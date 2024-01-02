@@ -11,7 +11,7 @@ Profile Website for Joe Maloney
 
 **Sample Projects**
 
-[CLI application written in Swift to boot ISO with Apple Hypervisor Framework](https://github.com/pkgdemon/swift-vm-cli) 2023
-[Arch Linux image with KDE and ZFS](https://github.com/pkgdemon/maloneyos) 2024
+* [CLI application written in Swift to boot ISO with Apple Hypervisor Framework](https://github.com/pkgdemon/swift-vm-cli) 2023
+* [Arch Linux image with KDE and ZFS](https://github.com/pkgdemon/maloneyos) 2024
 
 For more please see my [YouTube channel maloneytech](https://youtube.com/@maloneytech)

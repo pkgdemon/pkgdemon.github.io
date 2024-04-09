@@ -15,4 +15,4 @@ Profile Website for Joe Maloney
 * [Arch Linux image with KDE and ZFS](https://github.com/pkgdemon/maloneyos) 2024
 * [Dockerized GNUstep](https://github.com/pkgdemon/dockerstep) 2024
 
-For more please see my [YouTube channel maloneytech](https://youtube.com/@maloneytech)
+More examples including forks I have contributed fixes to can be found at my [Github](https://github.com/pkgdemon?tab=repositories)

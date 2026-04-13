@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SquashFS Setup Guide — Gershwin Workspace</title>
+<style>
+  body {
+    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    max-width: 720px;
+    margin: 40px auto;
+    padding: 0 20px;
+    color: #222;
+    line-height: 1.6;
+  }
+  h1 { font-size: 1.6em; border-bottom: 1px solid #ccc; padding-bottom: 8px; }
+  h2 { font-size: 1.25em; margin-top: 1.8em; }
+  code {
+    background: #f4f4f4;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.95em;
+  }
+  pre {
+    background: #f4f4f4;
+    padding: 12px 16px;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 0.9em;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 12px 0;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+  }
+  th { background: #f4f4f4; }
+  .note {
+    background: #fff8e1;
+    border-left: 4px solid #ffc107;
+    padding: 10px 14px;
+    margin: 16px 0;
+  }
+</style>
+</head>
+<body>
+
+<h1>SquashFS Setup Guide for Gershwin Workspace (Debian/Linux)</h1>
+
+<h2>Overview</h2>
+<p>
+  Gershwin Workspace mounts SquashFS images through <code>/Volumes</code> using
+  FUSE (Filesystem in Userspace). This requires the FUSE kernel module, the
+  <code>squashfuse</code> utility, and supporting libraries. The workspace also
+  uses <code>libsquashfs</code> at build time for reading AppImage icons.
+</p>
+
+<h2>Required Packages</h2>
+<p>Install all required packages:</p>
+<pre><code>sudo apt install squashfuse fuse3 libfuse3-4 libsquashfs-dev squashfs-tools</code></pre>
+
+<table>
+  <thead>
+    <tr>
+      <th>Package</th>
+      <th>Purpose</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>fuse3</code></td>
+      <td>Provides <code>fusermount3</code>, the userspace mount/unmount utility
+          that <code>squashfuse</code> calls to register mounts with the kernel.
+          <strong>Without this, no FUSE mounts will work.</strong></td>
+    </tr>
+    <tr>
+      <td><code>libfuse3-4</code></td>
+      <td>FUSE 3.x shared library (usually installed as a dependency of
+          <code>fuse3</code>).</td>
+    </tr>
+    <tr>
+      <td><code>squashfuse</code></td>
+      <td>FUSE filesystem driver that mounts SquashFS archives. This is the tool
+          invoked by <code>VolumeManager</code> when you open a
+          <code>.squashfs</code>, <code>.sqsh</code>, or <code>.sfs</code> file.</td>
+    </tr>
+    <tr>
+      <td><code>libsquashfs-dev</code></td>
+      <td>Development headers and library for <code>libsquashfs</code>
+          (squashfs-tools-ng). Required at <strong>build time</strong> so that
+          <code>configure</code> detects SquashFS support
+          (<code>HAVE_SQUASHFS=1</code>) and enables AppImage icon extraction in
+          <code>AppImageIconProvider</code>.</td>
+    </tr>
+    <tr>
+      <td><code>squashfs-tools</code></td>
+      <td>Provides <code>mksquashfs</code> and <code>unsquashfs</code> for
+          creating and inspecting SquashFS images.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Kernel Module</h2>
+<p>The <code>fuse</code> kernel module must be loaded:</p>
+<pre><code># Check if loaded
+lsmod | grep fuse
+
+# Load if missing
+sudo modprobe fuse</code></pre>
+<p>
+  On Debian with recent kernels, FUSE is typically built-in rather than a
+  loadable module. Verify with:
+</p>
+<pre><code>modinfo fuse</code></pre>
+<p>If it reports <code>filename: (builtin)</code>, no action is needed.</p>
+
+<h2>FUSE Device Node</h2>
+<p><code>/dev/fuse</code> must exist and be accessible:</p>
+<pre><code>ls -l /dev/fuse</code></pre>
+<p>Expected output shows a character device with mode <code>crw-rw-rw-</code>
+   (0666). If it does not exist, the <code>fuse3</code> package and a reboot
+   (or <code>modprobe fuse</code>) will create it.</p>
+
+<h2>Volumes Directory</h2>
+<p>
+  Gershwin Workspace mounts images under <code>/Volumes</code>. This directory
+  must exist with world-writable sticky-bit permissions so that non-root users
+  can create mount points:
+</p>
+<pre><code>sudo mkdir -p /Volumes
+sudo chmod 1777 /Volumes</code></pre>
+<p>Verify:</p>
+<pre><code>stat /Volumes
+# Access should be (1777/drwxrwxrwt)</code></pre>
+
+<h2>FUSE Configuration</h2>
+<p>
+  If you need other users (or root) to access a FUSE mount, uncomment
+  <code>user_allow_other</code> in <code>/etc/fuse.conf</code>:
+</p>
+<pre><code>sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf</code></pre>
+<p>
+  This is required by <code>MountSystemImage.sh</code>, which passes
+  <code>-o allow_other</code> to <code>squashfuse</code>.
+</p>
+
+<h2>Build-Time Configuration</h2>
+<p>
+  When building gershwin-workspace from source, <code>configure</code>
+  auto-detects <code>libsquashfs</code> via <code>pkg-config</code>. Confirm
+  detection with:
+</p>
+<pre><code>pkg-config --exists libsquashfs && echo "found" || echo "not found"
+pkg-config --cflags --libs libsquashfs</code></pre>
+<p>
+  After running <code>./configure</code>, verify that
+  <code>Workspace/config.h</code> contains:
+</p>
+<pre><code>#define HAVE_SQUASHFS 1</code></pre>
+<p>
+  If it shows <code>0</code>, the library was not found. Ensure
+  <code>libsquashfs-dev</code> is installed and re-run <code>./configure</code>.
+</p>
+
+<h2>Supported File Extensions</h2>
+<p>
+  <code>VolumeManager</code> recognises the following extensions for SquashFS
+  images:
+</p>
+<ul>
+  <li><code>.squashfs</code></li>
+  <li><code>.sqsh</code></li>
+  <li><code>.sfs</code></li>
+</ul>
+
+<h2>Unmounting</h2>
+<p>FUSE mounts under <code>/Volumes</code> can be unmounted with:</p>
+<pre><code>fusermount3 -u /Volumes/&lt;mount-name&gt;</code></pre>
+<p>Or from within Gershwin Workspace via the volume manager.</p>
+
+<h2>Quick Verification</h2>
+<p>Run the following to confirm everything is in place:</p>
+<pre><code># All required packages installed
+dpkg -l squashfuse fuse3 libfuse3-4 libsquashfs-dev squashfs-tools
+
+# FUSE kernel support
+test -c /dev/fuse && echo "/dev/fuse OK" || echo "/dev/fuse MISSING"
+
+# fusermount3 available
+which fusermount3 && echo "fusermount3 OK" || echo "fusermount3 MISSING (install fuse3)"
+
+# squashfuse available
+which squashfuse && echo "squashfuse OK" || echo "squashfuse MISSING"
+
+# /Volumes exists with correct permissions
+test -d /Volumes && echo "/Volumes OK" || echo "/Volumes MISSING"
+
+# libsquashfs detectable by pkg-config (build-time)
+pkg-config --exists libsquashfs && echo "libsquashfs OK" || echo "libsquashfs MISSING"</code></pre>
+
+<div class="note">
+  <strong>Most common issue:</strong> The <code>fuse3</code> package is not
+  installed. Without it, <code>fusermount3</code> is unavailable and
+  <code>squashfuse</code> cannot register mounts — even though the library,
+  kernel module, and <code>/dev/fuse</code> are all present.
+</div>
+
+</body>
+</html>

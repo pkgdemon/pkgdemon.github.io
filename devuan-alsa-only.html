@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ALSA + dmix + apulse Setup Reproduction</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 820px; margin: 2em auto; padding: 0 1em; line-height: 1.5; color: #222; }
+  h1, h2 { border-bottom: 1px solid #ccc; padding-bottom: .2em; }
+  pre { background: #f4f4f4; padding: 1em; border-left: 3px solid #4a90e2; overflow-x: auto; }
+  code { font-family: ui-monospace, monospace; }
+  .note { background: #fff8e1; padding: .8em 1em; border-left: 3px solid #f5a623; margin: 1em 0; }
+  .path { color: #6a737d; font-size: .9em; }
+</style>
+</head>
+<body>
+
+<h1>ALSA + dmix + apulse Reproduction Notes</h1>
+<p>This documents a working configuration that lets multiple applications share the
+sound card via ALSA's <code>dmix</code> plugin, with <code>apulse</code> redirecting
+PulseAudio-only apps to that same mixed device. No PulseAudio or PipeWire daemon
+is involved.</p>
+
+<h2>1. Required packages (Debian/Ubuntu)</h2>
+<pre><code>apt install alsa-utils apulse</code></pre>
+<p>Versions in use here: <code>alsa-utils 1.2.14-1</code>, <code>apulse 0.1.13-2+b3</code>.</p>
+
+<h2>2. ALSA config — <span class="path">~/.asoundrc</span></h2>
+<p>Sets the default PCM to a <code>plug</code> wrapper around a <code>dmix</code>
+slave bound to <code>hw:0,0</code>. <code>plug</code> handles rate/format
+conversion so apps that don't natively match 48 kHz / S16_LE still work.</p>
+<pre><code>pcm.!default {
+    type plug
+    slave.pcm "dmixer"
+}
+
+pcm.dmixer {
+    type dmix
+    ipc_key 1024
+    ipc_perm 0666
+    slave {
+        pcm "hw:0,0"
+        period_time 0
+        period_size 1024
+        buffer_size 4096
+        rate 48000
+        channels 2
+        format S16_LE
+    }
+    bindings {
+        0 0
+        1 1
+    }
+}
+
+ctl.!default {
+    type hw
+    card 0
+}</code></pre>
+<div class="note">
+  <strong>Notes:</strong>
+  <ul>
+    <li><code>ipc_perm 0666</code> lets multiple users share the dmix segment.</li>
+    <li><code>ipc_key 1024</code> is arbitrary but must be consistent across users sharing the mix.</li>
+    <li>If the card isn't index 0, change <code>hw:0,0</code> and <code>card 0</code>
+        (check with <code>aplay -l</code>).</li>
+    <li>For a system-wide version, drop the same content into
+        <code>/etc/asound.conf</code> instead of <code>~/.asoundrc</code>.</li>
+  </ul>
+</div>
+
+<h2>3. apulse global env var — <span class="path">/etc/zsh/zshrc</span></h2>
+<p>Added to the system-wide zshrc so every zsh user inherits it. This tells
+<code>apulse</code> to send output through the dmix-backed default rather than
+straight to <code>hw:0,0</code> (which would block other apps).</p>
+<pre><code>export APULSE_PLAYBACK_DEVICE=plug:dmixer</code></pre>
+<p class="path">Currently sits at /etc/zsh/zshrc:65.</p>
+<div class="note">
+  For bash users, add the same line to <code>/etc/bash.bashrc</code> (or
+  <code>/etc/profile.d/apulse.sh</code> for a shell-agnostic drop-in).
+</div>
+
+<h2>4. Usage</h2>
+<pre><code># Native ALSA app — uses dmix automatically via the default PCM
+aplay sound.wav
+
+# PulseAudio-only app — wrap with apulse
+apulse firefox
+apulse some-electron-app</code></pre>
+
+<h2>5. Verification</h2>
+<pre><code># Confirm card index
+aplay -l
+
+# Test the dmix path directly
+aplay -D plug:dmixer /usr/share/sounds/alsa/Front_Center.wav
+
+# Confirm env var is exported in a fresh shell
+echo $APULSE_PLAYBACK_DEVICE   # → plug:dmixer</code></pre>
+
+<h2>6. Reproduction checklist</h2>
+<ol>
+  <li>Install <code>alsa-utils</code> and <code>apulse</code>.</li>
+  <li>Write the asoundrc block above to <code>~/.asoundrc</code> (or
+      <code>/etc/asound.conf</code> system-wide).</li>
+  <li>Append <code>export APULSE_PLAYBACK_DEVICE=plug:dmixer</code> to
+      <code>/etc/zsh/zshrc</code> (and/or <code>/etc/bash.bashrc</code>).</li>
+  <li>Open a new shell; verify with the commands in §5.</li>
+  <li>Make sure no PulseAudio/PipeWire daemon is running and grabbing the card.</li>
+</ol>
+
+</body>
+</html>

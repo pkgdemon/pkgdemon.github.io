@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Fixing .local (mDNS) Resolution on Debian/Devuan</title>
+<style>
+body { font-family: -apple-system, sans-serif; max-width: 800px; margin: 2em auto; padding: 0 1em; line-height: 1.6; color: #222; }
+h1 { border-bottom: 2px solid #333; padding-bottom: 0.3em; }
+h2 { margin-top: 2em; color: #444; }
+pre { background: #f4f4f4; border: 1px solid #ddd; border-radius: 4px; padding: 1em; overflow-x: auto; }
+code { background: #f4f4f4; padding: 0.2em 0.4em; border-radius: 3px; }
+.file-path { font-weight: bold; color: #1a5276; }
+.note { background: #fff8dc; border-left: 4px solid #d4a017; padding: 0.6em 1em; margin: 1em 0; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+th, td { border: 1px solid #ddd; padding: 0.5em 1em; text-align: left; }
+th { background: #f0f0f0; }
+</style>
+</head>
+<body>
+<h1>Fixing <code>.local</code> (mDNS) Resolution on Debian/Devuan</h1>
+<p>Applied to both <strong>minime</strong> and <strong>devuan</strong>.</p>
+
+<h2>Symptom</h2>
+<p>Hosts on the LAN were reachable by their fully qualified router name (e.g. <code>joe-macmini.home.local</code>) but <em>not</em> by their Bonjour/mDNS name (<code>joe-macmini.local</code>), even though:</p>
+<ul>
+<li>Both machines were on the same wired subnet.</li>
+<li><code>avahi-daemon</code> was running and publishing this host's own name.</li>
+<li>No firewall was blocking UDP/5353.</li>
+<li>mDNS multicast traffic from other LAN hosts was visible via <code>tcpdump</code>.</li>
+</ul>
+<p>Even <code>getent hosts minime.local</code> (this host's own advertised name) returned nothing &mdash; and <code>tcpdump</code> showed that <strong>no outbound mDNS query was ever sent</strong>. So the problem was in the NSS layer, not the network.</p>
+
+<h2>Root Cause</h2>
+<p>The home router (<code>192.168.1.1</code>) serves a <code>home.local</code> zone and, as a side effect, answers authoritatively for the top-level <code>local</code> label:</p>
+<pre>$ dig +short SOA local. @192.168.1.1
+localhost. nobody.invalid. 1 3600 1200 604800 10800</pre>
+<p>The NSS module <code>mdns4_minimal</code> (from <code>libnss-mdns</code>) implements the Apple-recommended heuristic described in <a href="https://support.apple.com/en-us/HT201275">HT201275</a>: if unicast DNS has an <code>SOA</code> for <code>local.</code>, it assumes <code>.local</code> is a real unicast zone and <strong>silently disables itself</strong>. That is why no multicast query was ever emitted.</p>
+
+<div class="note">
+<strong>Gotcha:</strong> the <em>minimal</em> flavour (<code>mdns4_minimal</code>, <code>mdns6_minimal</code>, <code>mdns_minimal</code>) does <strong>not</strong> read <code>/etc/mdns.allow</code> under any circumstances &mdash; so a whitelist file alone will not override the SOA check. You must switch to the non-minimal module.
+</div>
+
+<h2>The Fix</h2>
+<p>Two changes, as root:</p>
+
+<h3>1. Create <span class="file-path">/etc/mdns.allow</span></h3>
+<pre>cat &gt; /etc/mdns.allow &lt;&lt;'EOF'
+.local.
+.local
+EOF</pre>
+<p>This tells the non-minimal <code>mdns4</code> module to resolve <code>.local</code> via mDNS authoritatively, bypassing the unicast-SOA heuristic.</p>
+
+<h3>2. Edit <span class="file-path">/etc/nsswitch.conf</span></h3>
+<p>Change the <code>hosts:</code> line from:</p>
+<pre>hosts:          files mdns4_minimal [NOTFOUND=return] dns</pre>
+<p>to:</p>
+<pre>hosts:          files mdns4 [NOTFOUND=return] dns</pre>
+<p>Or as a one-liner:</p>
+<pre>sed -i 's/mdns4_minimal \[NOTFOUND=return\] dns/mdns4 [NOTFOUND=return] dns/' /etc/nsswitch.conf</pre>
+
+<p>No daemon restart is required &mdash; NSS is re-read per process. Open a new shell to test.</p>
+
+<h2>Verification</h2>
+<pre>$ getent hosts minime.local
+192.168.1.173   minime.local
+$ getent hosts joe-macmini.local
+192.168.1.171   joe-macmini.local
+$ ping -c1 joe-macmini.local</pre>
+
+<h2>Trade-offs of <code>mdns4</code> vs <code>mdns4_minimal</code></h2>
+<table>
+<tr><th></th><th><code>mdns4_minimal</code></th><th><code>mdns4</code></th></tr>
+<tr><td>Queries beyond <code>.local</code></td><td>Never</td><td>Only if listed in <code>/etc/mdns.allow</code></td></tr>
+<tr><td>Reads <code>/etc/mdns.allow</code></td><td>No</td><td>Yes</td></tr>
+<tr><td>Unicast-SOA heuristic</td><td>Always applied</td><td>Skipped for suffixes in <code>/etc/mdns.allow</code></td></tr>
+<tr><td>Risk of slow lookups for unrelated names</td><td>None</td><td>None, as long as <code>/etc/mdns.allow</code> only contains <code>.local</code>/<code>.local.</code></td></tr>
+</table>
+
+<h2>Alternative (Not Applied)</h2>
+<p>The cleanest fix is on the router: stop it answering for the bare <code>local.</code> zone so that <code>dig SOA local. @router</code> returns <code>NXDOMAIN</code>. That would restore mDNS for every client on the LAN without per-host changes. This was not done here because router configuration was out of scope for the troubleshooting session.</p>
+
+<h2>References</h2>
+<ul>
+<li><code>/usr/share/doc/libnss-mdns/README.md.gz</code> &mdash; "Sites with a .local DNS zone"</li>
+<li>Apple TN: <a href="https://support.apple.com/en-us/HT201275">HT201275 &mdash; About Bonjour</a></li>
+<li>Upstream: <a href="https://github.com/lathiat/nss-mdns">github.com/lathiat/nss-mdns</a></li>
+</ul>
+</body>
+</html>

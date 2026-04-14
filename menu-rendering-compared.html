@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>How menus work: macOS vs GNUstep</title>
+<style>
+  :root {
+    --bg: #fafaf7;
+    --fg: #1f2328;
+    --muted: #5a6069;
+    --accent: #8a3324;
+    --rule: #e3e1d9;
+    --code-bg: #f1efe7;
+  }
+  html, body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+    font-size: 17px;
+    line-height: 1.55;
+    margin: 0;
+    padding: 0;
+  }
+  main {
+    max-width: 800px;
+    margin: 3rem auto;
+    padding: 0 1.5rem 4rem;
+  }
+  h1 {
+    font-size: 1.9rem;
+    color: var(--accent);
+    border-bottom: 2px solid var(--accent);
+    padding-bottom: 0.4rem;
+    margin-bottom: 1.5rem;
+  }
+  h2 {
+    color: var(--accent);
+    font-size: 1.3rem;
+    margin-top: 2.4rem;
+    margin-bottom: 0.8rem;
+  }
+  p { margin: 0.8rem 0; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 1rem;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.35;
+  }
+  code, pre {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  p code {
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 0.88em;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0;
+    font-size: 0.95rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.55rem 0.8rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  tr:nth-child(even) td {
+    background: #f4f2ea;
+  }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>How menus work: macOS vs GNUstep</h1>
+
+<p>Both macOS and GNUstep hand menu ownership to the frontmost application: the app itself builds the menu and draws it. But the two systems arrange those menus on screen in very different ways. This note walks through how each one actually puts pixels on the glass, and what the consequences are.</p>
+
+<h2>How menus work on macOS</h2>
+
+<p>On macOS the frontmost application draws its own menu bar. There is no system process that renders the bar on the app's behalf. When an app becomes active, it creates (or unhides) a borderless window that is exactly the width of the screen and roughly 24 points tall, and it draws the apple logo, the app's menu titles, and the clock area into that window itself.</p>
+
+<p>What makes the bar <em>look</em> like a single shared surface is the window server. WindowServer (internally SkyLight on modern macOS) composites every app's windows onto the screen. Menu bar windows are placed at a reserved window level, <code>kCGMainMenuWindowLevel</code>, which sits above normal windows and below alerts. Only one app's menu bar window is visible at a time; the others are ordered out.</p>
+
+<p>An application switch is therefore mostly a visibility swap. When app A deactivates and app B activates, A hides its menu bar window and B shows its own. Both windows occupy the same screen rectangle at the same window level, so the user sees a continuous strip even though the owner changed.</p>
+
+<p>Pull-downs are separate windows. When you click a menu title, the owning app opens a new borderless window at a higher popup window level and runs a local event-tracking loop until you pick an item or dismiss. The menu bar window itself does not expand; the pull-down is an independent surface that the compositor lays on top.</p>
+
+<p>The right-hand side of the bar is more interesting. The clock, Wi-Fi, volume, and battery icons you see there are not drawn by the frontmost app. They are status items, and they come from several different processes at once. Legacy extras are hosted by SystemUIServer. The modern icons (Control Center, Focus, Sound, Now Playing) come from ControlCenter.app. Any app that creates an <code>NSStatusItem</code> draws its own icon from its own process. Each of those processes creates a small borderless window and places it at the menu bar window level, aligned with the same y-coordinate as the frontmost app's bar.</p>
+
+<p>The result is that the menu bar strip you see is a cooperative illusion. Many processes draw into it, none of them owns it, and the rule that keeps them aligned is simply the shared window level plus the convention that everyone uses the same height.</p>
+
+<pre><code>  Frontmost App                                 Screen
+  +-------------+     +------------------+     +---------+
+  | NSMenu tree | --> | menu-bar NSWindow| --> |         |
+  +-------------+     | level: MainMenu  |     |         |
+                      +------------------+     |         |
+                               |               |  Window |
+                               v               | Server  | --> display
+                      +------------------+     |(SkyLight|
+                      |  pull-down window|     |  /WS)   |
+                      |  level: Popup    |     |         |
+                      +------------------+     +---------+
+                                                    ^
+  Right side of the bar (same MainMenu level):      |
+                                                    |
+  SystemUIServer  --+                                |
+  ControlCenter.app-+--> status-item NSWindows ------+
+  Any app's item ---+    (each app draws its own)
+</code></pre>
+
+<h2>How menus work in GNUstep</h2>
+
+<p>GNUstep inherits its menu model from NeXTstep, and the default presentation is still the NeXTstep one: a vertical, floating menu panel that the user can drag around the screen and tear off submenus from. The menu is a real window, owned by the app, and it lives wherever the user parked it.</p>
+
+<p>There is no system menu bar in stock GNUstep. Every menu belongs to one app and is drawn by that app. When you switch apps, the previous app's menu panel is hidden (or stays visible but inactive, depending on the style) and the new app's menu panel appears. No other process is involved.</p>
+
+<p>GNUstep offers three interface styles, selected by the <code>NSMenuInterfaceStyle</code> default. In the NeXTstep style the menu is the floating vertical panel described above. In the Windows95 style the horizontal menu is embedded inside each of the application's own document windows, the way GTK or Win32 apps traditionally work. In the Macintosh style the app places a horizontal menu strip at the top of the screen, which looks superficially like macOS but is still just that one app's panel; no system bar exists and no other app shares the strip.</p>
+
+<p>Under the hood all three styles are the same object. Every menu is an <code>NSMenu</code> rendered by an <code>NSMenuView</code> hosted inside an <code>NSMenuPanel</code>, which is a borderless <code>NSWindow</code> subclass the app creates and owns. The style setting changes layout (vertical vs horizontal), placement (floating vs embedded vs top-of-screen), and attach behaviour, but the window is always an app-owned panel.</p>
+
+<p>Keyboard shortcuts do not need the menu to be visible. Key equivalents are dispatched inside the app by <code>NSApplication</code> walking the menu tree when a key event arrives, so Command-S works whether the menu is a floating panel, embedded in a document window, or a strip at the top of the screen.</p>
+
+<p>GNUstep has an <code>NSStatusItem</code> class for API compatibility with Cocoa, but there is no shared presentation surface for it to appear in. Without a system-owned bar region, status items have nowhere canonical to live.</p>
+
+<pre><code>  App
+  +-------------+     +---------------+     +----------+     +--------+
+  | NSMenu tree | --> | NSMenuView    | --> | NSMenu-  | --> | X11 /  | --> screen
+  +-------------+     | (vert or horiz)|    | Panel    |     | Wayland|
+                      +---------------+     | (borderl.|     +--------+
+                                            |  NSWindow)
+                                            +----------+
+
+  Three styles, same panel object:
+
+    NeXTstep                Windows95                Macintosh
+    (default)
+
+    +----------+            +==============+         +=======================+
+    | App      |            | Document win |         | App menu strip (top)  |
+    +----------+            | +----------+ |         +=======================+
+    | File     |            | | File Edit||               (this app only;
+    | Edit     |            | +----------+|                no system bar)
+    | View     |            | | content  ||
+    | ...      |            | |          ||
+    +----------+            | +----------+|
+    (floats, drag)          +=============+
+                            (menu inside
+                             each window)
+</code></pre>
+
+<h2>Processes and components</h2>
+
+<p>It helps to see the actual moving parts. Below are tree views of what is running and which framework or object does what, in each system.</p>
+
+<p><strong>macOS.</strong> Several processes cooperate. The frontmost app and every status-item owner each contribute a window to the bar region; WindowServer composites them.</p>
+
+<pre><code>macOS menu system
+├── WindowServer            (process: _windowserver)
+│   ├── SkyLight.framework           compositor + input routing
+│   └── CoreGraphics window levels   kCGMainMenuWindowLevel (~24)
+│                                    kCGPopUpMenuWindowLevel
+│                                    kCGStatusWindowLevel
+│
+├── Frontmost application   (process: the app itself)
+│   ├── AppKit
+│   │   ├── NSApplication            setMainMenu:, activation events
+│   │   ├── NSMenu / NSMenuItem      the menu model
+│   │   ├── NSCarbonMenuImpl         tracking glue (legacy name)
+│   │   └── _NSMenuWindowManagerWindow
+│   │       ├── menu-bar window      level: MainMenu
+│   │       └── pull-down windows    level: PopUp
+│   └── HIToolbox.framework          legacy Menu Manager events
+│
+├── SystemUIServer          (process: SystemUIServer)
+│   ├── SystemUIPlugin.framework     loads .menu bundles
+│   └── /System/Library/CoreServices/Menu Extras/*.menu
+│       (legacy status extras, drawn into SystemUIServer's own
+│        windows at MainMenu level)
+│
+├── ControlCenter.app       (process: ControlCenter)
+│   ├── ControlCenter.framework      modern status cluster host
+│   ├── BatteryUIKit, NetworkMenusCommon, etc.
+│   └── per-item NSWindows at MainMenu level (Wi-Fi, BT, Sound,
+│                                              Focus, Clock, ...)
+│
+└── Any app with NSStatusItem
+    └── NSStatusBarWindow             app draws its own icon
+                                      at MainMenu level
+</code></pre>
+
+<p><strong>GNUstep.</strong> One process, one app. Everything menu-related lives inside the application's own address space; the window system just displays the panels the app creates.</p>
+
+<pre><code>GNUstep menu system
+└── The application         (one process, per app)
+    ├── libs-gui (AppKit)
+    │   ├── NSApplication             setMainMenu:, key-equiv dispatch
+    │   ├── NSInterfaceStyle          picks NeXTstep / Win95 / Mac
+    │   ├── NSMenu                    the menu model
+    │   ├── NSMenuView                vertical or horizontal layout
+    │   ├── NSMenuPanel               borderless NSWindow subclass
+    │   │   ├── main menu panel       one per app
+    │   │   └── submenu panels        one per open submenu
+    │   ├── GSTheme / GSThemeMenu     chrome, Win95 in-window embed
+    │   └── NSStatusBar / NSStatusItem
+    │                                 present in the API but
+    │                                 has no presentation surface
+    │
+    └── libs-back (display backend)
+        └── X11 or Wayland            just shows the NSWindows
+                                      the app asked for; no menu
+                                      awareness, no shared level
+</code></pre>
+
+<p>The shapes of the two trees are the story. macOS is a forest of cooperating processes held together by one compositor convention. GNUstep is a single tree per app, with no process above it arranging things.</p>
+
+<h2>Side-by-side</h2>
+
+<table>
+<thead>
+<tr><th>&nbsp;</th><th>macOS</th><th>GNUstep</th></tr>
+</thead>
+<tbody>
+<tr><td>Who owns the bar</td><td>Frontmost app draws its own bar window</td><td>Each app owns its own menu panel; no shared bar</td></tr>
+<tr><td>Where it appears</td><td>Fixed strip at top of main display</td><td>Depends on style: floating, in-window, or top strip</td></tr>
+<tr><td>Per-app or global</td><td>Per-app window, global-looking strip</td><td>Per-app, no global convention</td></tr>
+<tr><td>App switch</td><td>WindowServer hides old bar, shows new one at same level</td><td>Old panel hides, new panel appears wherever the app draws it</td></tr>
+<tr><td>Status items</td><td>Many processes share the bar region via a common window level</td><td><code>NSStatusItem</code> exists but has no presentation surface</td></tr>
+<tr><td>Pull-down tracking</td><td>Separate borderless window at popup level, app runs local event loop</td><td>Submenu is another <code>NSMenuPanel</code>, app runs local event loop</td></tr>
+</tbody>
+</table>
+
+<h2>The one sentence takeaway</h2>
+
+<p>Both systems give menu ownership to the application: the app builds the menu and draws it into a borderless window of its own. The difference is everything around that window. macOS adds a shared window level plus a compositor that cooperates across processes, so every app's bar and every status item from every process lands in the same reserved strip at the top of the screen.</p>
+
+<p>GNUstep has the ownership model but no shared presentation convention. Without a reserved region and without a compositor that enforces one, each app's menu appears wherever that app chooses to put it, and a cross-process feature like status items has nowhere to live.</p>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Who draws the macOS menu bar?</title>
+<style>
+  :root {
+    --bg: #fafaf7;
+    --fg: #1f2328;
+    --muted: #5a6069;
+    --accent: #8a3324;
+    --rule: #e3e1d9;
+    --code-bg: #f1efe7;
+  }
+  html, body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+    font-size: 17px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+  }
+  main {
+    max-width: 780px;
+    margin: 3rem auto;
+    padding: 0 1.5rem 4rem;
+  }
+  h1 {
+    font-size: 1.8rem;
+    color: var(--accent);
+    border-bottom: 2px solid var(--accent);
+    padding-bottom: 0.4rem;
+    margin-bottom: 1.5rem;
+  }
+  h2 {
+    color: var(--accent);
+    font-size: 1.25rem;
+    margin-top: 2.2rem;
+    margin-bottom: 0.6rem;
+  }
+  h3 {
+    font-size: 1.05rem;
+    margin-top: 1.4rem;
+    margin-bottom: 0.3rem;
+  }
+  p { margin: 0.8rem 0; }
+  code {
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 1rem;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.4;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0;
+    font-size: 0.95rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.55rem 0.8rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  tr:nth-child(even) td {
+    background: #f4f2ea;
+  }
+  ul { padding-left: 1.3rem; }
+  li { margin: 0.35rem 0; }
+  aside {
+    background: var(--code-bg);
+    border-left: 3px solid var(--accent);
+    padding: 0.8rem 1rem;
+    margin: 1.2rem 0;
+    font-size: 0.95rem;
+  }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Who draws the macOS menu bar?</h1>
+
+<p>The menu bar at the top of a macOS screen looks like one surface, but it is assembled from windows owned by several different processes. Each region of the bar has its own owner. This document walks across the bar from left to right and names which app or system process draws each part.</p>
+
+<aside>
+The menu bar is a cooperative illusion. Nobody draws the whole thing. Every piece is a separate borderless window at the same window level (<code>kCGMainMenuWindowLevel</code>), composited by WindowServer into what the user sees as one strip.
+</aside>
+
+<h2>The bar, left to right</h2>
+
+<pre>
++----------------------------------------------------------------------------+
+| [Apple] [App Name] [File] [Edit] [View] ...  ...  [Wi-Fi] [BT] [...] [Clock]|
++----------------------------------------------------------------------------+
+  \_______________________________/          \_____________________________/
+          drawn by the                              drawn by several
+       FRONTMOST APP                              OTHER processes
+
+</pre>
+
+<h2>Left side: the app menu</h2>
+
+<h3>Apple menu (🍎)</h3>
+<p>Drawn by the <strong>frontmost app</strong>, as part of its own menu-bar window. AppKit inserts it automatically for every Cocoa app. The contents (About This Mac, System Settings, Recent Items, Sleep, Restart, Shut Down, Log Out) are populated from a system template and route to system-wide actions, but the pixels and click tracking belong to the frontmost app.</p>
+
+<h3>App name menu (bold: "Safari", "Finder", "TextEdit", etc.)</h3>
+<p>Drawn by the <strong>frontmost app</strong>. Contains About, Preferences/Settings, Services, Hide, Hide Others, Show All, Quit. AppKit populates the standard items; the app can add its own.</p>
+
+<h3>File / Edit / View / Window / Help and other app-specific menus</h3>
+<p>Drawn by the <strong>frontmost app</strong>. These are the menus the app actually defined in its nib, xib, or code. When you switch apps, this entire left region is replaced because a different app is now drawing the bar.</p>
+
+<h2>Right side: status items</h2>
+
+<p>The right side is not drawn by the frontmost app. It is drawn by several other processes, each contributing its own small borderless window at the menu-bar level. Those windows do not move when you switch apps.</p>
+
+<h3>Modern status cluster: Wi-Fi, Bluetooth, Sound, Focus, Battery, Clock, Control Center button, Now Playing</h3>
+<p>Drawn by <strong>ControlCenter.app</strong> (app bundle at <code>/System/Library/CoreServices/ControlCenter.app</code>). One process, many small windows &mdash; one per visible item. Clicking an item pops a SwiftUI popover, also owned by ControlCenter. This process has been the owner of most of the right side since Big Sur (2020).</p>
+
+<h3>Spotlight, Siri, Notification Center, and legacy menu extras</h3>
+<p>Drawn by <strong>SystemUIServer.app</strong> (app bundle at <code>/System/Library/CoreServices/SystemUIServer.app</code>). Historically SystemUIServer owned the entire right side; ControlCenter took over most of it. What remains in SystemUIServer is Spotlight, Siri, Notification Center, and any older <code>.menu</code> bundles from <code>/System/Library/CoreServices/Menu Extras/</code>, which it loads in-process as plugins.</p>
+
+<h3>Third-party status icons: Dropbox, 1Password, Slack, Bartender, etc.</h3>
+<p>Drawn by <strong>each app's own process</strong>, using <code>NSStatusItem</code>. Dropbox's icon is a window owned by the Dropbox process. 1Password's icon is a window owned by the 1Password process. Each app positions its item cooperatively via SkyLight so they all share the bar region.</p>
+
+<h2>Summary table</h2>
+
+<table>
+<thead>
+<tr><th>Region</th><th>Drawn by</th><th>Process</th></tr>
+</thead>
+<tbody>
+<tr><td>Apple menu</td><td>Frontmost app</td><td>Whichever app is frontmost</td></tr>
+<tr><td>App name menu</td><td>Frontmost app</td><td>Whichever app is frontmost</td></tr>
+<tr><td>File, Edit, View, Window, Help, etc.</td><td>Frontmost app</td><td>Whichever app is frontmost</td></tr>
+<tr><td>Wi-Fi, Bluetooth, Sound, Focus, Battery, Clock, Control Center, Now Playing</td><td>Control Center</td><td>ControlCenter.app (<code>/System/Library/CoreServices/ControlCenter.app</code>)</td></tr>
+<tr><td>Spotlight, Siri, Notification Center, legacy menu extras</td><td>System UI Server</td><td>SystemUIServer.app (<code>/System/Library/CoreServices/SystemUIServer.app</code>)</td></tr>
+<tr><td>Dropbox, 1Password, Slack icon, and any third-party status item</td><td>Each app itself</td><td>The owning .app bundle's process (e.g. Dropbox.app, 1Password.app)</td></tr>
+<tr><td>Compositing the whole thing into one strip</td><td>Window Server</td><td>WindowServer (daemon, not an .app bundle; binary in <code>SkyLight.framework</code>)</td></tr>
+</tbody>
+</table>
+
+<h2>What Finder actually owns</h2>
+
+<p>Finder.app (<code>/System/Library/CoreServices/Finder.app</code>) is not special. It draws the left side of the bar only when Finder is frontmost &mdash; which is the default state when no other app is active, because Finder is always running. That is why people assume Finder owns the bar. As soon as Safari becomes frontmost, Safari is drawing the Apple menu and the app menu, and Finder's menu-bar window is ordered out.</p>
+
+<h2>What happens during an app switch</h2>
+
+<p>Only the left side changes. The old frontmost app's menu-bar window is ordered out; the new frontmost app's menu-bar window is ordered in. ControlCenter's and SystemUIServer's status-item windows do not move, because those processes never deactivated. Third-party status-item windows also stay put, for the same reason.</p>
+
+<aside>
+You can verify this with the Accessibility Inspector or by watching window lists: there are several borderless windows at the menu-bar level at all times, owned by different processes, sitting side by side. The bar is a row of cooperating windows, not a single one.
+</aside>
+
+<h2>Caveats</h2>
+<ul>
+  <li><strong>Non-Cocoa apps</strong> (old Carbon, some Java, full-screen games rendering their own UI) may not draw the Apple menu and app menus the standard way. Every modern AppKit app does.</li>
+  <li><strong>Full-screen mode</strong> hides the entire bar until the cursor reaches the top edge. The same owners reappear when the bar is revealed.</li>
+  <li><strong>Menu extras have shifted</strong> between macOS releases. The split of items between ControlCenter and SystemUIServer is not stable across versions.</li>
+</ul>
+
+</main>
+</body>
+</html>

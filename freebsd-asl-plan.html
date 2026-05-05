@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeBSD ASL — porting plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.plist { border-left-color: var(--accent); }
+  pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+          padding: 1rem 1.1rem; }
+  .card h4 { margin-top: 0; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  blockquote { margin: 1rem 0; padding: .5rem 1rem; border-left: 3px solid var(--accent);
+               background: #fff8f3; color: #333; }
+  .footnote { font-size: .85rem; color: var(--muted); }
+  ol li, ul li { margin: .25rem 0; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .filename { color: var(--accent); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .risk { background: #fff5e6; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .risk strong { color: var(--warn); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .step-num { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; background: var(--accent); color: white; border-radius: 50%; font-weight: 700; font-size: .85em; margin-right: .35em; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">Status</a>
+  <a href="#goal">Goal</a>
+  <a href="#repo">Repo</a>
+  <a href="#arch">Architecture</a>
+  <a href="#paths">Install paths</a>
+  <a href="#decisions">Decisions</a>
+  <a href="#files">File-by-file</a>
+  <a href="#bsd-wins">FreeBSD wins</a>
+  <a href="#integration">launchd integration</a>
+  <a href="#cli">CLI tool</a>
+  <a href="#license">License</a>
+  <a href="#phases">Phases</a>
+  <a href="#open">Open questions</a>
+</nav>
+
+<h1>FreeBSD ASL — porting plan</h1>
+<p class="subtitle">A FreeBSD-only port of Apple's ASL (Apple System Logger) — Apple's pre-unified-logging structured logging framework — replacing BSD syslog as the primary log infrastructure once we want richer-than-text-line records. Drops Mach IPC; replaces with GNUstep Distributed Objects. Companion to <a href="freebsd-launchd-plan.html">freebsd-launchd</a>, <a href="freebsd-configd-plan.html">freebsd-configd</a>, and <a href="freebsd-kmodloader-plan.html">freebsd-kmodloader</a>.</p>
+
+<section id="tldr" class="tldr">
+  <h3>Status: planning <span class="pill info">v0</span> &mdash; deferred</h3>
+  <ul>
+    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a> — <strong>monorepo</strong>. ASL source under <code>asl/</code> at the top, alongside <code>src/</code> (launchd), <code>configd/</code>, <code>kmodloader/</code>. Single build pipeline, single CI, single boot test.</li>
+    <li><strong>Mission:</strong> ship a structured-record logging system on FreeBSD modeled on the API the rest of the Apple-derived userland already speaks (<code>asl_log()</code>). Apps that have used <code>asl(3)</code> on macOS port without API changes; queries via the <code>syslog(1)</code> CLI work. <strong>BSD <code>syslogd</code> stays operational for backward compat</strong> — the ASL <code>syslogd</code> is rewritten Apple-side to ALSO write BSD-format /var/log/messages via <code>bsd_out.c</code>, so existing FreeBSD tools keep working.</li>
+    <li><strong>Why this is deferred:</strong> the launchd port works fine with plain BSD syslog (already shipped at commit <code>9f6c479</code>). ASL is an <em>upgrade path</em> — it gives us structured query (filter by Sender, Facility, PID, Time-range without grep tricks), per-job log filtering for <code>launchctl logs &lt;label&gt;</code>-style features, and matches the API expected by application code we'd inherit from macOS. <strong>Phase 6+ work, well after configd and kmodloader.</strong></li>
+    <li><strong>Source:</strong> Apple <code>syslog-97.1</code> (latest tag at <code>apple-oss-distributions/syslog</code>, APSL 2.0). 47 source files, ~38k LOC. 12 files have <code>&lt;mach/&gt;</code> includes; one MIG <code>.defs</code> file (<code>aslcommon/asl_ipc.defs</code>). Phase 1 amputation drops the Mach plumbing.</li>
+    <li><strong>No Mach IPC.</strong> The asl client library (<code>libsystem_asl</code>) talks to the syslogd database server via Mach in Apple's source. <strong>Replaced</strong> with GNUstep Distributed Objects (<code>NSConnection</code> + <code>NSPortCoder</code>) over AF_UNIX, same pattern as the configd port.</li>
+    <li><strong>Event loop:</strong> <code>libdispatch</code> dispatch sources only (kqueue under the hood). <code>DISPATCH_SOURCE_TYPE_READ</code> on <code>/dev/klog</code> for kernel-log ingestion; on <code>/var/run/log</code> Unix socket for BSD-syslog wire-format clients; on the DO socket for ASL clients. <code>DISPATCH_SOURCE_TYPE_VNODE</code> on <code>/etc/asl.conf</code> for live config reload.</li>
+    <li><strong>Coexistence with FreeBSD's <code>syslogd</code>:</strong> the Apple ASL <code>syslogd</code> implements the BSD-syslog wire protocol natively (<code>bsd_out.c</code> writes <code>/var/log/messages</code> et al. with the conventional facility/level routing). After this port lands, FreeBSD's stock <code>syslogd</code> is uninstalled; the ASL <code>syslogd</code> takes over both roles. Existing programs that call <code>syslog(3)</code> see no API change.</li>
+    <li><strong>Licensing:</strong> Apple's source is <strong>APSL 2.0</strong> (not Apache 2.0 like launchd/configd). FSF-approved free software license; per-file headers preserved on Apple-derived files; our top-level repo stays BSD-2-Clause; same inbound=outbound rule as the other ports.</li>
+  </ul>
+</section>
+
+<h2 id="goal">1. Goal &amp; non-goals</h2>
+
+<h3>1.1 Goal</h3>
+<p>Replace FreeBSD's <code>/usr/sbin/syslogd</code> with a port of Apple's ASL-backed <code>syslogd</code>, providing: (a) the BSD-syslog Unix-socket protocol so existing programs calling <code>syslog(3)</code> Just Work; (b) the asl(3) C API for richer structured logging by Apple-derived userland; (c) a <code>syslog(1)</code> CLI for queries that filter on structured fields (Sender, Facility, PID, Time, custom keys) without resorting to grep; (d) a binary store under <code>/var/log/asl/*.asl</code> for fast indexed queries; (e) text fallback in <code>/var/log/messages</code> for tooling that walks log files directly. Eliminates the gap between "what FreeBSD ships" (text-line BSD syslog) and "what the Apple-shaped userland expects" (structured ASL records).</p>
+
+<h3>1.2 Non-goals (this iteration)</h3>
+<ul>
+  <li><strong>No unified logging (<code>os_log</code>).</strong> Apple's modern post-ASL system (macOS 10.12+) is a much bigger project — the <code>logd</code> daemon and <code>tracev3</code> binary format aren't fully open-sourced. ASL is the largest open-source Apple logging system that's portable. Out of scope.</li>
+  <li><strong>No Mach IPC.</strong> Same project-wide rule. <code>asl_ipc.defs</code> (the MIG IDL between client and server) is deleted; replaced with DO.</li>
+  <li><strong>No iOS/iPadOS plist variants.</strong> Files like <code>asl.conf.ios</code>, <code>asl.conf.ios_sim</code>, <code>com.apple.syslogd_sim.plist</code> are dropped.</li>
+  <li><strong>No SecurityFoundation log redaction.</strong> Apple's syslogd integrates with the SecurityFoundation framework for privacy markers (<code>{public}</code>, <code>{private}</code> in os_log format strings). ASL's redaction is simpler; we keep what's already there but don't add new privacy plumbing.</li>
+  <li><strong>No <code>aslmanager</code> rotation policy reimagining.</strong> Apple's <code>aslmanager.tproj</code> rotates the .asl store. We port it as-is; FreeBSD already has its own <code>newsyslog</code> for /var/log/messages-style files.</li>
+  <li><strong>No backwards port to launchd's pre-Phase-3a stage.</strong> ASL needs Foundation + libdispatch (linked into <code>syslogd</code>). The system domain has to be in place; this work depends on launchd Phase 2 having shipped.</li>
+</ul>
+
+<h2 id="repo">2. Repository</h2>
+
+<p>Monorepo, same as configd and kmodloader. ASL source lives under <code>asl/</code> at the top of <code>freebsd-launchd</code>:</p>
+
+<pre><code>freebsd-launchd/
+├── src/                          launchd Apple-imported source
+├── configd/                      Apple configd-imported source
+├── kmodloader/                   clean-room kmodloader
+├── asl/                          Apple syslog-97.1 imported source (this plan)
+│   ├── scripts/import-source.sh  one-shot import from apple-oss-distributions/syslog
+│   ├── Makefile                  top-level build
+│   ├── compat/                   FreeBSD-specific shims if any surface
+│   └── src/                      forked Apple syslog-97.1, Mach paths deleted
+│       ├── aslcommon/            shared types, asl_common.c, asl_memory.c
+│       ├── aslmanager.tproj/     log rotation/management daemon
+│       ├── libsystem_asl.tproj/  the asl(3) library — links into apps
+│       ├── newsyslog/            log rotation utility (BSD-derived; we use
+│       │                         FreeBSD's own /usr/sbin/newsyslog instead;
+│       │                         this dir is dropped on import)
+│       ├── syslogd.tproj/        the syslogd daemon (the headline binary)
+│       └── util.tproj/           the syslog(1) CLI tool
+└── make-asl.sh                   STANDALONE — builds + installs from
+                                  asl/src/ to /usr/sbin/, /usr/lib/,
+                                  /System/Library/.
+</code></pre>
+
+<h2 id="arch">3. Architecture</h2>
+
+<div class="ascii-diagram">                    +---------------------+
+                    |     /etc/asl.conf   |
+                    +-----------+---------+
+                                | (vnode source: live reload)
+                                v
++---------------------+   +-----+------+   +-------------------------+
+|   /dev/klog         |-->|  syslogd  |<--| /var/run/netconfigd.sock|
+|  (kernel ringbuf;   |   |  (ObjC,   |    | wait — wrong sock; the |
+|   READ source)      |   |  GNUstep, |    | ASL one is below)      |
++---------------------+   |  Apple    |   +-------------------------+
+                          |  source)  |
++---------------------+   |           |   +-------------------------+
+|  /var/run/log       |-->|           |&lt;--| /var/run/asl_input      |
+|  (BSD syslog Unix   |   |           |   | (DO connection for ASL  |
+|   socket; READ src) |   |           |   |  clients via NSConnect.)|
++---------------------+   +-----+-----+   +-------------------------+
+                                |
+                                | (writes go to BOTH stores)
+                                v
+              +-----------------+-----------------+
+              |                                   |
+              v                                   v
+     +--------+--------+                  +-------+--------+
+     | /var/log/asl/   |                  | /var/log/      |
+     |   *.asl         |                  |   messages,    |
+     | (binary store,  |                  |   auth.log,    |
+     |  daily-rotated  |                  |   maillog ...  |
+     |  by aslmanager) |                  | (BSD text;     |
+     +-----------------+                  |  newsyslog     |
+                                          |  rotates)      |
+                                          +----------------+</div>
+
+<h3>3.1 The two stores, one daemon</h3>
+<p>This is the load-bearing design choice that makes ASL palatable for FreeBSD: the syslogd daemon writes <strong>both</strong> a binary ASL store (queryable via <code>syslog(1)</code> with structured filters) <strong>and</strong> the conventional BSD-syslog text files (<code>/var/log/messages</code>, <code>/var/log/auth.log</code>, etc., readable with <code>tail</code> / <code>grep</code> / any tool that walks files). Apple's <code>bsd_out.c</code> implements this — the source of <code>asl.conf</code>'s "rule"-based output routing is already split between an asl_db backend and a bsd-text backend.</p>
+
+<p>Existing FreeBSD admin habits (read /var/log/messages, run logger from a script) keep working unchanged. New apps that want structured queries get them. <strong>No tradeoff on the user side.</strong></p>
+
+<h3>3.2 Replacing Mach IPC with DO</h3>
+<p>The asl client library (<code>libsystem_asl</code>) buffers messages and ships them to syslogd via a Mach-IPC dance defined in <code>aslcommon/asl_ipc.defs</code>. We replace this with:</p>
+<ul>
+  <li><strong>Server side:</strong> syslogd creates an <code>NSConnection</code> over a known AF_UNIX socket (<code>/var/run/asl_input</code>) at startup. Implements an <code>@protocol ASLInput</code> with a <code>-submitMessage:</code> method.</li>
+  <li><strong>Client side:</strong> <code>libsystem_asl.tproj</code>'s wire-format functions are replaced with <code>NSConnection rootProxy</code> + a remote message send. Marshalling via <code>NSPortCoder</code> (which handles dictionary-of-strings-of-ints natively, exactly what asl messages are).</li>
+</ul>
+
+<p>For BSD-syslog clients (<code>syslog(3)</code>), no change — the same Unix datagram socket at <code>/var/run/log</code> stays open, daemon parses BSD wire format on it as before.</p>
+
+<h3>3.3 Event sources (libdispatch)</h3>
+
+<table>
+<thead><tr><th>Source type</th><th>Watches</th><th>Reaction</th></tr></thead>
+<tbody>
+<tr><td><code>DISPATCH_SOURCE_TYPE_READ</code></td><td><code>/dev/klog</code></td><td>parse kernel log line; route to asl store + bsd_out</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_READ</code></td><td><code>/var/run/log</code> (datagram socket)</td><td>parse BSD-syslog message; route same way</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_READ</code></td><td>DO listener fd (launchd-opened)</td><td>accept new NSConnection clients; their <code>submitMessage:</code> calls flow through</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_VNODE</code></td><td><code>/etc/asl.conf</code></td><td>reload routing rules; no syslogd restart needed</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_TIMER</code></td><td>store rotation interval</td><td>fire <code>aslmanager</code> via NSTask, daily</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_SIGNAL</code></td><td>SIGTERM, SIGHUP</td><td>SIGTERM: flush + exit. SIGHUP: reload config (same as asl.conf change).</td></tr>
+</tbody>
+</table>
+
+<h2 id="paths">4. Install paths</h2>
+
+<table>
+<thead>
+<tr><th>Artifact</th><th>Path</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr><td><code>syslogd</code> binary</td><td><code>/usr/sbin/syslogd</code></td><td>Replaces FreeBSD's. Same path so existing references (rc.d, plists, manpages) keep working. The shipped FreeBSD <code>/usr/sbin/syslogd</code> in base.txz gets clobbered by our overlay at build time.</td></tr>
+<tr><td><code>syslog</code> CLI</td><td><code>/usr/bin/syslog</code></td><td>The query tool. Apple's <code>util.tproj</code> binary. Standard <code>/usr/bin</code> for user-callable tools.</td></tr>
+<tr><td><code>aslmanager</code></td><td><code>/usr/libexec/aslmanager</code></td><td>Log rotation helper, invoked periodically by syslogd. <code>libexec</code> tier (not directly user-invoked).</td></tr>
+<tr><td><code>libsystem_asl.so</code></td><td><code>/System/Library/Libraries/libsystem_asl.so</code></td><td>The asl(3) client library. Linked by apps that want structured logging.</td></tr>
+<tr><td>Headers</td><td><code>/System/Library/Headers/asl.h</code></td><td>Public asl(3) API header. Apps include this to call <code>asl_log()</code>.</td></tr>
+<tr><td>Config</td><td><code>/etc/asl.conf</code></td><td>asl-conf-format routing rules. User-editable.</td></tr>
+<tr><td>BSD-syslog Unix socket</td><td><code>/var/run/log</code></td><td>Standard FreeBSD path; <code>syslog(3)</code> already opens this. Unchanged.</td></tr>
+<tr><td>ASL DO socket</td><td><code>/var/run/asl_input</code></td><td>For asl(3) clients via NSConnection. New.</td></tr>
+<tr><td>ASL store</td><td><code>/var/log/asl/&lt;date&gt;.asl</code></td><td>Daily binary-format files; rotated by aslmanager. <code>syslog(1)</code> queries against this.</td></tr>
+<tr><td>BSD text logs</td><td><code>/var/log/messages</code>, <code>auth.log</code>, ...</td><td>Unchanged from current FreeBSD layout. <code>newsyslog(8)</code> rotates them.</td></tr>
+</tbody>
+</table>
+
+<h2 id="decisions">5. Locked architectural decisions</h2>
+
+<table>
+<thead>
+<tr><th>Decision</th><th>Choice</th></tr>
+</thead>
+<tbody>
+<tr><td>Source baseline</td><td>Apple <code>syslog-97.1</code>. APSL 2.0. Latest tag.</td></tr>
+<tr><td>Mach IPC</td><td>None. <code>asl_ipc.defs</code> deleted. Replaced with DO over AF_UNIX.</td></tr>
+<tr><td>Service IPC mechanism</td><td>GNUstep Distributed Objects (<code>NSConnection</code>) for asl(3) clients. BSD-syslog Unix datagram socket unchanged for <code>syslog(3)</code> clients.</td></tr>
+<tr><td>Event loop</td><td>libdispatch dispatch sources only.</td></tr>
+<tr><td>Plist parsing (for asl.conf, etc.)</td><td>Where Apple uses CFPropertyList, we use <code>NSPropertyListSerialization</code> (already linked).</td></tr>
+<tr><td>Coexistence with BSD <code>syslogd</code></td><td>None — we replace it. Single <code>syslogd</code> at <code>/usr/sbin/syslogd</code>; the Apple-derived one handles both wire formats.</td></tr>
+<tr><td>Coexistence with FreeBSD <code>newsyslog</code></td><td>FreeBSD's <code>newsyslog</code> stays for BSD text files. Apple's <code>aslmanager</code> rotates the <code>.asl</code> binary store. Two rotators, two domains, no overlap.</td></tr>
+<tr><td>Modern os_log support</td><td>None. Out of scope.</td></tr>
+<tr><td>iOS / sim variants</td><td>Dropped on import.</td></tr>
+<tr><td>License (top-level)</td><td>BSD-2-Clause. Apple's syslog files retain APSL 2.0 per-file (different from launchd/configd which are Apache 2.0 — Apple specifically licenses syslog under APSL).</td></tr>
+</tbody>
+</table>
+
+<h2 id="files">6. File-by-file plan (<code>asl/src/</code>)</h2>
+
+<p>Imported source: Apple <code>syslog-97.1</code>. 47 files, ~38k LOC. 12 files reference <code>&lt;mach/...&gt;</code>; one MIG <code>.defs</code>.</p>
+
+<h3>6.1 Deleted on import (Mach-only or out-of-scope)</h3>
+<ul>
+  <li><code>syslog.xcodeproj/</code>, <code>xcodeconfig/</code> — Xcode build infra</li>
+  <li><code>aslcommon/asl_ipc.defs</code> — MIG IDL for Mach client/server protocol; the entire layer it describes is replaced with DO</li>
+  <li><code>newsyslog/</code> — FreeBSD has its own <code>newsyslog(8)</code> in base; we use that for BSD text files. Apple's port wasn't substantially different.</li>
+  <li><code>syslogd.tproj/asl.conf.ios</code>, <code>asl.conf.ios_sim</code> — iOS variants</li>
+  <li><code>syslogd.tproj/com.apple.syslogd_sim.plist</code> — iOS sim launchd plist</li>
+  <li><code>syslogd.tproj/com.apple.system.log.bridgeos</code> — bridgeOS-specific</li>
+  <li><code>syslogd.tproj/syslogd.sb</code> — sandbox profile (Apple-specific; we don't have macOS Sandbox)</li>
+  <li><code>syslogd.tproj/after_install.sh</code> — Apple installer post-step</li>
+  <li><code>libsystem_asl.tproj/man</code> for iOS-only manpages — keep mac-relevant ones</li>
+</ul>
+
+<h3>6.2 Retained — Phase 2 fate</h3>
+
+<table>
+<thead>
+<tr><th>File / dir</th><th>Apple LOC</th><th>Action</th><th>Target LOC</th></tr>
+</thead>
+<tbody>
+<tr><td><code>syslogd.tproj/syslogd.c</code></td><td>~1.2k</td><td>Prune. Replace Mach service-loop init with <code>dispatch_main</code> + libdispatch sources. Drop the bootstrap-port registration. Keep config-file load + signal handling.</td><td>~700</td></tr>
+<tr><td><code>syslogd.tproj/daemon.{c,h}</code></td><td>~3.5k</td><td>Prune. Replace Mach IPC entry points with DO entry. Keep the asl-store plumbing.</td><td>~1.8k</td></tr>
+<tr><td><code>syslogd.tproj/dbserver.c</code></td><td>~5k</td><td>Port. The asl database server (the heart of the structured store). Keep the on-disk format; replace Mach-port query interface with DO.</td><td>~3k</td></tr>
+<tr><td><code>syslogd.tproj/asl_action.c</code></td><td>~3.5k</td><td>Port mostly intact. asl.conf rule evaluator + dispatch to backends.</td><td>~3k</td></tr>
+<tr><td><code>syslogd.tproj/bsd_out.c</code></td><td>~1.2k</td><td>Keep. Writes BSD-syslog text files. This is the "we don't break FreeBSD" load-bearing module.</td><td>~1k (Mach refs pruned)</td></tr>
+<tr><td><code>syslogd.tproj/klog_in.c</code></td><td>~400</td><td>Port. Reads <code>/dev/klog</code>. Wrap in <code>DISPATCH_SOURCE_TYPE_READ</code>.</td><td>~300</td></tr>
+<tr><td><code>syslogd.tproj/udp_in.c</code></td><td>~800</td><td>Keep. Network syslog (UDP/514). Optional at runtime; off by default.</td><td>~700</td></tr>
+<tr><td><code>syslogd.tproj/remote.c</code></td><td>~600</td><td>Keep. <code>remote</code> input source for tools like <code>syslog -w</code> live tail.</td><td>~500</td></tr>
+<tr><td><code>libsystem_asl.tproj/src/asl.c</code></td><td>~6k</td><td>Substantial rewrite. Replace Mach-IPC submission with DO call. Keep the public asl(3) API surface byte-for-byte.</td><td>~3k</td></tr>
+<tr><td><code>libsystem_asl.tproj/src/asl_*.c</code> (msg, store, fd, file)</td><td>~3k</td><td>Port. Mostly Mach-free; minor pruning.</td><td>~2.5k</td></tr>
+<tr><td><code>aslcommon/asl_common.{c,h}</code></td><td>~2k</td><td>Port. Shared structs.</td><td>~1.8k</td></tr>
+<tr><td><code>aslcommon/asl_memory.{c,h}</code></td><td>~1.5k</td><td>Port. In-memory ASL store cache.</td><td>~1.4k</td></tr>
+<tr><td><code>aslmanager.tproj/aslmanager.c</code></td><td>~2k</td><td>Port. Rotation policy engine.</td><td>~1.8k</td></tr>
+<tr><td><code>util.tproj/syslog.c</code></td><td>~3k</td><td>Substantial rewrite of the IPC client side. Replace Mach store query with DO call. Keep the CLI argument parsing + output formatters.</td><td>~2k</td></tr>
+</tbody>
+</table>
+
+<p>Total post-Phase-2: roughly <strong>22-23k LOC</strong> vs Apple's ~38k pre-amputation. About 40% deletion. Less aggressive than launchd / configd because the Mach surface area in syslog is more concentrated (mostly the IPC layer) and the rest is portable.</p>
+
+<h2 id="bsd-wins">7. FreeBSD-only wins (vs Apple's Darwin-tied syslog)</h2>
+
+<table>
+<thead>
+<tr><th>Feature</th><th>Apple's syslog does</th><th>This port (FreeBSD-only)</th></tr>
+</thead>
+<tbody>
+<tr><td>Client → server IPC</td><td>Mach ports + MIG-generated stubs</td><td>GNUstep DO over AF_UNIX. Drop ~5k LOC of Mach plumbing.</td></tr>
+<tr><td>Kernel log ingest</td><td><code>/dev/klog</code> + <code>kev_*</code> for some events</td><td><code>/dev/klog</code> via <code>DISPATCH_SOURCE_TYPE_READ</code>. Same source FreeBSD's <code>syslogd</code> reads.</td></tr>
+<tr><td>BSD-syslog wire compat</td><td><code>bsd_out.c</code> writes /var/log/messages-style; same wire protocol on <code>/var/run/log</code></td><td>Identical — Apple already implemented BSD compat for systems that bridge to non-Apple syslog. We inherit it.</td></tr>
+<tr><td>Sandbox / privacy markers</td><td>SecurityFoundation integration, <code>{public}</code>/<code>{private}</code> os_log-style marks</td><td>Drop. ASL's pre-os_log redaction is much simpler and carries over.</td></tr>
+<tr><td>Build-system gates</td><td>iOS / sim / catalyst / bridgeos <code>#if</code></td><td>Delete. One target.</td></tr>
+</tbody>
+</table>
+
+<h2 id="integration">8. launchd integration</h2>
+
+<h3>8.1 The plist (replaces our current minimal one)</h3>
+<p>Today (Phase 3), <code>org.freebsd.syslogd.plist</code> in the <code>freebsd-launchd</code> overlay invokes FreeBSD's <code>/usr/sbin/syslogd -F -ss</code>. After this port lands, the same plist invokes the ASL-backed syslogd at the same path. The plist gains a <code>Sockets</code> key for the DO connection:</p>
+
+<pre class="plist"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;            &lt;string&gt;org.freebsd.syslogd&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt; &lt;array&gt;&lt;string&gt;/usr/sbin/syslogd&lt;/string&gt;&lt;/array&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;        &lt;true/&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;        &lt;true/&gt;
+    &lt;key&gt;Sockets&lt;/key&gt;          &lt;dict&gt;
+        &lt;key&gt;ASLClients&lt;/key&gt;
+        &lt;dict&gt;
+            &lt;key&gt;SockPathName&lt;/key&gt; &lt;string&gt;/var/run/asl_input&lt;/string&gt;
+            &lt;key&gt;SockType&lt;/key&gt;     &lt;string&gt;stream&lt;/string&gt;
+            &lt;key&gt;SockPathMode&lt;/key&gt; &lt;integer&gt;438&lt;/integer&gt; &lt;!-- 0666 --&gt;
+        &lt;/dict&gt;
+        &lt;key&gt;BSDClients&lt;/key&gt;
+        &lt;dict&gt;
+            &lt;key&gt;SockPathName&lt;/key&gt; &lt;string&gt;/var/run/log&lt;/string&gt;
+            &lt;key&gt;SockType&lt;/key&gt;     &lt;string&gt;dgram&lt;/string&gt;
+            &lt;key&gt;SockPathMode&lt;/key&gt; &lt;integer&gt;438&lt;/integer&gt;
+        &lt;/dict&gt;
+    &lt;/dict&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</code></pre>
+
+<p>launchd opens both sockets and hands fds to syslogd via <code>launch_activate_socket</code>. Connection queue stays warm even if syslogd is restarting.</p>
+
+<h2 id="cli">9. CLI tool — <code>syslog(1)</code></h2>
+
+<p>Apple's <code>syslog</code> command is the query interface. Phase 3 ports it. Subset of commands:</p>
+
+<ul>
+  <li><code>syslog</code> — dump recent messages (last hour by default)</li>
+  <li><code>syslog -w</code> — live stream new messages</li>
+  <li><code>syslog -k Sender launchd</code> — filter by structured key</li>
+  <li><code>syslog -k Time ge -1h</code> — time-range filter</li>
+  <li><code>syslog -F xml</code> — output structured records (the proof-of-concept query)</li>
+  <li><code>syslog -c &lt;sender&gt; &lt;level&gt;</code> — set per-sender filter level</li>
+</ul>
+
+<p>This is what FreeBSD admins already do with <code>tail /var/log/messages | grep ...</code>, just made declarative. Both work after this port lands.</p>
+
+<h2 id="license">10. Licensing</h2>
+
+<p>Apple's syslog source is <strong>APSL 2.0</strong> — Apple Public Source License Version 2.0. Different from launchd / configd (which are Apache 2.0). APSL is FSF-approved as a free software license; not GPL-compatible (so we couldn't combine APSL files with GPL-licensed code in a single binary, but our project doesn't use any GPL — just LGPL/MIT/Apache for system-domain libs, all compatible).</p>
+
+<table>
+<thead><tr><th>Source</th><th>License</th><th>How we handle it</th></tr></thead>
+<tbody>
+<tr><td>Apple <code>syslog-97.1</code> (APSL 2.0 in <code>APPLE_LICENSE</code> file, plus per-file headers)</td><td>APSL 2.0</td><td>Keep the per-file headers verbatim. Our edits to those files inherit APSL 2.0 via inbound=outbound — those individual files stay APSL regardless of top-level repo license.</td></tr>
+<tr><td>This repo's new code (DO bridge, FreeBSD shims, integration glue)</td><td>BSD-2-Clause</td><td>SPDX header on each new file.</td></tr>
+<tr><td>GNUstep Foundation, libdispatch (linked, not in tree)</td><td>LGPL/Apache as applicable</td><td>Listed in <code>NOTICE</code>. Same calculus as launchd/configd.</td></tr>
+</tbody>
+</table>
+
+<p><strong>NOTICE update:</strong> when ASL lands, the top-level <code>NOTICE</code> file gains an entry for "Apple Inc. (asl/syslog, 2003-2024, APSL 2.0)" alongside the existing launchd + configd attributions.</p>
+
+<h2 id="phases">11. Phased delivery</h2>
+
+<div class="phase">
+<h3>Phase 0 — repo scaffold + import</h3>
+<ul>
+  <li>Create <code>asl/</code> at the top of <code>freebsd-launchd</code>. Update <code>NOTICE</code> for APSL 2.0 attribution.</li>
+  <li>Add <code>asl/scripts/import-source.sh</code> that clones <code>apple-oss-distributions/syslog</code> at <code>syslog-97.1</code>, strips <code>.git</code>, drops it under <code>asl/src/</code>.</li>
+  <li>One-shot import commit (verbatim Apple tree).</li>
+  <li>Follow-up amputation commit per §6.1 (Mach + Xcode + iOS-sim + sandbox out).</li>
+  <li>No build wired up; ISO unchanged.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 1 — minimal asl-backed syslogd, BSD-text-only output</h3>
+<ul>
+  <li>Top-level <code>asl/Makefile</code> + <code>make-asl.sh</code>.</li>
+  <li>Port <code>syslogd.tproj/syslogd.c</code>, <code>daemon.c</code>, <code>klog_in.c</code>, <code>bsd_out.c</code>: minimum daemon that reads <code>/dev/klog</code> + <code>/var/run/log</code> and writes <code>/var/log/messages</code>. ASL store + DO not yet wired up.</li>
+  <li>Replaces FreeBSD's <code>/usr/sbin/syslogd</code> in the ISO. Existing <code>syslog(3)</code> calls continue to work; nothing user-visible changes.</li>
+  <li>Boot test extension: confirm <code>/var/log/messages</code> is being written (file size grows post-boot).</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 2 — ASL binary store + asl(3) library</h3>
+<ul>
+  <li>Port <code>aslcommon/</code>, <code>libsystem_asl.tproj/src/asl.c</code>, <code>syslogd.tproj/dbserver.c</code>.</li>
+  <li>Wire up the DO connection at <code>/var/run/asl_input</code>; <code>libsystem_asl</code>'s submit path uses <code>NSConnection</code>.</li>
+  <li>Daily-rotated <code>.asl</code> files start populating <code>/var/log/asl/</code>.</li>
+  <li>Boot test: confirm an ASL store file exists post-boot.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 3 — <code>syslog(1)</code> CLI tool</h3>
+<ul>
+  <li>Port <code>util.tproj/syslog.c</code>. Replaces Mach store-query client with DO query client.</li>
+  <li>Boot test extension: ssh in, run <code>syslog -k Sender launchd</code>, verify output includes "starting (pid=1 ...)".</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 4 — aslmanager rotation</h3>
+<ul>
+  <li>Port <code>aslmanager.tproj/aslmanager.c</code>. Wire up via launchd plist <code>org.freebsd.aslmanager.plist</code> (<code>StartCalendarInterval</code>, daily).</li>
+  <li>asl.conf rule evaluation (<code>asl_action.c</code>) finalized.</li>
+  <li>UDP/remote inputs (<code>udp_in.c</code>, <code>remote.c</code>) wired up if needed for off-box logging.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 5+ — optional, demand-driven</h3>
+<ul>
+  <li>launchd's own log routing migrated from stderr-to-file (the Phase 3d crutch we added to <code>init.sh</code>) to <code>asl_log()</code> calls. Removes the boot-time stderr→file redirection.</li>
+  <li>Per-job query for <code>launchctl logs &lt;label&gt;</code> — uses <code>syslog -k Sender &lt;label&gt;</code> internally.</li>
+  <li>Live filter API for tools that subscribe to specific keys via DO (matching configd's dynamic-store fan-out pattern).</li>
+</ul>
+</div>
+
+<h2 id="open">12. Open questions</h2>
+
+<div class="open-q">
+<strong>Q1. Coexistence with FreeBSD <code>syslogd</code> during transition.</strong> Phase 1 replaces base.txz's <code>/usr/sbin/syslogd</code>. Is that safe for partial deployments? Decision: yes — the replacement implements the BSD-syslog wire protocol natively (<code>bsd_out.c</code>), so anything that called <code>syslog(3)</code> sees no API change. In the ISO build, the overlay clobbers the base binary; in installed-system territory, the user opts in via package install.
+</div>
+
+<div class="open-q">
+<strong>Q2. APSL vs Apache mixing.</strong> Open. Both are FSF-approved free software licenses, both are GPL-incompatible. In the same monorepo with launchd/configd files (Apache) and asl files (APSL), both per-file licenses are preserved. The combined work distributes as BSD-2-Clause at top-level + per-file Apache OR APSL on Apple-derived files. No friction expected. Verify with one round of legal review when this ships if there's enterprise concern.
+</div>
+
+<div class="open-q">
+<strong>Q3. asl.conf format compatibility.</strong> Apple's <code>asl.conf</code> shipped with macOS uses Apple-specific routing rules (e.g., to the unified-logging bridge). Our port ships a simpler <code>asl.conf</code> matching FreeBSD-style facility/priority routing. Decision: ship a curated <code>asl.conf</code> in the overlay that mirrors FreeBSD's <code>/etc/syslog.conf</code> defaults plus an asl-store catch-all rule.
+</div>
+
+<div class="open-q">
+<strong>Q4. Sandbox profile (<code>syslogd.sb</code>).</strong> Apple sandboxes syslogd via <code>sandbox(7)</code> on macOS. FreeBSD has Capsicum but the policies don't translate directly. Decision: drop the Apple sandbox profile; revisit Capsicum-based sandboxing as a Phase 6 hardening pass.
+</div>
+
+<div class="open-q">
+<strong>Q5. <code>syslog</code> CLI vs FreeBSD <code>logger(1)</code> overlap.</strong> FreeBSD's <code>logger(1)</code> writes via <code>syslog(3)</code>; our port keeps that working. Apple's <code>syslog</code> CLI is read-mostly (queries) plus <code>-s</code> for sending. The two coexist fine at separate paths (<code>/usr/bin/logger</code>, <code>/usr/bin/syslog</code>); users pick by intent.
+</div>
+
+<div class="open-q">
+<strong>Q6. Migration story for already-deployed FreeBSD systems.</strong> If a user installs <code>freebsd-asl</code> on a running FreeBSD server with active log files, what happens to <code>/var/log/messages</code>? Decision: nothing — <code>bsd_out.c</code> writes to the same file in the same format. No migration needed. ASL's binary store under <code>/var/log/asl/</code> starts populating fresh.
+</div>
+
+<h2 id="refs">13. References</h2>
+
+<ul>
+  <li>Apple source: <a href="https://github.com/apple-oss-distributions/syslog">github.com/apple-oss-distributions/syslog</a> (latest tag <code>syslog-97.1</code>).</li>
+  <li>Companion plans: <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-kmodloader-plan.html">kmodloader</a>.</li>
+  <li>asl(3) API reference: <code>man 3 asl</code> on macOS, or <a href="https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/LoggingErrorsAndWarnings.html">Apple's logging guide</a> (archived; pre-os_log).</li>
+  <li>asl.conf format: <code>man 5 asl.conf</code> on macOS.</li>
+  <li>Apple Public Source License 2.0 text: <a href="https://opensource.apple.com/apsl/">opensource.apple.com/apsl/</a>.</li>
+  <li>FreeBSD <code>syslogd(8)</code>: the existing daemon this port replaces.</li>
+</ul>
+
+</body>
+</html>

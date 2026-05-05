@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeBSD notifyd — porting plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.plist { border-left-color: var(--accent); }
+  pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+          padding: 1rem 1.1rem; }
+  .card h4 { margin-top: 0; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  blockquote { margin: 1rem 0; padding: .5rem 1rem; border-left: 3px solid var(--accent);
+               background: #fff8f3; color: #333; }
+  .footnote { font-size: .85rem; color: var(--muted); }
+  ol li, ul li { margin: .25rem 0; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .filename { color: var(--accent); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .risk { background: #fff5e6; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .risk strong { color: var(--warn); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .step-num { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; background: var(--accent); color: white; border-radius: 50%; font-weight: 700; font-size: .85em; margin-right: .35em; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">Status</a>
+  <a href="#goal">Goal</a>
+  <a href="#repo">Repo</a>
+  <a href="#arch">Architecture</a>
+  <a href="#paths">Install paths</a>
+  <a href="#decisions">Decisions</a>
+  <a href="#files">File-by-file</a>
+  <a href="#bsd-wins">FreeBSD wins</a>
+  <a href="#usecases">Use cases (gershwin)</a>
+  <a href="#integration">launchd integration</a>
+  <a href="#license">License</a>
+  <a href="#phases">Phases</a>
+  <a href="#open">Open questions</a>
+</nav>
+
+<h1>FreeBSD notifyd — porting plan</h1>
+<p class="subtitle">A FreeBSD-only port of Apple's <code>notifyd</code> + <code>libnotify</code> — Apple's lightweight named-event pub/sub bus. Drops Mach IPC; replaces the wire layer with GNUstep Distributed Objects + AF_UNIX socket; preserves the libnotify C API surface so Apple-derived applications (gershwin desktop apps, ported third-party Cocoa apps) Just Work without source changes. Companion to <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-kmodloader-plan.html">kmodloader</a>, <a href="freebsd-asl-plan.html">asl</a>.</p>
+
+<section id="tldr" class="tldr">
+  <h3>Status: planning <span class="pill info">v0</span> &mdash; deferred</h3>
+  <ul>
+    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a> — <strong>monorepo</strong>. notifyd source under <code>notifyd/</code> at the top, alongside <code>src/</code> (launchd), <code>configd/</code>, <code>kmodloader/</code>, <code>asl/</code>. Single build pipeline, single CI, single boot test.</li>
+    <li><strong>Mission:</strong> give gershwin and any Apple-derived apps the named-event pub/sub bus they expect. Apps call <code>notify_post()</code>, <code>notify_register_dispatch()</code>, <code>notify_get_state()</code> — same C API — and the daemon does the fan-out. Promotes cross-process event coordination from "build a bespoke channel each time" to "just pick a name."</li>
+    <li><strong>Source:</strong> Apple <code>Libnotify-98.5</code> (latest tag at <code>apple-oss-distributions/Libnotify</code>, APSL). 48 source files, ~17k LOC. 12 files have <code>&lt;mach/&gt;</code> includes; 2 MIG <code>.defs</code> files (<code>notify_ipc.defs</code>, <code>notify_old_ipc.defs</code>). Phase 1 amputation drops the Mach plumbing.</li>
+    <li><strong>Why this is deferred:</strong> nothing in launchd / configd / kmodloader Phases 0-5 needs notifyd. Promotion happens when (a) the first Apple-derived app showing up wants <code>libnotify</code> linkage, OR (b) configd's DO-callback fan-out becomes a bottleneck for many-subscriber events and we want the cheaper notifyd model. <strong>Phase 7+ work, sequenced after configd ships and before/after ASL based on demand.</strong></li>
+    <li><strong>No Mach IPC.</strong> Apple's libnotify uses Mach ports for the daemon connection and shared-memory pages for state values. <strong>Replaced</strong> with: <code>NSConnection</code> over AF_UNIX for the daemon-client channel; <code>shm_open(2)</code> + <code>mmap(2)</code> for the state-value pages (preserves Apple's "reads are zero-IPC" performance characteristic).</li>
+    <li><strong>Event loop:</strong> <code>libdispatch</code> dispatch sources only. <code>DISPATCH_SOURCE_TYPE_VNODE</code> for path-watch notifications (already what Apple does — pathwatch.c uses kqueue under the hood). <code>DISPATCH_SOURCE_TYPE_READ</code> on the AF_UNIX listener.</li>
+    <li><strong>libnotify C API preserved byte-for-byte.</strong> <code>notify_post</code>, <code>notify_register_dispatch</code>, <code>notify_register_signal</code>, <code>notify_register_file_descriptor</code>, <code>notify_register_check</code>, <code>notify_get_state</code>, <code>notify_set_state</code>, <code>notify_cancel</code> all keep their existing signatures and semantics. Apple-derived apps link our <code>libnotify.so</code> without source changes.</li>
+    <li><strong>One delivery type drops:</strong> <code>NOTIFY_TYPE_PORT</code> (Mach port wakeup) is removed. Apps using it would need to switch to <code>NOTIFY_TYPE_DISPATCH</code> or <code>NOTIFY_TYPE_FD</code> — semantically equivalent, just different kernel mechanism.</li>
+    <li><strong>Licensing:</strong> Apple's source is APSL 1.1 (older variant; APSL 2.0 in newer files within the repo). FSF-approved free software; per-file headers preserved on Apple-derived files; our top-level repo stays BSD-2-Clause.</li>
+  </ul>
+</section>
+
+<h2 id="goal">1. Goal &amp; non-goals</h2>
+
+<h3>1.1 Goal</h3>
+<p>Provide a working <code>libnotify</code> + <code>notifyd</code> on FreeBSD so Apple-derived apps (gershwin desktop, ported Cocoa apps, third-party Apple-OSS-distributions tools) can use named pub/sub events without porting work. Replicate the API surface byte-for-byte; replace Mach-tied IPC + shared-memory mechanisms with FreeBSD-native equivalents (DO + POSIX shm). Preserve the performance characteristic that <em>reads of state values are zero-IPC</em> — that's what makes notifyd fundamentally different from a sockets-only pub/sub system.</p>
+
+<h3>1.2 Non-goals (this iteration)</h3>
+<ul>
+  <li><strong>No <code>NOTIFY_TYPE_PORT</code> (Mach port delivery).</strong> Same project-wide rule. Apps that registered for a Mach port to receive notifications: source change to <code>NOTIFY_TYPE_DISPATCH</code> or <code>NOTIFY_TYPE_FD</code>. Net code change in the consumer is ~5 lines.</li>
+  <li><strong>No DTrace probes.</strong> <code>notify_probes.d</code> is dropped. FreeBSD has DTrace but the probe definitions are Apple-specific.</li>
+  <li><strong>No iOS/iPadOS configs.</strong> <code>notify.conf.iOSSimulator</code>, <code>notify.conf.iPhone</code> dropped on import.</li>
+  <li><strong>No sandbox profile.</strong> <code>com.apple.notifyd.sb</code> is sandbox(7); FreeBSD has Capsicum but the policy doesn't translate. Hardening pass later.</li>
+  <li><strong>No app entitlements.</strong> <code>entitlements.plist</code>, <code>notifyutil_entitlements.plist</code> are macOS code-signing concerns; n/a here.</li>
+  <li><strong>No XCTest harness.</strong> <code>Libnotify.xcodeproj</code>, <code>xctests/</code>, <code>notifyd-xctests/</code> dropped — Xcode-only. We rebuild a minimal test corpus on top of FreeBSD's <code>kyua</code> or just shell scripts.</li>
+</ul>
+
+<h2 id="repo">2. Repository</h2>
+
+<p>Monorepo, same as the other ports. notifyd source lives under <code>notifyd/</code> at the top of <code>freebsd-launchd</code>:</p>
+
+<pre><code>freebsd-launchd/
+├── src/                          launchd Apple-imported source
+├── configd/                      Apple configd-imported source
+├── kmodloader/                   clean-room kmodloader
+├── asl/                          Apple syslog-imported source
+├── notifyd/                      Apple Libnotify-imported source (this plan)
+│   ├── scripts/import-source.sh
+│   ├── Makefile                  top-level: build daemon + libnotify + notifyutil
+│   ├── compat/
+│   └── src/                      forked Apple Libnotify-98.5
+│       ├── libnotify.{c,h}       the libnotify client library — API surface
+│       ├── notify.h              public API header
+│       ├── notify_keys.h         public well-known notification names
+│       ├── notify_client.c       client-side state management
+│       ├── notify_internal.h
+│       ├── notify_private.h
+│       ├── table.{c,h}           hash-table for token registry
+│       ├── notifyd/              the notifyd daemon
+│       │   ├── notifyd.{c,h}     daemon main, dispatch loop
+│       │   ├── service.{c,h}     service registration + name table
+│       │   ├── notify_proc.c     per-client process tracking
+│       │   ├── pathwatch.{c,h}   path-watch notifications via kqueue
+│       │   └── notify.conf       (MacOSX flavor; iOS variants dropped)
+│       ├── notifyutil/           notifyutil(1) CLI tool
+│       └── notifybench/          throughput benchmark harness
+└── make-notifyd.sh               STANDALONE — builds + installs
+</code></pre>
+
+<h2 id="arch">3. Architecture</h2>
+
+<div class="ascii-diagram">                  +------------------------+
+                  | publisher process      |
+                  | notify_post("name")    |
+                  +------------+-----------+
+                               | (NSConnection -postName:)
+                               v
++----------------+    +--------+--------+    +--------------------+
+| /etc/notify.   |--&gt;|    notifyd      |&lt;-->| /var/run/notifyd/  |
+|  conf          |   |    (ObjC,       |    |  state-pages       |
+| (early-access  |   |    GNUstep,     |    | (POSIX shm; one    |
+|  table)        |   |    libdispatch) |    |  uint64 per state  |
++----------------+   +--------+--------+    |  value, atomically |
+                               |             |  updated)          |
+                               | (delivery   +--------------------+
+                               |  per token type:
+                               v   _DISPATCH | _SIGNAL | _FD)
+              +----------------+----------------+
+              |        subscribers              |
+              |   (libnotify clients in apps)   |
+              |   token = notify_register_*("name", ...)|
+              +---------------------------------+
+
+         AF_UNIX socket: /var/run/notifyd.sock
+         (DO connection — one server, many clients)</div>
+
+<h3>3.1 The state-value optimization (load-bearing)</h3>
+
+<p>notifyd's defining feature versus a generic pub/sub system: <strong>reads of state values are <em>zero-IPC</em>.</strong> Apple does this with shared-memory pages — when a process registers for a name with state, it's mapped a page containing the state's <code>uint64_t</code> slot. The daemon writes the slot directly when state changes; client reads are a memory load. No syscall, no IPC roundtrip.</p>
+
+<p>This is why notifyd works for high-frequency state (volume level updates 60Hz, network reachability checks per HTTP request, etc.) where a sockets-roundtrip-per-read would be too slow.</p>
+
+<p><strong>FreeBSD port preserves this</strong>: replace Apple's Mach-allocated shared pages with <code>shm_open(2)</code> POSIX shared memory. The daemon allocates one or more shm segments holding the state-value array; clients <code>mmap()</code> them read-only at registration time. Daemon writes go through atomic store intrinsics (<code>__atomic_store_n</code>) so torn reads aren't possible.</p>
+
+<h3>3.2 Replacing Mach IPC with DO</h3>
+
+<p>The daemon-client channel uses Mach ports in Apple's source — see <code>notify_ipc.defs</code> + <code>notify_old_ipc.defs</code> (two MIG IDLs; old + current). We replace with:</p>
+
+<ul>
+  <li><strong>Server side:</strong> notifyd creates an <code>NSConnection</code> over <code>/var/run/notifyd.sock</code> at startup. Implements an <code>@protocol NotifydService</code> with <code>-registerName:type:client:</code>, <code>-postName:</code>, <code>-getState:returning:</code>, <code>-setState:value:</code>, etc.</li>
+  <li><strong>Client side:</strong> <code>libnotify.c</code>'s wire-format functions are replaced with <code>NSConnection rootProxy</code> + remote message sends. The public <code>notify_*</code> API remains identical; only the implementation guts under it change.</li>
+  <li><strong>Notification delivery</strong> (subscriber wakeup): preserved per-type:
+    <ul>
+      <li><code>NOTIFY_TYPE_DISPATCH</code> — daemon writes a byte to a libdispatch source's mach_port-or-fd; we use <code>kqueue/EVFILT_USER</code> + a unix-pipe-pair as the wakeup mechanism. <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_OR, ...)</code> implements the same semantics.</li>
+      <li><code>NOTIFY_TYPE_SIGNAL</code> — daemon <code>kill(pid, sig)</code>s the subscriber. Portable as-is.</li>
+      <li><code>NOTIFY_TYPE_FD</code> — daemon writes a byte to a pipe the subscriber holds the read end of. Portable as-is.</li>
+      <li><code>NOTIFY_TYPE_PORT</code> (Mach) — <strong>dropped</strong>. Apps source-port to <code>_DISPATCH</code>.</li>
+    </ul>
+  </li>
+</ul>
+
+<h3>3.3 Path-watch notifications</h3>
+
+<p>notifyd implements file-path-watch notifications: subscribe to a <strong>path</strong>, get woken when the file changes. Apple's <code>pathwatch.c</code> uses kqueue under the hood (Darwin natively); we keep the implementation as-is. <code>DISPATCH_SOURCE_TYPE_VNODE</code> in libdispatch.</p>
+
+<h3>3.4 Event sources (libdispatch)</h3>
+
+<table>
+<thead><tr><th>Source type</th><th>Watches</th><th>Reaction</th></tr></thead>
+<tbody>
+<tr><td><code>DISPATCH_SOURCE_TYPE_READ</code></td><td>DO listener fd (launchd-opened)</td><td>accept new <code>NSConnection</code> clients; their messages flow through the protocol</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_VNODE</code></td><td>each registered path</td><td>fire path-changed notification to subscribers</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_PROC</code></td><td>each registered client PID</td><td>auto-cancel registrations on <code>DISPATCH_PROC_EXIT</code> (don't deliver to dead clients)</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_VNODE</code></td><td><code>/etc/notify.conf</code></td><td>reload early-access table on config change</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_SIGNAL</code></td><td>SIGTERM, SIGHUP, SIGINFO</td><td>SIGTERM: clean shutdown. SIGHUP: reload conf. SIGINFO: dump stats.</td></tr>
+</tbody>
+</table>
+
+<h2 id="paths">4. Install paths</h2>
+
+<table>
+<thead>
+<tr><th>Artifact</th><th>Path</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr><td><code>notifyd</code> binary</td><td><code>/usr/libexec/notifyd</code></td><td>Daemon not invoked directly. Same tier as <code>/usr/libexec/getty</code>, <code>/usr/libexec/netconfigd</code>.</td></tr>
+<tr><td><code>notifyutil</code> CLI</td><td><code>/usr/bin/notifyutil</code></td><td>Admin/dev tool: post a name, watch for posts, set/get state. Standard <code>/usr/bin</code> for user-callable commands.</td></tr>
+<tr><td><code>libnotify.so</code></td><td><code>/System/Library/Libraries/libnotify.so</code></td><td>The client library. Apps link against this.</td></tr>
+<tr><td>Public headers</td><td><code>/System/Library/Headers/notify.h</code><br><code>/System/Library/Headers/notify_keys.h</code></td><td>Apps include via <code>#include &lt;notify.h&gt;</code>.</td></tr>
+<tr><td>DO socket</td><td><code>/var/run/notifyd.sock</code></td><td>Per-host daemon connection. launchd-opened via <code>Sockets={Listeners=...}</code>.</td></tr>
+<tr><td>State-page directory</td><td><code>/var/run/notifyd/</code></td><td>Daemon-managed POSIX shm names. Created by daemon at startup.</td></tr>
+<tr><td>Config</td><td><code>/etc/notify.conf</code></td><td>Apple's "early-access" table — names that get a state slot allocated at daemon startup so they're available before the publisher posts.</td></tr>
+<tr><td>launchd plist</td><td><code>/System/Library/LaunchDaemons/org.freebsd.notifyd.plist</code></td><td>Project-shipped daemon plist.</td></tr>
+</tbody>
+</table>
+
+<h2 id="decisions">5. Locked architectural decisions</h2>
+
+<table>
+<thead>
+<tr><th>Decision</th><th>Choice</th></tr>
+</thead>
+<tbody>
+<tr><td>Source baseline</td><td>Apple <code>Libnotify-98.5</code>. APSL. Latest tag.</td></tr>
+<tr><td>Mach IPC</td><td>None. Both <code>.defs</code> files deleted; client-server channel rebuilt on DO over AF_UNIX.</td></tr>
+<tr><td>Shared-memory state pages</td><td>Replaced with POSIX <code>shm_open(2)</code> + <code>mmap(2)</code>. Atomic updates via <code>&lt;stdatomic.h&gt;</code>.</td></tr>
+<tr><td>Notification delivery types</td><td><code>NOTIFY_TYPE_DISPATCH</code>, <code>NOTIFY_TYPE_SIGNAL</code>, <code>NOTIFY_TYPE_FD</code>, <code>NOTIFY_TYPE_CHECK</code> all preserved. <code>NOTIFY_TYPE_PORT</code> (Mach) dropped.</td></tr>
+<tr><td>Public API stability</td><td>All <code>notify_*</code> functions in <code>notify.h</code> keep their signatures and observable semantics. Source compatibility with Apple-derived apps is mandatory.</td></tr>
+<tr><td>Event loop</td><td>libdispatch dispatch sources only.</td></tr>
+<tr><td>Path-watch impl</td><td>kqueue (already what Apple does on Darwin; preserved).</td></tr>
+<tr><td>License (top-level)</td><td>BSD-2-Clause. Apple's libnotify files retain APSL per-file (mix of 1.1 and 2.0 — preserve whichever the file header carries).</td></tr>
+</tbody>
+</table>
+
+<h2 id="files">6. File-by-file plan (<code>notifyd/src/</code>)</h2>
+
+<p>Imported source: Apple <code>Libnotify-98.5</code>. 48 files, ~17k LOC. 12 Mach-tied; 2 MIG <code>.defs</code>.</p>
+
+<h3>6.1 Deleted on import (Mach-only or out-of-scope)</h3>
+<ul>
+  <li><code>Libnotify.xcodeproj/</code>, <code>xcodeconfig/</code>, <code>xcodescripts/</code>, <code>notifyd/xcodescripts/</code> — Xcode build infra</li>
+  <li><code>notify_ipc.defs</code>, <code>notify_old_ipc.defs</code> — MIG IDL (the entire layer they describe is replaced with DO)</li>
+  <li><code>notify_register_mach_port.3</code>, related Mach-port-delivery code — drops with <code>NOTIFY_TYPE_PORT</code></li>
+  <li><code>notifyd/com.apple.notifyd.sb</code> — sandbox(7) profile; not portable</li>
+  <li><code>notifyd/entitlements.plist</code>, <code>notifyutil/notifyutil_entitlements.plist</code> — code-signing entitlements; not portable</li>
+  <li><code>notifyd/notify.conf.iPhone</code>, <code>notifyd/notify.conf.iOSSimulator</code> — iOS variants</li>
+  <li><code>notify_probes.d</code> — DTrace probe definitions (Apple-specific)</li>
+  <li><code>xctests/</code>, <code>notifyd-xctests/</code> — XCTest harnesses</li>
+  <li><code>notify_private.modulemap</code>, <code>notify.modulemap</code> — Clang module maps for Apple's framework build; not used in our pkg-config-based build</li>
+</ul>
+
+<h3>6.2 Retained — Phase 2 fate</h3>
+
+<table>
+<thead>
+<tr><th>File</th><th>Apple LOC</th><th>Action</th><th>Target LOC</th></tr>
+</thead>
+<tbody>
+<tr><td><code>libnotify.c</code></td><td>~3.5k</td><td>Substantial rewrite of the IPC layer. Replace Mach-port-allocation + MIG-stub-call with <code>NSConnection</code> proxy calls. Public <code>notify_*</code> API unchanged. Replace shared-memory mapping (Mach <code>vm_allocate</code> + port handoff) with POSIX <code>shm_open</code> + <code>mmap</code>.</td><td>~2k</td></tr>
+<tr><td><code>notify_client.c</code></td><td>~2k</td><td>Port. Per-token bookkeeping. Mostly Mach-free; minor pruning.</td><td>~1.7k</td></tr>
+<tr><td><code>table.{c,h}</code>, <code>table.in.c</code></td><td>~1.5k</td><td>Keep. Hash-table impl for token registry. Pure data structure.</td><td>~1.5k</td></tr>
+<tr><td><code>notify.h</code>, <code>notify_keys.h</code>, <code>notify_internal.h</code>, <code>notify_private.h</code></td><td>~1k</td><td>Keep. Public API + internal protocol declarations. Drop only the <code>NOTIFY_TYPE_PORT</code> token type.</td><td>~900</td></tr>
+<tr><td><code>notifyd/notifyd.{c,h}</code></td><td>~2k</td><td>Prune. Replace Mach service-loop init with <code>dispatch_main</code> + libdispatch sources. Drop bootstrap-port registration. Keep config-file load + signal handling.</td><td>~1.2k</td></tr>
+<tr><td><code>notifyd/service.{c,h}</code></td><td>~3k</td><td>Port. Service registration + name table. Replace Mach-port-based subscriber tracking with PID-keyed table tied to <code>DISPATCH_SOURCE_TYPE_PROC</code>.</td><td>~2.2k</td></tr>
+<tr><td><code>notifyd/notify_proc.c</code></td><td>~1k</td><td>Port. Per-client process management. Auto-cancel registrations on PROC_EXIT.</td><td>~800</td></tr>
+<tr><td><code>notifyd/pathwatch.{c,h}</code></td><td>~600</td><td>Keep mostly intact. kqueue-based; portable.</td><td>~600</td></tr>
+<tr><td><code>notifyutil/notifyutil.c</code></td><td>~700</td><td>Port. The CLI is mostly libnotify-call-and-print; once libnotify works the CLI follows.</td><td>~600</td></tr>
+<tr><td><code>notifybench/</code></td><td>~500</td><td>Port. Useful for verifying state-page reads stay zero-IPC after our shm_open swap.</td><td>~500</td></tr>
+<tr><td>Manpages (<code>notify*.3</code>, <code>notifyd.8</code>, <code>notifyutil.1</code>)</td><td>—</td><td>Keep mostly intact. Drop <code>notify_register_mach_port.3</code>.</td><td>shrinks</td></tr>
+</tbody>
+</table>
+
+<p>Total post-Phase-2: roughly <strong>11-12k LOC</strong> vs Apple's ~17k pre-amputation. About 30% deletion (smaller ratio than configd/asl because notifyd is fundamentally smaller and most of the code is portable already).</p>
+
+<h2 id="bsd-wins">7. FreeBSD-only wins (vs Apple's Darwin-tied Libnotify)</h2>
+
+<table>
+<thead>
+<tr><th>Feature</th><th>Apple's notifyd does</th><th>This port (FreeBSD-only)</th></tr>
+</thead>
+<tbody>
+<tr><td>Daemon-client IPC</td><td>Mach ports + MIG-generated stubs (two flavors: current + legacy)</td><td>GNUstep DO over AF_UNIX. ~3k LOC of Mach plumbing replaced by ~600 LOC of DO. <code>notify_old_ipc.defs</code> goes away entirely (was for back-compat with pre-Snow-Leopard apps).</td></tr>
+<tr><td>State-value pages</td><td>Mach <code>vm_allocate</code> + port handoff for shared memory</td><td>POSIX <code>shm_open(2)</code> + <code>mmap(2)</code>. Same zero-IPC-read characteristic; portable across any Unix.</td></tr>
+<tr><td>Subscriber wakeup (<code>NOTIFY_TYPE_DISPATCH</code>)</td><td>Mach port message → libdispatch source</td><td>EVFILT_USER + libdispatch source. One less indirection layer.</td></tr>
+<tr><td>Path notifications</td><td>kqueue under the hood (already!)</td><td>kqueue. Identical.</td></tr>
+<tr><td>Subscriber bookkeeping</td><td>Mach send-rights tracked per-client; subscriber-died detected via Mach port-no-senders notification</td><td><code>DISPATCH_SOURCE_TYPE_PROC</code> on each subscriber's PID. <code>DISPATCH_PROC_EXIT</code> fires; daemon cancels that PID's registrations. Cleaner.</td></tr>
+<tr><td>Build-system gates</td><td>iOS / sim / catalyst <code>#if</code></td><td>Delete. One target.</td></tr>
+</tbody>
+</table>
+
+<h2 id="usecases">8. Use cases for gershwin</h2>
+
+<p>What we get when notifyd lands and gershwin's apps can use it:</p>
+
+<h3>8.1 Workspace (the desktop manager)</h3>
+
+<table>
+<thead><tr><th>Concern</th><th>Notification name</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td>Theme / appearance change</td><td><code>org.freebsd.appearance.theme-changed</code></td><td>Appearance prefs panel writes the new theme; posts the name. Every running app subscribed re-themes instantly. No per-app D-Bus connection or polling.</td></tr>
+<tr><td>Application activation / focus</td><td><code>org.freebsd.workspace.app-activated</code></td><td>Other apps de-emphasize selves (dim accent colors, pause animations).</td></tr>
+<tr><td>Hide / show all (NeXTSTEP signature)</td><td><code>org.freebsd.workspace.hide-others</code></td><td>Workspace single-post; all subscribed apps minimize.</td></tr>
+<tr><td>Display configuration changed</td><td><code>org.freebsd.display.changed</code></td><td>configd or kmodloader detects framebuffer plug; posts. Workspace reflows windows; full-screen video apps react.</td></tr>
+<tr><td>Login / logout</td><td><code>org.freebsd.session.user-logged-in</code> / <code>...logged-out</code></td><td>Per-user launchd agents (mail-checker, dock helpers, calendar-sync) wake. Mirrors Apple's <code>loginwindow</code> flow.</td></tr>
+</tbody>
+</table>
+
+<h3>8.2 System-state fanout</h3>
+
+<table>
+<thead><tr><th>Concern</th><th>Notification name</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td>Battery / power</td><td><code>org.freebsd.power.battery-changed</code></td><td>One <code>powermon</code> daemon (or extension to configd's <code>KernelEventMonitor</code>) reads ACPI; posts current state. Workspace menubar battery icon, lid-close handler, screen-dim policy all subscribe. <strong>One source, many subscribers</strong> — without notifyd, every consumer would need its own ACPI listener.</td></tr>
+<tr><td>Network state</td><td><code>org.freebsd.config.network-reachable</code></td><td>configd posts when an interface becomes reachable. Mail, browsers, sync clients subscribe. Apps check on each post — no polling, no per-app socket to configd.</td></tr>
+<tr><td>Sleep / wake</td><td><code>org.freebsd.power.sleep-requested</code> + <code>...wake</code></td><td>Apps save state, pause downloads, dim UI before sleep; resume after wake.</td></tr>
+<tr><td>Time / TZ change</td><td><code>org.freebsd.time.timezone-changed</code></td><td>Calendar, Mail, Clock all subscribe. Currently apps poll or recompute on every operation.</td></tr>
+<tr><td>Filesystem mount / unmount</td><td><code>org.freebsd.fs.mounted</code> / <code>...unmounted</code></td><td>Workspace's File Viewer (Finder-equivalent) updates the sidebar. ZFS pool import — mount-aware apps refresh.</td></tr>
+<tr><td>Keyboard layout change</td><td><code>org.freebsd.input.layout-changed</code></td><td>Apps refresh shortcut displays.</td></tr>
+<tr><td>Audio volume / mute</td><td><code>org.freebsd.audio.volume-changed</code></td><td>Sound prefs slider follows hardware media keys; menubar volume icon updates.</td></tr>
+</tbody>
+</table>
+
+<h3>8.3 Defaults / preferences plumbing</h3>
+
+<p>This is where notifyd shines compared to alternatives. <code>NSUserDefaults</code> cross-app coordination on macOS is a notifyd story:</p>
+
+<ol>
+  <li>App A calls <code>[defaults setObject:newValue forKey:@"FontFamily"]</code></li>
+  <li><code>cfprefsd</code>-equivalent (the prefs daemon) writes the file, posts <code>org.freebsd.prefs.&lt;domain&gt;.changed</code></li>
+  <li>App B (subscribed) gets woken, reloads the relevant key</li>
+  <li>App B's UI updates without a restart</li>
+</ol>
+
+<p>Without notifyd, every app would either poll the prefs file or rely on filesystem-watching primitives like <code>kqueue(EVFILT_VNODE)</code> — clunky compared to a single named post. <strong>gershwin's <code>NSUserDefaults</code> gets a noticeable UX upgrade</strong> when this works correctly across processes.</p>
+
+<h3>8.4 launchd-event-driven service activation</h3>
+
+<p>Apple uses notifyd to <strong>trigger launchd jobs</strong> without explicit RPC:</p>
+
+<pre class="plist"><code>&lt;key&gt;LaunchEvents&lt;/key&gt;
+&lt;dict&gt;
+  &lt;key&gt;com.apple.notifyd.matching&lt;/key&gt;
+  &lt;dict&gt;
+    &lt;key&gt;org.freebsd.network-reachable&lt;/key&gt;
+    &lt;dict/&gt;
+  &lt;/dict&gt;
+&lt;/dict&gt;</code></pre>
+
+<p>A daemon plist with this <code>LaunchEvents</code> stanza launches its program <em>only when</em> that named notification posts. Auto-update checker idle until network up; backup daemon idle until specific conditions; etc. <strong>Replaces both "phase markers" (the proposed <code>RequiresPhase</code> per launchd plan §11.3) and ad-hoc polling with one unified mechanism.</strong> Adding <code>LaunchEvents</code> support to launchd alongside this notifyd port unlocks an Apple-native event-driven supervision model.</p>
+
+<h3>8.5 Third-party Apple-derived apps "just work"</h3>
+
+<p>Practical concrete: any app you'd port from macOS that calls <code>notify_register_dispatch()</code> or <code>notify_post()</code> works without modification. Without notifyd we'd either need to:</p>
+<ul>
+  <li>Stub out libnotify (apps silently never get notified — broken)</li>
+  <li>Reroute libnotify calls to a different mechanism per-app (porting tax that scales with app count)</li>
+</ul>
+<p>With notifyd present, the calls Just Work.</p>
+
+<h2 id="integration">9. launchd integration</h2>
+
+<h3>9.1 The plist</h3>
+
+<pre class="plist"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;             &lt;string&gt;org.freebsd.notifyd&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt;  &lt;array&gt;&lt;string&gt;/usr/libexec/notifyd&lt;/string&gt;&lt;/array&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;         &lt;true/&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;         &lt;true/&gt;
+    &lt;key&gt;Sockets&lt;/key&gt;           &lt;dict&gt;
+        &lt;key&gt;Listeners&lt;/key&gt;     &lt;dict&gt;
+            &lt;key&gt;SockPathName&lt;/key&gt; &lt;string&gt;/var/run/notifyd.sock&lt;/string&gt;
+            &lt;key&gt;SockType&lt;/key&gt;     &lt;string&gt;stream&lt;/string&gt;
+            &lt;key&gt;SockPathMode&lt;/key&gt; &lt;integer&gt;438&lt;/integer&gt; &lt;!-- 0666 --&gt;
+        &lt;/dict&gt;
+    &lt;/dict&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</code></pre>
+
+<p>launchd opens the AF_UNIX listener and hands the fd to notifyd; client connections queue in the kernel even when notifyd is restarting.</p>
+
+<h3>9.2 Boot ordering</h3>
+
+<p>notifyd has no dependencies on other daemons — it's a leaf service. Configd may want to use notifyd internally for fan-out (instead of DO callbacks) once both are present, but configd works fine without it. Order it alongside other system daemons; no explicit ordering needed.</p>
+
+<h2 id="license">10. Licensing</h2>
+
+<p>Apple's Libnotify source is <strong>APSL</strong> (1.1 in older files, 2.0 in newer; preserve whichever each file carries). Same family of license as ASL; FSF-approved free software; not GPL-compatible (irrelevant for our project — no GPL deps).</p>
+
+<table>
+<thead><tr><th>Source</th><th>License</th><th>How we handle it</th></tr></thead>
+<tbody>
+<tr><td>Apple Libnotify-98.5 (per-file APSL headers)</td><td>APSL 1.1 / 2.0 mix</td><td>Keep per-file headers verbatim. Our edits inherit APSL via inbound=outbound — those individual files stay APSL regardless of top-level repo license.</td></tr>
+<tr><td>This repo's new code (DO bridge, FreeBSD shims, integration glue)</td><td>BSD-2-Clause</td><td>SPDX header on each new file.</td></tr>
+<tr><td>GNUstep Foundation, libdispatch (linked, not in tree)</td><td>LGPL/Apache as applicable</td><td>Listed in <code>NOTICE</code>. Same calculus as launchd/configd.</td></tr>
+</tbody>
+</table>
+
+<h2 id="phases">11. Phased delivery</h2>
+
+<div class="phase">
+<h3>Phase 0 — repo scaffold + import</h3>
+<ul>
+  <li>Create <code>notifyd/</code> at the top of <code>freebsd-launchd</code>. Update <code>NOTICE</code> for APSL attribution.</li>
+  <li>Add <code>notifyd/scripts/import-source.sh</code> that clones <code>apple-oss-distributions/Libnotify</code> at <code>Libnotify-98.5</code>, strips <code>.git</code>, drops it under <code>notifyd/src/</code>.</li>
+  <li>One-shot import commit (verbatim Apple tree).</li>
+  <li>Follow-up amputation commit per §6.1 (Mach IDL + Xcode + iOS variants + entitlements out).</li>
+  <li>No build wired up; ISO unchanged.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 1 — minimal notifyd + libnotify (DO IPC, no shm)</h3>
+<ul>
+  <li>Top-level <code>notifyd/Makefile</code> + <code>make-notifyd.sh</code>.</li>
+  <li>Port <code>notifyd.c</code>, <code>service.c</code>, <code>notify_proc.c</code>: minimum daemon that accepts DO connections, registers names, fans out posts.</li>
+  <li>Port <code>libnotify.c</code>: client API. Replace Mach IPC layer with NSConnection. <code>notify_post</code>, <code>notify_register_dispatch</code>, <code>notify_register_signal</code>, <code>notify_register_fd</code>, <code>notify_cancel</code> all work end-to-end.</li>
+  <li>State values still go through DO (slow path) — <code>notify_get_state</code>, <code>notify_set_state</code> are RPC calls in this phase.</li>
+  <li>Boot test extension: launchctl-equivalent harness runs <code>notifyutil</code>; verify a posted name reaches a subscriber in another process.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 2 — POSIX shm state pages</h3>
+<ul>
+  <li>Replace the DO RPC for <code>notify_get_state</code> with shared-memory mapping. Daemon allocates <code>shm_open</code>'d segments holding the state-value array; client <code>mmap</code>s them read-only on registration.</li>
+  <li>Daemon writes state via atomic store intrinsics (<code>atomic_store_explicit</code>) so torn reads are impossible.</li>
+  <li>Run <code>notifybench</code>: confirm state reads stay zero-IPC after the swap. Compare to Phase 1 RPC baseline.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 3 — pathwatch + advanced features</h3>
+<ul>
+  <li>Port <code>pathwatch.c</code>: subscribe-to-path-changes notifications. Already kqueue-based; minimal changes.</li>
+  <li>Port <code>notify_register_check</code> (poll-based; check counter changes via shm).</li>
+  <li><code>NOTIFY_TYPE_FD</code> delivery (subscriber holds the read end of a pipe) wired up.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 4 — notifyutil CLI</h3>
+<ul>
+  <li>Port <code>notifyutil/notifyutil.c</code>: post a name, watch for posts, set/get state. Useful for testing + system administration.</li>
+  <li>Boot test: ssh in, <code>notifyutil -p test.foo</code> from one shell; <code>notifyutil -w test.foo</code> from another; confirm wakeup.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 5 — launchd <code>LaunchEvents</code> integration</h3>
+<ul>
+  <li>Add <code>LaunchEvents</code> + <code>com.apple.notifyd.matching</code> stanza support to <code>core.m</code> in the launchd source. Job stays in WAITING state until a matching name is posted; spawn happens on first post.</li>
+  <li>Replaces the proposed <code>RequiresPhase</code> mechanism (launchd plan §11.3) with the more general notifyd-driven approach.</li>
+  <li>Migrate phase no-op jobs (kld-loaded, filesystems-ready, network-ready) to post their phase names through notifyd; consumer plists use <code>LaunchEvents</code> instead of <code>RequiresPhase</code>.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 6 — gershwin integration</h3>
+<ul>
+  <li>Workspace, prefs panels, menubar widgets all start using notifyd posts (theme, audio, network, battery, etc.).</li>
+  <li>Per-user launchd agents triggered by <code>org.freebsd.session.user-logged-in</code>.</li>
+  <li>Configd (if shipped) routes its dynamic-store change events through notifyd for fan-out, replacing the per-client DO-callback scheme.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 7+ — optional, demand-driven</h3>
+<ul>
+  <li>Re-enable <code>NOTIFY_TYPE_PORT</code> only if some app's port-receiving consumer can't be source-ported. Unlikely.</li>
+  <li>DTrace probes (port <code>notify_probes.d</code>) when the perf-measurement need shows up.</li>
+  <li>Cross-host event federation (SSDP-style notifyd network bridge) — speculative.</li>
+</ul>
+</div>
+
+<h2 id="open">12. Open questions</h2>
+
+<div class="open-q">
+<strong>Q1. Atomic uint64 across architectures.</strong> POSIX shm + atomic store works on amd64 native. arm64 + 32-bit hosts we'd want to verify torn-read semantics — <code>atomic_store_explicit(memory_order_relaxed)</code> is the right primitive but compiler / target-arch-specific. Phase 2 testing covers.
+</div>
+
+<div class="open-q">
+<strong>Q2. Coexistence with NSDistributedNotificationCenter.</strong> GNUstep ships <code>NSDistributedNotificationCenter</code>, which is GNUstep's own pub/sub mechanism (separate from notifyd). Apps using <code>NSDistributedNotificationCenter</code> Just Work today. Apps using <code>notify_post</code> need our notifyd port. <strong>Both should coexist</strong> — they don't conflict; pick the API that matches the app's expectation. Long-term gershwin question: should new app code prefer one over the other? Decision deferrable.
+</div>
+
+<div class="open-q">
+<strong>Q3. Naming convention for project-emitted events.</strong> Apple uses <code>com.apple.*</code> for system events. We propose <code>org.freebsd.*</code> for our project's posts (network, power, theme, etc.) and reserve <code>com.apple.*</code> for app-emitted compat names. <code>org.gershwin.*</code> for desktop-specific events. Keep these consistent across all FreeBSD-launchd-ecosystem code.
+</div>
+
+<div class="open-q">
+<strong>Q4. Apple's <code>com.apple.system.config.network_change</code> compat.</strong> Apple-derived apps registering for that exact name will expect it to fire on network state change. Should configd post both the Apple-canon name and our <code>org.freebsd.config.network-changed</code>? Decision: yes, dual-post — costs nothing, retains source compat with apps that hard-coded the Apple name.
+</div>
+
+<div class="open-q">
+<strong>Q5. State-page location and quotas.</strong> POSIX shm names default to <code>/dev/shm/</code> on Linux; FreeBSD uses <code>/tmp/...</code> or <code>swap/...</code> behind the scenes. Naming scheme: <code>org.freebsd.notifyd.state.&lt;n&gt;</code> for daemon-managed segments. Per-host quota for state-value count: start at 16k slots; bump if real workloads need more.
+</div>
+
+<div class="open-q">
+<strong>Q6. Bootstrapping order with launchd.</strong> notifyd needs to be running before <code>LaunchEvents</code>-using plists can be evaluated. If notifyd is itself launched by launchd, there's a chicken-and-egg if the launchd plist using <code>LaunchEvents</code> is loaded before notifyd is up. Decision: notifyd's own plist has highest priority RunAtLoad, no <code>LaunchEvents</code>; other plists' <code>LaunchEvents</code> are evaluated after notifyd's IPC socket is up. Same pattern as configd.
+</div>
+
+<div class="open-q">
+<strong>Q7. Per-user notifyd vs single system-wide daemon.</strong> Apple runs one notifyd per session domain (system + each gui/&lt;uid&gt;). For our scope: start with system-wide only. Per-user notifyd waits until per-user launchd is implemented (post-Phase 6 of the launchd plan).
+</div>
+
+<h2 id="refs">13. References</h2>
+
+<ul>
+  <li>Apple source: <a href="https://github.com/apple-oss-distributions/Libnotify">github.com/apple-oss-distributions/Libnotify</a> (latest tag <code>Libnotify-98.5</code>).</li>
+  <li>Companion plans: <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-kmodloader-plan.html">kmodloader</a>, <a href="freebsd-asl-plan.html">asl</a>.</li>
+  <li>libnotify(3) API: <code>man 3 notify</code> on macOS, or <a href="https://developer.apple.com/library/archive/documentation/Darwin/Reference/ManPages/man3/notify.3.html">developer.apple.com/.../notify.3.html</a>.</li>
+  <li>Apple Public Source License: <a href="https://opensource.apple.com/apsl/">opensource.apple.com/apsl/</a>.</li>
+  <li>POSIX <code>shm_open(2)</code>: <code>man 2 shm_open</code>.</li>
+</ul>
+
+</body>
+</html>

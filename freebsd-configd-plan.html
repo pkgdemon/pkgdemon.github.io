@@ -110,7 +110,7 @@
 <section id="tldr" class="tldr">
   <h3>Status: planning <span class="pill info">v0</span></h3>
   <ul>
-    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-configd">github.com/pkgdemon/freebsd-configd</a> (proposed) — separate from <code>freebsd-launchd</code>; integrated into the same livecd build pipeline by <code>freebsd-launchd/build.sh</code> via host-side clone + chroot-side compile + install.</li>
+    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a> — <strong>monorepo</strong>. configd source lives under <code>configd/</code> at the top of the launchd repo, alongside <code>src/</code> (launchd) and (eventually) <code>kmodloader/</code>. Single build pipeline, single CI, single boot test gates everything.</li>
     <li><strong>Mission:</strong> replace FreeBSD's network configuration plumbing — <code>/etc/rc.d/netif</code>, <code>/etc/rc.d/dhclient</code>, <code>/etc/rc.d/wpa_supplicant</code>, <code>/etc/rc.d/hostname</code>, <code>/etc/rc.d/routing</code>, <code>/etc/resolv.conf</code> management — with one launchd-supervised <code>netconfigd</code> daemon backed by a single canonical plist (<code>/Local/Library/Preferences/Network.plist</code>).</li>
     <li><strong>Source:</strong> Apple <code>configd-963.270.3</code> (latest tag at <code>apple-oss-distributions/configd</code>, Apache 2.0). 289 source files. Phase 1 amputation drops the Mach-only files; what remains needs FreeBSD-shaped rewrites for the IPC + event-loop + DHCP layers.</li>
     <li><strong>No Mach IPC, no <code>libxpc</code>, no <code>IOKit</code>, no AirPort/CoreWLAN.</strong> All Mach/IOKit paths in the imported source are deleted; service-to-service IPC uses <strong>GNUstep Distributed Objects</strong> (<code>NSConnection</code> + <code>NSPortCoder</code> over AF_UNIX) instead of Mach ports + XPC.</li>
@@ -143,55 +143,69 @@
 
 <h2 id="repo">2. Repository</h2>
 
-<h3>2.1 Why a separate repo (not a subdir of <code>freebsd-launchd</code>)</h3>
+<h3>2.1 Monorepo: configd lives inside <code>freebsd-launchd</code></h3>
 
-<p>Apple ships <code>configd</code> as its own source release, separate from <code>launchd</code>. Three reasons to keep that separation in our port:</p>
+<p>One repo (<a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a>) holds launchd, configd, and any related tooling that follows. Reasons:</p>
 
 <ol>
-  <li><strong>Independent versioning.</strong> launchd was last released by Apple in 2012 (<code>launchd-842.1.4</code>); configd has continued to evolve through 2024 (<code>configd-963.270.3</code>). Different upstreams, different velocities, different review cycles.</li>
-  <li><strong>Reusability.</strong> <code>freebsd-configd</code> can be consumed by other projects (gershwin desktop, raw FreeBSD without launchd-as-PID-1) without dragging the entire livecd-build pipeline along.</li>
-  <li><strong>Repo size.</strong> Apple <code>configd-963.270.3</code> is ~5.5MB of source — too big to hide inside <code>freebsd-launchd/src/configd/</code> without losing the discoverability that "this is its own thing" gives.</li>
+  <li><strong>Single build pipeline.</strong> <code>build.sh</code>, the chroot, the CI workflow, the boot test — all one. No second clone loop, no second CI surface, no version-skew between repos.</li>
+  <li><strong>Cross-component refactors are atomic.</strong> When the DO interface used by configd's <code>scutil</code>-port changes shape, both ends move in one commit. With separate repos, you'd have two PRs, two reviews, and a window where the system is broken.</li>
+  <li><strong>Discoverability.</strong> A new contributor clones one repo and sees the whole system. The pieces are obviously related; their separation across repos would be the artificial thing.</li>
+  <li><strong>Tooling parity with launchd's pattern.</strong> The launchd source already lives in <code>src/</code> with Apple's odd nested structure (<code>src/src/</code>); adding <code>configd/</code> and <code>kmodloader/</code> as siblings is a natural extension.</li>
 </ol>
 
-<h3>2.2 Top-level layout</h3>
+<h3>2.2 Top-level layout (post-monorepo)</h3>
 
-<pre><code>freebsd-configd/
-├── LICENSE                        BSD-2-Clause
-├── NOTICE                         Apple, GNUstep, us
-├── README.md                      elevator pitch + quickstart
-├── PLAN.md                        link to this published plan
-├── Makefile                       top-level: build daemon + scutil + framework
-├── make-configd.sh                STANDALONE — builds + installs from src/ to
-                                   /usr/libexec/, /usr/sbin/, /System/Library/.
-                                   Reusable by freebsd-launchd's build.sh and
-                                   anyone else who wants to drop configd onto
-                                   an existing /System/Library/ tree.
-├── scripts/
-│   ├── import-source.sh           one-shot Apple configd import
-│   └── lint.sh                    forbidden-symbol grep (no <mach/>, no IOKit)
-├── plists/                        launchd plists shipped with configd
-│   └── org.freebsd.netconfigd.plist
-├── compat/                        FreeBSD-specific shims if any surface
-└── src/                           forked Apple configd-963.270.3, Mach paths deleted
-    ├── configd.tproj/             daemon main, dynamic store, server loop
-    ├── Plugins/                   IPMonitor, KernelEventMonitor, etc.
-    ├── libSystemConfiguration/    framework support library
-    ├── nwi/                       network-info dictionary
-    ├── scutil.tproj/              CLI client
-    ├── SystemConfiguration.fproj/ framework headers + impl
-    ├── common/                    shared bits
-    └── logging/                   logging helpers
+<pre><code>freebsd-launchd/
+├── LICENSE                       BSD-2-Clause (top-level)
+├── NOTICE                        Apple (launchd + configd), GNUstep, us
+├── README.md
+├── build.sh                      builds the whole monorepo end to end
+├── make-launchd.sh               STANDALONE — launchd build/install
+├── make-configd.sh               STANDALONE — configd build/install
+├── make-kmodloader.sh            STANDALONE — kmodloader build/install
+├── pkglist.txt
+├── buildpkgs.txt
+├── overlays/                     ISO overlay (plists, etc.)
+├── plists/                       launchd plists for shipped daemons
+├── boot/, ramdisk/, tests/, .github/, scripts/   (existing)
+│
+├── src/                          launchd Apple-imported source (existing
+│                                 location; not renamed for now to minimize
+│                                 churn against in-flight Phase 3+ work)
+│
+├── configd/                      Apple configd-imported source (NEW)
+│   ├── scripts/import-source.sh
+│   ├── Makefile
+│   ├── compat/
+│   └── src/                      forked Apple configd-963.270.3
+│       ├── configd.tproj/
+│       ├── Plugins/
+│       ├── libSystemConfiguration/
+│       ├── nwi/
+│       ├── scutil.tproj/
+│       ├── SystemConfiguration.fproj/
+│       ├── common/
+│       └── logging/
+│
+└── kmodloader/                   clean-room kmodloader (Phase 7+; see the
+                                  freebsd-kmodloader-plan.html)
+    ├── Makefile
+    ├── src/
+    └── personalities/
 </code></pre>
 
-<h3>2.3 How <code>freebsd-launchd</code> integrates this</h3>
+<h3>2.3 How <code>build.sh</code> handles configd</h3>
 
-<p>Pattern lifted from the existing system-domain-build flow in <code>freebsd-launchd/build.sh</code>: host-side clone of <code>freebsd-configd</code> into <code>repos/</code>, rsync into the chroot, then run <code>make-configd.sh</code> chroot-side <em>after</em> launchd is built (so configd can link against the launchd-installed Foundation/libdispatch). Net additions to <code>freebsd-launchd/build.sh</code>:</p>
+<p>No host-clone change — configd's source is already in the working tree. The chroot-side rsync that already brings <code>src/</code> in just brings <code>configd/</code> with it (via <code>rsync -a $ROOT/{src,configd}/...</code>). After <code>make-launchd.sh</code> finishes installing <code>/sbin/launchd</code>, <code>build.sh</code> calls <code>make-configd.sh</code> in the same chroot session, which compiles configd against the just-installed Foundation/libdispatch and installs <code>/usr/libexec/netconfigd</code> + <code>/usr/sbin/scutil</code>. Net additions to <code>build.sh</code>:</p>
 
 <ul>
-  <li>One more entry in the host clone loop: <code>https://github.com/pkgdemon/freebsd-configd.git</code></li>
-  <li>One more chroot-side step after <code>make-launchd.sh</code>: <code>cd /tmp/configd &amp;&amp; ./make-configd.sh</code></li>
-  <li>One more file in the ISO overlay: <code>/Local/Library/Preferences/Network.plist</code> shipped empty, so the daemon's "no config → auto-DHCP" path fires on first boot.</li>
+  <li>Extend the chroot rsync line: <code>rsync -a "$ROOT/src/" "$WORK/rootfs/tmp/launchd/src/"</code> → also stages <code>configd/</code>.</li>
+  <li>Append after the <code>make-launchd.sh</code> invocation: <code>chroot "$WORK/rootfs" /tmp/launchd/make-configd.sh</code>.</li>
+  <li>Add overlay file <code>/Local/Library/Preferences/Network.plist</code> (empty) so the daemon's auto-DHCP path fires on first boot.</li>
 </ul>
+
+<p><strong>Existing <code>src/</code> location not renamed</strong> in this plan to avoid churn against the ongoing Phase 3+ launchd work. A future cosmetic commit can move <code>src/</code> → <code>launchd/</code> for parity once everything has stabilized; both plans (configd, kmodloader) tolerate either layout.</p>
 
 <h2 id="arch">3. Architecture</h2>
 
@@ -521,8 +535,8 @@
 <div class="phase">
 <h3>Phase 0 — repo scaffold</h3>
 <ul>
-  <li>Create <code>github.com/pkgdemon/freebsd-configd</code>; minimal <code>README</code>, <code>LICENSE</code> (BSD-2-Clause), <code>NOTICE</code>.</li>
-  <li>Add <code>scripts/import-source.sh</code> that clones <code>apple-oss-distributions/configd</code> at <code>configd-963.270.3</code>, strips <code>.git</code>, drops it under <code>src/</code>.</li>
+  <li>Create <code>configd/</code> at the top of <code>freebsd-launchd</code>. Update top-level <code>NOTICE</code> to enumerate Apple's configd in addition to launchd.</li>
+  <li>Add <code>configd/scripts/import-source.sh</code> that clones <code>apple-oss-distributions/configd</code> at <code>configd-963.270.3</code>, strips <code>.git</code>, drops it under <code>configd/src/</code>.</li>
   <li>One-shot import commit (verbatim Apple tree).</li>
   <li>Follow-up amputation commit per §6.1 (Mach + IOKit + AirPort + sim out).</li>
   <li>No build wired up; ISO unchanged.</li>
@@ -599,7 +613,7 @@
 <h2 id="open">14. Open questions</h2>
 
 <div class="open-q">
-<strong>Q1. Repo separation.</strong> Confirmed: separate repo (<code>freebsd-configd</code>), not a subdir of <code>freebsd-launchd</code>. Reasons in §2.1. Reopen if integration friction surfaces.
+<strong>Q1. Repo layout. — SETTLED.</strong> Monorepo: configd lives under <code>configd/</code> at the top of <code>freebsd-launchd</code>. Reasons in §2.1: single build pipeline, atomic cross-component refactors, single CI surface, easier discoverability.
 </div>
 
 <div class="open-q">

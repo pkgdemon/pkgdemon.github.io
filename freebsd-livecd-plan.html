@@ -110,8 +110,8 @@
 <section id="tldr" class="tldr">
   <h3>Status: working <span class="pill ok">v0.1</span></h3>
   <ul>
-    <li><strong>CI passes end-to-end.</strong> Build + boot smoke-test both green on every push. Run <a href="https://github.com/pkgdemon/freebsd-livecd/actions/runs/25349540268">25349540268</a>. <a href="https://github.com/pkgdemon/freebsd-livecd">github.com/pkgdemon/freebsd-livecd</a></li>
-    <li><strong>Minimal base ISO: <span class="measured">396 MiB</span></strong> — comparable to Alpine livecd (~190 MiB) once you account for FreeBSD's larger base. Boot to multi-user, root writable, all five test stages pass.</li>
+    <li><strong>CI passes end-to-end.</strong> Build + boot smoke-test both green on every push. Repo: <a href="https://github.com/pkgdemon/freebsd-livecd-gunion">github.com/pkgdemon/freebsd-livecd-gunion</a>. The boot test watches for one marker on serial — the getty <code>login:</code> prompt — which by definition means every prior stage of the boot succeeded.</li>
+    <li><strong>Minimal base ISO: <span class="measured">396 MiB</span></strong> — comparable to Alpine livecd (~190 MiB) once you account for FreeBSD's larger base. Boots to a clean multi-user prompt; init.sh runs silently in production.</li>
     <li><strong>KDE Plasma 6 ISO: <span class="measured">3.8 GiB</span></strong> for 10.3 GiB of content. ~36% compression (zstd-19 + dedup). Comparable to GhostBSD-with-KDE (~3.5 GiB) and Kubuntu (~4.5 GiB).</li>
     <li><strong>Architecture works:</strong> cd9660 root → vnode-mount uzip → gunion overlay → <code>init_chroot</code>. cd9660 stays mounted forever; only decompressed pages of accessed uzip data live in RAM.</li>
     <li><strong>No kernel work needed.</strong> All in-tree FreeBSD primitives (mkuzip, geom_uzip, gunion since 14.0, init's init_chroot kenv read order).</li>
@@ -265,6 +265,8 @@ if (init_chroot kenv set)       // re-read AFTER the script returns
     <tr><td><strong>3.1 GiB ISO with 2.8 GiB <code>/rescue</code></strong></td><td><strong><code>cp -aR</code> on FreeBSD doesn't preserve hardlinks (unlike GNU cp). /rescue's ~200 hardlinks to one crunchgen binary all expanded to full copies.</strong></td><td><strong>tar pipe: <code>(cd src; tar cf - rescue) | (cd dst; tar xf -)</code></strong></td></tr>
     <tr><td>makefs: <code>minsize rounded up to ffs bsize exceeds maxsize</code></td><td>makefs's default 32 KiB block size requires the requested image size to be bsize-aligned</td><td>Round LOWER_BYTES up to 1 MiB boundary</td></tr>
     <tr><td>Build fails at makefs: <code>cannot fit content into requested size</code></td><td>Fixed-LIVE_DISK_SIZE doesn't scale with package additions — adding KDE blew past the 2 GiB ceiling</td><td>Switch to LIVE_HEADROOM model: lower = content + headroom, content auto-detected</td></tr>
+    <tr><td>Boot: <code>init 16 - - login_getclass: unknown class 'daemon'</code></td><td>base.txz ships <code>/etc/login.conf</code> but not the compiled <code>/etc/login.conf.db</code>; bsdinstall normally builds it during install, which we skip</td><td>Run <code>cap_mkdb /etc/login.conf</code> + <code>pwd_mkdb -p</code> on the rootfs after extraction</td></tr>
+    <tr><td>Boot test never sees marker, even though the boot succeeded</td><td>Used <code>"Starting local daemons:"</code> marker — that line only prints if <code>/etc/rc.local</code> exists. We deleted rc.local for a clean live boot, so the line vanished too.</td><td>Switch to the <code>login:</code> getty prompt as the marker. It always prints on a successful boot and is the strongest "system is fully up" signal.</td></tr>
   </tbody>
 </table>
 
@@ -428,7 +430,21 @@ mount -t unionfs -o below /upper /lower
 
 <p>The 2023 GSoC squashfs-on-FreeBSD effort exists as a branch but never merged. Reviving it is weeks-to-months of kernel work. Even if done, it doesn't solve the writable-overlay problem (squashfs is also block-vs-filesystem mismatched against gunion). Real win would be ~10% smaller ISO from squashfs's tail-packing — not worth it.</p>
 
-<h3>4.7 Comparison summary</h3>
+<h3>4.7 Two-repo strategy</h3>
+
+<p>Rather than picking one architecture in this repo and discarding the alternatives, the plan is to build them as <strong>parallel repos with the same build pipeline</strong> and let the architectures be compared head-to-head:</p>
+
+<table>
+  <thead><tr><th>Repo</th><th>Architecture</th><th>Status</th></tr></thead>
+  <tbody>
+    <tr><td><a href="https://github.com/pkgdemon/freebsd-livecd-gunion"><code>freebsd-livecd-gunion</code></a></td><td>cd9660 + uzip + <strong>gunion</strong> (block-level overlay) + init_chroot. LIVE_HEADROOM baked into the lower UFS at build time.</td><td><span class="pill ok">working, v0.1</span></td></tr>
+    <tr><td><code>freebsd-livecd-unionfs</code> (planned)</td><td>cd9660 + uzip + <strong>in-kernel unionfs</strong> + tmpfs upper + init_chroot. RAM-scaled apparent disk size. File-level overlay; matches Linux livecd semantics.</td><td><span class="pill warn">planned</span></td></tr>
+  </tbody>
+</table>
+
+<p>Same build script structure, same pkg pipeline, same boot-test harness. The two will diverge only in the overlay layer (init.sh + cdroot's overlay-tooling files). Real measurements from each will let us compare ISO size, build time, runtime memory, and stability rather than guessing.</p>
+
+<h3>4.8 Comparison summary</h3>
 
 <table>
   <thead><tr><th>Option</th><th>Apparent FS size scales with host RAM?</th><th>Risk</th><th>Effort</th></tr></thead>
@@ -478,9 +494,8 @@ mount -t unionfs -o below /upper /lower
 
 <h3>This project</h3>
 <ul>
-  <li>Repo: <a href="https://github.com/pkgdemon/freebsd-livecd">github.com/pkgdemon/freebsd-livecd</a></li>
-  <li>Last green run (KDE): <a href="https://github.com/pkgdemon/freebsd-livecd/actions/runs/25350809866">25350809866</a></li>
-  <li>Last green run (minimal): <a href="https://github.com/pkgdemon/freebsd-livecd/actions/runs/25349540268">25349540268</a></li>
+  <li>gunion variant (this report): <a href="https://github.com/pkgdemon/freebsd-livecd-gunion">github.com/pkgdemon/freebsd-livecd-gunion</a></li>
+  <li>unionfs variant (planned): <code>github.com/pkgdemon/freebsd-livecd-unionfs</code></li>
 </ul>
 
 <h3>FreeBSD source citations (current main, commit 045a9ef829fa)</h3>

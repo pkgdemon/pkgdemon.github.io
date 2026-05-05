@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeBSD squashfs &amp; live ISO — research report</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0 auto; max-width: 920px; padding: 2.5rem 1.5rem 6rem;
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    color: var(--fg); background: var(--bg);
+  }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.45rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .25rem; }
+  p, li { color: var(--fg); }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre {
+    background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+    overflow-x: auto; font-size: .85rem; line-height: 1.45;
+    border-left: 3px solid var(--accent2);
+  }
+  pre code { background: none; padding: 0; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr {
+    background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent);
+    padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem;
+  }
+  .tldr h3 { margin-top: 0; color: var(--accent); }
+  .pill {
+    display: inline-block; font-size: .75rem; padding: 1px 8px; border-radius: 999px;
+    background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+    font-weight: 600; letter-spacing: .02em;
+  }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+    padding: 1rem 1.1rem;
+  }
+  .card h4 { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  blockquote {
+    margin: 1rem 0; padding: .5rem 1rem; border-left: 3px solid var(--accent);
+    background: #fff8f3; color: #333;
+  }
+  .footnote { font-size: .85rem; color: var(--muted); }
+  ol li, ul li { margin: .25rem 0; }
+  .nav { position: sticky; top: 0; background: var(--bg); padding: .5rem 0; margin: -2.5rem -1.5rem 2rem; padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule); font-size: .88rem; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .filename { color: var(--accent); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .keypath { background: var(--code-bg); padding: 2px 4px; border-radius: 3px; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .85em; color: #333; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#state">State of squashfs</a>
+  <a href="#options">Architecture options</a>
+  <a href="#intree">In/out of tree</a>
+  <a href="#rescue">Rescue tools</a>
+  <a href="#livecd">Live ISO design</a>
+  <a href="#reroot">reroot</a>
+  <a href="#recommendation">Recommendation</a>
+  <a href="#refs">References</a>
+</nav>
+
+<h1>Building a modern, writable, tiny live ISO for FreeBSD</h1>
+<p class="subtitle">Squashfs in the FreeBSD kernel — what exists, what's missing, what to actually build.</p>
+
+<section id="tldr" class="tldr">
+  <h3>TL;DR</h3>
+  <ul>
+    <li><strong>There is no production squashfs in the FreeBSD kernel.</strong> A 2023 GSoC project <a href="https://github.com/Mashijams/freebsd-src/tree/gsoc/squashfs">(branch)</a> got read-only mount working but was never merged and has been dormant since 2023-Q3. <code>squashfuse</code> exists as a port but it's FUSE, so it can't be your boot root without significant scaffolding.</li>
+    <li><strong>You do <em>not</em> have to integrate into the FreeBSD tree.</strong> A squashfs filesystem is a standard loadable kernel module; you can build it out-of-tree, install it to <code>/boot/modules</code>, and ship a port — exactly the nvidia model. The KBI for VFS modules is in installed headers (<code>VFS_SET</code>, vnode ops, etc.).</li>
+    <li><strong>You probably don't need squashfs to ship a live ISO today.</strong> Every active FreeBSD live distro (helloSystem, NomadBSD, FuryBSD, mfsBSD) uses <code>mkuzip(8)</code> + <code>geom_uzip(4)</code>: block-compressed read-only image with random access, supports zstd. It's the FreeBSD-native squashfs analog and it's already in the tree.</li>
+    <li><strong>For the writable overlay, use <code>gunion(8)</code> (block-level, FreeBSD 14+) or <code>unionfs-fuse</code></strong>. Avoid in-kernel <code>unionfs</code> — its man page literally says "IT DOESN'T WORK" and NomadBSD ripped it out for deadlocks.</li>
+    <li><strong><code>reboot -r</code> is FreeBSD's <code>switch_root</code></strong> — pivot from a tiny kernel+ramdisk into the real overlay-mounted root. This is exactly the Linux livecd pattern and it works on FreeBSD today.</li>
+    <li><strong>Recommended path:</strong> if you specifically want squashfs interop with Linux, revive the GSoC branch as an out-of-tree port. If you want a small writable live ISO and don't care about the format, <code>mkuzip</code> + <code>gunion</code> + <code>reboot -r</code> gets you there with zero kernel work.</li>
+  </ul>
+</section>
+
+<h2 id="state">1. State of squashfs on FreeBSD</h2>
+
+<h3>1.1 In-tree: nothing</h3>
+<p>A grep for <code>squashfs</code> across <code>sys/</code>, <code>sbin/</code>, <code>usr.sbin/</code>, <code>contrib/</code> in the current source tree returns zero hits. There is no module skeleton, no GEOM provider, no VFS implementation. There is no <code>mount_squashfs</code> mount helper, and <code>makefs(8)</code> doesn't know about the format.</p>
+
+<h3>1.2 GSoC 2023 — the closest existing kernel work <span class="pill warn">stalled</span></h3>
+<ul>
+  <li><strong>Project:</strong> "Port SquashFuse To The FreeBSD Kernel"</li>
+  <li><strong>Student:</strong> Raghav Sharma (raghav@FreeBSD.org), mentored by Chuck Tuffli</li>
+  <li><strong>Code:</strong> <a href="https://github.com/Mashijams/freebsd-src/tree/gsoc/squashfs">github.com/Mashijams/freebsd-src — branch <code>gsoc/squashfs</code></a></li>
+  <li><strong>Status reports:</strong>
+    <a href="https://www.freebsd.org/status/report-2023-04-2023-06/squashfs/">Q2 2023</a>,
+    <a href="https://www.freebsd.org/status/report-2023-07-2023-09/squashfs/">Q3 2023</a></li>
+  <li><strong>What works:</strong> read-only mount, <code>vop_lookup</code> / <code>vop_readdir</code> (directories), <code>vop_read</code> / <code>vop_strategy</code> (files), <code>vop_readlink</code> (symlinks). Compression: zlib, lzo2, zstd. Targets FreeBSD 13.2-RELEASE.</li>
+  <li><strong>What's missing / unfinished:</strong> kernel xattr hooks pending, never merged, no Phabricator review, no quarterly mention from Q4 2023 → Q4 2025.</li>
+  <li><strong>Practical takeaway:</strong> the code is your starting point if you want a real kernel module — but you'd be reviving an unmaintained branch, rebasing onto current <code>main</code>, fixing whatever's broken under the new VFS, and adding tests. Estimate: <em>weeks of focused work</em>, not days.</li>
+</ul>
+
+<h3>1.3 squashfuse (FUSE) — works, but not for early boot <span class="pill warn">limited</span></h3>
+<ul>
+  <li>Port: <a href="https://www.freshports.org/filesystems/fusefs-squashfuse/">filesystems/fusefs-squashfuse</a> (was sysutils/, recategorized 2024-11-06).</li>
+  <li>Upstream: <a href="https://github.com/vasi/squashfuse">github.com/vasi/squashfuse</a>.</li>
+  <li>Provides <code>squashfuse</code> + <code>squashfuse_ll</code>, depends on FUSE 3, lz4, lzo2, zstd.</li>
+  <li><strong>Why it's awkward as a boot root:</strong> FUSE needs userspace, so the kernel can't mount squashfs as the initial root. You'd need an mfs_root with enough userspace to start <code>squashfuse</code>, then pivot — a lot more moving parts than just using a uzip image.</li>
+</ul>
+
+<h2 id="options">2. Your four real architecture options</h2>
+
+<div class="grid">
+  <div class="card">
+    <h4>A. Use <code>mkuzip</code> instead of squashfs <span class="pill ok">recommended</span></h4>
+    <p>Block-compressed read-only image (zlib/lzma/zstd) with random-access TOC. Mounted via <code>geom_uzip(4)</code>; you put a UFS on top.</p>
+    <p><strong>Pros:</strong> in-tree, well-tested, used by every FreeBSD live distro, no kernel work needed, fast.<br>
+    <strong>Cons:</strong> not squashfs (no Linux interop), no built-in dedup, slightly worse ratios on metadata-heavy trees.</p>
+    <p><em>Closest thing to squashfs that already works.</em></p>
+  </div>
+  <div class="card">
+    <h4>B. Out-of-tree squashfs kernel module <span class="pill warn">heavy lift</span></h4>
+    <p>Revive the GSoC 2023 branch, package as a port that installs to <code>/boot/modules/squashfs.ko</code>, ship a <code>mount_squashfs</code> binary.</p>
+    <p><strong>Pros:</strong> real squashfs, Linux interop, image portability.<br>
+    <strong>Cons:</strong> weeks of kernel work, you become the maintainer, KBI churn at every major release.</p>
+  </div>
+  <div class="card">
+    <h4>C. squashfuse + scaffolding <span class="pill warn">complex</span></h4>
+    <p>Boot a minimal mfs_root with userland, run <code>squashfuse</code> to mount the image, <code>reboot -r</code> into it.</p>
+    <p><strong>Pros:</strong> uses existing port, no kernel code.<br>
+    <strong>Cons:</strong> FUSE in the boot path is fragile; performance hit; more moving parts than (A).</p>
+  </div>
+  <div class="card">
+    <h4>D. tarfs + zstd <span class="pill ok">interesting</span></h4>
+    <p>Recently merged in-tree (<code>sys/fs/tarfs/</code>): mount a zstd-compressed tar archive read-only as a filesystem. Originally built for FreeBSD container images.</p>
+    <p><strong>Pros:</strong> in-tree, modern, zstd, simpler than uzip+ufs (single archive).<br>
+    <strong>Cons:</strong> less battle-tested for live media, no random-access dedup like squashfs, hardlinks/xattr support varies.</p>
+  </div>
+</div>
+
+<h2 id="intree">3. In-tree vs. out-of-tree</h2>
+
+<h3>3.1 An out-of-tree filesystem module is fully supported</h3>
+
+<p>FreeBSD's loader searches both <code>/boot/kernel</code> and <code>/boot/modules</code> by default — see <span class="filename">sys/kern/kern_linker.c</span> and <span class="filename">stand/common/module.c</span>:</p>
+
+<pre><code>static char linker_path[MAXPATHLEN] = "/boot/kernel;/boot/modules";
+TUNABLE_STR("module_path", linker_path, sizeof(linker_path));</code></pre>
+
+<p><code>/boot/modules</code> is the conventional drop-zone for third-party modules — it's exactly what nvidia, vendor wifi drivers, and various ports use.</p>
+
+<h3>3.2 A filesystem is a regular kernel module</h3>
+
+<p>The macro <code>VFS_SET</code> in <span class="filename">sys/sys/mount.h</span> is the registration hook, and it's part of the public KBI shipped in <code>/usr/include/sys/</code>. Every in-tree FS uses the same pattern; <code>cd9660</code>, <code>fusefs</code>, <code>autofs</code>, <code>ext2fs</code>, <code>tarfs</code> all build as both static and loadable.</p>
+
+<pre><code>VFS_SET(squashfs_vfsops, squashfs, VFCF_READONLY);
+MODULE_VERSION(squashfs, 1);</code></pre>
+
+<h3>3.3 Out-of-tree skeleton (the nvidia pattern)</h3>
+
+<p>An out-of-tree port-ready Makefile looks like this, leveraging <span class="filename">/usr/share/mk/bsd.kmod.mk</span>:</p>
+
+<pre><code># Makefile in your repo
+KMOD=    squashfs
+SRCS=    squashfs_vfsops.c squashfs_vnops.c squashfs_io.c \
+         squashfs_decompress.c \
+         vnode_if.h opt_kstack_pages.h
+KMODDIR= /boot/modules        # default is /boot/kernel; set to modules
+
+.include &lt;bsd.kmod.mk&gt;</code></pre>
+
+<p>Build it against <em>installed</em> headers (no source tree required) by setting <code>KERNBUILDDIR=/usr/include/sys</code>. The ports framework (<code>USES=kmod</code>) handles all of this for you.</p>
+
+<h3>3.4 KBI caveat</h3>
+<p>FreeBSD's KBI is stable <em>within</em> a STABLE branch (e.g. 14.x), but not across major versions. You'd ship one binary per major release, or a source port that rebuilds locally. This is the standard third-party module trade-off.</p>
+
+<h3>3.5 Verdict</h3>
+<p class="verdict go">Out-of-tree is the right answer for an experiment, a third-party project, or a "live distro toolkit". You only need to upstream into <code>sys/fs/squashfs</code> if you want it loaded by the loader as part of a release build, or if you want it in <code>/usr/include/sys</code> for other consumers. Even then, you can develop entirely as a port and merge later.</p>
+
+<h2 id="rescue">4. Rescue and userland tooling</h2>
+
+<h3>4.1 Mount helper</h3>
+<p>Each in-kernel FS has a corresponding <code>sbin/mount_*</code> helper that just calls <code>nmount(2)</code> with the right fstype. Look at <span class="filename">sbin/mount_cd9660/</span> as the template — it's ~250 lines. Your <code>mount_squashfs</code> would be similar.</p>
+
+<h3>4.2 Rescue integration</h3>
+<p><span class="filename">rescue/rescue/Makefile</span> already statically links <code>mount_cd9660</code>, <code>mount_msdosfs</code>, <code>mount_nullfs</code>, <code>mount_unionfs</code>, <code>mount_udf</code>, <code>mount_nfs</code>. Adding <code>mount_squashfs</code> is one line, but only matters if squashfs is in tree. For an out-of-tree port, ship the binary in <code>/usr/local/sbin/</code>.</p>
+
+<h3>4.3 mksquashfs / unsquashfs</h3>
+<p>Already packaged: <code>sysutils/squashfs-tools</code>. You don't have to build these yourself — your live-ISO build script depends on the port.</p>
+
+<h3>4.4 makefs(8) extension <span class="pill warn">optional</span></h3>
+<p>If you want <code>makefs -t squashfs</code> to work natively (so the release build can produce squashfs images without external tools), add a backend in <span class="filename">usr.sbin/makefs/</span> alongside <code>cd9660.c</code>. This is purely cosmetic — <code>mksquashfs</code> from the port already works.</p>
+
+<h2 id="livecd">5. Modern live ISO architecture</h2>
+
+<h3>5.1 What's wrong with the existing FreeBSD installer ISO?</h3>
+<p>The release ISO (<code>release/amd64/mkisoimages.sh</code>) is a plain cd9660 image with <code>/etc/fstab</code> set to mount root <code>ro</code>. <code>rc.initdiskless</code> creates tmpfs overlays for <code>/etc</code>, <code>/var</code>, <code>/tmp</code> from cpio templates in <code>/conf/</code>. It works, but it's not compressed and the "writable" parts are limited to a few directories. There's no whole-rootfs writability.</p>
+
+<h3>5.2 The Linux pattern, translated to FreeBSD</h3>
+
+<table>
+  <thead>
+    <tr><th>Layer</th><th>Linux</th><th>FreeBSD equivalent</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Compressed read-only base</td><td>squashfs (zstd)</td><td><code>mkuzip</code> on UFS, OR squashfs (out-of-tree)</td></tr>
+    <tr><td>Writable overlay</td><td>OverlayFS (file-level)</td><td><code>gunion(8)</code> (block-level, 14.0+) — or <code>unionfs-fuse</code></td></tr>
+    <tr><td>Writable backing</td><td>tmpfs upper</td><td>swap-backed <code>md(4)</code> via <code>mdconfig -t swap</code></td></tr>
+    <tr><td>Pivot</td><td><code>switch_root</code> from initramfs</td><td><code>reboot -r</code> (since FreeBSD 11)</td></tr>
+    <tr><td>Boot media FS</td><td>cd9660 + initramfs</td><td>cd9660 (loader can't read uzip directly; ramdisk image lives <em>inside</em> cd9660)</td></tr>
+  </tbody>
+</table>
+
+<h3>5.3 Concrete boot flow</h3>
+
+<ol>
+  <li>Loader (BIOS or EFI) reads cd9660; loads kernel + <code>mfs_root</code> image (small UFS, ~5–10 MB).</li>
+  <li>Kernel boots with mfs_root as <code>/</code>. Init runs a tiny <code>/sbin/init</code> shell script.</li>
+  <li>Script: locates the compressed image on the optical/USB media (or in cd9660), attaches it via <code>mdconfig -t vnode -f /cdrom/rootfs.uzip</code>, mounts the resulting <code>/dev/mdN.uzip</code> read-only at <code>/newroot</code>.</li>
+  <li>Script: creates a swap-backed memdisk for the writable upper (<code>mdconfig -t swap -s 2g</code>), then either
+    <ul>
+      <li><code>gunion create md0.uzip md1</code> → put a UFS on the resulting union device, mount at <code>/newroot</code>; <em>or</em></li>
+      <li>mount <code>tmpfs</code> on <code>/newroot.upper</code>, mount <code>unionfs-fuse</code> with lower=uzip, upper=tmpfs.</li>
+    </ul>
+  </li>
+  <li>Set <code>vfs.root.mountfrom</code> to the new device, <code>reboot -r</code>.</li>
+  <li>Kernel re-mounts root from the union device, re-execs <code>/sbin/init</code> from the live system. You're now running with a fully writable rootfs.</li>
+</ol>
+
+<h3>5.4 The unionfs trap</h3>
+<blockquote>From <code>mount_unionfs(8)</code> in the current tree:<br>
+<strong>"THIS FILE SYSTEM TYPE IS NOT YET FULLY SUPPORTED (READ: IT DOESN'T WORK) AND USING IT MAY, IN FACT, DESTROY DATA ON YOUR SYSTEM."</strong></blockquote>
+<p>Don't use it. NomadBSD switched to <code>unionfs-fuse</code> after deadlocks during <code>reboot -r</code>. Your two real overlay choices are <strong><code>gunion(8)</code></strong> (block-level, in-tree as of 14) or <strong><code>unionfs-fuse</code></strong> (file-level, port).</p>
+
+<h3>5.5 What existing FreeBSD-derived live distros do</h3>
+
+<table>
+  <thead><tr><th>Distro</th><th>Read-only base</th><th>Writable layer</th><th>Pivot</th></tr></thead>
+  <tbody>
+    <tr><td>helloSystem</td><td><code>mkuzip</code> (UFS inside)</td><td>Copy into swap-backed memdisk (no overlay; just duplicates)</td><td><code>reboot -r</code></td></tr>
+    <tr><td>NomadBSD</td><td><code>mkuzip</code></td><td><code>unionfs-fuse</code></td><td>direct mount</td></tr>
+    <tr><td>FuryBSD</td><td><code>mkuzip</code></td><td>same as helloSystem</td><td><code>reboot -r</code></td></tr>
+    <tr><td>GhostBSD</td><td>cd9660</td><td>full RAM copy (4 GB+)</td><td>n/a</td></tr>
+    <tr><td>mfsBSD</td><td>tar.gz into MFS</td><td>everything in RAM</td><td>n/a</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Nobody uses squashfs.</strong> Every active project uses <code>mkuzip</code>.</p>
+
+<h2 id="reroot">6. <code>reboot -r</code> (reroot)</h2>
+
+<p>The FreeBSD analog of Linux's <code>switch_root</code>. Implemented in <span class="filename">sbin/init/init.c</span> (the userland half) and <span class="filename">sys/kern/kern_shutdown.c</span> (<code>kern_reroot()</code>). Restricted to PID 1.</p>
+
+<h4>What it does, mechanically:</h4>
+<ol>
+  <li>Init copies itself into a tmpfs at <code>/dev/reroot</code> and re-execs from there.</li>
+  <li>The temp init issues <code>reboot(RB_REROOT)</code>.</li>
+  <li>Kernel kills all other processes, unmounts everything except <code>/dev</code>, calls <code>vfs_mountroot()</code> with the new <code>vfs.root.mountfrom</code>.</li>
+  <li>Kernel re-execs <code>/sbin/init</code> from the new root.</li>
+</ol>
+
+<h4>What this means for you:</h4>
+<ul>
+  <li>You can absolutely "boot tiny mfs → mount big root → pivot". This is the canonical FreeBSD live pattern.</li>
+  <li>Memory disks <em>do</em> survive a reroot (since the kernel hasn't been reset). Useful for the upper overlay tmpfs.</li>
+  <li>It's <em>not</em> a writable-overlay creation mechanism by itself — it just switches the root. You build the union/overlay <em>before</em> calling <code>reboot -r</code>.</li>
+</ul>
+
+<h2 id="recommendation">7. Recommended path forward</h2>
+
+<h3>7.1 If your goal is a tiny modern writable live ISO ASAP <span class="pill ok">do this</span></h3>
+<p><strong>Don't write a kernel module.</strong> Build with what's already in the tree:</p>
+<ol>
+  <li>Stage your rootfs as UFS (use <code>makefs -t ffs</code>).</li>
+  <li>Compress with <code>mkuzip -j16 -d -s 65536 rootfs.ufs</code> (zstd, 64K blocks). Expect ~40-50% of original size for a typical install.</li>
+  <li>Build a tiny mfs_root (~5 MB UFS) containing <code>/sbin/init</code>, <code>mdconfig</code>, <code>mount</code>, <code>gunion</code>, your pivot script, and a bare <code>/dev</code>.</li>
+  <li>Pack everything into a cd9660 with <code>makefs -t cd9660 -o rockridge,bootimage=...</code>.</li>
+  <li>Pivot script: attach uzip → create <code>gunion</code> with swap-backed upper → put UFS on union → <code>reboot -r</code>.</li>
+  <li>For installation, your installer reroots into the on-disk target.</li>
+</ol>
+
+<p>Reference implementations to read first: <a href="https://github.com/helloSystem/ISO/blob/experimental/build.sh">helloSystem ISO build</a>, <a href="https://github.com/nomadbsd/NomadBSD/blob/master/build">NomadBSD build script</a>.</p>
+
+<h3>7.2 If you specifically need squashfs format <span class="pill warn">heavier</span></h3>
+<ol>
+  <li>Fork the GSoC 2023 branch (<a href="https://github.com/Mashijams/freebsd-src/tree/gsoc/squashfs">Mashijams/freebsd-src</a>).</li>
+  <li>Rebase onto current main; convert to a standalone repo with the layout
+    <code>squashfs/{Makefile, squashfs_vfsops.c, squashfs_vnops.c, ...}</code>.</li>
+  <li>Add a <code>mount_squashfs</code> userland binary under <code>squashfs/mount_squashfs/</code>.</li>
+  <li>Add a ports skeleton (<code>filesystems/squashfs-kmod</code> + <code>USES=kmod</code>) that builds against installed headers and installs to <code>/boot/modules/squashfs.ko</code>.</li>
+  <li>Write a small test harness — at minimum, mount and read a few reference squashfs images produced by mksquashfs at different compression levels.</li>
+  <li>Then plug the resulting kmod into the live ISO build above, replacing <code>mkuzip</code>+<code>mdconfig</code> with <code>mksquashfs</code>+<code>mount_squashfs</code>.</li>
+</ol>
+<p>You can do this entirely <em>outside</em> the FreeBSD tree. Upstream later if it's healthy.</p>
+
+<h3>7.3 If you want squashfs <em>now</em> without writing kernel code <span class="pill warn">workable</span></h3>
+<p>Use <code>fusefs-squashfuse</code> from ports as the read-only layer. Boot scaffolding looks like (1) tiny mfs_root with <code>fusefs.ko</code> preloaded, <code>squashfuse</code> in <code>/sbin</code>, (2) script attaches the squashfs image, <code>squashfuse rootfs.sqsh /newroot</code>, (3) <code>gunion</code>-style overlay on top (note: gunion is block-level so it sits <em>under</em>, not above, FUSE — for FUSE you'd need <code>unionfs-fuse</code> instead), (4) <code>reboot -r</code>. Slower than uzip and an extra moving part, but no kernel code.</p>
+
+<h2>8. What gets touched, where</h2>
+
+<table>
+  <thead><tr><th>Component</th><th>Path (if in tree) or repo (if out)</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>kernel module source</td><td><code>sys/fs/squashfs/</code> <em>or</em> your-repo/<code>squashfs/</code></td><td>Out-of-tree fine</td></tr>
+    <tr><td>module Makefile</td><td><code>sys/modules/squashfs/</code> <em>or</em> repo top-level</td><td><code>KMODDIR=/boot/modules</code></td></tr>
+    <tr><td>VFS registration</td><td>in your <code>squashfs_vfsops.c</code></td><td><code>VFS_SET(... , VFCF_READONLY)</code></td></tr>
+    <tr><td><code>mount_squashfs</code></td><td><code>sbin/mount_squashfs/</code> <em>or</em> port</td><td>Model on <code>sbin/mount_cd9660/</code></td></tr>
+    <tr><td>mksquashfs</td><td><em>not yours</em></td><td>Already in <code>sysutils/squashfs-tools</code></td></tr>
+    <tr><td>rescue inclusion</td><td><code>rescue/rescue/Makefile</code></td><td>Only matters if upstreamed</td></tr>
+    <tr><td><code>makefs -t squashfs</code></td><td><code>usr.sbin/makefs/squashfs.c</code></td><td>Optional polish</td></tr>
+    <tr><td>release/livefs build</td><td><code>release/amd64/mkisoimages.sh</code> + your build script</td><td>Most realistic to keep entirely out-of-tree as a separate "freebsd-livecd" project repo</td></tr>
+    <tr><td>boot loader squashfs reader</td><td><code>stand/libsa/</code></td><td>Only needed if you want to boot <em>directly</em> from squashfs without an mfs_root shim. Significant work — skip it.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="refs">9. References</h2>
+
+<h3>FreeBSD source (this tree)</h3>
+<ul>
+  <li><span class="filename">sys/fs/tarfs/</span> — modern in-tree precedent for a compressed read-only filesystem (zstd-tar). Read this first if you want to know what a clean modern FS module looks like.</li>
+  <li><span class="filename">sys/fs/cd9660/</span>, <span class="filename">sys/modules/cd9660/Makefile</span> — minimal example.</li>
+  <li><span class="filename">sys/sys/mount.h</span> — <code>VFS_SET</code> macro definition.</li>
+  <li><span class="filename">sys/geom/uzip/</span> — geom_uzip implementation (CLOOP-format, zlib/lzma/zstd).</li>
+  <li><span class="filename">sys/dev/md/md.c</span> — memory disk driver, <code>MD_ROOT</code> mfs_root mechanism (lines 173-198, 2057-2062).</li>
+  <li><span class="filename">sys/kern/kern_shutdown.c</span> — <code>kern_reroot()</code> implementation.</li>
+  <li><span class="filename">sbin/init/init.c</span> — userland half of <code>reboot -r</code>.</li>
+  <li><span class="filename">sbin/mount_cd9660/</span> — mount helper template.</li>
+  <li><span class="filename">libexec/rc/rc.initdiskless</span> — current FreeBSD writable-overlay-on-readonly-root mechanism (limited to specific dirs).</li>
+  <li><span class="filename">release/amd64/mkisoimages.sh</span>, <span class="filename">release/amd64/make-memstick.sh</span> — current ISO build.</li>
+  <li><span class="filename">share/mk/bsd.kmod.mk</span> — build infrastructure for kernel modules; supports out-of-tree via <code>KERNBUILDDIR</code>.</li>
+  <li><span class="filename">tools/tools/nanobsd/nanobsd.sh</span>, <code>defaults.sh</code> — read-only-root reference (<code>root_rw_mount="NO"</code>).</li>
+</ul>
+
+<h3>External — squashfs-on-FreeBSD</h3>
+<ul>
+  <li>GSoC 2023 status reports:
+    <a href="https://www.freebsd.org/status/report-2023-04-2023-06/squashfs/">Q2</a>,
+    <a href="https://www.freebsd.org/status/report-2023-07-2023-09/squashfs/">Q3</a>.
+  </li>
+  <li>GSoC code branches:
+    <a href="https://github.com/Mashijams/freebsd-src/tree/gsoc/squashfs">Mashijams/freebsd-src</a>,
+    <a href="https://github.com/sleipbyte/freebsd-src/tree/gsoc/squashfs">sleipbyte/freebsd-src</a>.
+  </li>
+  <li>squashfuse upstream: <a href="https://github.com/vasi/squashfuse">vasi/squashfuse</a>.</li>
+  <li>FreshPorts — <a href="https://www.freshports.org/filesystems/fusefs-squashfuse/">filesystems/fusefs-squashfuse</a>.</li>
+  <li>Forum discussion — <a href="https://forums.freebsd.org/threads/mksquashfs-unsquashfs-squashfuse.62445/">mksquashfs/unsquashfs/squashfuse on FreeBSD</a>.</li>
+  <li>squashfs format reference — <a href="https://docs.kernel.org/filesystems/squashfs.html">kernel.org docs</a>.</li>
+</ul>
+
+<h3>External — FreeBSD live-ISO building</h3>
+<ul>
+  <li>helloSystem boot architecture — <a href="https://hellosystem.github.io/docs/developer/boot.html">hellosystem.github.io/docs/developer/boot.html</a>.</li>
+  <li>helloSystem build script — <a href="https://github.com/helloSystem/ISO/blob/experimental/build.sh">helloSystem/ISO/build.sh</a>.</li>
+  <li>NomadBSD build — <a href="https://github.com/nomadbsd/NomadBSD/blob/master/build">nomadbsd/NomadBSD/build</a>.</li>
+  <li>GhostBSD build — <a href="https://github.com/ghostbsd/ghostbsd-build">ghostbsd/ghostbsd-build</a>.</li>
+  <li>mfsBSD paper — <a href="https://people.freebsd.org/~mm/mfsbsd/mfsbsd.pdf">people.freebsd.org/~mm/mfsbsd</a>.</li>
+  <li>geom_rowr (helloSystem out-of-tree overlay GEOM) — <a href="https://hellosystem.github.io/docs/developer/geom_rowr.html">hellosystem.github.io geom_rowr</a>.</li>
+  <li>helloSystem unionfs deadlock issue — <a href="https://github.com/helloSystem/ISO/issues/326">helloSystem/ISO#326</a>.</li>
+  <li>2025 unionfs writeup — <a href="https://www.tunbury.org/2025/09/17/freebsd-unionfs/">tunbury.org/2025/09/17/freebsd-unionfs</a>.</li>
+</ul>
+
+<h3>External — manuals &amp; reviews</h3>
+<ul>
+  <li><a href="https://man.freebsd.org/cgi/man.cgi?query=geom_uzip&amp;sektion=4">geom_uzip(4)</a></li>
+  <li><a href="https://man.freebsd.org/cgi/man.cgi?query=mkuzip&amp;sektion=8">mkuzip(8)</a></li>
+  <li><a href="https://man.freebsd.org/cgi/man.cgi?query=gunion&amp;sektion=8">gunion(8)</a> + <a href="https://reviews.freebsd.org/D32697">Phab D32697</a></li>
+  <li><a href="https://people.freebsd.org/~lidl/blog/re-root.html">reboot -r writeup</a> + <a href="https://reviews.freebsd.org/D2698">D2698</a> / <a href="https://reviews.freebsd.org/D3693">D3693</a></li>
+  <li>Linux livecd architecture (for comparison) — <a href="https://major.io/p/adventures-in-live-booting-linux-distributions/">major.io article</a>, <a href="https://help.ubuntu.com/community/LiveCDCustomization">Ubuntu LiveCDCustomization</a>.</li>
+</ul>
+
+<hr>
+<p class="footnote">Generated 2026-05-04. Research synthesized from a deep search of <code>/Users/jmaloney/freebsd-src</code> (current main, last commit <code>045a9ef829fa</code>) plus external research across FreeBSD status reports, GSoC archives, and the active FreeBSD-derived live-distro projects.</p>
+
+</body>
+</html>

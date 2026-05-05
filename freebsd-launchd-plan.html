@@ -157,7 +157,7 @@
 ├── NOTICE                        Apple, swift-corelibs-libdispatch, GNUstep, us
 ├── README.md                     elevator pitch + quickstart
 ├── PLAN.md                       link to this published plan
-├── build.sh                      lifted from livecd-unionfs; clones the 5 upstreams, builds them in-chroot, calls make-launchd.sh, then ISO-wraps
+├── build.sh                      lifted from livecd-unionfs; clones 6 upstreams, builds them in-chroot, calls make-launchd.sh, then ISO-wraps
 ├── make-launchd.sh               STANDALONE — builds + installs launchd from src/ to /sbin/; assumes /System/Library/ libs present. Reusable by gershwin-on-freebsd.
 ├── pkglist.txt                   runtime FreeBSD pkgs to install in chroot (start empty)
 ├── buildpkgs.txt                 build-only pkgs (cmake, ninja, gmake, autoconf, libtool) — purged before slim
@@ -263,8 +263,8 @@
 <tr><td><code>wait4path</code> helper</td><td><code>/usr/bin/wait4path</code></td><td>Non-essential; user-callable.</td></tr>
 <tr><td>Man pages</td><td><code>/usr/share/man/man{1,5,8}/</code></td><td>Base-system man path.</td></tr>
 <tr><td>System LaunchDaemons</td><td><code>/System/Library/LaunchDaemons/</code></td><td>NeXT/Apple convention; default scan dir baked into <code>launchd.c</code>.</td></tr>
-<tr><td>Third-party LaunchDaemons</td><td><code>/Library/LaunchDaemons/</code></td><td>Apple convention, second scan dir; for ports/pkg-installed services.</td></tr>
-<tr><td>Per-user LaunchAgents</td><td><code>~/Library/LaunchAgents/</code> + <code>/Library/LaunchAgents/</code></td><td>Apple convention; not used on a server but the support stays.</td></tr>
+<tr><td>Third-party LaunchDaemons</td><td><code>/Local/Library/LaunchDaemons/</code></td><td>Second scan dir; for ports/pkg-installed services. Uses the gershwin <code>/Local/Library/</code> tree (where tools-make installs third-party gnustep-make resources) rather than Apple's <code>/Library/</code>.</td></tr>
+<tr><td>Per-user LaunchAgents</td><td><code>~/Library/LaunchAgents/</code> + <code>/Local/Library/LaunchAgents/</code></td><td>User half matches macOS exactly (gershwin home dirs are <code>/Users/&lt;u&gt;/Library/...</code>); local-system half uses gershwin <code>/Local/Library/</code>. Not used on a server but the support stays.</td></tr>
 <tr><td>Control socket (PID 1)</td><td><code>/var/run/launchd/sock</code></td><td>Matches <code>IPC_DEFAULT_PID1_SOCK</code> in <code>ipc.c</code>.</td></tr>
 <tr><td>libdispatch (.so + headers)</td><td><code>/System/Library/Libraries/libdispatch.so</code><br><code>/System/Library/Headers/dispatch/</code></td><td>Built by <code>build.sh</code> in-chroot; out of <code>/usr/local</code> so the FreeBSD pkg copy doesn't shadow it.</td></tr>
 <tr><td>libobjc2, libgnustep-base, libgnustep-corebase</td><td><code>/System/Library/Libraries/</code></td><td>Same.</td></tr>
@@ -302,7 +302,7 @@
 
 <h2 id="files">6. File-by-file plan (<code>src/</code>)</h2>
 
-<p>Imported source: Apple <code>launchd-842.1.4</code>. 26,779 lines, 68 files originally. Phase 1 amputation deletes the wholly-Mach files; what remains needs Phase 2 work.</p>
+<p>Imported source: Apple <code>launchd-842.1.4</code>. 26,779 lines, 68 files originally. Phase 1 amputation deletes the wholly-Mach files; what remains is the substrate Phase 2 replaces. The Phase 2 rewrites (<code>runtime.c</code>, <code>ipc.c</code>, <code>core.[cm]</code>, <code>log.c</code>, <code>launchctl.c</code>, plus the Mach-pruning of <code>liblaunch.c</code>) land as <strong>code reused from a previous attempt to install launchd in system</strong>; the file-by-file table below describes the target shape, not work typed from scratch.</p>
 
 <h3>6.1 Deleted on import (Mach-only)</h3>
 <ul>
@@ -363,8 +363,8 @@
 <p>Rule lifted from <code>gershwin-on-freebsd</code>: <strong>all git operations happen on the host, the chroot stays git-free</strong>. <code>build.sh</code> handles both halves inline:</p>
 
 <ol>
-  <li><strong>Host stage (early in <code>build.sh</code>):</strong> <code>git clone</code> the five upstreams into <code>repos/&lt;name&gt;/</code> at the repo root, or <code>git pull --ff-only</code> if already present. Idempotent.</li>
-  <li><strong>Chroot stage:</strong> extract pkgbase, mount the chroot, <code>pkg install</code> build deps, <code>rsync -a ./repos/ work/rootfs/tmp/repos/</code> into the chroot, then run the build invocations from §8.4 with <code>REPOS_DIR=/tmp/repos</code> set in the environment.</li>
+  <li><strong>Host stage (early in <code>build.sh</code>):</strong> <code>git clone</code> the six upstreams (5 GNUstep + Tessil/robin-map) into <code>repos/&lt;name&gt;/</code> at the repo root, or <code>git pull --ff-only</code> if already present. Idempotent.</li>
+  <li><strong>Chroot stage:</strong> extract pkgbase, mount the chroot, <code>pkg install</code> runtime + build deps, <code>rsync -a ./repos/ work/rootfs/tmp/repos/</code> into the chroot, sed-patch libobjc2's <code>CMakeLists.txt</code> per §8.3, then run the build invocations from §8.4 with <code>REPOS_DIR=/tmp/repos</code> set in the environment.</li>
   <li><strong>launchd stage:</strong> after the GNUstep libs are installed, <code>build.sh</code> calls <code>./make-launchd.sh</code> (chroot'd). That's the standalone-reusable script — it builds <code>src/</code> against <code>/System/Library/</code> and installs <code>launchd</code>/<code>launchctl</code> to <code>/sbin/</code>.</li>
 </ol>
 
@@ -385,8 +385,23 @@
 
 <p>Order is significant: <code>tools-make</code> writes <code>/System/Library/Preferences/GNUstep.conf</code> (the <code>--with-layout=gershwin</code> map), <code>libobjc2</code> needs that config plus an established <code>BlocksRuntime</code> from libdispatch, and <code>libs-base</code>/<code>libs-corebase</code> drive their installs through <code>gnustep-make</code> with <code>GNUSTEP_INSTALLATION_DOMAIN=SYSTEM</code>.</p>
 
-<h3>8.3 libdispatch patches — none, for now</h3>
-<p>We start with <strong>stock <code>swift-corelibs-libdispatch</code></strong> at HEAD, no patches. The gershwin tree carries a 126-line FreeBSD kevent fix (busy-wait on certain timer fflags) but we want to see how launchd behaves against unpatched upstream first. If timer-driven jobs (StartInterval, ThrottleInterval) misbehave during Phase 3 the patch goes in <code>patches/</code> and gets applied by <code>checkout.sh</code>; until then the directory doesn't exist.</p>
+<h3>8.3 Upstream patches</h3>
+
+<h4>libdispatch — none, for now</h4>
+<p>We start with <strong>stock <code>swift-corelibs-libdispatch</code></strong> at HEAD, no patches. The gershwin tree carries a 126-line FreeBSD kevent fix (busy-wait on certain timer fflags) but we want to see how launchd behaves against unpatched upstream first. If timer-driven jobs (StartInterval, ThrottleInterval) misbehave during Phase 3 the patch goes in <code>patches/</code> and gets applied at host-side checkout; until then the directory doesn't exist.</p>
+
+<h4>libobjc2 — robinmap FetchContent → SOURCE_DIR</h4>
+<p>libobjc2's <code>CMakeLists.txt</code> calls <code>FetchContent_Declare(robinmap GIT_REPOSITORY ...)</code>, which fires <code>git</code> at configure-time. The chroot is git-free by design, so this fails. The fix has two parts:</p>
+<ol>
+  <li>Add <a href="https://github.com/Tessil/robin-map.git"><code>Tessil/robin-map</code></a> to the host clone loop (§8.6) as a sibling to libobjc2.</li>
+  <li>After rsyncing <code>repos/</code> into the chroot, before the libobjc2 cmake invocation, sed-patch the chroot copy of <code>libobjc2/CMakeLists.txt</code> to use <code>SOURCE_DIR</code> at the rsynced sibling path:
+<pre class="shell"><code>sed -i '' \
+    -e 's|GIT_REPOSITORY https://github.com/Tessil/robin-map/|SOURCE_DIR /tmp/repos/robin-map)|' \
+    -e '/GIT_TAG[[:space:]]*v1\.4\.0)/d' \
+    "$WORK/rootfs/tmp/repos/libobjc2/CMakeLists.txt"</code></pre>
+  </li>
+</ol>
+<p>Patching the chroot copy (not the host clone) keeps future <code>git pull --ff-only</code> runs clean against upstream libobjc2.</p>
 
 <h3>8.4 The exact build invocations</h3>
 
@@ -433,6 +448,10 @@ $MAKE_CMD distclean 2&gt;/dev/null || true
 $MAKE_CMD         || exit 1
 $MAKE_CMD install</code></pre>
 
+<h4>Source GNUstep.sh after tools-make install</h4>
+<p>Required between tools-make and libobjc2. tools-make's install creates <code>/System/Library/Makefiles/GNUstep.sh</code>; sourcing it exports <code>GNUSTEP_HEADERS</code>, <code>GNUSTEP_LIBRARY</code>, <code>GNUSTEP_MAKEFILES</code> and adds <code>/System/Library/Tools</code> to <code>PATH</code> so <code>gnustep-config</code> resolves. Without this, libobjc2's cmake (which calls <code>gnustep-config --variable=GNUSTEP_${GNUSTEP_INSTALL_TYPE}_HEADERS</code> via <code>find_program</code>) can't find the tool, and install paths collapse to <code>/usr/local/lib/libobjc.so</code> + <code>/objc/*.h</code> — libs-base configure then fails with "Could not find Objective-C headers". libs-base's own <code>AC_CONFIG_AUX_DIR</code> also reads <code>$GNUSTEP_MAKEFILES</code>; sourcing once after tools-make covers both.</p>
+<pre class="shell"><code>. /System/Library/Makefiles/GNUstep.sh</code></pre>
+
 <h4>libobjc2</h4>
 <pre class="shell"><code>if [ -d "$REPOS_DIR/libobjc2/Build" ]; then
   rm -rf "$REPOS_DIR/libobjc2/Build"
@@ -453,12 +472,14 @@ cmake .. \
 "$MAKE_CMD" install   || exit 1</code></pre>
 
 <h4>libs-base (Foundation)</h4>
+<p><code>--disable-tls</code> is passed because launchd doesn't speak TLS; pulling in libgnutls/openssl just to satisfy NSStream/NSURLConnection's TLS code path would bloat the ISO. XSLT is not disabled — configure emits a warning but doesn't error.</p>
 <pre class="shell"><code>export GNUSTEP_INSTALLATION_DOMAIN="SYSTEM"
 
 cd "$REPOS_DIR/libs-base"
 ./configure \
   --with-dispatch-include=/System/Library/Headers \
-  --with-dispatch-library=/System/Library/Libraries
+  --with-dispatch-library=/System/Library/Libraries \
+  --disable-tls
 
 $MAKE_CMD -j"$CPUS" || exit 1
 $MAKE_CMD install
@@ -483,14 +504,15 @@ $MAKE_CMD clean</code></pre>
 
 <h3>8.6 The clone loop inside <code>build.sh</code></h3>
 
-<p>The git-clone stage is just a shell loop near the top of <code>build.sh</code>, before pkgbase extraction. Trimmed from the 15-repo gershwin-developer Checkout.sh to the 5 we actually need. No pinning, no patches — tracks upstream HEAD.</p>
+<p>The git-clone stage is just a shell loop near the top of <code>build.sh</code>, before pkgbase extraction. The five GNUstep upstreams plus <code>Tessil/robin-map</code> (sibling source for libobjc2's robinmap dep — see §8.3). No pinning, no patches at clone-time — tracks upstream HEAD.</p>
 
 <pre class="shell"><code>REPOS_DIR="$(pwd)/repos"
 
 REPOS="
 https://github.com/apple/swift-corelibs-libdispatch.git
-https://github.com/gnustep/libobjc2.git
 https://github.com/gnustep/tools-make.git
+https://github.com/gnustep/libobjc2.git
+https://github.com/Tessil/robin-map.git
 https://github.com/gnustep/libs-base.git
 https://github.com/gnustep/libs-corebase.git
 "
@@ -516,24 +538,30 @@ cd -
 
 <p><strong>Stance: install nothing we don't need.</strong> The starting point is the absolute minimum that lets <code>build.sh</code> get past <code>cmake</code> and <code>./configure</code>; everything else is added one package at a time, only when a build or runtime failure surfaces it. The gershwin desktop's <code>Bootstrap.sh</code> carries ~60 packages because it builds the full GUI stack — we are not building any of that, so we should not cargo-cult the list.</p>
 
-<h4><code>buildpkgs.txt</code> — minimum to start</h4>
+<h4><code>buildpkgs.txt</code> — what Phase 2 shipped</h4>
 <pre><code>cmake
 ninja
 gmake
 autoconf
 libtool
+pkgconf
 </code></pre>
-<p><code>clang</code>/<code>clang++</code> ship in FreeBSD base, so they aren't listed. <code>git</code> is intentionally absent: all <code>git clone</code>s happen on the host before the chroot exists; the chroot is git-free. <code>pkgconf</code>, <code>automake</code>, <code>llvm</code> all left out — add only if a configure step actually demands them.</p>
+<p><code>clang</code>/<code>clang++</code> ship in FreeBSD base, so they aren't listed. <code>git</code> is intentionally absent: all <code>git clone</code>s happen on the host before the chroot exists; the chroot is git-free. <code>pkgconf</code> was added when libs-base configure couldn't find ICU — it queries via <code>pkg-config icu-i18n / icu-uc</code>. <code>automake</code>, <code>llvm</code> still left out.</p>
 
-<h4><code>pkglist.txt</code> — start empty</h4>
-<pre><code># intentionally empty — populated as Phase 2 surfaces requirements
+<h4><code>pkglist.txt</code> — what Phase 2 shipped</h4>
+<pre><code>libxml2
+icu
 </code></pre>
-<p>Run the build, see what fails, add the matching package, run again. The likely candidates (in rough order of probability) are:</p>
-
+<p>Both are runtime deps of <code>libgnustep-base.so</code>:</p>
 <ul>
-  <li><code>libffi</code> — libobjc2 needs this for NSInvocation; build will probably fail at libobjc2 cmake without it.</li>
-  <li><code>icu</code> — libs-base needs this for NSLocale/NSString; configure will probably refuse without it.</li>
-  <li><code>libxml2</code> — libs-base uses it for NSXMLParser and the XML branch of NSPropertyListSerialization. Configure may have a <code>--disable-xml</code> path; if it does, take that path.</li>
+  <li><code>libxml2</code> — libs-base XML branch (GSXML / NSXMLNode / XML <code>NSPropertyListSerialization</code>). Configure has a <code>--disable-xml</code> flag but we keep XML on; binary plists are not the only format we need to read.</li>
+  <li><code>icu</code> — libs-base unicode (NSLocale / NSString). Hard dep, no <code>--disable</code> flag.</li>
+</ul>
+
+<p><strong>Surprises during Phase 2 surfacing:</strong></p>
+<ul>
+  <li><code>libffi</code> — predicted as a likely candidate, but already supplied by FreeBSD base. Not added.</li>
+  <li><code>libgnutls</code> — also predicted; we took the <code>--disable-tls</code> path (libs-base configure flag, see §8.4) instead. Not added.</li>
 </ul>
 
 <p>Things from the gershwin <code>Bootstrap.sh</code> we explicitly do not add unless something forces our hand:</p>
@@ -557,7 +585,7 @@ libtool
 <table>
 <thead><tr><th>Script</th><th>Runs where</th><th>Standalone?</th><th>Purpose</th></tr></thead>
 <tbody>
-<tr><td><code>build.sh</code></td><td>Host (FreeBSD VM)</td><td>(it <em>is</em> the livecd builder)</td><td>Inline git-clone of the 5 upstreams into <code>repos/</code>. Extract pkgbase, mount chroot, rsync repos in, run the five GNUstep build invocations from §8.4, then call <code>make-launchd.sh</code> chrooted, purge buildpkgs, slim, mkuzip, cd9660.</td></tr>
+<tr><td><code>build.sh</code></td><td>Host (FreeBSD VM)</td><td>(it <em>is</em> the livecd builder)</td><td>Inline git-clone of the 6 upstreams (5 GNUstep + Tessil/robin-map) into <code>repos/</code>. Extract pkgbase, mount chroot, install runtime + build pkgs, rsync repos in, sed-patch libobjc2's CMakeLists.txt (§8.3), run the §8.4 build invocations (libdispatch → tools-make → <code>. /System/Library/Makefiles/GNUstep.sh</code> → libobjc2 → libs-base → libs-corebase), then call <code>make-launchd.sh</code> chrooted, purge buildpkgs, slim, mkuzip, cd9660.</td></tr>
 <tr><td><code>make-launchd.sh</code></td><td>Chroot or live host</td><td><strong>Yes — designed for this</strong></td><td>cd into <code>src/</code>, build launchd against <code>/System/Library/</code>, install <code>launchd</code> + <code>launchctl</code> to <code>/sbin/</code>, install plists from <code>plists/</code> to <code>/System/Library/LaunchDaemons/</code>. Hard-checks for <code>/System/Library/Libraries/libdispatch.so</code> and <code>libgnustep-base.so</code> before doing anything; exits with a clear error if they're missing.</td></tr>
 <tr><td><code>tests/boot-test.sh</code></td><td>Host (CI Linux)</td><td>Yes</td><td>qemu+expect smoke test against an ISO path passed as <code>$1</code>.</td></tr>
 </tbody>
@@ -588,7 +616,7 @@ echo 'init_path="/sbin/launchd"' &gt;&gt; "$WORK/cdroot/boot/loader.conf"</code>
 
 <div class="ascii-diagram">                  +-------------------------------------------+
                   | 0. host: ./checkout.sh                    |   NEW
-                  |    git clone 5 upstreams into repos/      |
+                  |    git clone 6 upstreams into repos/      |
                   |    at HEAD (git pull --ff-only on re-run) |
                   |    (cached on CI runner; gitignored)      |
                   +---------------------+---------------------+
@@ -679,11 +707,65 @@ echo 'init_path="/sbin/launchd"' &gt;&gt; "$WORK/cdroot/boot/loader.conf"</code>
 </ul>
 
 <h3>9.2 PID 1 handoff</h3>
-<p>Two-stage. (a) cd9660 boots → loader → kernel → kernel execs <code>/sbin/init</code> (which is a symlink to <code>/rescue/init</code> on cd9660) → <code>/rescue/init</code> reads <code>init_chroot=/sysroot</code> kenv and runs <code>/init.sh</code>. (b) <code>init.sh</code> mounts the uzip-backed unionfs at <code>/sysroot</code>, then sets <code>kenv init_path=/sbin/launchd</code> and re-execs init so the post-chroot init is our launchd binary.</p>
 
-<div class="open-q">
-<strong>Worth verifying empirically:</strong> FreeBSD's <code>init</code> reads <code>init_path</code> at startup; whether it re-reads after <code>chroot</code> is what determines whether the kenv approach works or whether we need a small shim at <code>/sysroot/sbin/init</code> that <code>exec</code>s <code>/sbin/launchd</code>. Either path is cheap; settle in Phase 2.
-</div>
+<p>Single-stage shebang chain. <code>loader.conf</code> sets
+<code>init_path="/init.sh:/rescue/init"</code>. The kernel hits the
+<code>#!/rescue/sh</code> shebang at the top of <code>/init.sh</code>
+(handled unconditionally by <code>imgact_shell</code> — see §9.2.1)
+and exec's <code>/rescue/sh</code> as PID 1 with <code>/init.sh</code>
+as <code>argv[1]</code>. The script then:</p>
+
+<ol>
+  <li>Mounts <code>devfs</code> at <code>/dev</code> and reopens stdio
+      from <code>/dev/console</code> (kernel hands PID 1 with
+      <code>fds 0/1/2</code> closed).</li>
+  <li><code>mdconfig</code> + <code>mount -t ufs/tmpfs/unionfs</code>
+      to layer the writable upper over the read-only uzip lower at
+      <code>/sysroot</code>.</li>
+  <li><code>exec /rescue/chroot /sysroot /sbin/launchd</code> — every
+      <code>exec</code> preserves the same PID, so launchd inherits as
+      the original PID 1 the kernel created.</li>
+</ol>
+
+<p>The colon-fallback to <code>/rescue/init</code> is for the case
+where the kernel rejects <code>/init.sh</code> for any reason. In that
+fallback, <code>/rescue/init</code> is PID 1, reads
+<code>init_script=/init.sh</code> kenv, and invokes the same script
+as a child. The script detects <code>$$ != 1</code> and uses the
+classic <code>kenv init_chroot=/sysroot</code> + exit pattern,
+falling back to FreeBSD's normal init flow (no launchd).</p>
+
+<h4 id="why-not-init-c">9.2.1 Why we don't go through init.c</h4>
+<p>An earlier draft of this section proposed setting
+<code>kenv init_path=/sbin/launchd</code> in the script and relying
+on init.c to re-read it after the <code>init_chroot</code> pivot.
+<strong>Source review settled this:</strong> FreeBSD's
+<code>/sbin/init</code> (and <code>/rescue/init</code>, which is the
+same code, just crunchgen'd) reads <code>init_path</code> exactly
+once at startup (<code>sbin/init/init.c:245</code>), and only re-checks
+it on the <code>reroot</code> recovery path
+(<code>init.c:814</code>) — never after the
+<code>init_chroot</code> pivot in the normal boot flow. The only
+re-exec hook in init.c is the <code>init_exec</code> kenv at
+<code>init.c:321</code>, fired before <em>any</em> userland code runs
+(too early to be useful for our pivot).</p>
+
+<p>The shebang path bypasses init.c entirely. Verified by reading
+<code>sys/kern/init_main.c</code> +
+<code>sys/kern/imgact_shell.c</code>: <code>start_init()</code>
+calls <code>kern_execve()</code> with no PID-1-special-case (line 797);
+<code>do_execve()</code> iterates the imgact chain unconditionally
+(<code>kern_exec.c:664-668</code>); <code>imgact_shell.c:108-110</code>
+has no guards on <code>p->p_pid</code> or <code>P_SYSTEM</code>. The
+shebang fires for the very first userspace exec exactly as it does
+for any other.</p>
+
+<p><strong>Caveats.</strong> Shell-script-as-init is undocumented in
+FreeBSD — no <code>init(8)</code> mention, no shipped
+<code>init_path</code> default uses it, no test in
+<code>tests/sys/kern/</code> exercises it. The mechanism is purely a
+consequence of the kernel exec path being uniform. Documented here so
+future maintainers don't have to re-discover it.</p>
 
 <h2 id="ci">10. CI &amp; release pipeline</h2>
 
@@ -759,6 +841,35 @@ expect {
 <p>devd must run before <code>netif</code> because NIC <code>IFATTACH</code> events flow through it. Plan: a <code>LaunchDaemons.early/</code> directory the bootstrapper loads before the main scan. Keeps the launchd binary simple and the early tier declarative.</p>
 
 <h2 id="rcd">12. rc.d port scope</h2>
+
+<h3>12.0 Configuration mechanism — plists, not <code>rc.conf</code></h3>
+
+<p>Every per-host configuration concern — hostname, interface IP, default route, WiFi credentials, daemon arguments — is expressed as a plist, not as a key in <code>/etc/rc.conf</code>, and not as a single-purpose file like <code>/etc/hostname</code>. There is <strong>no <code>rc.conf</code> parsing layer</strong> in this project. Users edit the plist directly (or, more commonly, edit it via GUI tooling that manipulates the plist).</p>
+
+<p>Path conventions:</p>
+<ul>
+  <li><code>/System/Library/LaunchDaemons/</code> — project-shipped plists (getty, devd, syslogd, etc.). Untouched by users.</li>
+  <li><code>/Local/Library/LaunchDaemons/</code> — admin-installed and user-edited plists (hostname, per-iface networking, custom services). The "third-party" tier in the gershwin layout.</li>
+</ul>
+
+<p>Concrete examples of the per-component pattern:</p>
+
+<table>
+<thead><tr><th>Concern</th><th>Plist file</th><th>What runs</th></tr></thead>
+<tbody>
+<tr><td>Hostname</td><td><code>/Local/Library/LaunchDaemons/org.freebsd.hostname.plist</code></td><td><code>/bin/hostname my-host</code> (the string is in the plist's <code>ProgramArguments</code>)</td></tr>
+<tr><td>Static IP on em0</td><td><code>/Local/Library/LaunchDaemons/org.freebsd.netif.em0.plist</code></td><td><code>/sbin/ifconfig em0 inet 192.168.1.10/24 up</code></td></tr>
+<tr><td>DHCP on em0</td><td><code>/Local/Library/LaunchDaemons/org.freebsd.dhclient.em0.plist</code></td><td><code>/sbin/dhclient -d em0</code> (KeepAlive=true)</td></tr>
+<tr><td>WiFi on wlan0</td><td><code>/Local/Library/LaunchDaemons/org.freebsd.wpa.wlan0.plist</code></td><td><code>/usr/sbin/wpa_supplicant -i wlan0 -c /etc/wpa_supplicant.conf</code> (KeepAlive=true)</td></tr>
+<tr><td>Default route</td><td><code>/Local/Library/LaunchDaemons/org.freebsd.routes.plist</code></td><td><code>/sbin/route add default 192.168.1.1</code></td></tr>
+</tbody>
+</table>
+
+<p><strong>Why no <code>rc.conf</code> parser:</strong> rc.conf has 1000+ knobs accumulated over 30 years. Supporting "some" of them creates a confusing partial-compatibility layer. A plist's <code>ProgramArguments</code> shows the literal command that runs — no magic translation, no surprises. For users coming from FreeBSD muscle memory, the substitution is one-line: whatever you'd put after <code>ifconfig_em0=</code> in rc.conf goes into <code>ProgramArguments</code> verbatim.</p>
+
+<p><strong>Why no <code>/etc/hostname</code> shortcut:</strong> consistency. Every other concern is a plist; hostname becoming the lone single-line file would be the inconsistent choice.</p>
+
+<p><strong>WiFi keeps <code>/etc/wpa_supplicant.conf</code></strong> because it's <code>wpa_supplicant</code>'s own configuration file (we'd be reinventing the wheel to replace it). The plist just <em>invokes</em> wpa_supplicant; configuration of the WiFi credentials themselves stays in the file format the tool already reads.</p>
 
 <h3>12.1 Milestone 1 — launchd boots, console login</h3>
 <p>Smallest possible scope that proves launchd is PID 1: no plists, just the daemon itself + getty via the existing <code>/etc/ttys</code> path. The boot test watches for <code>launchd: PID 1 ready</code> and <code>login:</code> on serial.</p>
@@ -891,7 +1002,7 @@ Licensed under BSD-2-Clause (see LICENSE).
 
 This product includes software developed by:
   - Apple Inc. (launchd, 2005-2012, Apache 2.0)
-    https://github.com/apple/launchd
+    https://github.com/apple-oss-distributions/launchd
     Modified by freebsd-launchd contributors; see git log.
 
   - Apple Inc. and the Swift project authors
@@ -950,7 +1061,7 @@ This product includes software developed by:
   <li>Add the host-side git-clone loop near the top of <code>build.sh</code> (per §8.6).</li>
   <li>Add <code>repos/</code> to <code>.gitignore</code>.</li>
   <li>Add <code>buildpkgs.txt</code> (cmake, ninja, gmake, autoconf, libtool — no <code>git</code>; chroot stays git-free).</li>
-  <li>Extend <code>build.sh</code> with the chroot-side rsync of <code>repos/</code> in, plus the five build invocations from §8.4.</li>
+  <li>Extend <code>build.sh</code> with the chroot-side rsync of <code>repos/</code> in, the libobjc2 robinmap sed-patch (§8.3), and the build invocations from §8.4 (libdispatch → tools-make → source <code>GNUstep.sh</code> → libobjc2 → libs-base → libs-corebase).</li>
   <li>Extend <code>build.sh</code> with the buildpkgs purge step.</li>
   <li>Add overlay <code>etc/ld-elf.so.conf.d/system.conf</code>.</li>
   <li>Boot test still expects <code>login:</code> only — the GNUstep libs are present but nothing in the ISO uses them yet. Confirms the install didn't break boot.</li>
@@ -1002,7 +1113,7 @@ This product includes software developed by:
 </div>
 
 <div class="open-q">
-<strong>Q3. <code>init_path</code> kenv re-read after chroot.</strong> Verify empirically in Phase 3d whether FreeBSD's <code>init</code> honors <code>init_path</code> after the <code>init_chroot</code> pivot or whether we need a tiny <code>/sysroot/sbin/init</code> shim that <code>exec</code>s <code>/sbin/launchd</code>. Either path is cheap.
+<strong>Q3. <code>init_path</code> kenv re-read after chroot. — SETTLED.</strong> FreeBSD's <code>init</code> does <em>not</em> re-read <code>init_path</code> after the <code>init_chroot</code> pivot — read once at <code>init.c:245</code>, only re-checked on the <code>reroot</code> recovery path (<code>init.c:814</code>). Two FreeBSD-source-reading agents confirmed independently. We sidestep init.c entirely via shebang-as-init: the kernel's <code>imgact_shell</code> handles <code>#!/rescue/sh</code> in <code>/init.sh</code> for the first userspace exec just like any other, with no PID-1-special-case in <code>start_init()</code> or <code>do_execve()</code>. See §9.2 + §9.2.1 for the full mechanism.
 </div>
 
 <div class="open-q">
@@ -1016,7 +1127,7 @@ This product includes software developed by:
 <h2 id="refs">16. References</h2>
 <ul>
   <li>Pipeline source: <a href="https://github.com/pkgdemon/freebsd-livecd-unionfs">github.com/pkgdemon/freebsd-livecd-unionfs</a> — <code>build.sh</code>, <code>tests/boot-test.sh</code>, <code>.github/workflows/build.yml</code> all lifted from here.</li>
-  <li>Apple source: <a href="https://github.com/apple/launchd">github.com/apple/launchd</a> (last open-source release, <code>launchd-842.1.4</code>).</li>
+  <li>Apple source: <a href="https://github.com/apple-oss-distributions/launchd">github.com/apple-oss-distributions/launchd</a> (last open-source release, <code>launchd-842.1.4</code>).</li>
   <li>libdispatch upstream: <a href="https://github.com/apple/swift-corelibs-libdispatch">github.com/apple/swift-corelibs-libdispatch</a>.</li>
   <li>FreeBSD <code>devel/libdispatch</code> port (reference for the kevent patch state): <a href="https://www.freshports.org/devel/libdispatch">freshports.org/devel/libdispatch</a>.</li>
   <li>FreeBSD <code>hier(7)</code>: <a href="https://man.freebsd.org/cgi/man.cgi?query=hier&amp;sektion=7">man.freebsd.org/hier(7)</a>.</li>

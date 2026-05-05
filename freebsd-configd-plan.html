@@ -1,0 +1,645 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeBSD configd — porting plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.plist { border-left-color: var(--accent); }
+  pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+          padding: 1rem 1.1rem; }
+  .card h4 { margin-top: 0; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  blockquote { margin: 1rem 0; padding: .5rem 1rem; border-left: 3px solid var(--accent);
+               background: #fff8f3; color: #333; }
+  .footnote { font-size: .85rem; color: var(--muted); }
+  ol li, ul li { margin: .25rem 0; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .filename { color: var(--accent); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .risk { background: #fff5e6; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .risk strong { color: var(--warn); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .step-num { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; background: var(--accent); color: white; border-radius: 50%; font-weight: 700; font-size: .85em; margin-right: .35em; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">Status</a>
+  <a href="#goal">Goal</a>
+  <a href="#repo">Repo</a>
+  <a href="#arch">Architecture</a>
+  <a href="#paths">Install paths</a>
+  <a href="#decisions">Decisions</a>
+  <a href="#files">File-by-file</a>
+  <a href="#bsd-wins">FreeBSD wins</a>
+  <a href="#deps">Deps</a>
+  <a href="#integration">launchd integration</a>
+  <a href="#schema">Network.plist schema</a>
+  <a href="#cli">CLI tool</a>
+  <a href="#license">License</a>
+  <a href="#phases">Phases</a>
+  <a href="#open">Open questions</a>
+</nav>
+
+<h1>FreeBSD configd — porting plan</h1>
+<p class="subtitle">A FreeBSD-only port of Apple's <code>configd</code> — the network/system-configuration daemon — that drops Mach IPC, replaces it with GNUstep Distributed Objects (DO), uses libdispatch for all kernel/file/process events, and integrates as a launchd-supervised service. Owns the canonical state of every network interface, hostname, and DNS resolver setting on the system. Companion to the <a href="freebsd-launchd-plan.html">freebsd-launchd port</a>.</p>
+
+<section id="tldr" class="tldr">
+  <h3>Status: planning <span class="pill info">v0</span></h3>
+  <ul>
+    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-configd">github.com/pkgdemon/freebsd-configd</a> (proposed) — separate from <code>freebsd-launchd</code>; integrated into the same livecd build pipeline by <code>freebsd-launchd/build.sh</code> via host-side clone + chroot-side compile + install.</li>
+    <li><strong>Mission:</strong> replace FreeBSD's network configuration plumbing — <code>/etc/rc.d/netif</code>, <code>/etc/rc.d/dhclient</code>, <code>/etc/rc.d/wpa_supplicant</code>, <code>/etc/rc.d/hostname</code>, <code>/etc/rc.d/routing</code>, <code>/etc/resolv.conf</code> management — with one launchd-supervised <code>netconfigd</code> daemon backed by a single canonical plist (<code>/Local/Library/Preferences/Network.plist</code>).</li>
+    <li><strong>Source:</strong> Apple <code>configd-963.270.3</code> (latest tag at <code>apple-oss-distributions/configd</code>, Apache 2.0). 289 source files. Phase 1 amputation drops the Mach-only files; what remains needs FreeBSD-shaped rewrites for the IPC + event-loop + DHCP layers.</li>
+    <li><strong>No Mach IPC, no <code>libxpc</code>, no <code>IOKit</code>, no AirPort/CoreWLAN.</strong> All Mach/IOKit paths in the imported source are deleted; service-to-service IPC uses <strong>GNUstep Distributed Objects</strong> (<code>NSConnection</code> + <code>NSPortCoder</code> over AF_UNIX) instead of Mach ports + XPC.</li>
+    <li><strong>Event loop:</strong> <code>libdispatch</code> dispatch sources only. <code>DISPATCH_SOURCE_TYPE_READ</code> on <code>PF_ROUTE</code> for kernel iface events (replacing Darwin's <code>PF_SYSTEM</code>/<code>KEV_NETWORK_CLASS</code>); <code>DISPATCH_SOURCE_TYPE_VNODE</code> for live config-file reload; <code>DISPATCH_SOURCE_TYPE_PROC</code> for managed <code>dhclient</code>/<code>wpa_supplicant</code> child supervision; <code>DISPATCH_SOURCE_TYPE_SIGNAL</code> for shutdown/reload.</li>
+    <li><strong>Plist parsing:</strong> GNUstep <code>NSPropertyListSerialization</code> (already linked into launchd; no additional libraries).</li>
+    <li><strong>DHCP / IPv6 RA / WiFi:</strong> spawn FreeBSD's existing <code>dhclient</code>, <code>rtsold</code>, <code>wpa_supplicant</code> as <code>NSTask</code> children (Phase 1). <strong>Do not</strong> reimplement these protocols inside the daemon initially. Apple's configd absorbed DHCP into <code>IPConfiguration</code> after years of evolution; we earn that path the same way — only when there's a measurable reason.</li>
+    <li><strong>Single source of truth:</strong> <code>/Local/Library/Preferences/Network.plist</code> — the canonical config the daemon reads and the GUI edits. Live-reloaded via <code>WatchPaths</code>-equivalent libdispatch vnode source. No <code>/etc/rc.conf</code> parsing, no <code>/etc/hostname</code>, no <code>/etc/resolv.conf</code> as user-edited file (the daemon writes resolv.conf <em>from</em> the plist).</li>
+    <li><strong>Live ISO behavior:</strong> if no <code>Network.plist</code> exists, <code>netconfigd</code> auto-DHCPs every plugged ethernet interface and starts <code>rtsold</code> for IPv6 RA — matching the user's preferred rc.conf <code>network_interfaces="auto" ifconfig_DEFAULT="DHCP"</code> preset, without needing a config file.</li>
+    <li><strong>Licensing:</strong> BSD-2-Clause top-level (matches the launchd repo and FreeBSD ecosystem). Apple <code>configd</code> source files retain their Apache 2.0 headers per-file. NOTICE enumerates Apple, GNUstep, and us.</li>
+  </ul>
+</section>
+
+<h2 id="goal">1. Goal &amp; non-goals</h2>
+
+<h3>1.1 Goal</h3>
+<p>Port Apple's <code>configd</code> to FreeBSD as a launchd-supervised daemon (<code>netconfigd</code>), implementing the full Apple-style "one daemon owns network/system state" architecture: a single source-of-truth plist, kernel-event-driven reactivity, a Distributed Objects API the GUI uses to query/edit state, and supervised subprocesses (<code>dhclient</code>/<code>rtsold</code>/<code>wpa_supplicant</code>) for the protocols that already have working FreeBSD implementations. End state: a FreeBSD live ISO that boots with launchd as PID 1, <code>netconfigd</code> auto-configures every plugged interface (IPv4 DHCP + IPv6 RA), the user has a working network in seconds, and a future GUI tool can present/edit per-interface settings via a clean ObjC API.</p>
+
+<h3>1.2 Non-goals (this iteration)</h3>
+<ul>
+  <li><strong>No AirPort / CoreWLAN.</strong> WiFi authentication is delegated to <code>wpa_supplicant</code>, the FreeBSD-native tool. The plugin <code>AirPort.framework</code> stays out of tree.</li>
+  <li><strong>No IOKit.</strong> Apple's <code>InterfaceNamer</code> uses IOKit to assign persistent names from USB/PCI metadata; we let the FreeBSD kernel name interfaces and don't try to override.</li>
+  <li><strong>No Mach IPC.</strong> Same rule as the launchd port: every <code>mach/...</code> include, every <code>.defs</code> file, every <code>bootstrap_port</code> reference is amputated. <code>NSConnection</code> over AF_UNIX is the IPC.</li>
+  <li><strong>No XPC.</strong> XPC services are not in tree. DO covers the same use cases for our scale.</li>
+  <li><strong>No SimulatorSupport.</strong> The whole iOS/iPadOS-sim plugin is dropped.</li>
+  <li><strong>No QoSMarking.</strong> Apple-specific framework, not portable.</li>
+  <li><strong>No internal DHCP client (Phase 1).</strong> <code>dhclient</code> stays a subprocess. Phase 6+ may revisit.</li>
+  <li><strong>No captive-portal detection.</strong> Apple's URL-probe heuristic is out of scope; users handle this through the browser.</li>
+  <li><strong>No <code>/etc/rc.conf</code> compatibility layer.</strong> <code>Network.plist</code> is the only config file the daemon reads.</li>
+</ul>
+
+<h2 id="repo">2. Repository</h2>
+
+<h3>2.1 Why a separate repo (not a subdir of <code>freebsd-launchd</code>)</h3>
+
+<p>Apple ships <code>configd</code> as its own source release, separate from <code>launchd</code>. Three reasons to keep that separation in our port:</p>
+
+<ol>
+  <li><strong>Independent versioning.</strong> launchd was last released by Apple in 2012 (<code>launchd-842.1.4</code>); configd has continued to evolve through 2024 (<code>configd-963.270.3</code>). Different upstreams, different velocities, different review cycles.</li>
+  <li><strong>Reusability.</strong> <code>freebsd-configd</code> can be consumed by other projects (gershwin desktop, raw FreeBSD without launchd-as-PID-1) without dragging the entire livecd-build pipeline along.</li>
+  <li><strong>Repo size.</strong> Apple <code>configd-963.270.3</code> is ~5.5MB of source — too big to hide inside <code>freebsd-launchd/src/configd/</code> without losing the discoverability that "this is its own thing" gives.</li>
+</ol>
+
+<h3>2.2 Top-level layout</h3>
+
+<pre><code>freebsd-configd/
+├── LICENSE                        BSD-2-Clause
+├── NOTICE                         Apple, GNUstep, us
+├── README.md                      elevator pitch + quickstart
+├── PLAN.md                        link to this published plan
+├── Makefile                       top-level: build daemon + scutil + framework
+├── make-configd.sh                STANDALONE — builds + installs from src/ to
+                                   /usr/libexec/, /usr/sbin/, /System/Library/.
+                                   Reusable by freebsd-launchd's build.sh and
+                                   anyone else who wants to drop configd onto
+                                   an existing /System/Library/ tree.
+├── scripts/
+│   ├── import-source.sh           one-shot Apple configd import
+│   └── lint.sh                    forbidden-symbol grep (no <mach/>, no IOKit)
+├── plists/                        launchd plists shipped with configd
+│   └── org.freebsd.netconfigd.plist
+├── compat/                        FreeBSD-specific shims if any surface
+└── src/                           forked Apple configd-963.270.3, Mach paths deleted
+    ├── configd.tproj/             daemon main, dynamic store, server loop
+    ├── Plugins/                   IPMonitor, KernelEventMonitor, etc.
+    ├── libSystemConfiguration/    framework support library
+    ├── nwi/                       network-info dictionary
+    ├── scutil.tproj/              CLI client
+    ├── SystemConfiguration.fproj/ framework headers + impl
+    ├── common/                    shared bits
+    └── logging/                   logging helpers
+</code></pre>
+
+<h3>2.3 How <code>freebsd-launchd</code> integrates this</h3>
+
+<p>Pattern lifted from the existing system-domain-build flow in <code>freebsd-launchd/build.sh</code>: host-side clone of <code>freebsd-configd</code> into <code>repos/</code>, rsync into the chroot, then run <code>make-configd.sh</code> chroot-side <em>after</em> launchd is built (so configd can link against the launchd-installed Foundation/libdispatch). Net additions to <code>freebsd-launchd/build.sh</code>:</p>
+
+<ul>
+  <li>One more entry in the host clone loop: <code>https://github.com/pkgdemon/freebsd-configd.git</code></li>
+  <li>One more chroot-side step after <code>make-launchd.sh</code>: <code>cd /tmp/configd &amp;&amp; ./make-configd.sh</code></li>
+  <li>One more file in the ISO overlay: <code>/Local/Library/Preferences/Network.plist</code> shipped empty, so the daemon's "no config → auto-DHCP" path fires on first boot.</li>
+</ul>
+
+<h2 id="arch">3. Architecture</h2>
+
+<p>One long-running daemon (<code>netconfigd</code>) owns all network and system-configuration state. It is launchd-supervised (KeepAlive=true), reacts to kernel events (PF_ROUTE), reacts to file changes (Network.plist via libdispatch vnode source), supervises subprocesses (<code>dhclient</code>, <code>rtsold</code>, <code>wpa_supplicant</code> via libdispatch proc sources), and exposes a Distributed Objects API on a known AF_UNIX socket so other processes (<code>scutil</code>, GUI tools, application reachability code) can query and modify state.</p>
+
+<div class="ascii-diagram">                  +----------------------------+
+                  |  /Local/Library/Preferences|
+                  |       /Network.plist       |
+                  +-------------+--------------+
+                                | (vnode source: WRITE|EXTEND|DELETE)
+                                v
++--------------------+     +----+-----+     +-------------------------+
+|   PF_ROUTE socket  |---->|netconfigd|<----| /var/run/netconfigd.sock|
+|  (RTM_NEWADDR/etc) |     |  (ObjC,  |     | (DO root: NetConfig-    |
++--------------------+     |  GNUstep)|     |  Service @protocol)     |
+                           +----+-----+     +-----------+-------------+
+                                |                       |
+                  +-------------+--------------+        |  scutil(1) /
+                  | NSTask children            |        |  GUI tooling
+                  |   - dhclient -b -n &lt;iface&gt; |        v
+                  |   - rtsold -a              |    +-------+-------+
+                  |   - wpa_supplicant -i ...  |    | NSConnection  |
+                  |   (proc source per child)  |    | client proxy  |
+                  +----------------------------+    +---------------+
+                                |
+                                v
+                     +----------+----------+
+                     | kernel network stack|
+                     | (ifaddrs, routes,   |
+                     |  resolv.conf, ...)  |
+                     +---------------------+</div>
+
+<h3>3.1 The dynamic store, GNUstep-flavored</h3>
+
+<p>Apple's configd publishes state to the SystemConfiguration "dynamic store" — a key-value space (keys like <code>State:/Network/Interface/en0/IPv4</code>) that processes subscribe to. We keep the same key naming for compatibility-of-mental-model, but back it with an <code>NSMutableDictionary</code> protected by a serial dispatch queue. Subscribers register interest via the DO connection; <code>NSDistributedNotificationCenter</code>-style fan-out notifies them when a subscribed key changes.</p>
+
+<h3>3.2 Interface state machine</h3>
+
+<p>Each NIC the daemon manages has an <code>NCInterface</code> object whose state machine is:</p>
+
+<table>
+<thead><tr><th>State</th><th>Entered via</th><th>Active subprocess</th></tr></thead>
+<tbody>
+<tr><td><code>Down</code></td><td>iface attached, no link, or admin-down</td><td>none</td></tr>
+<tr><td><code>LinkUp</code></td><td>RTM_IFINFO link active</td><td>none yet</td></tr>
+<tr><td><code>DHCPv4</code></td><td>config method=DHCP, link active</td><td><code>dhclient -b -n &lt;iface&gt;</code></td></tr>
+<tr><td><code>StaticV4</code></td><td>config method=Static, link active</td><td>none (SIOCSIFADDR ioctls)</td></tr>
+<tr><td><code>WPA</code></td><td>WiFi method=WPA, link associating</td><td><code>wpa_supplicant -i &lt;iface&gt; -c &lt;file&gt;</code></td></tr>
+<tr><td><code>Up</code></td><td>v4 acquired (DHCP lease or static applied)</td><td>(possibly dhclient still alive in background)</td></tr>
+</tbody>
+</table>
+
+<p>IPv6 is orthogonal: the daemon enables <code>accept_rtadv</code> via <code>SIOCSIFADDR</code> on every interface that reaches <code>LinkUp</code>, and ensures <code>rtsold -a</code> is running globally.</p>
+
+<h3>3.3 Event sources (libdispatch)</h3>
+
+<table>
+<thead><tr><th>Source type</th><th>Watches</th><th>Reaction</th></tr></thead>
+<tbody>
+<tr><td><code>DISPATCH_SOURCE_TYPE_READ</code></td><td>PF_ROUTE socket</td><td>parse routing message → call <code>handleRoutingMessage:</code> on <code>NCDaemon</code>; route to relevant <code>NCInterface</code></td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_VNODE</code></td><td><code>/Local/Library/Preferences/Network.plist</code></td><td>reload via <code>NSPropertyListSerialization</code>; diff against current state; apply changes per-interface</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_PROC</code></td><td>each managed child PID</td><td>on <code>DISPATCH_PROC_EXIT</code>: log, decide whether to restart</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_SIGNAL</code></td><td>SIGTERM / SIGHUP</td><td>SIGTERM: clean shutdown. SIGHUP: force config reload.</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_TIMER</code></td><td>(Phase 2) DHCP retry backoff if needed</td><td>declarative</td></tr>
+</tbody>
+</table>
+
+<h2 id="paths">4. Install paths</h2>
+
+<table>
+<thead>
+<tr><th>Artifact</th><th>Path</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr><td><code>netconfigd</code> binary</td><td><code>/usr/libexec/netconfigd</code></td><td>FreeBSD <code>hier(7)</code>: <code>libexec</code> for system daemons not invoked directly by users. Same tier as <code>/usr/libexec/getty</code>.</td></tr>
+<tr><td><code>scutil</code> binary</td><td><code>/usr/sbin/scutil</code></td><td>Admin-callable command-line tool; matches macOS path.</td></tr>
+<tr><td>launchd plist</td><td><code>/System/Library/LaunchDaemons/org.freebsd.netconfigd.plist</code></td><td>Project-shipped daemon; lives in the system tier.</td></tr>
+<tr><td>Canonical config</td><td><code>/Local/Library/Preferences/Network.plist</code></td><td>User-editable (admin tier). Gershwin layout — matches our use of <code>/Local/Library/LaunchDaemons</code>.</td></tr>
+<tr><td>DO socket</td><td><code>/var/run/netconfigd.sock</code></td><td>Conventional FreeBSD path for daemon UNIX sockets. launchd-opened via <code>Sockets={Listeners=...}</code>.</td></tr>
+<tr><td>SystemConfiguration framework</td><td><code>/System/Library/Libraries/libSystemConfiguration.so</code> + headers in <code>/System/Library/Headers/SystemConfiguration/</code></td><td>Linkable by application code; same convention as the GNUstep libs.</td></tr>
+<tr><td>Generated <code>/etc/resolv.conf</code></td><td><code>/etc/resolv.conf</code></td><td>Daemon writes this from the plist's <code>DNS</code> key. Marked machine-managed; manual edits are clobbered.</td></tr>
+</tbody>
+</table>
+
+<h2 id="decisions">5. Locked architectural decisions</h2>
+
+<table>
+<thead>
+<tr><th>Decision</th><th>Choice</th></tr>
+</thead>
+<tbody>
+<tr><td>Target kernel</td><td>FreeBSD 14.x and 15.x. No Linux, no NetBSD.</td></tr>
+<tr><td>Mach IPC</td><td>None. All <code>&lt;mach/...&gt;</code> deleted.</td></tr>
+<tr><td>XPC</td><td>None.</td></tr>
+<tr><td>IOKit</td><td>None.</td></tr>
+<tr><td>AirPort / CoreWLAN</td><td>None. WiFi via <code>wpa_supplicant</code> subprocess.</td></tr>
+<tr><td>Service-to-service IPC</td><td>GNUstep Distributed Objects (<code>NSConnection</code> + <code>NSPortCoder</code>) over AF_UNIX. No <code>gdomap</code> registration — direct <code>NSSocketPort</code> on a known path.</td></tr>
+<tr><td>Event loop</td><td>libdispatch dispatch sources only.</td></tr>
+<tr><td>Kernel event source</td><td>PF_ROUTE socket, parsed inside <code>NCRouteSource</code>. Not Darwin's <code>PF_SYSTEM</code>/<code>KEV_NETWORK_CLASS</code>.</td></tr>
+<tr><td>DHCP</td><td>FreeBSD's <code>/sbin/dhclient</code> as <code>NSTask</code> child of netconfigd. Phase 6+ may absorb DHCP into the daemon if there's a reason; not now.</td></tr>
+<tr><td>IPv6 router solicitation</td><td>FreeBSD's <code>/usr/sbin/rtsold -a</code> as a single <code>NSTask</code> child of netconfigd.</td></tr>
+<tr><td>WiFi authentication</td><td>FreeBSD's <code>/usr/sbin/wpa_supplicant</code> as <code>NSTask</code> child per wireless iface.</td></tr>
+<tr><td>Plist parsing</td><td>GNUstep <code>NSPropertyListSerialization</code> (XML + binary). Same Foundation already linked into launchd.</td></tr>
+<tr><td>Foundation in netconfigd</td><td>Yes. Cost ~10 MB linked, payable once. Same calculus as launchd.</td></tr>
+<tr><td>Source of truth for config</td><td><code>/Local/Library/Preferences/Network.plist</code>. No rc.conf parser. No <code>/etc/hostname</code>, no manually-edited <code>/etc/resolv.conf</code>.</td></tr>
+<tr><td>Auto-config default</td><td>If <code>Network.plist</code> is missing or empty, netconfigd auto-DHCPs every link-up ethernet iface and starts <code>rtsold</code>. Live ISO ships an empty <code>Network.plist</code> so the auto path fires.</td></tr>
+<tr><td>License (top-level)</td><td>BSD-2-Clause. Apple <code>configd</code> files retain Apache 2.0 per-file.</td></tr>
+<tr><td>Build platform</td><td>FreeBSD only, inside the same <code>vmactions/freebsd-vm</code> chroot the launchd build uses.</td></tr>
+</tbody>
+</table>
+
+<h2 id="files">6. File-by-file plan (<code>src/</code>)</h2>
+
+<p>Imported source: Apple <code>configd-963.270.3</code>. 289 source files; ~5.5 MB. Phase 1 amputation drops the wholly-Mach files and the explicit non-goals (AirPort, IOKit-based InterfaceNamer, SimulatorSupport, QoSMarking). What remains needs Phase 2 work.</p>
+
+<h3>6.1 Deleted on import (Mach-only or out-of-scope)</h3>
+<ul>
+  <li><code>configd.xcodeproj/</code>, <code>xcconfigs/</code>, <code>xcscripts/</code> — Xcode build infra</li>
+  <li><code>**/*.defs</code> — MIG interface definitions (Mach-RPC IDL)</li>
+  <li><code>configd.tproj/_SC_*.{c,h}</code> Mach-IPC plumbing — entire IPC server replaced by DO</li>
+  <li><code>Plugins/QoSMarking/</code> — Apple-specific QoS framework</li>
+  <li><code>Plugins/SimulatorSupport/</code> — iOS sim only</li>
+  <li><code>Plugins/InterfaceNamer/</code> — IOKit-based; FreeBSD names interfaces in-kernel</li>
+  <li><code>Plugins/IPMonitor/IPMonitorAWDReport.{c,h}</code> — Apple-Wireless-Diagnostics; not portable</li>
+  <li><code>SCTest-Swift/</code> — Swift test harness, depends on macOS Swift</li>
+  <li><code>libSystemConfiguration/SCDPlugin*.{c,h}</code> — plugin loader using Mach-style host-port lookup</li>
+</ul>
+
+<h3>6.2 Retained — Phase 2 fate</h3>
+
+<table>
+<thead>
+<tr><th>File / dir</th><th>Apple LOC (rough)</th><th>Action</th><th>Target LOC</th></tr>
+</thead>
+<tbody>
+<tr><td><code>configd.tproj/configd.{c,h}</code></td><td>~1.5k</td><td>Rewrite from a near-empty file. Replace Mach <code>service_loop</code> with <code>dispatch_main</code>; replace Mach IPC server with <code>NSConnection</code> over AF_UNIX. Keep the dynamic-store data structure shape.</td><td>~600</td></tr>
+<tr><td><code>configd.tproj/_SC_dynamicStore_*.{c,h}</code></td><td>~3k</td><td>Rewrite as ObjC. Back the store with <code>NSMutableDictionary</code> + serial dispatch queue. Notification fan-out via DO callbacks.</td><td>~800</td></tr>
+<tr><td><code>Plugins/IPMonitor/</code></td><td>~8k</td><td>Port. Replace Apple's <code>IPConfiguration</code> calls with <code>NSTask</code> spawn of <code>/sbin/dhclient</code>. Keep the routing-table sanitization + IPv6 acceptance logic. Drop AWD reporter.</td><td>~3k</td></tr>
+<tr><td><code>Plugins/KernelEventMonitor/</code></td><td>~2k</td><td>Rewrite. Replace <code>PF_SYSTEM</code>+<code>KEV_NETWORK_CLASS</code> with <code>PF_ROUTE</code> socket parsing. Same event dispatch shape.</td><td>~600</td></tr>
+<tr><td><code>Plugins/LinkConfiguration/</code></td><td>~1k</td><td>Port. Translates link-state events to interface state-machine transitions. <code>SIOCGIFMEDIA</code> instead of Apple's link APIs.</td><td>~500</td></tr>
+<tr><td><code>Plugins/PreferencesMonitor/</code></td><td>~2k</td><td>Port. Watches <code>Network.plist</code> via <code>DISPATCH_SOURCE_TYPE_VNODE</code>; diffs against current state; applies changes.</td><td>~700</td></tr>
+<tr><td><code>Plugins/SCNetworkReachability/</code></td><td>~3k</td><td>Port. Provides reachability API to apps via DO. Uses PF_ROUTE for change events.</td><td>~1.2k</td></tr>
+<tr><td><code>libSystemConfiguration/</code></td><td>~1k</td><td>Prune Mach refs; keep store-client API but back it with DO calls.</td><td>~600</td></tr>
+<tr><td><code>nwi/</code></td><td>~600</td><td>Keep mostly as-is. Pure data structures (network info dictionary).</td><td>~500</td></tr>
+<tr><td><code>scutil.tproj/</code></td><td>~5k</td><td>Substantial rewrite. Replace Mach store-client with DO client. Keep the shell-style command parsing (<code>show</code>, <code>get</code>, <code>set</code>, <code>watch</code>).</td><td>~2k</td></tr>
+<tr><td><code>SystemConfiguration.fproj/</code></td><td>~10k</td><td>Trim. Keep the public framework API surface that apps use (SCNetworkReachability, SCDynamicStore). Drop Apple-specific bits.</td><td>~3k</td></tr>
+<tr><td><code>common/</code>, <code>logging/</code></td><td>~1k</td><td>Keep mostly as-is.</td><td>~800</td></tr>
+</tbody>
+</table>
+
+<p>Total post-Phase-2: roughly <strong>14-15k LOC</strong> vs Apple's ~37k pre-amputation. About 60% deletion, similar to the launchd port's reduction ratio.</p>
+
+<h2 id="bsd-wins">7. FreeBSD-only wins (vs Apple's Darwin-tied configd)</h2>
+
+<table>
+<thead>
+<tr><th>Feature</th><th>Apple's configd does</th><th>This port (FreeBSD-only)</th></tr>
+</thead>
+<tbody>
+<tr><td>Kernel iface events</td><td><code>PF_SYSTEM</code> + <code>KEV_NETWORK_CLASS</code> + <code>kern_event</code></td><td><code>PF_ROUTE</code> socket — standard, simpler, less Darwin-specific glue</td></tr>
+<tr><td>Service IPC</td><td>Mach ports + XPC + bootstrap server</td><td>GNUstep DO over AF_UNIX. Full ObjC messaging; <code>NSPortCoder</code> for marshalling. Dramatically less plumbing.</td></tr>
+<tr><td>Plugin loading</td><td>Mach host port + bundle dlopen with <code>SCDPluginExecCommand</code></td><td>No plugins as separate dylibs initially — link statically into the daemon. Reach for dlopen only when there's a reason.</td></tr>
+<tr><td>DHCP</td><td>Internal <code>IPConfiguration</code> agent (years of Apple-internal work)</td><td><code>NSTask</code> spawn of FreeBSD's <code>/sbin/dhclient</code>. Trivially correct; well-tested.</td></tr>
+<tr><td>WiFi auth</td><td>AirPort framework + <code>eapolclient</code></td><td><code>wpa_supplicant</code> subprocess. Battle-tested on FreeBSD.</td></tr>
+<tr><td>Iface naming</td><td><code>InterfaceNamer</code> plugin: IOKit USB/PCI introspection</td><td>FreeBSD kernel handles this. Drop the plugin.</td></tr>
+<tr><td>Reachability events</td><td>Mach-port-based notifications + dispatch_source on a custom mach port type</td><td>DO callbacks + libdispatch sources. ObjC <code>-changed:</code> messages.</td></tr>
+<tr><td>Build-system gates</td><td>iOS / macOS / sim / catalyst <code>#if TARGET_OS_*</code></td><td>Delete them all. One target.</td></tr>
+</tbody>
+</table>
+
+<h2 id="deps">8. Dependencies</h2>
+
+<p>No new pkglist or buildpkgs entries beyond what <code>freebsd-launchd</code> already pulls in. The system domain (libdispatch + libobjc2 + tools-make + libs-base + libs-corebase) is already installed by the time configd builds. Configd needs:</p>
+
+<ul>
+  <li><strong>Build-time</strong>: clang, lld (FreeBSD base); the gnustep-make framework already installed; pkgconf; the system-domain headers/libraries at <code>/System/Library/</code>.</li>
+  <li><strong>Runtime</strong>: <code>libdispatch.so</code>, <code>libgnustep-base.so</code>, <code>libgnustep-corebase.so</code>, <code>libobjc.so</code>, <code>libBlocksRuntime.so</code> (all from system domain). Plus FreeBSD-base subprocesses: <code>/sbin/dhclient</code>, <code>/usr/sbin/rtsold</code>, <code>/usr/sbin/wpa_supplicant</code> (the last needs <code>pkg install wpa_supplicant</code> if not in base — verify).</li>
+</ul>
+
+<p><strong>The make-configd.sh dependency check:</strong> the script hard-checks <code>/System/Library/Libraries/libgnustep-base.so</code> + <code>libdispatch.so</code> (same pattern as <code>make-launchd.sh</code>). If they're missing, exit early with a clear error pointing to the system-domain build.</p>
+
+<h2 id="integration">9. launchd integration</h2>
+
+<h3>9.1 The plist</h3>
+
+<pre class="plist"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;
+    &lt;string&gt;org.freebsd.netconfigd&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt;
+    &lt;array&gt;
+        &lt;string&gt;/usr/libexec/netconfigd&lt;/string&gt;
+    &lt;/array&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;     &lt;true/&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;     &lt;true/&gt;
+    &lt;key&gt;Sockets&lt;/key&gt;       &lt;dict&gt;
+        &lt;key&gt;Listeners&lt;/key&gt; &lt;dict&gt;
+            &lt;key&gt;SockPathName&lt;/key&gt; &lt;string&gt;/var/run/netconfigd.sock&lt;/string&gt;
+            &lt;key&gt;SockType&lt;/key&gt;     &lt;string&gt;stream&lt;/string&gt;
+            &lt;key&gt;SockPathMode&lt;/key&gt; &lt;integer&gt;438&lt;/integer&gt; &lt;!-- 0666 --&gt;
+        &lt;/dict&gt;
+    &lt;/dict&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</code></pre>
+
+<p>launchd opens the AF_UNIX listener at boot and hands the fd to <code>netconfigd</code> via the standard <code>launch_activate_socket</code> protocol (or our equivalent in the FreeBSD launchd port). Until netconfigd is up, queued connections from <code>scutil</code>/GUI tools sit in the kernel's socket queue.</p>
+
+<h3>9.2 Boot ordering</h3>
+
+<p>netconfigd needs <code>/System/Library/</code> populated (the GNUstep libs it links against). At boot:</p>
+
+<ol>
+  <li>launchd starts as PID 1.</li>
+  <li>launchd scans <code>/System/Library/LaunchDaemons/</code>, finds <code>org.freebsd.netconfigd.plist</code>.</li>
+  <li>launchd opens <code>/var/run/netconfigd.sock</code> (the Sockets listener) and forks netconfigd with the fd in <code>LISTEN_FDS</code> environment.</li>
+  <li>netconfigd reads its socket from the env, wraps it in <code>NSSocketPort</code>, creates an <code>NSConnection</code> with <code>self</code> as root.</li>
+  <li>netconfigd reads <code>/Local/Library/Preferences/Network.plist</code>; if absent or empty, falls into the auto-DHCP path for every link-up ethernet iface.</li>
+  <li>netconfigd installs PF_ROUTE source, vnode source, signal sources; calls <code>dispatch_main()</code>.</li>
+</ol>
+
+<p>The <code>org.freebsd.network.auto.plist</code> + helper script we sketched in the launchd-plan amendment becomes <strong>obsolete</strong> once netconfigd ships — netconfigd absorbs that role natively.</p>
+
+<h2 id="schema">10. <code>Network.plist</code> schema</h2>
+
+<p>One canonical configuration file. Every per-host setting has a path here. The GUI tooling reads/writes this file directly (or talks to netconfigd over DO, which writes it back).</p>
+
+<pre class="plist"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+                       "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+    &lt;key&gt;Hostname&lt;/key&gt;
+    &lt;string&gt;my-host&lt;/string&gt;
+
+    &lt;key&gt;Interfaces&lt;/key&gt;
+    &lt;dict&gt;
+        &lt;key&gt;em0&lt;/key&gt;
+        &lt;dict&gt;
+            &lt;key&gt;Method&lt;/key&gt; &lt;string&gt;DHCP&lt;/string&gt;
+        &lt;/dict&gt;
+
+        &lt;key&gt;em1&lt;/key&gt;
+        &lt;dict&gt;
+            &lt;key&gt;Method&lt;/key&gt; &lt;string&gt;Static&lt;/string&gt;
+            &lt;key&gt;IPv4&lt;/key&gt;
+            &lt;dict&gt;
+                &lt;key&gt;Address&lt;/key&gt; &lt;string&gt;192.168.1.10/24&lt;/string&gt;
+                &lt;key&gt;Router&lt;/key&gt;  &lt;string&gt;192.168.1.1&lt;/string&gt;
+            &lt;/dict&gt;
+        &lt;/dict&gt;
+
+        &lt;key&gt;wlan0&lt;/key&gt;
+        &lt;dict&gt;
+            &lt;key&gt;Method&lt;/key&gt; &lt;string&gt;WPA&lt;/string&gt;
+            &lt;key&gt;WPA&lt;/key&gt;
+            &lt;dict&gt;
+                &lt;key&gt;ConfigFile&lt;/key&gt; &lt;string&gt;/etc/wpa_supplicant.conf&lt;/string&gt;
+            &lt;/dict&gt;
+            &lt;key&gt;IPv4&lt;/key&gt;
+            &lt;dict&gt;
+                &lt;key&gt;Method&lt;/key&gt; &lt;string&gt;DHCP&lt;/string&gt;
+            &lt;/dict&gt;
+        &lt;/dict&gt;
+    &lt;/dict&gt;
+
+    &lt;key&gt;IPv6&lt;/key&gt;
+    &lt;dict&gt;
+        &lt;key&gt;Mode&lt;/key&gt; &lt;string&gt;Auto&lt;/string&gt; &lt;!-- Auto | Manual | Off --&gt;
+    &lt;/dict&gt;
+
+    &lt;key&gt;DNS&lt;/key&gt;
+    &lt;dict&gt;
+        &lt;!-- Optional. If absent, DNS is taken from DHCP. --&gt;
+        &lt;key&gt;Servers&lt;/key&gt;
+        &lt;array&gt;
+            &lt;string&gt;1.1.1.1&lt;/string&gt;
+            &lt;string&gt;1.0.0.1&lt;/string&gt;
+        &lt;/array&gt;
+        &lt;key&gt;Search&lt;/key&gt;
+        &lt;array&gt;
+            &lt;string&gt;example.com&lt;/string&gt;
+        &lt;/array&gt;
+    &lt;/dict&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</code></pre>
+
+<p><strong>Empty / absent <code>Network.plist</code></strong> → the daemon auto-DHCPs every link-up ethernet, enables IPv6 RA via <code>rtsold -a</code>, leaves hostname as kernel default ("Amnesiac"), and lets DNS come from DHCP. This is the live-ISO default behavior; users get networking for free.</p>
+
+<p><strong>Per-iface dict missing</strong> → the iface defaults to DHCP if it's an ethernet that's link-up, untouched if it's anything else. A user who wants em0 to NOT auto-DHCP adds <code>{"Method": "Disabled"}</code>.</p>
+
+<h3>10.1 Schema versioning</h3>
+
+<p>Add a top-level <code>"Version"</code> key (integer) once we have post-v1 schema changes. v1 is implicit; v2+ ships the daemon's accepted version range.</p>
+
+<h2 id="cli">11. <code>scutil</code> CLI tool</h2>
+
+<p>Apple's <code>scutil</code> is the "system configuration shell" — interactive and one-shot commands to query and edit the dynamic store. We port it as a DO client of netconfigd. Initial command set:</p>
+
+<ul>
+  <li><code>scutil --show</code> — dump the entire dynamic store</li>
+  <li><code>scutil --get Hostname</code> / <code>--set Hostname my-host</code> — single-key edits</li>
+  <li><code>scutil --interfaces</code> — list managed interfaces with current state</li>
+  <li><code>scutil --reload</code> — force netconfigd to re-read Network.plist</li>
+  <li><code>scutil --watch &lt;key&gt;</code> — long-running, prints on store changes</li>
+</ul>
+
+<p>The interactive Mach-shell mode of Apple's scutil is dropped (it depended on Mach store semantics). One-shot mode covers what users actually use.</p>
+
+<h2 id="license">12. Licensing</h2>
+
+<p>Same model as the launchd port. Top-level BSD-2-Clause; Apple <code>configd</code> source files retain their Apache 2.0 headers per-file (inbound=outbound). Our new code is BSD-2-Clause with SPDX headers.</p>
+
+<table>
+<thead><tr><th>Source</th><th>License</th><th>How we handle it</th></tr></thead>
+<tbody>
+<tr><td>Apple <code>configd-963.270.3</code> (<code>@APPLE_OSREFERENCE_LICENSE_HEADER_START@</code> in every file)</td><td>Apache 2.0 (modern Apple OSRef license is Apache 2.0 with optional extra clause)</td><td>Keep the Apple header verbatim. Our edits inherit Apache 2.0 via inbound=outbound. Files stay Apache regardless of top-level.</td></tr>
+<tr><td>GNUstep base / corebase / libobjc2 (linked, not in tree)</td><td>LGPL 2.1+ / LGPL 3 (with linking exception) / MIT</td><td>Listed in <code>NOTICE</code>. Linking exception lets netconfigd link Foundation without becoming LGPL.</td></tr>
+<tr><td>libdispatch (linked, not in tree)</td><td>Apache 2.0 with Runtime Library Exception</td><td>Listed in <code>NOTICE</code>.</td></tr>
+<tr><td>This repo's new code</td><td>BSD-2-Clause</td><td>Each new file gets a BSD-2-Clause SPDX header.</td></tr>
+</tbody>
+</table>
+
+<h2 id="phases">13. Phased delivery</h2>
+
+<div class="phase">
+<h3>Phase 0 — repo scaffold</h3>
+<ul>
+  <li>Create <code>github.com/pkgdemon/freebsd-configd</code>; minimal <code>README</code>, <code>LICENSE</code> (BSD-2-Clause), <code>NOTICE</code>.</li>
+  <li>Add <code>scripts/import-source.sh</code> that clones <code>apple-oss-distributions/configd</code> at <code>configd-963.270.3</code>, strips <code>.git</code>, drops it under <code>src/</code>.</li>
+  <li>One-shot import commit (verbatim Apple tree).</li>
+  <li>Follow-up amputation commit per §6.1 (Mach + IOKit + AirPort + sim out).</li>
+  <li>No build wired up; ISO unchanged.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 1 — minimal netconfigd (the "auto-DHCP" milestone)</h3>
+<ul>
+  <li>Top-level <code>Makefile</code> + <code>make-configd.sh</code>.</li>
+  <li><code>main.m</code> + <code>NCDaemon</code> — reads <code>Network.plist</code> (or auto-everything if absent), forks <code>dhclient -b -n &lt;iface&gt;</code> for each link-up ethernet iface, exec's <code>rtsold -a</code> for IPv6 RA. dispatch_main() loop with no event sources yet.</li>
+  <li><code>freebsd-launchd/build.sh</code> extended to clone freebsd-configd, run make-configd.sh in chroot.</li>
+  <li><code>org.freebsd.netconfigd.plist</code> shipped in the ISO at <code>/System/Library/LaunchDaemons/</code>.</li>
+  <li>Boot test extension: third marker watches for <code>bound to 10.0.2.X</code> on the serial console (qemu's slirp DHCP) — proves DHCP fired and got a lease.</li>
+  <li><strong>Drops the auto-network shell-script overlay we drafted</strong> in favor of this proper daemon.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 2 — kernel events + live config reload</h3>
+<ul>
+  <li><code>NCRouteSource</code>: PF_ROUTE socket as <code>DISPATCH_SOURCE_TYPE_READ</code>. Parses RTM_NEWADDR / RTM_DELADDR / RTM_IFINFO / RTM_IFANNOUNCE.</li>
+  <li><code>NCInterface</code> objects per managed iface; route messages dispatched to the right object.</li>
+  <li><code>NCConfigWatcher</code>: vnode source on Network.plist; diffs and reapplies on change.</li>
+  <li>Hot-plug: plug a new ethernet, daemon DHCPs it without reboot.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 3 — DO server + scutil port</h3>
+<ul>
+  <li><code>NetConfigService</code> protocol; netconfigd registers <code>self</code> as DO root over launchd-handed AF_UNIX socket.</li>
+  <li><code>NCStore</code> dynamic-store-equivalent with KVO-style notifications over DO.</li>
+  <li>Port <code>scutil.tproj</code> as a DO client; <code>scutil --show</code> / <code>--get</code> / <code>--set</code> / <code>--watch</code> work.</li>
+  <li>Boot test: ssh in, run <code>scutil --interfaces</code>, verify it returns the expected dictionary.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 4 — IPv6 RA, hostname, DNS</h3>
+<ul>
+  <li>IPv6 mode handling: <code>Auto</code> enables <code>accept_rtadv</code> per iface and runs <code>rtsold -a</code>; <code>Manual</code> applies static v6 from plist; <code>Off</code> disables.</li>
+  <li><code>Hostname</code> key: daemon calls <code>sethostname(3)</code> on startup and on key change.</li>
+  <li><code>DNS</code> key: daemon writes <code>/etc/resolv.conf</code> from the plist (with a "managed by netconfigd" header comment); falls back to DHCP-supplied DNS when key is absent.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 5 — WiFi via wpa_supplicant</h3>
+<ul>
+  <li><code>NCInterface</code> WPA state branch: spawn <code>wpa_supplicant -i &lt;iface&gt; -c &lt;file&gt;</code> as managed child.</li>
+  <li>Watch wpa_supplicant's control-socket for ASSOCIATED / DISCONNECTED events; gate DHCP behind ASSOCIATED.</li>
+  <li>Schema sketch for inline credentials (Phase 6+) vs always-pointing-at-/etc/wpa_supplicant.conf.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 6 — SCNetworkReachability for apps</h3>
+<ul>
+  <li>Port the public reachability API. Apps call <code>SCNetworkReachabilityCreateWithName(...)</code> via the linked framework; under the hood it's a DO call to netconfigd.</li>
+  <li>This is what makes the GUI tooling actually pleasant — apps can subscribe to "reachability of github.com changed" and the GUI/daemon plumbing handles it.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 7+ — optional, demand-driven</h3>
+<ul>
+  <li>Internal DHCP client (drop the dhclient subprocess) — only if dhclient's behavior or footprint becomes a concern.</li>
+  <li>Captive-portal probing — when someone needs it.</li>
+  <li>Multiple-DNS-policy support (per-domain resolvers, etc.) — when someone needs it.</li>
+</ul>
+</div>
+
+<h2 id="open">14. Open questions</h2>
+
+<div class="open-q">
+<strong>Q1. Repo separation.</strong> Confirmed: separate repo (<code>freebsd-configd</code>), not a subdir of <code>freebsd-launchd</code>. Reasons in §2.1. Reopen if integration friction surfaces.
+</div>
+
+<div class="open-q">
+<strong>Q2. <code>gdomap</code> or direct <code>NSSocketPort</code>.</strong> Decision: direct <code>NSSocketPort</code> at <code>/var/run/netconfigd.sock</code>; no gdomap. Avoids running a name-registration daemon for one well-known service. If we end up with multiple DO services that need lookup, revisit.
+</div>
+
+<div class="open-q">
+<strong>Q3. Daemon binary path: <code>/usr/libexec</code> vs <code>/sbin</code>.</strong> Decision: <code>/usr/libexec/netconfigd</code>. Users don't invoke this directly; they invoke <code>scutil</code> at <code>/usr/sbin/scutil</code>. <code>libexec</code> is the FreeBSD <code>hier(7)</code> location for indirect-only daemons (<code>/usr/libexec/getty</code>, <code>/usr/libexec/sendmail</code>, etc.).
+</div>
+
+<div class="open-q">
+<strong>Q4. WiFi credentials storage: Network.plist or <code>/etc/wpa_supplicant.conf</code>?</strong> Phase 5 starts with the plist pointing at <code>/etc/wpa_supplicant.conf</code> — wpa_supplicant's existing config format is well-tested. Inline credentials in Network.plist (with the daemon writing wpa_supplicant.conf from them) is Phase 6+. Decision deferrable.
+</div>
+
+<div class="open-q">
+<strong>Q5. Replacing dhclient with internal DHCP.</strong> Open. Apple's path was years of <code>IPConfiguration</code> work; we shouldn't go there until there's a measurable reason (lease-renewal latency, footprint, etc.). Phase 7+ at earliest.
+</div>
+
+<div class="open-q">
+<strong>Q6. <code>/etc/resolv.conf</code> ownership.</strong> Daemon writes it from <code>Network.plist</code>'s <code>DNS</code> key on Phase 4. Manual edits clobber on next boot. If users need a "don't manage resolv.conf" escape hatch, add a top-level <code>"DNS": {"Mode": "Manual"}</code> key. Decision deferrable.
+</div>
+
+<div class="open-q">
+<strong>Q7. Schema versioning gate.</strong> v1 is implicit. Add the <code>"Version"</code> key when v2 ships (or earlier if a GUI tool needs to know which schema it's reading). Cheap to add later.
+</div>
+
+<div class="open-q">
+<strong>Q8. Reachability API in Phase 6 — public framework or DO-only?</strong> Open. Public framework matches Apple's surface but adds linker-soname-stability concerns. DO-only is simpler. Settle when apps actually need it.
+</div>
+
+<h2 id="refs">15. References</h2>
+
+<ul>
+  <li>Apple source: <a href="https://github.com/apple-oss-distributions/configd">github.com/apple-oss-distributions/configd</a> (latest tag <code>configd-963.270.3</code>).</li>
+  <li>Companion plan: <a href="freebsd-launchd-plan.html">freebsd-launchd porting plan</a>.</li>
+  <li>GNUstep base (Foundation): <a href="https://github.com/gnustep/libs-base">github.com/gnustep/libs-base</a>.</li>
+  <li>GNUstep DO docs: <code>libs-base/Documentation/General/DistributedObjects.gsdoc</code>.</li>
+  <li>libdispatch dispatch sources: <a href="https://developer.apple.com/documentation/dispatch">developer.apple.com/documentation/dispatch</a>.</li>
+  <li>FreeBSD <code>route(4)</code> / <code>PF_ROUTE</code>: <code>man 4 route</code>.</li>
+</ul>
+
+</body>
+</html>

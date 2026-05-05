@@ -1,0 +1,1029 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeBSD launchd — porting plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.plist { border-left-color: var(--accent); }
+  pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+          padding: 1rem 1.1rem; }
+  .card h4 { margin-top: 0; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  blockquote { margin: 1rem 0; padding: .5rem 1rem; border-left: 3px solid var(--accent);
+               background: #fff8f3; color: #333; }
+  .footnote { font-size: .85rem; color: var(--muted); }
+  ol li, ul li { margin: .25rem 0; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .filename { color: var(--accent); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .risk { background: #fff5e6; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .risk strong { color: var(--warn); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .step-num { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; background: var(--accent); color: white; border-radius: 50%; font-weight: 700; font-size: .85em; margin-right: .35em; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">Status</a>
+  <a href="#goal">Goal</a>
+  <a href="#repo">Repo</a>
+  <a href="#arch">Architecture</a>
+  <a href="#paths">Install paths</a>
+  <a href="#decisions">Decisions</a>
+  <a href="#files">File-by-file</a>
+  <a href="#bsd-wins">FreeBSD wins</a>
+  <a href="#deps">Deps</a>
+  <a href="#livecd">LiveCD pipeline</a>
+  <a href="#ci">CI &amp; release</a>
+  <a href="#boot">Boot flow</a>
+  <a href="#rcd">rc.d port</a>
+  <a href="#license">License</a>
+  <a href="#phases">Phases</a>
+  <a href="#open">Open questions</a>
+</nav>
+
+<h1>FreeBSD launchd — porting plan</h1>
+<p class="subtitle">A FreeBSD-only port of Apple's <code>launchd</code> that drops Mach IPC, replaces <code>rc.d</code> as PID&nbsp;1, and lives in standard FreeBSD paths. Single repo, single <code>build.sh</code>: builds the GNUstep system-domain libraries + launchd <em>inside a livecd staging chroot</em>, boot-tests the resulting ISO in CI, publishes a continuous release. Pipeline lifted from <a href="https://github.com/pkgdemon/freebsd-livecd-unionfs">freebsd-livecd-unionfs</a>.</p>
+
+<section id="tldr" class="tldr">
+  <h3>Status: planning <span class="pill info">v0</span></h3>
+  <ul>
+    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a> — empty; this plan is the scope-of-work for the first commits.</li>
+    <li><strong>Mission:</strong> replace <code>/etc/rc</code> + <code>rc.d</code> on FreeBSD with Apple <code>launchd</code> as PID&nbsp;1. Sshd is the proof-of-life target; other base service plists (syslog, cron, devd, NFS, etc.) ship in the repo for users to opt into. Desktop later.</li>
+    <li><strong>No Mach IPC, no XPC, no <code>libxpc</code>, no <code>darlingserver</code>.</strong> All Mach paths in the imported source are deleted; service-to-service IPC uses launchd's own AF_UNIX socket activation (<code>Sockets</code> plist key, predates XPC).</li>
+    <li><strong>Event loop:</strong> <code>libdispatch</code> dispatch sources only (kqueue under the hood). No raw <code>kqueue</code>/<code>kevent</code> in our code.</li>
+    <li><strong>Plist parsing:</strong> GNUstep <code>NSPropertyListSerialization</code> (handles XML and binary). Foundation in PID 1 — same shape as macOS.</li>
+    <li><strong>No separate Gershwin repo.</strong> The five system-domain libs (libdispatch, libobjc2, tools-make, libs-base, libs-corebase) get cloned and built directly inside the livecd staging chroot by <code>build.sh</code>. No submodule.</li>
+    <li><strong>One repo, one pipeline.</strong> Lifts <code>build.sh</code>, <code>tests/boot-test.sh</code>, and the GitHub Actions workflow from <code>freebsd-livecd-unionfs</code>. Build → boot-test in qemu → publish a continuous release ISO. Boot test watches the serial console for two markers: <code>launchd: PID 1 ready</code> and <code>login:</code>. Either marker missing fails the release gate.</li>
+    <li><strong>Install paths:</strong> binaries follow FreeBSD <code>hier(7)</code> — <code>/sbin/launchd</code>, <code>/sbin/launchctl</code>. Only the plist directories use the Apple/NeXT layout, because that's what the daemon already scans.</li>
+    <li><strong>Licensing:</strong> BSD-2-Clause top-level (matches FreeBSD ecosystem). Apple's launchd files keep their original Apache 2.0 headers per-file. <code>NOTICE</code> enumerates Apple, swift-corelibs-libdispatch, GNUstep, and us.</li>
+  </ul>
+</section>
+
+<h2 id="goal">1. Goal &amp; non-goals</h2>
+
+<h3>1.1 Goal</h3>
+<p>Boot a FreeBSD 15.0 live ISO to a usable multi-user prompt with launchd as PID&nbsp;1. Reach a console <code>login:</code>, then prove the supervisor with sshd. Other base service plists — syslogd, cron, devd, mountd, nfsd, nfsclient, etc. — ship in the repo so users can <code>launchctl load</code> what they want, but they aren't release-gating goals. No <code>/etc/rc</code>, no <code>/etc/rc.d</code>, no <code>service(8)</code>. Every push to <code>main</code> rebuilds the ISO, boot-tests it in qemu, and (on green) publishes it as the <code>continuous</code> GitHub release.</p>
+
+<h3>1.2 Non-goals (this iteration)</h3>
+<ul>
+  <li><strong>Not a port of every <code>rc.d</code> script.</strong> FreeBSD ships ~180; we'll port a server-essential ~12 and document the rest as "won't port" with reasons (§11).</li>
+  <li><strong>Not Linux, not NetBSD.</strong> FreeBSD-only — we use kqueue-flavored libdispatch features freely without portability shims (§7).</li>
+  <li><strong>No GUI stack.</strong> No libs-gui, libs-back, libs-opal, libs-quartzcore, no Workspace.app, no LoginWindow.app. Headless server.</li>
+  <li><strong>No Mach IPC compatibility shim.</strong> Third-party plists referencing <code>MachServices</code> get the key silently ignored (and logged at debug level).</li>
+  <li><strong>No <code>libxpc</code> emulation.</strong> XPC services are Mach-rooted; without Mach there's nothing to emulate.</li>
+</ul>
+
+<h2 id="repo">2. Repository — single repo, single pipeline</h2>
+
+<p>One repo: <a href="https://github.com/pkgdemon/freebsd-launchd"><code>pkgdemon/freebsd-launchd</code></a>. It contains:</p>
+<ol>
+  <li>The Apple <code>launchd-842.1.4</code> source (one-time fork, Mach paths gutted) under <code>src/</code>.</li>
+  <li>Our rc.d-replacement plists under <code>plists/</code>.</li>
+  <li>A <code>build.sh</code> that — modeled on <a href="https://github.com/pkgdemon/freebsd-livecd-unionfs"><code>freebsd-livecd-unionfs</code></a> — extracts FreeBSD pkgbase, mounts a chroot, clones &amp; builds the GNUstep system-domain libraries into <code>/System/Library/</code>, builds launchd into <code>/sbin/</code>, slims the rootfs, mkuzips it, and wraps it in a hybrid BIOS+UEFI cd9660 ISO.</li>
+  <li>A <code>tests/boot-test.sh</code> that boots the ISO under qemu+OVMF and watches serial for launchd-emitted markers.</li>
+  <li>A GitHub Actions workflow that runs build → test → release on every push.</li>
+</ol>
+
+<p><strong>No git submodules.</strong> Earlier versions of this plan considered a "system-domain Gershwin fork" as a submodule. Cleaner approach: <code>build.sh</code> simply <code>git clone</code>s each upstream library at chroot-build time, builds, installs.</p>
+
+<h3>2.1 Top-level layout</h3>
+
+<pre><code>freebsd-launchd/
+├── LICENSE                       BSD-2-Clause
+├── NOTICE                        Apple, swift-corelibs-libdispatch, GNUstep, us
+├── README.md                     elevator pitch + quickstart
+├── PLAN.md                       link to this published plan
+├── build.sh                      lifted from livecd-unionfs; clones the 5 upstreams, builds them in-chroot, calls make-launchd.sh, then ISO-wraps
+├── make-launchd.sh               STANDALONE — builds + installs launchd from src/ to /sbin/; assumes /System/Library/ libs present. Reusable by gershwin-on-freebsd.
+├── pkglist.txt                   runtime FreeBSD pkgs to install in chroot (start empty)
+├── buildpkgs.txt                 build-only pkgs (cmake, ninja, gmake, autoconf, libtool) — purged before slim
+├── repos/                        gitignored — populated by build.sh's git-clone stage; rsync'd into chroot
+├── boot/
+│   └── loader.conf               kernel modules + init kenv (init_path=/sbin/launchd)
+├── ramdisk/
+│   └── init.sh                   unionfs pivot: mounts /sysroot, kenv init_chroot, kenv init_path
+├── overlays/
+│   ├── etc/
+│   │   ├── rc.conf               minimal — the launchd plists own the rest
+│   │   ├── motd.template         banner
+│   │   └── ld-elf.so.conf.d/system.conf   one line: /System/Library/Libraries
+│   └── (more as needed)
+├── plists/                       our rc.d-replacement LaunchDaemon plists
+│   ├── org.freebsd.devd.plist
+│   ├── org.freebsd.syslogd.plist
+│   ├── org.freebsd.sshd.plist
+│   ├── org.freebsd.cron.plist
+│   ├── org.freebsd.rpcbind.plist
+│   ├── org.freebsd.mountd.plist
+│   ├── org.freebsd.nfsd.plist
+│   ├── org.freebsd.nfsclient.plist
+│   └── org.freebsd.phase.{filesystems,network,kld}-ready.plist
+├── tests/
+│   └── boot-test.sh              qemu+expect smoke test (extended marker set)
+├── .github/workflows/
+│   └── build.yml                 build → test → release (3 jobs, gated)
+├── compat/                       FreeBSD-specific shims
+├── scripts/
+│   ├── import-source.sh          one-shot Apple launchd import (already done)
+│   └── lint.sh                   forbidden-symbol grep
+└── src/                          forked Apple launchd-842.1.4 (Mach paths deleted)
+    ├── src/                      daemon: launchd.c, runtime.c, ipc.c, core.[cm], log.c
+    ├── liblaunch/                wire-format library: launch.h, liblaunch.c
+    ├── support/                  launchctl.c, wait4path.c
+    ├── man/                      man pages
+    └── rc/                       legacy rc.common — kept selectively
+</code></pre>
+
+<h2 id="arch">3. Architecture</h2>
+
+<div class="ascii-diagram">                +----------------------------------------------+
+                |  launchd  (PID 1, persistent)                |
+                |                                              |
+                |  +--------------------------------------+    |
+                |  |  libdispatch main queue              |    |
+                |  |  (dispatch_main(), runs forever)     |    |
+                |  +-------------------+------------------+    |
+                |                      |                       |
+                |    +-----------------+--------------+        |
+                |    |          dispatch sources       |       |
+                |    +---------------------------------+       |
+                |    | SIGNAL: SIGCHLD  -&gt; reap        |       |
+                |    | SIGNAL: SIGTERM  -&gt; shutdown    |       |
+                |    | SIGNAL: SIGHUP   -&gt; rescan_dirs |       |
+                |    | PROC:   per-job  -&gt; reap (BSD)  |       |
+                |    | READ:   accept_fd -&gt; accept_ctl |       |
+                |    | READ:   listen_fd[N] -&gt; spawn   |  &lt;--- Sockets activation
+                |    | TIMER:  throttle    -&gt; retry    |       |
+                |    | TIMER:  start_iv    -&gt; spawn    |       |
+                |    | VNODE:  watchpath[N] -&gt; notify  |  &lt;--- WatchPaths
+                |    | READ:   PF_ROUTE     -&gt; net up  |  &lt;--- network-ready phase
+                |    +---------------------------------+       |
+                |                      |                       |
+                |    +-----------------+--------------+        |
+                |    |     job table (label -&gt; Job)   |        |
+                |    +--------------------------------+        |
+                +----------------------+---------------------+-+
+                                       |
+              fork+exec / posix_spawn  |        SCM_RIGHTS fd passing
+              for each Job that needs it        on socket-activated jobs
+                                       |
+              +-------------+    +-----+--------+    +------------------+
+              | child job A |    | child job B  |    | launchctl(8)     |
+              | pid=N       |    | inherited fd |    | client over      |
+              |             |    | from listener|    | /var/run/launchd |
+              +------+------+    +-------+------+    +--------+---------+</div>
+
+<h3>3.1 Why this works on FreeBSD specifically</h3>
+<ul>
+  <li><strong>Single-threaded user-visible state.</strong> All job-table mutation funnels through <code>dispatch_get_main_queue()</code>. Worker fan-out is libdispatch's problem; we never call <code>pthread_create</code>.</li>
+  <li><strong>PID 1 stays inside <code>dispatch_main()</code>,</strong> which is a kqueue wait under the hood. No custom poll loop.</li>
+  <li><strong>Per-job <code>DISPATCH_SOURCE_TYPE_PROC</code></strong> with <code>DISPATCH_PROC_EXIT</code> gives clean per-pid death notification. SIGCHLD remains as a backstop for orphans PID 1 inherits.</li>
+  <li><strong>Shutdown is just <code>dispatch_async</code></strong> to a stop-everyone-and-exit block.</li>
+</ul>
+
+<div class="risk">
+<strong>One real subtlety:</strong> the SIGCHLD disposition inside launchd must be a <em>no-op handler</em>, not <code>SIG_IGN</code>. Under <code>SIG_IGN</code> on FreeBSD the kernel reaps zombies synchronously and never delivers SIGCHLD, which means <code>EVFILT_SIGNAL</code> never fires and the dispatch source is silent.
+</div>
+
+<h2 id="paths">4. Install paths</h2>
+
+<p><strong>This repo follows FreeBSD <code>hier(7)</code> for binaries</strong> and only uses the <code>/System</code> tree for things that genuinely belong there (libraries the launchd daemon links against, plist directories the daemon scans).</p>
+
+<table>
+<thead>
+<tr><th>Artifact</th><th>Path</th><th>Why</th></tr>
+</thead>
+<tbody>
+<tr><td><code>launchd</code> binary</td><td><code>/sbin/launchd</code></td><td>PID 1 must live on the root partition; matches <code>init</code>'s location.</td></tr>
+<tr><td><code>launchctl</code> binary</td><td><code>/sbin/launchctl</code></td><td>Needed during single-user before <code>/usr/local</code> mounts; matches <code>service(8)</code>.</td></tr>
+<tr><td><code>wait4path</code> helper</td><td><code>/usr/bin/wait4path</code></td><td>Non-essential; user-callable.</td></tr>
+<tr><td>Man pages</td><td><code>/usr/share/man/man{1,5,8}/</code></td><td>Base-system man path.</td></tr>
+<tr><td>System LaunchDaemons</td><td><code>/System/Library/LaunchDaemons/</code></td><td>NeXT/Apple convention; default scan dir baked into <code>launchd.c</code>.</td></tr>
+<tr><td>Third-party LaunchDaemons</td><td><code>/Library/LaunchDaemons/</code></td><td>Apple convention, second scan dir; for ports/pkg-installed services.</td></tr>
+<tr><td>Per-user LaunchAgents</td><td><code>~/Library/LaunchAgents/</code> + <code>/Library/LaunchAgents/</code></td><td>Apple convention; not used on a server but the support stays.</td></tr>
+<tr><td>Control socket (PID 1)</td><td><code>/var/run/launchd/sock</code></td><td>Matches <code>IPC_DEFAULT_PID1_SOCK</code> in <code>ipc.c</code>.</td></tr>
+<tr><td>libdispatch (.so + headers)</td><td><code>/System/Library/Libraries/libdispatch.so</code><br><code>/System/Library/Headers/dispatch/</code></td><td>Built by <code>build.sh</code> in-chroot; out of <code>/usr/local</code> so the FreeBSD pkg copy doesn't shadow it.</td></tr>
+<tr><td>libobjc2, libgnustep-base, libgnustep-corebase</td><td><code>/System/Library/Libraries/</code></td><td>Same.</td></tr>
+<tr><td>gnustep-make</td><td><code>/System/Library/Makefiles/</code></td><td>Build-time only; needed to compile downstream daemons against Foundation.</td></tr>
+</tbody>
+</table>
+
+<p><strong>Why split it this way:</strong> a sysadmin shelling into a FreeBSD box should find <code>launchctl</code> at the path <code>service(8)</code> would have been at — <code>/sbin</code>. Burying admin tools under <code>/System/Library/Tools/</code> would only make sense for an all-in OS-distribution pivot; in a FreeBSD-shaped install where everything else lives in <code>hier(7)</code> locations, it's hostile.</p>
+
+<h2 id="decisions">5. Locked architectural decisions</h2>
+
+<table>
+<thead>
+<tr><th>Decision</th><th>Choice</th></tr>
+</thead>
+<tbody>
+<tr><td>Target kernel</td><td>FreeBSD 14.x and 15.x. No Linux, no NetBSD, no portability gates.</td></tr>
+<tr><td>Binary format</td><td>ELF (FreeBSD native). No Mach-O, no <code>dyld</code>.</td></tr>
+<tr><td>Toolchain</td><td>clang + lld + llvm-ar (FreeBSD base). Never gcc.</td></tr>
+<tr><td>Mach IPC</td><td>None. All <code>&lt;mach/...&gt;</code>, MIG <code>.defs</code> deleted.</td></tr>
+<tr><td>XPC</td><td>None. <code>libxpc</code> not in tree.</td></tr>
+<tr><td>Service IPC</td><td>AF_UNIX socket activation via launchd's <code>Sockets</code> plist key. Out-of-band fd passing via <code>SCM_RIGHTS</code>.</td></tr>
+<tr><td>Init / PID 1</td><td>This launchd. Replaces <code>/sbin/init</code>'s rc-chain via <code>init_path</code> kenv.</td></tr>
+<tr><td>Event loop</td><td>libdispatch dispatch sources only.</td></tr>
+<tr><td>libdispatch source</td><td><code>apple/swift-corelibs-libdispatch</code> built from source by <code>build.sh</code> in the staging chroot. <strong>Not</strong> <code>devel/libdispatch</code> from FreeBSD pkg, because that lands in <code>/usr/local</code> and would shadow ours.</td></tr>
+<tr><td>Plist parsing</td><td>GNUstep <code>NSPropertyListSerialization</code> from <code>libgnustep-base</code>. Handles XML and binary plists.</td></tr>
+<tr><td>Foundation in PID 1</td><td>Yes. macOS does it; cost ~10 MB linked, payable once.</td></tr>
+<tr><td>Where the GNUstep libs come from</td><td><code>build.sh</code> clones each upstream repo into the chroot, builds, installs to <code>/System/Library/</code>. <strong>No git submodule, no Gershwin fork.</strong></td></tr>
+<tr><td>License (top-level)</td><td>BSD-2-Clause (matches FreeBSD ecosystem). Apple's launchd files retain Apache 2.0 headers per-file.</td></tr>
+<tr><td>Build platform</td><td>FreeBSD only, inside <code>vmactions/freebsd-vm@v1</code>. No macOS, no Linux. Mac is edit-only.</td></tr>
+<tr><td>Release artifact</td><td>A bootable hybrid BIOS+UEFI cd9660 ISO with launchd as PID 1, published as <code>continuous</code> on every push to <code>main</code>.</td></tr>
+<tr><td>Release gate</td><td>Boot test must observe both <code>launchd: PID 1 ready</code> and <code>login:</code> on serial within 8 minutes.</td></tr>
+</tbody>
+</table>
+
+<h2 id="files">6. File-by-file plan (<code>src/</code>)</h2>
+
+<p>Imported source: Apple <code>launchd-842.1.4</code>. 26,779 lines, 68 files originally. Phase 1 amputation deletes the wholly-Mach files; what remains needs Phase 2 work.</p>
+
+<h3>6.1 Deleted on import (Mach-only)</h3>
+<ul>
+  <li><code>launchd.xcodeproj/</code>, <code>xcconfigs/</code>, <code>xcscripts/</code> — Xcode build infra</li>
+  <li><code>src/*.defs</code> — MIG interface definitions (Mach-RPC IDL)</li>
+  <li><code>src/kill2.{c,h}</code> — Apple <code>kill2()</code> syscall wrapper; replaced by POSIX <code>kill(2)</code></li>
+  <li><code>src/ktrace.{c,h}</code> — Apple <code>kdebug</code> emitters</li>
+  <li><code>SystemStarter/</code> — pre-launchd <code>/System/Library/StartupItems</code> mechanism (legacy since 10.4)</li>
+  <li><code>liblaunch/libbootstrap.c</code>, <code>bootstrap.h</code>, <code>bootstrap_priv.h</code> — Mach bootstrap-server client</li>
+  <li><code>support/launchproxy.c</code> — Mach-IPC inetd-style wrapper</li>
+</ul>
+
+<h3>6.2 Retained — Phase 2 fate</h3>
+
+<table>
+<thead>
+<tr><th>File</th><th>Apple LOC</th><th>Mach refs</th><th>Action</th><th>Target LOC</th></tr>
+</thead>
+<tbody>
+<tr><td><code>src/launchd.c</code></td><td>~660</td><td>1</td><td>Prune. Drop <code>task_set_bootstrap_port</code>; replace <code>monitor_networking_state</code> (Darwin <code>PF_SYSTEM</code>/<code>KEV_NETWORK_CLASS</code>) with a FreeBSD <code>PF_ROUTE</code> dispatch source watching <code>RTM_NEWADDR</code>/<code>RTM_DELADDR</code>.</td><td>~400</td></tr>
+<tr><td><code>src/runtime.c</code></td><td>1,453</td><td>85</td><td>Rewrite from scratch on libdispatch.</td><td>~600</td></tr>
+<tr><td><code>src/ipc.c</code></td><td>537</td><td>?</td><td>Rewrite (small). Replace <code>kevent_mod</code> with <code>DISPATCH_SOURCE_TYPE_READ</code>; drop the <code>MachServices</code> checkin branch.</td><td>~500</td></tr>
+<tr><td><code>src/core.[cm]</code></td><td>11,973</td><td>207</td><td>Rewrite from a near-empty file. Port the data structures, plist-key parsers, KeepAlive policy state machine, Sockets activation. Drop: <code>MachServices</code>, <code>bootstrap_subset_t</code>, <code>domain_t</code>, XPC, <code>jetsam_*</code>, audit-session, <code>PerUserLaunchd</code>. Keep as Objective-C using <code>NSPropertyListSerialization</code>.</td><td>~2000-2500</td></tr>
+<tr><td><code>src/log.{c,h}</code></td><td>—</td><td>3-6</td><td>Prune <code>mach_error_string</code>. Keep syslog buffer, console fallback, level mask.</td><td>~300</td></tr>
+<tr><td><code>liblaunch/liblaunch.c</code></td><td>—</td><td>8</td><td>Prune Mach refs (8 spots). Keep <code>launch_data_pack</code>/<code>unpack</code>, <code>launchd_msg_send</code>/<code>recv</code> wire-format code.</td><td>~1200</td></tr>
+<tr><td><code>liblaunch/launch.h</code> et al</td><td>—</td><td>few</td><td>Drop <code>LAUNCH_DATA_MACHPORT</code> and the three accessors.</td><td>~250</td></tr>
+<tr><td><code>liblaunch/libvproc.c</code></td><td>1,061</td><td>42</td><td><strong>Delete entirely.</strong> No Mach, no ports to pass.</td><td>0</td></tr>
+<tr><td><code>support/launchctl.c</code></td><td>4,549</td><td>21</td><td>Substantial rewrite. Drop <code>bsexec</code>, <code>bslist</code>, <code>bstree</code>, <code>bootstrap</code>, <code>asuser</code>. Keep <code>load</code>, <code>unload</code>, <code>start</code>, <code>stop</code>, <code>list</code>, <code>submit</code>, <code>getenv</code>, etc. Plist reading via <code>NSPropertyListSerialization</code>.</td><td>~1500</td></tr>
+<tr><td><code>support/wait4path.c</code></td><td>—</td><td>0</td><td>Keep as is.</td><td>unchanged</td></tr>
+<tr><td><code>man/</code>, <code>rc/</code></td><td>—</td><td>0</td><td>Keep selectively. <code>rc.netboot</code> gone.</td><td>shrinks</td></tr>
+</tbody>
+</table>
+
+<p>Total post-Phase-2: roughly <strong>7-8k LOC</strong> vs Apple's ~22k pre-amputation. About 65% deletion.</p>
+
+<h2 id="bsd-wins">7. FreeBSD-only wins (vs a portable BSD+Linux design)</h2>
+
+<table>
+<thead>
+<tr><th>Feature</th><th>Portable BSD+Linux approach</th><th>This repo (FreeBSD-only)</th></tr>
+</thead>
+<tbody>
+<tr><td>Per-pid child death</td><td>SIGCHLD source + <code>waitpid(WNOHANG)</code> drain + pid hash</td><td><code>DISPATCH_SOURCE_TYPE_PROC</code> with <code>DISPATCH_PROC_EXIT</code> per job; SIGCHLD as backstop only</td></tr>
+<tr><td><code>WatchPaths</code></td><td>"BSD only in v1; Linux gets inotify shim later"</td><td><code>DISPATCH_SOURCE_TYPE_VNODE</code> with full flag set. Just works.</td></tr>
+<tr><td>Peer creds on AF_UNIX</td><td><code>#ifdef SO_PEERCRED</code> / <code>LOCAL_PEERCRED</code> branches</td><td><code>LOCAL_PEERCRED</code> + <code>struct xucred</code>. One path.</td></tr>
+<tr><td>Network-ready signal</td><td>"TODO: netlink shim or always-up placeholder"</td><td><code>PF_ROUTE</code> socket as <code>DISPATCH_SOURCE_TYPE_READ</code>, parse <code>RTM_NEWADDR</code></td></tr>
+<tr><td>VNODE flag for read-only</td><td><code>O_EVTONLY</code> shim (Darwin-only)</td><td><code>O_RDONLY</code> works directly</td></tr>
+<tr><td>Build-system gates</td><td>Pervasive <code>#ifdef __FreeBSD__</code> / <code>__linux__</code></td><td>Delete them all</td></tr>
+</tbody>
+</table>
+
+<h2 id="deps">8. Dependencies — built in-chroot, no submodules</h2>
+
+<p>Five upstream libraries are cloned and built by <code>build.sh</code> inside the staging chroot, in dependency order, before launchd itself is built. We track upstream HEAD; if a breakage surfaces we'll address it then, not preemptively.</p>
+
+<h3>8.1 Host-side clone, chroot-side build — both in <code>build.sh</code></h3>
+
+<p>Rule lifted from <code>gershwin-on-freebsd</code>: <strong>all git operations happen on the host, the chroot stays git-free</strong>. <code>build.sh</code> handles both halves inline:</p>
+
+<ol>
+  <li><strong>Host stage (early in <code>build.sh</code>):</strong> <code>git clone</code> the five upstreams into <code>repos/&lt;name&gt;/</code> at the repo root, or <code>git pull --ff-only</code> if already present. Idempotent.</li>
+  <li><strong>Chroot stage:</strong> extract pkgbase, mount the chroot, <code>pkg install</code> build deps, <code>rsync -a ./repos/ work/rootfs/tmp/repos/</code> into the chroot, then run the build invocations from §8.4 with <code>REPOS_DIR=/tmp/repos</code> set in the environment.</li>
+  <li><strong>launchd stage:</strong> after the GNUstep libs are installed, <code>build.sh</code> calls <code>./make-launchd.sh</code> (chroot'd). That's the standalone-reusable script — it builds <code>src/</code> against <code>/System/Library/</code> and installs <code>launchd</code>/<code>launchctl</code> to <code>/sbin/</code>.</li>
+</ol>
+
+<p><code>repos/</code> is in <code>.gitignore</code>. CI caches it on the runner so unchanged upstreams skip re-clone.</p>
+
+<h3>8.2 Upstream URLs &amp; build order</h3>
+
+<table>
+<thead><tr><th>Order</th><th>Upstream</th><th>Build system</th><th>Installs to</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><a href="https://github.com/apple/swift-corelibs-libdispatch.git">apple/swift-corelibs-libdispatch</a></td><td>cmake</td><td><code>/System/Library/Libraries/libdispatch.so</code> + headers in <code>/System/Library/Headers/{dispatch,os}/</code></td></tr>
+<tr><td>2</td><td><a href="https://github.com/gnustep/tools-make.git">gnustep/tools-make</a></td><td>autoconf</td><td><code>/System/Library/Makefiles/</code> + <code>/System/Library/Preferences/GNUstep.conf</code></td></tr>
+<tr><td>3</td><td><a href="https://github.com/gnustep/libobjc2.git">gnustep/libobjc2</a></td><td>cmake</td><td><code>/System/Library/Libraries/libobjc.so</code></td></tr>
+<tr><td>4</td><td><a href="https://github.com/gnustep/libs-base.git">gnustep/libs-base</a></td><td>gnustep-make</td><td><code>/System/Library/Libraries/libgnustep-base.so</code></td></tr>
+<tr><td>5</td><td><a href="https://github.com/gnustep/libs-corebase.git">gnustep/libs-corebase</a></td><td>gnustep-make</td><td><code>/System/Library/Libraries/libgnustep-corebase.so</code></td></tr>
+</tbody>
+</table>
+
+<p>Order is significant: <code>tools-make</code> writes <code>/System/Library/Preferences/GNUstep.conf</code> (the <code>--with-layout=gershwin</code> map), <code>libobjc2</code> needs that config plus an established <code>BlocksRuntime</code> from libdispatch, and <code>libs-base</code>/<code>libs-corebase</code> drive their installs through <code>gnustep-make</code> with <code>GNUSTEP_INSTALLATION_DOMAIN=SYSTEM</code>.</p>
+
+<h3>8.3 libdispatch patches — none, for now</h3>
+<p>We start with <strong>stock <code>swift-corelibs-libdispatch</code></strong> at HEAD, no patches. The gershwin tree carries a 126-line FreeBSD kevent fix (busy-wait on certain timer fflags) but we want to see how launchd behaves against unpatched upstream first. If timer-driven jobs (StartInterval, ThrottleInterval) misbehave during Phase 3 the patch goes in <code>patches/</code> and gets applied by <code>checkout.sh</code>; until then the directory doesn't exist.</p>
+
+<h3>8.4 The exact build invocations</h3>
+
+<p>This block is what <code>build.sh</code> runs inside the chroot, after <code>checkout.sh</code> has populated <code>repos/</code> on the host and stage 3 has rsync'd it to <code>$REPOS_DIR=/tmp/repos</code>. Verbatim — these commands are known-good for installing this set into <code>/System/Library/</code>.</p>
+
+<p><strong>FreeBSD-only simplification:</strong> we don't need the multi-OS <code>detect_platform()</code> dance the gershwin scripts carry. <code>MAKE_CMD</code> and <code>CPUS</code> are constants here:</p>
+
+<pre class="shell"><code>MAKE_CMD=gmake
+CPUS=$(sysctl -n hw.ncpu)</code></pre>
+
+<p>No <code>case $OS in FreeBSD|GhostBSD|Linux ...</code> switch. Anyone wanting Linux/NetBSD support forks the repo.</p>
+
+<h4>libdispatch</h4>
+<pre class="shell"><code>cd "$REPOS_DIR/swift-corelibs-libdispatch/Build"
+
+cmake .. \
+  -DCMAKE_INSTALL_PREFIX=/System/Library \
+  -DCMAKE_INSTALL_LIBDIR=Libraries \
+  -DINSTALL_DISPATCH_HEADERS_DIR=/System/Library/Headers/dispatch \
+  -DINSTALL_BLOCK_HEADERS_DIR=/System/Library/Headers \
+  -DINSTALL_OS_HEADERS_DIR=/System/Library/Headers/os \
+  -DINSTALL_PRIVATE_HEADERS=ON \
+  -DCMAKE_INSTALL_MANDIR=Documentation/man \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER=clang++
+
+"$MAKE_CMD" -j"$CPUS" || exit 1
+"$MAKE_CMD" install   || exit 1</code></pre>
+
+<h4>tools-make</h4>
+<pre class="shell"><code>cd "$REPOS_DIR/tools-make"
+$MAKE_CMD distclean 2&gt;/dev/null || true
+
+./configure \
+  --with-config-file=/System/Library/Preferences/GNUstep.conf \
+  --with-layout=gershwin \
+  --with-library-combo=ng-gnu-gnu \
+  --with-objc-lib-flag=" " \
+  LDFLAGS="-L/System/Library/Libraries" \
+  CPPFLAGS="-I/System/Library/Headers" \
+  libobjc_LIBS=" "
+
+$MAKE_CMD         || exit 1
+$MAKE_CMD install</code></pre>
+
+<h4>libobjc2</h4>
+<pre class="shell"><code>if [ -d "$REPOS_DIR/libobjc2/Build" ]; then
+  rm -rf "$REPOS_DIR/libobjc2/Build"
+fi
+mkdir -p "$REPOS_DIR/libobjc2/Build"
+cd "$REPOS_DIR/libobjc2/Build"
+
+cmake .. \
+  -DGNUSTEP_INSTALL_TYPE=SYSTEM \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DEMBEDDED_BLOCKS_RUNTIME=OFF \
+  -DBlocksRuntime_INCLUDE_DIR=/System/Library/Headers \
+  -DBlocksRuntime_LIBRARIES=/System/Library/Libraries/libBlocksRuntime.so
+
+"$MAKE_CMD" -j"$CPUS" || exit 1
+"$MAKE_CMD" install   || exit 1</code></pre>
+
+<h4>libs-base (Foundation)</h4>
+<pre class="shell"><code>export GNUSTEP_INSTALLATION_DOMAIN="SYSTEM"
+
+cd "$REPOS_DIR/libs-base"
+./configure \
+  --with-dispatch-include=/System/Library/Headers \
+  --with-dispatch-library=/System/Library/Libraries
+
+$MAKE_CMD -j"$CPUS" || exit 1
+$MAKE_CMD install
+$MAKE_CMD clean</code></pre>
+
+<h4>libs-corebase (CoreFoundation)</h4>
+<pre class="shell"><code>cd "$REPOS_DIR/libs-corebase"
+./configure \
+  CPPFLAGS="-I/System/Library/Headers" \
+  LDFLAGS="-L/System/Library/Libraries"
+
+$MAKE_CMD -j"$CPUS" || exit 1
+$MAKE_CMD install
+$MAKE_CMD clean</code></pre>
+
+<h3>8.5 Runtime linker</h3>
+<p>Two parts. (a) launchd is linked with <code>-Wl,-rpath,/System/Library/Libraries</code> in its Makefile so it finds its own libs without environment help. (b) For everything else on the system that wants to link our libs, a one-line file <code>overlays/etc/ld-elf.so.conf.d/system.conf</code> containing <code>/System/Library/Libraries</code> ships in the ISO and is picked up by <code>ldconfig</code> at first boot.</p>
+
+<div class="risk">
+<strong>BlocksRuntime sourcing.</strong> The libobjc2 invocation expects <code>/System/Library/Libraries/libBlocksRuntime.so</code> already exists with the matching headers in <code>/System/Library/Headers/</code>. libdispatch's cmake builds and installs <code>libBlocksRuntime</code> when <code>INSTALL_PRIVATE_HEADERS=ON</code> + the Block headers are routed to <code>/System/Library/Headers</code>; verify in Phase 2 that this is sufficient, otherwise <code>build.sh</code> needs an explicit pre-step that builds BlocksRuntime separately (it lives in <code>swift-corelibs-libdispatch/src/BlocksRuntime/</code>).
+</div>
+
+<h3>8.6 The clone loop inside <code>build.sh</code></h3>
+
+<p>The git-clone stage is just a shell loop near the top of <code>build.sh</code>, before pkgbase extraction. Trimmed from the 15-repo gershwin-developer Checkout.sh to the 5 we actually need. No pinning, no patches — tracks upstream HEAD.</p>
+
+<pre class="shell"><code>REPOS_DIR="$(pwd)/repos"
+
+REPOS="
+https://github.com/apple/swift-corelibs-libdispatch.git
+https://github.com/gnustep/libobjc2.git
+https://github.com/gnustep/tools-make.git
+https://github.com/gnustep/libs-base.git
+https://github.com/gnustep/libs-corebase.git
+"
+
+mkdir -p "$REPOS_DIR"
+cd "$REPOS_DIR"
+
+for REPO in $REPOS; do
+    NAME=$(basename "$REPO" .git)
+    if [ -d "$NAME/.git" ]; then
+        echo "Updating $NAME..."
+        ( cd "$NAME" &amp;&amp; git fetch --all --tags &amp;&amp; git pull --ff-only )
+    else
+        echo "Cloning $NAME..."
+        git clone "$REPO"
+    fi
+done
+
+cd -
+</code></pre>
+
+<h3>8.7 Package lists — start minimal, add when something breaks</h3>
+
+<p><strong>Stance: install nothing we don't need.</strong> The starting point is the absolute minimum that lets <code>build.sh</code> get past <code>cmake</code> and <code>./configure</code>; everything else is added one package at a time, only when a build or runtime failure surfaces it. The gershwin desktop's <code>Bootstrap.sh</code> carries ~60 packages because it builds the full GUI stack — we are not building any of that, so we should not cargo-cult the list.</p>
+
+<h4><code>buildpkgs.txt</code> — minimum to start</h4>
+<pre><code>cmake
+ninja
+gmake
+autoconf
+libtool
+</code></pre>
+<p><code>clang</code>/<code>clang++</code> ship in FreeBSD base, so they aren't listed. <code>git</code> is intentionally absent: all <code>git clone</code>s happen on the host before the chroot exists; the chroot is git-free. <code>pkgconf</code>, <code>automake</code>, <code>llvm</code> all left out — add only if a configure step actually demands them.</p>
+
+<h4><code>pkglist.txt</code> — start empty</h4>
+<pre><code># intentionally empty — populated as Phase 2 surfaces requirements
+</code></pre>
+<p>Run the build, see what fails, add the matching package, run again. The likely candidates (in rough order of probability) are:</p>
+
+<ul>
+  <li><code>libffi</code> — libobjc2 needs this for NSInvocation; build will probably fail at libobjc2 cmake without it.</li>
+  <li><code>icu</code> — libs-base needs this for NSLocale/NSString; configure will probably refuse without it.</li>
+  <li><code>libxml2</code> — libs-base uses it for NSXMLParser and the XML branch of NSPropertyListSerialization. Configure may have a <code>--disable-xml</code> path; if it does, take that path.</li>
+</ul>
+
+<p>Things from the gershwin <code>Bootstrap.sh</code> we explicitly do not add unless something forces our hand:</p>
+
+<ul>
+  <li><code>libxslt</code> — XSLT transforms only; we parse plists.</li>
+  <li><code>gnutls</code> / <code>openssl</code> — TLS in NSURLConnection; launchd doesn't speak TLS. Configure libs-base with <code>--disable-tls</code> if it has the flag; if not, deal with it then.</li>
+  <li><code>mDNSResponder</code>, <code>dbus</code>, <code>cups</code>, <code>wget</code> — no Bonjour, no D-Bus, no printing, no fetching in-chroot.</li>
+  <li><code>squashfs-tools-ng</code>, <code>fusefs-squashfuse</code> — we use <code>mkuzip</code> + <code>geom_uzip</code> + in-kernel <code>unionfs</code>, not squashfs.</li>
+  <li><code>libvncserver</code>, <code>freerdp</code> — remote desktop, not in scope.</li>
+  <li>libjpeg-turbo, <code>tiff</code>, <code>png</code>, <code>giflib</code>, <code>ImageMagick7</code>, <code>cairo</code>, <code>libXft</code>, <code>libXt</code>, <code>libxcb</code>, <code>xcb-util-*</code>, <code>xrandr</code>, <code>libXrandr</code>, <code>libXcomposite</code>, <code>xorg-fonts-truetype</code>, <code>freeglut</code> — all GUI/image/X11. We have no display server.</li>
+  <li><code>flite</code>, <code>portaudio</code>, <code>libao</code> — audio. Not on a server.</li>
+</ul>
+
+<p>The pattern: <strong>every package added to either list gets a one-line commit message naming the build step that demanded it.</strong> Future readers (and future-you) can then audit whether that demand still holds when the upstream changes.</p>
+
+<h3>8.8 Two scripts: <code>build.sh</code> (livecd) and <code>make-launchd.sh</code> (reusable)</h3>
+
+<p>Everything livecd-specific lives in <code>build.sh</code>: the git clones, the pkgbase extraction, the chroot setup, the GNUstep-library builds, the slim pass, the mkuzip, the cd9660 wrap. <code>make-launchd.sh</code> is the only standalone-reusable piece — it's what gershwin-on-freebsd will call to add launchd to a system that already has the GNUstep stack.</p>
+
+<table>
+<thead><tr><th>Script</th><th>Runs where</th><th>Standalone?</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>build.sh</code></td><td>Host (FreeBSD VM)</td><td>(it <em>is</em> the livecd builder)</td><td>Inline git-clone of the 5 upstreams into <code>repos/</code>. Extract pkgbase, mount chroot, rsync repos in, run the five GNUstep build invocations from §8.4, then call <code>make-launchd.sh</code> chrooted, purge buildpkgs, slim, mkuzip, cd9660.</td></tr>
+<tr><td><code>make-launchd.sh</code></td><td>Chroot or live host</td><td><strong>Yes — designed for this</strong></td><td>cd into <code>src/</code>, build launchd against <code>/System/Library/</code>, install <code>launchd</code> + <code>launchctl</code> to <code>/sbin/</code>, install plists from <code>plists/</code> to <code>/System/Library/LaunchDaemons/</code>. Hard-checks for <code>/System/Library/Libraries/libdispatch.so</code> and <code>libgnustep-base.so</code> before doing anything; exits with a clear error if they're missing.</td></tr>
+<tr><td><code>tests/boot-test.sh</code></td><td>Host (CI Linux)</td><td>Yes</td><td>qemu+expect smoke test against an ISO path passed as <code>$1</code>.</td></tr>
+</tbody>
+</table>
+
+<h4>The gershwin-on-freebsd integration story</h4>
+<p>The whole reason for splitting <code>make-launchd.sh</code> out as standalone: gershwin-on-freebsd already builds the full GNUstep stack (libdispatch + libobjc2 + tools-make + libs-base + libs-corebase + libs-gui + libs-back + Workspace + LoginWindow + everything) into <code>/System/Library/</code> via the upstream <code>gershwin-developer</code> meta-installer. It does <em>not</em> have launchd. To add launchd, that ISO builder just does:</p>
+
+<pre class="shell"><code># Inside the gershwin-on-freebsd chroot, after gershwin-developer's
+# Install-System-Domain.sh has placed libdispatch + Foundation in /System/Library/
+
+git clone https://github.com/pkgdemon/freebsd-launchd /tmp/launchd
+cd /tmp/launchd
+./make-launchd.sh           # checks for /System/Library/Libraries/*, builds, installs to /sbin/
+
+# Wire launchd as PID 1 in the gershwin-on-freebsd loader.conf:
+echo 'init_path="/sbin/launchd"' &gt;&gt; "$WORK/cdroot/boot/loader.conf"</code></pre>
+
+<p><strong>That's the entire integration.</strong> No git submodule, no shared CI, no version coupling. gershwin-on-freebsd clones the launchd repo in its own build script and gets a tested, boot-verified launchd dropped on top of its existing /System/Library/ tree. Symmetrically, our own <code>build.sh</code> calls <code>make-launchd.sh</code> in its chroot — same script, same behavior, no code duplication.</p>
+
+<div class="open-q">
+<strong>Standalone-script contract.</strong> <code>make-launchd.sh</code> takes one optional argument: <code>--prefix</code> (default <code>/</code>). All paths are resolved relative to that prefix, so the same script works for chroot installs (<code>--prefix=/path/to/chroot</code>) and live-system installs (<code>--prefix=/</code>). Settle the exact CLI in Phase 3 when the script first goes in.
+</div>
+
+<h2 id="livecd">9. The livecd build pipeline</h2>
+
+<p>Lifted directly from <a href="https://github.com/pkgdemon/freebsd-livecd-unionfs"><code>freebsd-livecd-unionfs</code></a>. The skeleton — pkgbase extraction, chroot mount, slim, mkuzip, hybrid cd9660 — is unchanged. We add two new chroot stages between "pkg install" and "slim".</p>
+
+<div class="ascii-diagram">                  +-------------------------------------------+
+                  | 0. host: ./checkout.sh                    |   NEW
+                  |    git clone 5 upstreams into repos/      |
+                  |    at HEAD (git pull --ff-only on re-run) |
+                  |    (cached on CI runner; gitignored)      |
+                  +---------------------+---------------------+
+                                        |
+                                        v
+                  +-------------------------------------------+
+                  | 1. fetch base.txz + kernel.txz            |
+                  |    from download.freebsd.org              |
+                  |    (cached in distfiles/)                 |
+                  +---------------------+---------------------+
+                                        |
+                                        v
+                  +-------------------------------------------+
+                  | 2. extract -&gt; work/rootfs/                |
+                  |    cap_mkdb, pwd_mkdb                     |
+                  +---------------------+---------------------+
+                                        |
+                                        v
+                  +-------------------------------------------+
+                  | 3. chroot + pkg bootstrap                 |
+                  |    pkg install -y &lt; pkglist.txt           |  &lt;-- runtime deps
+                  |    pkg install -y &lt; buildpkgs.txt         |  &lt;-- build deps (purged later)
+                  |    rsync repos/ -&gt; chroot:/tmp/repos/     |  &lt;-- chroot stays git-free
+                  |    rsync src/   -&gt; chroot:/tmp/launchd/   |
+                  +---------------------+---------------------+
+                                        |
+                                        v   NEW
+                  +-------------------------------------------+
+                  | 4. chroot: build GNUstep system domain    |
+                  |    libdispatch -&gt; tools-make -&gt; libobjc2  |
+                  |       -&gt; libs-base -&gt; libs-corebase       |
+                  |    install to /System/Library/            |
+                  +---------------------+---------------------+
+                                        |
+                                        v   NEW
+                  +-------------------------------------------+
+                  | 5. chroot: build launchd                  |
+                  |    cd /tmp/launchd && make / install      |
+                  |    -&gt; /sbin/launchd, /sbin/launchctl      |
+                  |    -&gt; /System/Library/LaunchDaemons/*     |
+                  +---------------------+---------------------+
+                                        |
+                                        v
+                  +-------------------------------------------+
+                  | 6. pkg delete -af buildpkgs               |  &lt;-- purge before slim
+                  |    pkg clean -ay                          |
+                  +---------------------+---------------------+
+                                        |
+                                        v
+                  +-------------------------------------------+
+                  | 7. slim: rm man/doc/info/locale/games/    |
+                  |    examples/include/tests/lib/debug       |
+                  |    rm kernel/*.symbols                    |
+                  +---------------------+---------------------+
+                                        |
+                                        v
+                  +-------------------------------------------+
+                  | 8. cp overlays/. -&gt; work/rootfs/          |
+                  |    rewrite /etc/fstab                     |
+                  +---------------------+---------------------+
+                                        |
+                                        v
+                  +-------------------------------------------+
+                  | 9. makefs ffs2 -&gt; rootfs.img              |
+                  |    mkuzip -A zstd -C 19 -&gt; rootfs.uzip    |
+                  +---------------------+---------------------+
+                                        |
+                                        v
+                  +-------------------------------------------+
+                  |10. cdroot/: loader, kernel.gz, .ko mods,  |
+                  |    /rescue, ramdisk/init.sh, rootfs.uzip  |
+                  |    /sbin/init -&gt; /rescue/init  (cd9660)   |
+                  |    boot/loader.conf init_path=/sbin/launchd|
+                  +---------------------+---------------------+
+                                        |
+                                        v
+                  +-------------------------------------------+
+                  |11. makefs cd9660 rockridge                |
+                  |    El Torito BIOS + EFI                   |
+                  |    -&gt; out/livecd.iso                      |
+                  +-------------------------------------------+</div>
+
+<h3>9.1 Why build inside the chroot, not on the host VM?</h3>
+<ul>
+  <li><strong>Hermetic.</strong> What we link against = what we ship. No risk of accidentally linking against a host library that won't exist in the booted system.</li>
+  <li><strong>Same toolchain as the runtime.</strong> Compiler version, libc version, headers all match the rootfs we're shipping.</li>
+  <li><strong>The chroot already has every base header we need.</strong> The pkgbase <code>base.txz</code> contains the full base userland; <code>buildpkgs.txt</code> only adds cmake/ninja/clang-extras/git that aren't in base.</li>
+</ul>
+
+<h3>9.2 PID 1 handoff</h3>
+<p>Two-stage. (a) cd9660 boots → loader → kernel → kernel execs <code>/sbin/init</code> (which is a symlink to <code>/rescue/init</code> on cd9660) → <code>/rescue/init</code> reads <code>init_chroot=/sysroot</code> kenv and runs <code>/init.sh</code>. (b) <code>init.sh</code> mounts the uzip-backed unionfs at <code>/sysroot</code>, then sets <code>kenv init_path=/sbin/launchd</code> and re-execs init so the post-chroot init is our launchd binary.</p>
+
+<div class="open-q">
+<strong>Worth verifying empirically:</strong> FreeBSD's <code>init</code> reads <code>init_path</code> at startup; whether it re-reads after <code>chroot</code> is what determines whether the kenv approach works or whether we need a small shim at <code>/sysroot/sbin/init</code> that <code>exec</code>s <code>/sbin/launchd</code>. Either path is cheap; settle in Phase 2.
+</div>
+
+<h2 id="ci">10. CI &amp; release pipeline</h2>
+
+<p>Three GitHub Actions jobs. Pattern lifted from <code>freebsd-livecd-unionfs/.github/workflows/build.yml</code>.</p>
+
+<table>
+<thead><tr><th>Job</th><th>Runner</th><th>What it does</th><th>Gate</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>build</code></td>
+  <td>ubuntu-latest hosting <code>vmactions/freebsd-vm@v1</code> (FreeBSD 15.0, 8 GB RAM, 4 CPU)</td>
+  <td>Disk-space cleanup, restore distfiles cache (keyed on <code>pkglist.txt</code> + <code>buildpkgs.txt</code>), <code>sh build.sh</code>, copy <code>out/</code> back to host, upload <code>livecd.iso</code> + <code>SHA256SUMS</code> as artifact.</td>
+  <td>Exit 0 from <code>build.sh</code></td>
+</tr>
+<tr>
+  <td><code>test</code></td>
+  <td>ubuntu-latest</td>
+  <td><code>apt-get install qemu-system-x86 expect ovmf</code>; download artifact; run <code>tests/boot-test.sh out/livecd.iso</code>; on failure upload <code>tests/boot.log</code>.</td>
+  <td>Both serial markers seen within 8 min</td>
+</tr>
+<tr>
+  <td><code>release</code></td>
+  <td>ubuntu-latest</td>
+  <td><code>needs: [build, test]</code> + <code>if: github.ref == 'refs/heads/main' &amp;&amp; github.event_name == 'push'</code>. Renames ISO to <code>FreeBSD-15.0-amd64-launchd-YYYYMMDD.iso</code> + <code>.sha256</code>; <code>gh release delete continuous --yes --cleanup-tag</code>; <code>softprops/action-gh-release@v2</code> re-publishes with <code>tag_name: continuous</code>, <code>prerelease: true</code>.</td>
+  <td>Both prior jobs green</td>
+</tr>
+</tbody>
+</table>
+
+<h3>10.1 Boot-test marker set</h3>
+<p>The current livecd-unionfs test waits for one marker: <code>login:</code> on serial. We extend to two:</p>
+
+<pre class="shell"><code>spawn qemu-system-x86_64 -m 4G -machine q35 -bios $OVMF \
+    -cdrom $iso -display none -serial stdio -no-reboot
+
+# Marker 1: launchd announces itself early
+expect {
+    timeout { puts "\nFAIL: launchd did not announce within 8 min"; exit 1 }
+    "launchd: PID 1 ready" { puts "OK: launchd is PID 1" }
+}
+
+# Marker 2: getty came up via the launchd plist (or via init's /etc/ttys path)
+expect {
+    timeout { puts "\nFAIL: 'login:' prompt not seen"; exit 1 }
+    "login:" { puts "OK: boot reached the login prompt" }
+}</code></pre>
+
+<p><code>launchd: PID 1 ready</code> is logged by our <code>launchd.c</code> after directory scan completes and the AF_UNIX server is accepting. Two markers means: <em>the binary is PID 1</em> AND <em>launchd's job model actually came up enough to spawn getty</em>. Either marker missing fails the release gate — no broken ISO ships.</p>
+
+<h2 id="boot">11. Boot flow without rcorder</h2>
+
+<p>FreeBSD <code>rc.d</code> uses <code>rcorder(8)</code> to topologically sort scripts by their <code># PROVIDE</code>/<code># REQUIRE</code>/<code># BEFORE</code> headers. launchd philosophically rejects this in favor of <strong>runtime dependency</strong> — a job blocks on the resource it needs and launchd starts the provider on demand.</p>
+
+<h3>11.1 Socket-activated daemons (the easy 80%)</h3>
+<p>Daemons that listen on sockets — <code>sshd</code>, <code>rpcbind</code>, <code>mountd</code>, <code>syslogd</code> — declare their listen sockets in their plist's <code>Sockets</code> key. launchd opens the socket, listens on the daemon's behalf, and only forks the daemon when a connection arrives. Anything that needs the daemon just <code>connect()</code>s; the kernel queues the connection until the daemon answers. <strong>Eliminates ordering for socket clients</strong>: <code>nfsd</code> calling <code>rpcbind</code> via the loopback socket Just Works regardless of start order.</p>
+
+<h3>11.2 Phase no-op jobs (the awkward 15%)</h3>
+<p>Some "dependencies" aren't sockets — "filesystems mounted", "network configured", "kernel modules loaded". Each becomes a one-shot plist with a well-known label that touches a stamp file on success:</p>
+
+<table>
+<thead><tr><th>Phase job label</th><th>Does</th><th>Stamp file</th></tr></thead>
+<tbody>
+<tr><td><code>org.freebsd.phase.kld-loaded</code></td><td><code>kldload</code> everything in <code>kld_list</code></td><td><code>/var/run/.phase.kld-loaded</code></td></tr>
+<tr><td><code>org.freebsd.phase.filesystems-ready</code></td><td><code>fsck -p</code> + <code>mount -a -t nonfs,nullfs</code> + <code>swapon -a</code></td><td><code>/var/run/.phase.filesystems-ready</code></td></tr>
+<tr><td><code>org.freebsd.phase.network-ready</code></td><td>Touch the file once <code>PF_ROUTE</code> reports <code>RTM_NEWADDR</code> for any non-loopback iface</td><td><code>/var/run/.phase.network-ready</code></td></tr>
+</tbody>
+</table>
+
+<h3>11.3 Explicit ordering (the last 5%)</h3>
+<p>Narrow extension to the plist schema: a <code>RequiresPhase</code> array key the bootstrapper resolves at load time. Daemons in <code>WAITING</code> until each listed phase's stamp file exists. Gives back rcorder-style declarative power for the few cases that need it without re-introducing a full topological sort.</p>
+
+<h3>11.4 <code>devd</code> is special</h3>
+<p>devd must run before <code>netif</code> because NIC <code>IFATTACH</code> events flow through it. Plan: a <code>LaunchDaemons.early/</code> directory the bootstrapper loads before the main scan. Keeps the launchd binary simple and the early tier declarative.</p>
+
+<h2 id="rcd">12. rc.d port scope</h2>
+
+<h3>12.1 Milestone 1 — launchd boots, console login</h3>
+<p>Smallest possible scope that proves launchd is PID 1: no plists, just the daemon itself + getty via the existing <code>/etc/ttys</code> path. The boot test watches for <code>launchd: PID 1 ready</code> and <code>login:</code> on serial.</p>
+
+<table>
+<thead><tr><th>Service</th><th>Plist label</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>getty</td><td>—</td><td>Not a launchd job in this milestone. <code>init</code> handoff path in <code>launchd.c</code> reads <code>/etc/ttys</code> and execs getty per line. Same code path Apple's launchd has had since 10.4.</td></tr>
+</tbody>
+</table>
+
+<h3>12.2 Milestone 2 — sshd as the first launchd-supervised daemon</h3>
+
+<p><strong>This is the proof-of-life milestone for the supervisor.</strong> Pick one daemon, give it a plist, watch launchd manage it. <code>sshd</code> is the right choice because it (a) is universally useful, (b) gives us an end-to-end smoke test (boot ISO → ssh in from outside → kill the sshd → see launchd respawn it), and (c) forces just enough networking to be real, no more.</p>
+
+<p>Bring-up set for this milestone:</p>
+
+<table>
+<thead><tr><th>Service</th><th>Plist label</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>netif</code> (one-shot)</td><td><code>org.freebsd.netif</code></td><td>One-shot: <code>ifconfig</code> interfaces up from <code>rc.conf</code>. Touches <code>/var/run/.phase.netif-up</code>.</td></tr>
+<tr><td><code>dhclient</code> (one iface for now)</td><td><code>org.freebsd.dhclient.&lt;iface&gt;</code></td><td>Single hand-written plist for the primary iface. Per-iface dynamic generation deferred to milestone 3. KeepAlive=true. RequiresPhase=[netif-up].</td></tr>
+<tr><td><code>sshd</code></td><td><code>org.freebsd.sshd</code></td><td>Socket-activated on TCP/22; <code>inetdCompatibility={Wait:true}</code>. RequiresPhase=[network-ready]. <strong>The headline test target.</strong></td></tr>
+<tr><td>Phase: netif-up</td><td><code>org.freebsd.phase.netif-up</code></td><td>Touched by <code>netif</code>.</td></tr>
+<tr><td>Phase: network-ready</td><td><code>org.freebsd.phase.network-ready</code></td><td>Long-running watcher; touches stamp on first <code>RTM_NEWADDR</code>.</td></tr>
+</tbody>
+</table>
+
+<p>Boot-test extension: third marker watches for sshd listening (e.g. <code>sshd: Server listening on 0.0.0.0 port 22</code>). Gate the release on it.</p>
+
+<h3>12.3 Milestone 3 — remaining base services (shipped, not goal-gating)</h3>
+
+<p>Once milestone 2 is green, fill in plists for the rest of the FreeBSD base service set. <strong>These ship in the repo so users can <code>launchctl load</code> what they want; they don't gate the release.</strong> The ISO doesn't have to <em>start</em> nfsd to pass CI — it just has to ship a working plist for users who do want NFS.</p>
+
+<table>
+<thead><tr><th>Service</th><th>Plist label</th><th>Goal-essential?</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>devd</code></td><td><code>org.freebsd.devd</code></td><td>Yes — most systems want it</td><td>Early-tier; loads before main scan. KeepAlive=true.</td></tr>
+<tr><td><code>syslogd</code></td><td><code>org.freebsd.syslogd</code></td><td>Yes</td><td>Socket-activated on <code>/var/run/log</code>; KeepAlive=true.</td></tr>
+<tr><td><code>cron</code></td><td><code>org.freebsd.cron</code></td><td>Yes</td><td><code>cron -s</code> (no fork); KeepAlive=true.</td></tr>
+<tr><td><code>wpa_supplicant</code> (per iface)</td><td><code>org.freebsd.wpa_supplicant.&lt;iface&gt;</code></td><td>Opt-in (wireless only)</td><td>Per-wireless-interface; generated dynamically. KeepAlive=true. RequiresPhase=[netif-up].</td></tr>
+<tr><td><code>dhclient</code> (per iface, dynamic)</td><td><code>org.freebsd.dhclient.&lt;iface&gt;</code></td><td>Yes</td><td>Replaces the milestone-2 hand-written plist with the dynamic per-iface generation pattern from §12.6.</td></tr>
+<tr><td><code>rpcbind</code></td><td><code>org.freebsd.rpcbind</code></td><td><strong>Ship plist; not goal-essential</strong></td><td>KeepAlive=true; needed only if user opts into NFS. RequiresPhase=[network-ready].</td></tr>
+<tr><td><code>mountd</code></td><td><code>org.freebsd.mountd</code></td><td><strong>Ship plist; not goal-essential</strong></td><td>KeepAlive=true; <code>WatchPaths=[/etc/exports, /etc/zfs/exports]</code> for live reload.</td></tr>
+<tr><td><code>nfsd</code></td><td><code>org.freebsd.nfsd</code></td><td><strong>Ship plist; not goal-essential</strong></td><td>KeepAlive=true; RequiresPhase=[network-ready].</td></tr>
+<tr><td><code>nfsclient</code></td><td><code>org.freebsd.nfsclient</code></td><td><strong>Ship plist; not goal-essential</strong></td><td>One-shot: <code>kldload nfscl</code> + <code>vfs.nfs.*</code> sysctls.</td></tr>
+<tr><td>Phase: kld-loaded</td><td><code>org.freebsd.phase.kld-loaded</code></td><td>Yes</td><td>One-shot.</td></tr>
+<tr><td>Phase: filesystems-ready</td><td><code>org.freebsd.phase.filesystems-ready</code></td><td>Yes</td><td>One-shot.</td></tr>
+</tbody>
+</table>
+
+<h3>12.4 Sketch: <code>org.freebsd.sshd.plist</code></h3>
+<pre class="plist"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+  &lt;key&gt;Label&lt;/key&gt;            &lt;string&gt;org.freebsd.sshd&lt;/string&gt;
+  &lt;key&gt;ProgramArguments&lt;/key&gt; &lt;array&gt;
+                                &lt;string&gt;/usr/sbin/sshd&lt;/string&gt;
+                                &lt;string&gt;-i&lt;/string&gt;
+                              &lt;/array&gt;
+  &lt;key&gt;inetdCompatibility&lt;/key&gt; &lt;dict&gt;&lt;key&gt;Wait&lt;/key&gt;&lt;true/&gt;&lt;/dict&gt;
+  &lt;key&gt;Sockets&lt;/key&gt;          &lt;dict&gt;
+    &lt;key&gt;Listeners&lt;/key&gt;      &lt;dict&gt;
+      &lt;key&gt;SockServiceName&lt;/key&gt; &lt;string&gt;ssh&lt;/string&gt;
+      &lt;key&gt;SockType&lt;/key&gt;        &lt;string&gt;stream&lt;/string&gt;
+      &lt;key&gt;Bonjour&lt;/key&gt;         &lt;false/&gt;
+    &lt;/dict&gt;
+  &lt;/dict&gt;
+  &lt;key&gt;RequiresPhase&lt;/key&gt;    &lt;array&gt;&lt;string&gt;network-ready&lt;/string&gt;&lt;/array&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</code></pre>
+
+<h3>12.5 Out of scope (won't port — server scope)</h3>
+<ul>
+  <li><strong>Hardware-laptop:</strong> <code>apm</code>, <code>apmd</code>, <code>powerd</code>, <code>bluetooth</code>, <code>hcsecd</code>, <code>sdpd</code>, <code>watchdogd</code></li>
+  <li><strong>Legacy / deprecated:</strong> <code>sendmail</code>, <code>sendmail_submit</code>, <code>amd</code>, <code>ntpdate</code>, <code>ftpd</code>, <code>tftpd</code>, <code>inetd</code> (launchd <em>is</em> the inetd replacement), <code>ypbind</code>/<code>ypserv</code>/<code>yppasswdd</code> (NIS, dead)</li>
+  <li><strong>Niche:</strong> <code>accounting</code>, <code>bsnmpd</code>, <code>hastd</code>, <code>ctld</code>, <code>iscsid</code>, <code>nfscbd</code>, <code>gssd</code></li>
+  <li><strong>Firewall:</strong> port one path (probably <code>pf</code>); skip <code>ipfw</code>/<code>ipfw_netflow</code>/<code>pflog</code>/<code>pfsync</code> until requested</li>
+  <li><strong>Caching:</strong> <code>local_unbound</code>, NSS caches — not until requested</li>
+</ul>
+
+<h3>12.6 The "anything else becomes a one-shot" rule</h3>
+<p>Single most important translation rule: <strong>anything <code>rc.d</code> does that isn't "run a long-lived daemon" becomes a one-shot plist</strong> with <code>RunAtLoad=true, KeepAlive=false, LaunchOnlyOnce=true</code>. Examples: <code>sysctl</code> from <code>/etc/sysctl.conf</code>, <code>kldload</code> from <code>kld_list</code>, <code>fsck -p</code> + <code>mount -a</code>, <code>swapon -a</code>, <code>/var/run</code> + <code>/tmp</code> cleanup. Live config-file reload (<code>service foo reload</code>) is a strict improvement in launchd via <code>WatchPaths</code> / <code>QueueDirectories</code>.</p>
+
+<h2 id="license">13. Licensing</h2>
+
+<p>The repo is a composition of three source families. They coexist cleanly under a single top-level <code>LICENSE</code> with per-file headers preserved — <strong>no dual-licensing needed</strong>. Top-level: <strong>BSD-2-Clause</strong> (matches the FreeBSD ecosystem and your other repos; aligns with FreeBSD base itself).</p>
+
+<table>
+<thead><tr><th>Source</th><th>License</th><th>How we handle it in-tree</th></tr></thead>
+<tbody>
+<tr><td>Apple <code>launchd-842.1.4</code> (<code>@APPLE_APACHE_LICENSE_HEADER_START@</code> in every file)</td><td>Apache 2.0</td><td>Keep the Apple header verbatim. Our edits to those files inherit Apache 2.0 via inbound=outbound — those individual files stay Apache regardless of top-level.</td></tr>
+<tr><td>Files lifted from <code>freebsd-livecd-unionfs</code> (<code>build.sh</code>, <code>tests/boot-test.sh</code>, <code>ramdisk/init.sh</code>, the workflow YAML)</td><td>BSD-2-Clause</td><td>Your own code. Keep the BSD-2-Clause header from the source repo. Same license as top-level, no friction.</td></tr>
+<tr><td><code>swift-corelibs-libdispatch</code> (linked, not in tree)</td><td>Apache 2.0 with Runtime Library Exception</td><td>Listed in <code>NOTICE</code>. Runtime exception means linking against it doesn't impose Apache on the linker.</td></tr>
+<tr><td>GNUstep base / corebase / libobjc2 (linked, not in tree)</td><td>LGPL 2.1+ / LGPL 3 (with linking exception) / MIT (libobjc2)</td><td>Listed in <code>NOTICE</code>. Linking exception lets PID 1 link Foundation without itself becoming LGPL. Per LGPL §6, ISO release notes link to the upstream commit the build was made from.</td></tr>
+<tr><td>This repo's new code (<code>checkout.sh</code>, plists, our launchd rewrite hunks, <code>compat/</code>)</td><td><strong>BSD-2-Clause</strong></td><td>Each new file gets a BSD-2-Clause SPDX header. Matches the top-level and the FreeBSD norm.</td></tr>
+</tbody>
+</table>
+
+<h3>13.1 Why BSD-2-Clause top-level (and not Apache 2.0)</h3>
+<ol>
+  <li><strong>FreeBSD ecosystem fit.</strong> FreeBSD base is BSD-2-Clause; <code>freebsd-livecd-unionfs</code> is BSD-2-Clause; a FreeBSD sysadmin opening the repo expects BSD-2-Clause. Apache 2.0 would be a momentary surprise.</li>
+  <li><strong>Apple's headers don't depend on our top-level choice.</strong> Apple's <code>@APPLE_APACHE_LICENSE_HEADER_START@</code> blocks stay on every Apple file regardless. Top-level license only governs files we ourselves author.</li>
+  <li><strong>The patent-grant argument doesn't cut here.</strong> Apache 2.0's patent grant matters when <em>contributors</em> contribute patented inventions and you want downstream protection from their future-self assertions. For a port of someone else's already-Apache-2.0 code, the existing grant on those files is preserved by the file header — top-level license doesn't change that. We're not introducing patentable inventions of our own.</li>
+  <li><strong>Smaller surface.</strong> BSD-2-Clause has no <code>NOTICE</code> requirement, no §4(d) ceremony. Cleaner.</li>
+</ol>
+<p>Real-world precedent: FreeBSD base itself contains Apache-licensed code (e.g. portions of OpenJDK) under a BSD-2-Clause-licensed project umbrella. Apache files keep their headers; the project is BSD. Same pattern as here.</p>
+
+<h3>13.2 Why not dual-license</h3>
+<p>Dual licensing (e.g. "BSD-2-Clause OR Apache-2.0") makes sense when consumers need to pick either license at use time — typical for libraries that want to be drop-in for both GPL and permissive consumers. Nothing here is that case: consumers download the ISO, they don't relink against our <code>.so</code>s. Dual-licensing the top-level adds friction (every <code>NOTICE</code>-equivalent, every contribution, every dependency review considers two licenses) for zero downstream benefit.</p>
+
+<h3>13.3 Modifying Apple's launchd files — what the rules require</h3>
+<p>We will modify Apple files extensively (gut Mach paths, rewrite <code>core.c</code>, etc.). Apache 2.0 explicitly permits this. The compliance checklist per Apache 2.0 §4:</p>
+
+<ol>
+  <li><strong>Keep the original copyright header verbatim.</strong> Every Apple file's <code>@APPLE_APACHE_LICENSE_HEADER_START@</code> through <code>@APPLE_APACHE_LICENSE_HEADER_END@</code> block stays at the top of the file, even after we delete 80% of the body.</li>
+  <li><strong>Add a "Modified by..." note immediately below the Apple header.</strong> Apache 2.0 §4(b): "modified files must carry prominent notices stating that You changed the files." A two-line note suffices:
+    <pre><code>/*
+ * Modified 2026 by Joe Maloney for the freebsd-launchd project.
+ * SPDX-License-Identifier: Apache-2.0  (this file remains Apache 2.0)
+ */</code></pre>
+    The SPDX line clarifies for tooling that <em>this individual file</em> stays Apache even though the project top-level is BSD-2-Clause.
+  </li>
+  <li><strong>Modified file stays Apache 2.0.</strong> Our changes to that file are Apache-licensed (inbound=outbound). The project top-level (BSD-2-Clause) doesn't override per-file licensing — Apache files in a BSD project remain Apache; BSD files in an Apache project remain BSD. License is per-file, not per-repo.</li>
+  <li><strong><code>NOTICE</code> file at repo root.</strong> Apple's launchd source ships with a <code>NOTICE</code> requirement. Even though BSD-2-Clause itself doesn't require one, we still ship a <code>NOTICE</code> at the repo root because some Apache files in our tree carry that requirement. Listing what's in there:
+    <pre><code>freebsd-launchd
+Copyright 2026 Joe Maloney and contributors
+Licensed under BSD-2-Clause (see LICENSE).
+
+This product includes software developed by:
+  - Apple Inc. (launchd, 2005-2012, Apache 2.0)
+    https://github.com/apple/launchd
+    Modified by freebsd-launchd contributors; see git log.
+
+  - Apple Inc. and the Swift project authors
+    (swift-corelibs-libdispatch, Apache 2.0 + Runtime Library Exception)
+    Linked at runtime; not included in this source tree.
+
+  - The GNUstep Project
+    (libs-base, libs-corebase, LGPL 2.1+ / 3 with linking exception)
+    Linked at runtime; not included in this source tree.
+
+  - The libobjc2 contributors
+    (libobjc2, MIT) — linked at runtime; not in source tree.</code></pre>
+  </li>
+  <li><strong>New files we author</strong> (build.sh, make-launchd.sh, the plists, our compat shims) get a BSD-2-Clause SPDX header:
+    <pre><code>/*
+ * Copyright 2026 Joe Maloney and freebsd-launchd contributors
+ * SPDX-License-Identifier: BSD-2-Clause
+ */</code></pre>
+  </li>
+</ol>
+
+<p>None of this is novel — every Apache-derived BSD project (and there are many in the FreeBSD world) follows this pattern. A reader can run <code>find . -name '*.[ch]' | xargs grep -l SPDX-License-Identifier</code> and immediately see which files are Apache and which are BSD.</p>
+
+<h3>13.4 Shipping LGPL source for built-in-libraries</h3>
+<p>The ISO ships <code>libgnustep-base.so</code> and <code>libgnustep-corebase.so</code> (LGPL 2.1+ / LGPL 3 with linking exception) as built binaries. Per LGPL §6, recipients must be able to obtain the corresponding source. Two ways to satisfy this:</p>
+<ol>
+  <li><strong>Ship source as a tarball</strong> under <code>/System/Library/Source/</code> in the ISO. Self-contained, large.</li>
+  <li><strong>Release notes link to the upstream commit the ISO was built from.</strong> §6 explicitly permits this. Cheaper, smaller ISO.</li>
+</ol>
+<p>Plan goes with option 2 — see Q5 in §15.</p>
+
+<h2 id="phases">14. Phased delivery</h2>
+
+<div class="phase">
+<h3>Phase 0 — scaffold the repo from livecd-unionfs</h3>
+<ul>
+  <li>Create the empty repo at <code>pkgdemon/freebsd-launchd</code>, add <code>LICENSE</code> (BSD-2-Clause), <code>NOTICE</code>, <code>README.md</code>, <code>.gitignore</code>, link to this published plan.</li>
+  <li>Copy verbatim from <code>freebsd-livecd-unionfs</code>: <code>boot/loader.conf</code>, <code>ramdisk/init.sh</code>, <code>tests/boot-test.sh</code>, <code>.github/workflows/build.yml</code>, <code>build.sh</code>.</li>
+  <li>Adapt <code>build.sh</code>: rename labels from "unionfs" to "launchd", bump artifact filename pattern, update <code>tag_name</code> body text. Build still produces an ISO identical to livecd-unionfs at this stage — proves the pipeline works in the new repo.</li>
+  <li>CI green: ISO built, boot-tested to <code>login:</code>, published as <code>continuous</code>.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 1 — import &amp; amputate launchd</h3>
+<ul>
+  <li><code>scripts/import-source.sh</code> clones <code>apple-oss-distributions/launchd</code> at tag matching <code>launchd-842.1.4</code>, strips <code>.git</code>, drops it under <code>src/</code>.</li>
+  <li>Single follow-up commit deletes the wholly-Mach files (per §6.1). Commit message lists deletions verbatim.</li>
+  <li>No build wired up yet; ISO unchanged.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 2 — GNUstep system domain in <code>build.sh</code></h3>
+<ul>
+  <li>Add the host-side git-clone loop near the top of <code>build.sh</code> (per §8.6).</li>
+  <li>Add <code>repos/</code> to <code>.gitignore</code>.</li>
+  <li>Add <code>buildpkgs.txt</code> (cmake, ninja, gmake, autoconf, libtool — no <code>git</code>; chroot stays git-free).</li>
+  <li>Extend <code>build.sh</code> with the chroot-side rsync of <code>repos/</code> in, plus the five build invocations from §8.4.</li>
+  <li>Extend <code>build.sh</code> with the buildpkgs purge step.</li>
+  <li>Add overlay <code>etc/ld-elf.so.conf.d/system.conf</code>.</li>
+  <li>Boot test still expects <code>login:</code> only — the GNUstep libs are present but nothing in the ISO uses them yet. Confirms the install didn't break boot.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 3 — launchd daemon &amp; client (milestone 1 from §12.1)</h3>
+<ul>
+  <li>Phase 3a: <code>runtime.c</code> rewrite on libdispatch; <code>launchd.c</code> minimal main; foreground daemon with one preloaded plist.</li>
+  <li>Phase 3b: <code>ipc.c</code> AF_UNIX server; <code>launchctl list</code>/<code>load</code>/<code>unload</code> against a running daemon.</li>
+  <li>Phase 3c: <code>core.[cm]</code> job model with KeepAlive, Throttle, Sockets, WatchPaths, RequiresPhase.</li>
+  <li>Phase 3d: PID 1 mode — directory scan (initially empty), getty exec from <code>/etc/ttys</code>, SIGCHLD reaping for orphans, shutdown handling.</li>
+  <li>Add <code>make-launchd.sh</code>; extend <code>build.sh</code> to call it after the GNUstep stage.</li>
+  <li>Extend <code>boot/loader.conf</code> with <code>init_path=/sbin/launchd</code>.</li>
+  <li>Boot test gains the <code>launchd: PID 1 ready</code> marker. <strong>Release gate is now real.</strong></li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 4 — sshd as proof-of-life (milestone 2 from §12.2)</h3>
+<ul>
+  <li>Bring up minimum networking: <code>netif</code> one-shot, hand-written <code>dhclient</code> plist for the primary iface, <code>phase.network-ready</code> watcher.</li>
+  <li>Write the <code>sshd</code> plist (sketched in §12.4); ship it in <code>/System/Library/LaunchDaemons/</code> in the ISO.</li>
+  <li>Extend the boot test with a third marker on <code>sshd: Server listening</code>. Bonus: extend the test runner to <code>ssh root@&lt;guest-ip&gt;</code> after the marker fires and gate on a successful command exit.</li>
+  <li>This is the first end-to-end proof launchd's job model works.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 5 — remaining base services (milestone 3 from §12.3)</h3>
+<ul>
+  <li>Plists for devd (early-tier), syslogd, cron, wpa_supplicant.</li>
+  <li>Per-iface <code>dhclient</code> plist generator (replacing the milestone-2 hand-written one).</li>
+  <li>Phase no-op jobs (kld-loaded, filesystems-ready).</li>
+  <li>Ship plists for rpcbind, mountd, nfsd, nfsclient — not loaded by default; available for users who want NFS via <code>launchctl load</code>.</li>
+  <li>Validate from a booted ISO: ssh in, log to syslog, cron job runs, hotplug a device and watch devd react. NFS path is opt-in; spot-check by manually loading the plists, but don't gate the release on it.</li>
+</ul>
+</div>
+
+<h2 id="open">15. Open questions</h2>
+
+<div class="open-q">
+<strong>Q1. <code>RequiresPhase</code> as a schema extension.</strong> No precedent in Apple's launchd; we're adding a new plist key. Risk: anyone porting our plists back to macOS gets a warning. Acceptable cost — we're not pretending to be macOS — but worth documenting in <code>launchd.plist(5)</code>.
+</div>
+
+<div class="open-q">
+<strong>Q2. <code>devd</code> early-tier mechanism.</strong> Plan picks a <code>LaunchDaemons.early/</code> directory the bootstrapper scans first. Alternative: a <code>--early-daemon</code> CLI flag on launchd itself. Settle in Phase 3e.
+</div>
+
+<div class="open-q">
+<strong>Q3. <code>init_path</code> kenv re-read after chroot.</strong> Verify empirically in Phase 3d whether FreeBSD's <code>init</code> honors <code>init_path</code> after the <code>init_chroot</code> pivot or whether we need a tiny <code>/sysroot/sbin/init</code> shim that <code>exec</code>s <code>/sbin/launchd</code>. Either path is cheap.
+</div>
+
+<div class="open-q">
+<strong>Q4. Rollback story for the installed-on-a-real-system case.</strong> If a launchd update bricks boot, how does the user get back to <code>rc.d</code>? Likely answer: keep <code>/etc/rc</code> intact on disk and let the bootloader pick PID 1 via the kernel <code>init_path</code> envar. Document in the migration guide once we leave livecd-only territory.
+</div>
+
+<div class="open-q">
+<strong>Q5. Source-tarball shipping for LGPL.</strong> Licensing §13.1 picks "release notes link to the upstream pinned SHA" over "ship source tarball under <code>/System/Library/Source/</code>". Confirm with whoever cares about strict LGPL §6 compliance before tagging an actual release (vs the <code>continuous</code> rolling release).
+</div>
+
+<h2 id="refs">16. References</h2>
+<ul>
+  <li>Pipeline source: <a href="https://github.com/pkgdemon/freebsd-livecd-unionfs">github.com/pkgdemon/freebsd-livecd-unionfs</a> — <code>build.sh</code>, <code>tests/boot-test.sh</code>, <code>.github/workflows/build.yml</code> all lifted from here.</li>
+  <li>Apple source: <a href="https://github.com/apple/launchd">github.com/apple/launchd</a> (last open-source release, <code>launchd-842.1.4</code>).</li>
+  <li>libdispatch upstream: <a href="https://github.com/apple/swift-corelibs-libdispatch">github.com/apple/swift-corelibs-libdispatch</a>.</li>
+  <li>FreeBSD <code>devel/libdispatch</code> port (reference for the kevent patch state): <a href="https://www.freshports.org/devel/libdispatch">freshports.org/devel/libdispatch</a>.</li>
+  <li>FreeBSD <code>hier(7)</code>: <a href="https://man.freebsd.org/cgi/man.cgi?query=hier&amp;sektion=7">man.freebsd.org/hier(7)</a>.</li>
+  <li>FreeBSD <code>rc(8)</code>, <code>rc.subr(8)</code>, <code>rcorder(8)</code>: <a href="https://man.freebsd.org/cgi/man.cgi?query=rc.subr&amp;sektion=8">man.freebsd.org/rc.subr(8)</a>.</li>
+</ul>
+
+<p class="footnote">Plan v0 — generated 2026-05-04. This is a living document; updates land here before any code commits.</p>
+
+</body>
+</html>

@@ -358,6 +358,7 @@
 <tr><td><code>StandardOutPath</code> / <code>StandardErrorPath</code></td><td><span class="verdict no">unverified, likely not</span></td><td>Redirect spawned-child stdio. Add when a per-job log file is wanted.</td></tr>
 <tr><td><code>Umask</code></td><td><span class="verdict no">unverified, likely not</span></td><td>Per-job umask before exec.</td></tr>
 <tr><td><code>ThrottleInterval</code></td><td><span class="verdict no">unverified, likely not</span></td><td>KeepAlive currently respawns immediately on exit; no rate-limit. Add when a flapping daemon makes us want backoff.</td></tr>
+<tr><td><code>Disabled</code></td><td><span class="verdict maybe">unverified — likely partial</span></td><td>Per-job "skip me at scan time" boolean. Apple-shipped plists ship with <code>Disabled=true</code> for opt-in services (sshd, nfsd, etc.) so the user has to explicitly enable them. <strong>Today, even if our launchd parses this key, the persistent override mechanism that lets users flip it without editing the shipped plist is not yet implemented</strong> — see §12.7.</td></tr>
 <tr><td><code>RequiresPhase</code> (proposed extension)</td><td><span class="verdict no">NOT implemented</span></td><td>Project-specific schema extension per §11.3 — block job until a named phase stamp file exists. Will land alongside the configd / kmodloader work since those need ordering.</td></tr>
 </tbody>
 </table>
@@ -987,6 +988,77 @@ expect {
 
 <h3>12.6 The "anything else becomes a one-shot" rule</h3>
 <p>Single most important translation rule: <strong>anything <code>rc.d</code> does that isn't "run a long-lived daemon" becomes a one-shot plist</strong> with <code>RunAtLoad=true, KeepAlive=false, LaunchOnlyOnce=true</code>. Examples: <code>sysctl</code> from <code>/etc/sysctl.conf</code>, <code>kldload</code> from <code>kld_list</code>, <code>fsck -p</code> + <code>mount -a</code>, <code>swapon -a</code>, <code>/var/run</code> + <code>/tmp</code> cleanup. Live config-file reload (<code>service foo reload</code>) is a strict improvement in launchd via <code>WatchPaths</code> / <code>QueueDirectories</code>.</p>
+
+<h3>12.7 Service enable / disable UX</h3>
+
+<p>Concrete scenario: <code>sshd</code> ships <strong>disabled by default</strong>. Admin enables it on a freshly-installed system. How?</p>
+
+<h4>Apple's model (the target)</h4>
+
+<p>The shipped plist at <code>/System/Library/LaunchDaemons/org.freebsd.sshd.plist</code> contains:</p>
+<pre class="plist"><code>&lt;key&gt;Disabled&lt;/key&gt;
+&lt;true/&gt;</code></pre>
+<p>At every boot, launchd scans, sees the key, skips the job. <strong>The shipped plist is never edited</strong> by users or admins — it stays bit-for-bit stable across upgrades.</p>
+
+<p>State changes go through one of three paths:</p>
+
+<table>
+<thead><tr><th>Method</th><th>Persistence</th><th>How</th></tr></thead>
+<tbody>
+<tr><td><code>launchctl load -w</code> (CLI, persistent)</td><td>Survives reboots</td><td><code>sudo launchctl load -w /System/Library/LaunchDaemons/org.freebsd.sshd.plist</code></td></tr>
+<tr><td><code>launchctl load</code> (CLI, one-shot)</td><td>Lost on reboot</td><td><code>sudo launchctl load /System/Library/LaunchDaemons/org.freebsd.sshd.plist</code></td></tr>
+<tr><td>GUI toggle (e.g., gershwin "Sharing" pane)</td><td>Survives reboots</td><td>GUI talks to launchd over IPC, flips the same persistent state the <code>-w</code> flag does.</td></tr>
+</tbody>
+</table>
+
+<p>The <strong>persistence trick</strong> is a separate <strong>overrides file</strong>:</p>
+<ul>
+  <li>Apple historical: <code>/var/db/launchd.db/com.apple.launchd/overrides.plist</code></li>
+  <li>Apple modern: <code>/var/db/com.apple.xpc.launchd/disabled.plist</code></li>
+  <li>This project: <code>/var/db/org.freebsd.launchd/overrides.plist</code></li>
+</ul>
+
+<p>At boot, launchd merges <strong>(a)</strong> the shipped plist's <code>Disabled</code> key (default state) with <strong>(b)</strong> the overrides file (user's persistent intent). The overrides file is a plist of <code>{label: bool}</code> entries — only present when a user has expressed an opt-in or opt-out for a specific job.</p>
+
+<p>Modern <code>launchctl</code> verbs (macOS 10.10+) make this explicit:</p>
+<pre class="shell"><code>sudo launchctl enable system/org.freebsd.sshd     # set persistent "enabled"
+sudo launchctl disable system/org.freebsd.sshd    # set persistent "disabled"
+sudo launchctl bootstrap system /System/Library/LaunchDaemons/org.freebsd.sshd.plist
+sudo launchctl bootout system/org.freebsd.sshd</code></pre>
+
+<h4>Status today</h4>
+
+<table>
+<thead><tr><th>Capability</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td><code>Disabled</code> key parsed at scan time</td><td><span class="verdict maybe">probably partial</span> — needs <code>core.m</code> audit</td></tr>
+<tr><td>Overrides-file mechanism</td><td><span class="verdict no">NOT implemented</span> — launchd doesn't read or merge any override file today</td></tr>
+<tr><td><code>launchctl load &lt;path&gt;</code> / <code>unload &lt;path&gt;</code></td><td><span class="verdict go">basic</span> — works in the vendored 178-line <code>launchctl.c</code></td></tr>
+<tr><td><code>launchctl load -w</code> / persistent flag</td><td><span class="verdict no">NOT implemented</span></td></tr>
+<tr><td><code>launchctl enable</code> / <code>disable</code> (modern verb)</td><td><span class="verdict no">NOT implemented</span></td></tr>
+<tr><td><code>launchctl start &lt;label&gt;</code> / <code>stop &lt;label&gt;</code></td><td><span class="verdict no">probably NOT implemented</span> — no manual one-shot start</td></tr>
+</tbody>
+</table>
+
+<h4>Implementation plan (Phase 5 batch)</h4>
+
+<p>~250 LOC of focused launchd surgery, lands alongside the <code>EnvironmentVariables</code> / <code>StartCalendarInterval</code> / etc. work in §6.3:</p>
+
+<ol>
+  <li><strong><code>core.m</code></strong> (~150 LOC): at plist-scan time, read <code>/var/db/org.freebsd.launchd/overrides.plist</code>. For each scanned job, merge <code>shipped.Disabled XOR override[label]</code>. Apply the merged value. Add a vnode source on the overrides file so changes flush to running state without a daemon restart.</li>
+  <li><strong><code>launchctl.c</code></strong> (~80 LOC): implement the <code>-w</code> flag and the modern <code>enable</code> / <code>disable</code> verbs. They write to the overrides file via launchd's IPC (or directly with file lock + send a "reload" IPC).</li>
+  <li><strong><code>ipc.c</code></strong> (~30 LOC): new IPC verbs for "set persistent enable", "set persistent disable", "manual start", "manual stop".</li>
+  <li><strong>varrun plist</strong> (one line): <code>mkdir -p /var/db/org.freebsd.launchd</code> so the overrides file has a home.</li>
+</ol>
+
+<h4>Pragmatic Phase 4 path</h4>
+
+<p>For the <em>immediate</em> sshd milestone (Phase 4 in §14), two options:</p>
+<ul>
+  <li><strong>A. Defer the override mechanism; ship sshd enabled by default.</strong> <code>org.freebsd.sshd.plist</code> with <code>RunAtLoad=true</code>, no <code>Disabled</code> key. Fastest to the proof-of-life milestone. Acceptable for a livecd; less acceptable for a secure-server posture.</li>
+  <li><strong>B. Implement the override mechanism first; ship sshd disabled by default.</strong> User runs <code>sudo launchctl load -w /System/Library/LaunchDaemons/org.freebsd.sshd.plist</code> to enable. The right Apple-shaped answer. Adds ~250 LOC to Phase 4's scope.</li>
+</ul>
+<p><strong>Recommendation:</strong> A for Phase 4 (get configd + sshd-as-supervised-daemon working end-to-end), B as a focused Phase 5 commit before we'd consider the system installable. Live ISO with sshd-on-by-default is fine — every boot has the same default-password posture, and that's already accepted.</p>
 
 <h2 id="license">13. Licensing</h2>
 

@@ -338,6 +338,39 @@
 
 <p>Total post-Phase-2: roughly <strong>7-8k LOC</strong> vs Apple's ~22k pre-amputation. About 65% deletion.</p>
 
+<h3>6.3 Plist-key support — current state vs Apple's full surface</h3>
+
+<p>Apple's <code>launchd</code> parses ~80+ plist keys. Our vendored source from prior work handles a working subset; the rest are silently ignored at parse time (the plist still loads — the key just has no effect). The table below tracks what's implemented today, what's load-bearing for project-shipped plists, and what's pending.</p>
+
+<table>
+<thead><tr><th>Plist key</th><th>Status</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>Label</code></td><td><span class="verdict go">implemented</span></td><td>Job identifier; required.</td></tr>
+<tr><td><code>ProgramArguments</code></td><td><span class="verdict go">implemented</span></td><td>argv to <code>posix_spawn</code>.</td></tr>
+<tr><td><code>RunAtLoad</code></td><td><span class="verdict go">implemented</span></td><td>Spawn at scan time. Verified by every shipped plist.</td></tr>
+<tr><td><code>KeepAlive</code></td><td><span class="verdict go">implemented</span></td><td>Respawn on exit. Verified by getty + syslogd surviving across login sessions.</td></tr>
+<tr><td><code>Sockets</code></td><td><span class="verdict go">implemented</span></td><td>launchd opens AF_UNIX listener, hands fd via env. Verified by the IPC socket at <code>/var/run/launchd/sock</code>.</td></tr>
+<tr><td><code>inetdCompatibility</code> (<code>Wait</code> subkey)</td><td><span class="verdict maybe">partial</span></td><td>Minimal sshd-shape works; verify edge cases when sshd lands in Phase 4.</td></tr>
+<tr><td><code>EnvironmentVariables</code></td><td><span class="verdict no">NOT implemented</span></td><td><code>core.m:391</code> calls <code>posix_spawn(..., environ)</code> unconditionally — plist env is ignored. <strong>Workaround:</strong> use absolute paths in <code>ProgramArguments</code>, or wrap with <code>/bin/sh -c "PATH=...; cmd"</code>. Symptom: shell-wrapped plist exits 127 (command not found).</td></tr>
+<tr><td><code>StartCalendarInterval</code></td><td><span class="verdict no">NOT implemented</span></td><td>Apple's cron-replacement key (dict with optional Minute/Hour/Day/Weekday/Month). <strong>Workaround:</strong> ship <code>/usr/sbin/cron</code> as a compat daemon (we do — <code>org.freebsd.cron.plist</code>) and put scheduled tasks in crontabs. Long-term answer: add this key to <code>core.m</code> (~50 LOC, NSDate-based timer waking at next match), migrate <code>periodic(8)</code>-style daily/weekly/monthly tasks to native launchd plists, optionally drop cron from the ISO entirely.</td></tr>
+<tr><td><code>WorkingDirectory</code></td><td><span class="verdict no">unverified, likely not</span></td><td>Should chdir before exec. Add when a daemon needs it.</td></tr>
+<tr><td><code>UserName</code> / <code>GroupName</code></td><td><span class="verdict no">unverified, likely not</span></td><td>Drop privileges before exec. Will be needed when sshd plist lands in Phase 4.</td></tr>
+<tr><td><code>StandardOutPath</code> / <code>StandardErrorPath</code></td><td><span class="verdict no">unverified, likely not</span></td><td>Redirect spawned-child stdio. Add when a per-job log file is wanted.</td></tr>
+<tr><td><code>Umask</code></td><td><span class="verdict no">unverified, likely not</span></td><td>Per-job umask before exec.</td></tr>
+<tr><td><code>ThrottleInterval</code></td><td><span class="verdict no">unverified, likely not</span></td><td>KeepAlive currently respawns immediately on exit; no rate-limit. Add when a flapping daemon makes us want backoff.</td></tr>
+<tr><td><code>RequiresPhase</code> (proposed extension)</td><td><span class="verdict no">NOT implemented</span></td><td>Project-specific schema extension per §11.3 — block job until a named phase stamp file exists. Will land alongside the configd / kmodloader work since those need ordering.</td></tr>
+</tbody>
+</table>
+
+<p><strong>Implementation pattern</strong> for a new key (~30-50 LOC each, in <code>core.m</code>):</p>
+<ol>
+  <li>Read the key from the plist's <code>NSDictionary</code> at job-load time.</li>
+  <li>Validate type (string vs dict vs array vs integer).</li>
+  <li>Apply at the appropriate point: env-build for <code>EnvironmentVariables</code>; <code>chdir(2)</code> before exec for <code>WorkingDirectory</code>; <code>setuid(2)</code>/<code>setgid(2)</code> for <code>UserName</code>/<code>GroupName</code>; <code>open(2) + dup2(2)</code> for <code>Standard{Out,Error}Path</code>; <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, ...)</code> for <code>StartCalendarInterval</code>; etc.</li>
+</ol>
+
+<p><strong>Phase-5 batch:</strong> implement <code>EnvironmentVariables</code>, <code>StartCalendarInterval</code>, <code>WorkingDirectory</code>, <code>UserName</code>/<code>GroupName</code>, <code>Standard{Out,Error}Path</code>, <code>Umask</code> as a focused "match more of Apple's plist schema" pass. Unlocks: cron-to-native-launchd migration, sshd with privsep user, per-daemon log redirection, and the rest of the conventional Apple plist idioms.</p>
+
 <h2 id="bsd-wins">7. FreeBSD-only wins (vs a portable BSD+Linux design)</h2>
 
 <table>

@@ -34,7 +34,7 @@
         border-left: 3px solid var(--accent2); }
   pre code { background: none; padding: 0; }
   pre.shell { border-left-color: var(--ok); }
-  pre.plist { border-left-color: var(--accent); }
+  pre.objc { border-left-color: var(--accent); }
   pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
   a { color: var(--accent2); }
   a:hover { color: var(--accent); }
@@ -56,6 +56,8 @@
   .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
            padding: 1.2rem 1.4rem; margin: 1rem 0; }
   .phase h3 { margin-top: 0; }
+  .phase.done { border-left: 4px solid var(--ok); }
+  .phase.todo { border-left: 4px solid var(--accent2); }
   table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
   th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
   th { background: #eee5d6; }
@@ -89,13 +91,10 @@
 <nav class="nav">
   <a href="#tldr">Status</a>
   <a href="#goal">Goal</a>
-  <a href="#approaches">Approaches</a>
-  <a href="#repo">Repo</a>
   <a href="#arch">Architecture</a>
-  <a href="#schema">Personality schema</a>
-  <a href="#paths">Install paths</a>
+  <a href="#paths">Three paths</a>
+  <a href="#repo">Repo</a>
   <a href="#decisions">Decisions</a>
-  <a href="#coverage">Hardware coverage</a>
   <a href="#integration">launchd integration</a>
   <a href="#license">License</a>
   <a href="#phases">Phases</a>
@@ -103,239 +102,193 @@
 </nav>
 
 <h1>FreeBSD kmodloader — porting plan</h1>
-<p class="subtitle">A FreeBSD-only daemon, modeled on Apple's <code>kextd</code> and IOKit personality matching, that ensures <strong>every hardware-class kernel module on the system autoloads at boot or on hot-plug when its hardware is detected</strong>. Default FreeBSD does not do this aggressively (especially for GPU drivers); this project closes that gap. Companion to <a href="freebsd-launchd-plan.html">freebsd-launchd</a> and <a href="freebsd-configd-plan.html">freebsd-configd</a>.</p>
+<p class="subtitle">A FreeBSD-only daemon that ensures every hardware-class kernel module on the system autoloads at boot when its hardware is detected. Default FreeBSD does not do this aggressively (especially for GPU drivers and the third-party drm-kmod / nvidia stacks); this project closes that gap. Companion to <a href="freebsd-launchd-plan.html">freebsd-launchd</a> and <a href="freebsd-configd-plan.html">freebsd-configd</a>.</p>
 
 <section id="tldr" class="tldr">
-  <h3>Status: planning <span class="pill info">v0</span></h3>
+  <h3>Status: Phase 1 shipped <span class="pill ok">v1</span></h3>
   <ul>
-    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a> — <strong>monorepo</strong>. kmodloader source lives under <code>kmodloader/</code> at the top of the launchd repo, alongside <code>src/</code> (launchd) and <code>configd/</code>. Single build pipeline, single CI, single boot test.</li>
-    <li><strong>Mission:</strong> on this OS, you plug in a GPU, a USB camera, a Bluetooth dongle, a NIC, and the right kmod loads. No <code>kld_list=</code> editing, no manual <code>kldload</code>. Matches the macOS UX, fixes FreeBSD's gap.</li>
-    <li><strong>Approach:</strong> clean-room ObjC daemon (<code>kmodloader</code>) using GNUstep Foundation + libdispatch. Reads <strong>personality plists</strong> (Apple-shaped: <code>Info.plist</code> inside <code>.kext</code>-style bundles at <code>/System/Library/Extensions/&lt;name&gt;.kext/</code>) to map hardware → kmod. Combines that database with FreeBSD's existing <code>linker.hints</code> (<code>kldxref</code>) for kmods that already declare <code>MODULE_PNP_INFO</code>.</li>
-    <li><strong>No Apple source vendored.</strong> Apple's <code>kextd</code> + <code>kextload</code> + <code>kextcache</code> are open source (<code>apple-oss-distributions/IOKitTools</code>) but heavily IOKit/Mach-tied; the matching algorithm is portable concept-wise, the implementation isn't. We write the daemon clean-room and reference Apple's design.</li>
-    <li><strong>Boot vs hot-plug, both covered:</strong> at startup, <code>kmodloader</code> walks <code>devctl(4)</code> + reads the kernel's PCI/USB device list and loads everything matching. Then it stays alive on a libdispatch <code>DISPATCH_SOURCE_TYPE_READ</code> over <code>devctl(4)</code> for hot-plug.</li>
-    <li><strong>Boot ordering:</strong> first launchd daemon to start. NICs need their kmods loaded before <code>configd</code> can configure them; storage controllers need kmods before <code>fsck</code>; GPUs need kmods before any X/Wayland/Mir attempt.</li>
-    <li><strong>Licensing:</strong> BSD-2-Clause throughout. No Apple per-file headers — this is clean-room code, not a port.</li>
-    <li><strong>Hard requirement:</strong> every hardware-class kmod packaged on the system <strong>must</strong> have a matching personality (either <code>MODULE_PNP_INFO</code> in the kld itself, or a personality plist we ship). Phase 1 covers GPUs (the biggest gap), networking, USB, storage. Phase 2+ fills in audio, input, sensors, and long-tail.</li>
+    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a> &mdash; <strong>monorepo</strong>. kmodloader source lives under <code>kmodloader/</code> at the top of the launchd repo, alongside <code>src/</code> (launchd) and <code>configd/</code>.</li>
+    <li><strong>Mission:</strong> on this OS, hardware that has a FreeBSD driver works without manual <code>kldload</code> or <code>kld_list=</code> edits. GPUs auto-engage DRM/KMS. NICs come up. WiFi cards register. USB classes attach. VM guest additions load when in a VM.</li>
+    <li><strong>Architecture:</strong> three parallel match paths feed one kldload loop:
+      <ol>
+        <li><strong>devmatch(8) + linker.hints</strong> &mdash; covers anything in-tree with <code>PNP_INFO</code> macros (NICs, USB classes, ACPI HID, most storage). Zero curation; FreeBSD's <code>kldxref</code> already built the index.</li>
+        <li><strong>PCI scan for display class 0x0300xx</strong> &mdash; covers drm-kmod GPU drivers (no <code>PNP_INFO</code>). Routes by vendor: Intel &rarr; <code>i915kms</code>, NVIDIA &rarr; <code>nvidia-drm</code>, AMD &rarr; per-device split via a frozen radeonkms ID list vs. amdgpu default.</li>
+        <li><strong>Hypervisor scan (<code>kern.vm_guest</code>)</strong> &mdash; covers VirtualBox / VMware guest additions (ports kmods). KVM/QEMU/bhyve, Hyper-V, Xen are already covered by GENERIC.</li>
+      </ol>
+    </li>
+    <li><strong>What we do NOT do anymore:</strong> hand-curated IOPCIMatch personality plists. Phase 1a-c shipped them; Phase 1d ripped them out in favor of the three-path scan. Reason: hand-curation doesn't scale to FreeBSD's hardware coverage. devmatch already has the data (<code>linker.hints</code>); we just have to use it. The narrow gap (drm-kmod and VM additions) is closed with three vendor-map functions, not 700+ device IDs.</li>
+    <li><strong>Boot timing:</strong> Phase 1 is one-shot at boot &mdash; <code>RunAtLoad=true</code>, <code>KeepAlive=false</code>. Phase 2 (planned) keeps the daemon alive on a <code>DISPATCH_SOURCE_TYPE_READ</code> source over <code>/dev/devctl</code> for hot-plug.</li>
+    <li><strong>No Apple source vendored.</strong> The original plan was modeled on Apple's <code>kextd</code> + <code>IOKitPersonalities</code>; the implementation that shipped is closer in spirit to FreeBSD's own <code>devmatch</code>. Clean-room ObjC throughout.</li>
+    <li><strong>Licensing:</strong> BSD-2-Clause. No Apple per-file headers &mdash; clean-room code, not a port.</li>
   </ul>
 </section>
 
 <h2 id="goal">1. Goal &amp; non-goals</h2>
 
 <h3>1.1 Goal</h3>
-<p>When a piece of hardware is present (at boot) or attaches (at runtime), the kernel module that drives it loads <strong>without manual configuration</strong>. The user installs the system, the user plugs in their NVIDIA card, the user's GPU works. The user plugs in a Realtek-chipset USB ethernet adapter, the kernel binds <code>re(4)</code> or whatever's appropriate, configd notices the new interface and runs DHCP. <strong>Zero <code>kld_list=</code> edits, zero <code>kldload</code> invocations from the user.</strong></p>
+<p>When hardware is present at boot, the kernel module that drives it loads <strong>without manual configuration</strong>. The user installs the system, plugs in their hardware, the system works. <strong>Zero <code>kld_list=</code> edits, zero <code>kldload</code> invocations from the user.</strong></p>
 
 <h3>1.2 Non-goals (this iteration)</h3>
 <ul>
-  <li><strong>No kernel patches.</strong> We use FreeBSD's existing <code>devctl(4)</code> event interface; we don't modify the kernel's matching code.</li>
-  <li><strong>No reimplementation of <code>kldload</code>.</strong> We wrap it via <code>NSTask</code> (or call <code>kldload(2)</code> directly).</li>
-  <li><strong>No driver porting.</strong> We're a discovery + dispatcher daemon; we don't write or modify drivers themselves. Drivers come from FreeBSD base, <code>drm-kmod</code>, <code>nvidia-driver</code>, etc.</li>
-  <li><strong>No GPU-specific magic.</strong> GPU drivers get matched via PCI vendor:device the same way as any other hardware; we don't have a GPU-specific code path.</li>
+  <li><strong>No kernel patches.</strong> We use FreeBSD's existing tools (<code>devmatch</code>, <code>pciconf</code>, <code>sysctl</code>); we don't modify the kernel.</li>
+  <li><strong>No reimplementation of <code>kldload</code>.</strong> We wrap it via <code>NSTask</code>.</li>
+  <li><strong>No driver porting.</strong> Drivers come from FreeBSD base, drm-kmod, nvidia-driver, virtualbox-additions, etc.</li>
+  <li><strong>No replacement for <code>devd(8)</code>.</strong> devd handles non-kmod-load actions (running scripts on attach, configuring network on link-up). kmodloader is narrower: only kmod loading. devd's role &mdash; if we want it &mdash; is separate (and currently absent; we replicate its essential parts case-by-case in launchd-driven daemons).</li>
   <li><strong>No Mach IPC, no IOKit, no XPC.</strong> Same project-wide rule.</li>
-  <li><strong>No prelinked kernel image.</strong> Apple's <code>kextcache</code> builds a single fused kernel+kexts image; we keep kmods as separate <code>.ko</code> files and load on demand. Prelinking is Phase 4+ if startup latency demands it.</li>
-  <li><strong>No replacement for <code>devd(8)</code>.</strong> devd handles non-kmod-load actions (running scripts on attach, configuring network on link-up). kmodloader is narrower: it only handles kmod loading. devd remains, and the launchd plan §12.3 has it as a normal LaunchDaemon.</li>
+  <li><strong>No prelinked kernel image.</strong> We keep kmods as separate <code>.ko</code> files and load on demand.</li>
 </ul>
 
-<h2 id="approaches">2. Approaches considered</h2>
+<h2 id="arch">2. Architecture</h2>
 
-<p>Five approaches were evaluated against the requirement "all hardware-class kmods autoload at boot or on hot-plug". Listed in order of escalating effort.</p>
+<p>Three independent match paths run sequentially in <code>KMDaemon.runOneShot</code>. Each emits a list of kld names. Lists are concatenated, deduplicated, and the GPU set is pulled to the front so the framebuffer is owned by a DRM driver before peripheral driver attaches happen. Then <code>kldload -n</code> each.</p>
 
-<div class="card">
-  <h4>Option A — improved <code>devd</code> rules in overlay</h4>
-  <p><strong>Effort:</strong> hours. <strong>Verdict:</strong> <span class="verdict maybe">PARTIAL</span> — covers the gaps but doesn't scale.</p>
-  <p>Ship hand-written <code>/etc/devd/i915.conf</code>, <code>nvidia.conf</code>, <code>amdgpu.conf</code> in our overlay. Each rule matches PCI vendor:device pairs and runs <code>kldload</code>. Adds <code>org.freebsd.devd.plist</code> to the LaunchDaemons set.</p>
-  <p><em>Why partial:</em> works for the specific drivers we hand-write rules for. Doesn't generalize. Every new GPU model, every new chipset family, requires a rule edit. Not how Apple does it; not how Linux does it.</p>
-</div>
+<div class="ascii-diagram">  +----------------------------+   +---------------------------+   +-------------------+
+  |  pciconf -l                |   |  sysctl -n kern.vm_guest  |   |  devmatch         |
+  |  (display-class scan)      |   |  (hypervisor probe)       |   |  (linker.hints)   |
+  +-------------+--------------+   +-------------+-------------+   +----------+--------+
+                |                                |                            |
+    vendor map  |               vm_guest map     |        kld names           |
+                v                                v                            v
+        [i915kms]                        [vboxguest, ...]              [if_em, umass, ...]
+        [amdgpu/radeonkms]               [vmci, ...]
+        [nvidia-drm]                     [] (kvm/hv/xen/bare)
+                |                                |                            |
+                +------------------+-------------+                            |
+                                   |                                          |
+                                   v                                          |
+                         [GPU klds first]                                     |
+                                   |   ............................<--------+
+                                   v
+                           NSMutableOrderedSet (dedupe)
+                                   |
+                                   v
+                         /sbin/kldload -n &lt;name&gt;  (per kld)
+                                   |
+                                   v
+                         kernel newbus probe + driver attach</div>
 
-<div class="card">
-  <h4>Option B — eager <code>kld_list=</code> with everything</h4>
-  <p><strong>Effort:</strong> trivial. <strong>Verdict:</strong> <span class="verdict no">REJECTED</span> — wrong shape.</p>
-  <p>Just put every hardware-class kmod in <code>loader.conf</code>'s <code>kld_list</code>. The kernel loads them all at boot; drivers fail to <code>probe()</code> on absent hardware; ones that match attach.</p>
-  <p><em>Why rejected:</em> wasteful (kernel memory), slow (kld load is not free), conflict-prone (e.g., <code>i915kms.ko</code> + <code>amdgpu.ko</code> both attaching to integrated graphics on a hybrid system). Apple specifically <em>avoids</em> this; their kernelcache is curated, not "load everything".</p>
-</div>
+<h3>2.1 Why three paths instead of one</h3>
+<p>FreeBSD's drivers split cleanly into three categories by how match information is published:</p>
 
-<div class="card">
-  <h4>Option C — improve <code>kldxref</code> + <code>MODULE_PNP_INFO</code> coverage</h4>
-  <p><strong>Effort:</strong> requires patching ports. <strong>Verdict:</strong> <span class="verdict maybe">USEFUL UPSTREAM, NOT SUFFICIENT.</span></p>
-  <p>FreeBSD already has <code>MODULE_PNP_INFO()</code> macros that drivers declare — <code>kldxref</code> walks installed kmods and builds <code>linker.hints</code>, which the kernel consults on attach. Many base drivers use this; <strong>most third-party drivers (drm-kmod, nvidia-driver) don't.</strong></p>
-  <p><em>Why insufficient:</em> requires upstream port patches to add <code>MODULE_PNP_INFO</code> to drivers that lack it. Even with that, USB-class matching (e.g., "any USB-CDC device" vs specific VID:PID) is harder to express. We'd be one bug-fix-per-port away from working.</p>
-  <p>However: <strong>we use whatever <code>linker.hints</code> already covers</strong> as the first lookup tier. kmodloader supplements; doesn't duplicate.</p>
-</div>
+<table>
+<thead><tr><th>Category</th><th>Match data lives in...</th><th>Reachable via</th></tr></thead>
+<tbody>
+<tr><td>In-tree drivers with <code>PNP_INFO</code></td><td><code>linker.hints</code> (kldxref output)</td><td><code>devmatch(8)</code></td></tr>
+<tr><td>drm-kmod GPU drivers + nvidia binary blob</td><td>Compiled-in C structs; not in <code>linker.hints</code></td><td>PCI scan + 3-vendor map</td></tr>
+<tr><td>Hypervisor guest additions (VBox, VMware)</td><td>Implicit by hypervisor identity</td><td><code>kern.vm_guest</code> probe</td></tr>
+</tbody>
+</table>
 
-<div class="card">
-  <h4>Option D — clean-room <code>kmodloader</code> daemon (recommended)</h4>
-  <p><strong>Effort:</strong> ~2-3 weeks for Phase 1. <strong>Verdict:</strong> <span class="verdict go">GO.</span></p>
-  <p>An ObjC daemon (Foundation + libdispatch), launchd-supervised, that walks the bus at boot, listens on <code>devctl(4)</code> for hot-plug, and matches devices against a personality registry combining (a) FreeBSD's <code>linker.hints</code> for drivers that declare <code>MODULE_PNP_INFO</code>, (b) personality plists shipped in <code>.kext</code>-style bundles for drivers that don't.</p>
-  <p>Modeled on Apple's kextd architecture but written from scratch. Uses ObjC patterns (<code>NSDictionary</code> for personality storage, <code>NSPredicate</code> for matching, <code>NSTask</code> for invoking <code>kldload(8)</code>).</p>
-</div>
+<p>Trying to unify all three under one mechanism &mdash; the original plan's "personality plists with IOPCIMatch" &mdash; required hand-curating the device-ID lists for category 2 and 3. That doesn't scale: amdgpu's supported list grows each AMD generation, and the personality plists were always going to lag real hardware. The three-path split lets each category use the data source that already has the answer.</p>
 
-<div class="card">
-  <h4>Option E — port Apple's <code>kextd</code> + IOKit subset</h4>
-  <p><strong>Effort:</strong> months. <strong>Verdict:</strong> <span class="verdict no">REJECTED</span> — wrong scope.</p>
-  <p>Apple's kextd is C++ heavy, IOKit-tied (uses I/O Registry traversal, IOService probe scoring, Mach matching notifications). Porting wholesale would require porting IOKit-without-Mach, which is a project comparable to the launchd port itself.</p>
-  <p><em>Why rejected:</em> we don't need Apple's complexity. Our requirement is simpler: "given a device's bus + PCI/USB ID, find and load the matching kmod." That's a 1k-LOC daemon, not a framework.</p>
-</div>
+<h2 id="paths">3. The three match paths in detail</h2>
 
-<h2 id="repo">3. Repository</h2>
+<h3 id="path-devmatch">3.1 Path 1 &mdash; devmatch + linker.hints</h3>
+<p>Bare <code>devmatch</code> (no flag) walks the live device tree and emits one kld basename per line for every enabled-but-unattached device that has a registered driver in <code>linker.hints</code>. <code>linker.hints</code> is built by <code>kldxref(8)</code> from each driver's <code>PNP_INFO()</code> macro at install time &mdash; pkg's post-install script regenerates it whenever a kld package lands. So at boot the index already covers everything that ships from base + ports.</p>
 
-<h3>3.1 Monorepo: kmodloader lives inside <code>freebsd-launchd</code></h3>
-<p>Single repo holds launchd, configd, and kmodloader. Same reasoning as configd's §2.1: one build pipeline, atomic cross-component refactors, single CI surface, easier discoverability for new contributors. <code>kmodloader/</code> is a sibling of <code>src/</code> and <code>configd/</code> at the top level.</p>
+<pre class="shell"><code>$ devmatch
+pchtherm.ko
+rtsx.ko
+if_iwlwifi.ko
+if_iwm.ko
+ichsmb.ko
+acpi_wmi.ko</code></pre>
 
-<h3>3.2 Layout under <code>freebsd-launchd/kmodloader/</code></h3>
+<p><strong>Coverage on a representative laptop</strong> (Skylake-era Lenovo): NICs (<code>if_em</code>), WiFi (<code>if_iwlwifi</code> / <code>if_iwm</code>), thermal (<code>pchtherm</code>), SD reader (<code>rtsx</code>), SMBus (<code>ichsmb</code>), ACPI WMI. Most of the system except the GPU.</p>
+
+<p><strong>NOT </strong> <code>devmatch -a</code>. The <code>-a</code> flag prints <code>devname: kld</code> for every enabled device including already-attached ones &mdash; wrong format, wrong filter. Bare <code>devmatch</code> is the canonical "what needs loading" query.</p>
+
+<h3 id="path-gpu">3.2 Path 2 &mdash; GPU PCI scan</h3>
+<p>drm-kmod's <code>i915kms.ko</code>, <code>amdgpu.ko</code>, <code>radeonkms.ko</code>, and the nvidia binary kmod do not declare <code>PNP_INFO</code>. <code>kldxref -d /boot/modules/linker.hints | grep i915</code> is empty. <code>strings /boot/modules/i915kms.ko | grep pnp_info</code> is empty. devmatch will never see them.</p>
+
+<p>Solution: walk <code>pciconf -l</code> for class <code>0x0300xx</code> (display controllers; covers VGA, XGA, 3D), extract <code>(vendor, device)</code> per device, and route per a small in-code map:</p>
+
+<pre class="objc"><code>- (NSArray&lt;NSString *&gt; *)gpuKldsForDevices:(NSArray&lt;NSDictionary *&gt; *)devices
+{
+    NSMutableOrderedSet&lt;NSString *&gt; *r = [NSMutableOrderedSet orderedSet];
+    for (NSDictionary *dev in devices) {
+        NSString *vendor = dev[@"vendor"];
+        NSString *device = dev[@"device"];
+
+        if ([vendor isEqualToString:@"0x8086"]) {
+            [r addObject:@"i915kms"];
+        }
+        else if ([vendor isEqualToString:@"0x1002"]) {
+            // Per-device split: radeonkms list is frozen upstream.
+            uint16_t devID = (uint16_t)strtoul(device.UTF8String, NULL, 16);
+            BOOL isRadeon = NO;
+            for (size_t i = 0; i &lt; kRadeonKMSDeviceIDsCount; i++) {
+                if (kRadeonKMSDeviceIDs[i] == devID) { isRadeon = YES; break; }
+            }
+            [r addObject:isRadeon ? @"radeonkms" : @"amdgpu"];
+        }
+        else if ([vendor isEqualToString:@"0x10de"]) {
+            [r addObject:@"nvidia-drm"];   // pulls nvidia-modeset + nvidia
+        }
+    }
+    return r.array;
+}</code></pre>
+
+<p><strong>Three vendor IDs.</strong> <code>0x8086</code> (Intel), <code>0x1002</code> (AMD/ATI), <code>0x10de</code> (NVIDIA). PCI-SIG assignments from the 1980s and 90s; will not change.</p>
+
+<h4>3.2.1 The AMD split: radeonkms vs. amdgpu</h4>
+<p>The only category-2 entry that needs more than vendor info. radeonkms covers TeraScale through HD 7000 + early Sea Islands; amdgpu covers GCN 1.1+ through current RDNA*. Linux's radeon driver is in maintenance-only mode upstream and stopped gaining new device IDs years ago &mdash; drm-kmod inherits the same frozen list.</p>
+
+<p>So we vendor it once: 699 unique 16-bit device IDs from drm-kmod's <code>include/drm/drm_pciids.h</code> (the <code>radeon_PCI_IDS</code> macro) baked into <code>kmodloader/src/RadeonPCIIDs.h</code> as a <code>static const uint16_t[]</code>. Any AMD device whose ID matches the frozen set goes to <code>radeonkms</code>; everything else (Polaris onward) defaults to <code>amdgpu</code>. <strong>amdgpu is the open default</strong>: hardware AMD ships next year picks up amdgpu without us changing the table.</p>
+
+<p>Update procedure (rare): re-fetch <code>drm_pciids.h</code>, re-extract the <code>0x1002</code> entries, regenerate the header. The set has not changed in years.</p>
+
+<h4>3.2.2 NVIDIA chain via MODULE_DEPEND</h4>
+<p><code>kldload nvidia-drm</code> pulls <code>nvidia-modeset</code> which pulls <code>nvidia</code> via <code>MODULE_DEPEND</code> declarations in the kmods. We only have to name the leaf. Requires <code>hw.nvidiadrm.modeset="1"</code> in <code>/boot/loader.conf</code> so <code>nvidia-drm.ko</code> engages DRM/KMS at init &mdash; a kenv tunable, must be set kenv-time.</p>
+
+<h4>3.2.3 Multi-GPU + non-GPU systems</h4>
+<p>Multi-GPU laptops (Intel iGPU + Nvidia dGPU is common) are handled naturally: the scan finds both vendors, both kld sets get loaded. Bare-metal-with-no-GPU systems (some VMs) return an empty device list &mdash; the GPU pass loads nothing.</p>
+
+<h3 id="path-vm">3.3 Path 3 &mdash; hypervisor scan</h3>
+<p>Read <code>kern.vm_guest</code>, route to a small fixed kld set:</p>
+
+<pre class="objc"><code>- (NSArray&lt;NSString *&gt; *)hypervisorKlds
+{
+    NSString *vmGuest = [self sysctlString:@"kern.vm_guest"];
+    if ([vmGuest isEqualToString:@"vbox"]) {
+        return @[@"vboxguest", @"vboxvideo"];
+    }
+    if ([vmGuest isEqualToString:@"vmware"]) {
+        return @[@"vmci", @"vmmemctl", @"vmxnet3", @"vmware_drv"];
+    }
+    return @[];   // none, kvm, qemu, bhyve, hv, xen — covered by GENERIC
+}</code></pre>
+
+<p>QEMU/KVM/bhyve guests get virtio_pci/_blk/_net/_scsi from GENERIC. Hyper-V guests get the <code>hv_*</code> family from GENERIC. Xen guests get xenpci/blkfront/netfront from GENERIC. Only VBox and VMware ship their additions as ports kmods, hence the targeted load.</p>
+
+<p>The packages <code>emulators/virtualbox-ose-additions-nox11</code> and <code>emulators/open-vm-tools-nox11</code> are in <code>pkglist.txt</code>; without them <code>kldload</code> fails harmlessly and the daemon moves on.</p>
+
+<h2 id="repo">4. Repository</h2>
+
+<h3>4.1 Layout under <code>freebsd-launchd/kmodloader/</code></h3>
 
 <pre><code>freebsd-launchd/kmodloader/
-├── Makefile                      kmodloader build (driven by make-kmodloader.sh)
-├── src/                          daemon source (~1k LOC, ObjC clean-room)
-│   ├── main.m
-│   ├── KMDaemon.{h,m}            top-level coordinator
-│   ├── KMRegistry.{h,m}          personality database
-│   ├── KMDevice.{h,m}            represents a discovered device
-│   ├── KMMatch.{h,m}             matching algorithm (PCI/USB/etc.)
-│   ├── KMDevctlSource.{h,m}      libdispatch source on /dev/devctl
-│   └── KMBusEnumerate.{h,m}      walks PCI/USB at boot via sysctl/dev tree
-├── personalities/                shipped .kext-style bundles
-│   ├── i915kms.kext/Contents/Info.plist        Intel GPU
-│   ├── nvidia.kext/Contents/Info.plist         NVIDIA
-│   ├── amdgpu.kext/Contents/Info.plist         AMD modern GPUs
-│   ├── radeonkms.kext/Contents/Info.plist      AMD legacy
-│   ├── if_re.kext/Contents/Info.plist          Realtek NIC (example)
-│   └── ...                                     more as Phase 1+ progresses
-└── tests/                        offline matching tests against captured
-                                  devctl corpus + personality fixtures
+├── Makefile                 gmake build, installs to /usr/libexec/kmodloader
+└── src/
+    ├── main.m               @autoreleasepool { [KMDaemon runOneShot]; }
+    ├── KMDaemon.{h,m}       runOneShot orchestrator + the three match paths
+    └── RadeonPCIIDs.h       generated frozen device list (radeon_PCI_IDS, 699 IDs)
 </code></pre>
 
-<p>Top-level (<code>freebsd-launchd/</code>) hosts the shared infra:</p>
+<p>No <code>personalities/</code> directory. No <code>KMRegistry</code> / <code>KMMatch</code> / <code>KMDevice</code> / <code>KMBusEnumerate</code> classes. Phase 1d ripped them out: ~900 LOC removed, replaced by ~150 LOC of three-path orchestration.</p>
+
+<p>Top-level (<code>freebsd-launchd/</code>) hosts:</p>
 <ul>
-  <li><code>make-kmodloader.sh</code> at repo root (alongside <code>make-launchd.sh</code>, <code>make-configd.sh</code>) — STANDALONE, callable as a unit by <code>build.sh</code> or downstream consumers.</li>
-  <li><code>overlays/System/Library/LaunchDaemons/org.freebsd.kmodloader.plist</code> — the launchd plist.</li>
-  <li><code>build.sh</code> calls <code>make-kmodloader.sh</code> from the chroot after <code>make-launchd.sh</code> finishes (kmodloader links against Foundation + libdispatch).</li>
+  <li><code>overlays/System/Library/LaunchDaemons/org.freebsd.kmodloader.plist</code></li>
+  <li><code>overlays/boot/loader.conf</code> &mdash; sets <code>hw.nvidiadrm.modeset="1"</code></li>
+  <li><code>pkglist.txt</code> &mdash; lists drm-latest-kmod, nvidia-drm-latest-kmod, wifi-firmware-*-kmod, virtualbox-ose-additions-nox11, open-vm-tools-nox11</li>
+  <li><code>build.sh</code> &mdash; chroot-side, runs <code>gmake -C kmodloader install</code> after launchd + configd builds</li>
 </ul>
 
-<h3>3.3 How <code>build.sh</code> handles kmodloader</h3>
+<h3>4.2 How <code>build.sh</code> handles kmodloader</h3>
+<p>Same chroot session that builds launchd + configd. After <code>make-configd.sh</code> finishes, <code>build.sh</code> rsyncs <code>kmodloader/</code> into <code>chroot:/tmp/kmodloader/</code> and runs <code>gmake -C /tmp/kmodloader install</code> &mdash; the Makefile compiles the daemon and installs to <code>/usr/libexec/kmodloader</code>. No wrapper script.</p>
 
-<p>Same chroot session that builds launchd + configd. The chroot rsync that brings the working tree into <code>/tmp/launchd/</code> picks up <code>kmodloader/</code> for free. After <code>make-configd.sh</code> finishes, <code>build.sh</code> runs <code>make-kmodloader.sh</code> chroot-side; it compiles the daemon, installs to <code>/usr/libexec/kmodloader</code>, copies the personality bundles into <code>/System/Library/Extensions/</code>.</p>
-
-<h2 id="arch">4. Architecture</h2>
-
-<div class="ascii-diagram">                +-----------------------------+
-                | /System/Library/Extensions/ |
-                |   *.kext/Contents/Info.plist|
-                +--------------+--------------+
-                               | (loaded into KMRegistry at startup;
-                               |  watched via VNODE source for live add)
-                               v
-+-------------------+    +-----+------+    +------------------------+
-|  /dev/devctl      |--->| kmodloader |    | /boot/.../linker.hints |
-|  (PROT_READ-only  |    |  (ObjC,    |    | (kldxref-built; loaded |
-|   stream socket   |    |  GNUstep)  |&lt;---|  on startup)           |
-|   of attach/      |    +-----+------+    +------------------------+
-|   detach events)  |          |
-+-------------------+          | (NSTask-spawn)
-                               v
-                      +--------+--------+
-                      | /sbin/kldload   |
-                      |   -n &lt;module&gt;   |
-                      +--------+--------+
-                               |
-                               v
-                      +--------+--------+
-                      |  kernel kld     |
-                      |  - loads .ko    |
-                      |  - drivers      |
-                      |    probe()      |
-                      |  - device       |
-                      |    attaches     |
-                      +-----------------+</div>
-
-<h3>4.1 Personality registry</h3>
-<p>An <code>NSMutableDictionary</code> keyed by match type (<code>"PCI"</code>, <code>"USB"</code>, <code>"USBClass"</code>, <code>"ACPI"</code>) → arrays of personality dicts. Loaded at startup from two sources:</p>
-<ol>
-  <li><code>/boot/&lt;kerneldir&gt;/linker.hints</code> (binary format, parsed once). Provides <code>MODULE_PNP_INFO</code>-declared matches for kmods that have them.</li>
-  <li><code>/System/Library/Extensions/*.kext/Contents/Info.plist</code> (parsed via <code>NSPropertyListSerialization</code>). Provides our hand-curated personalities for drivers that don't declare <code>MODULE_PNP_INFO</code> (notably GPU drivers, third-party packages).</li>
-</ol>
-<p>Live additions: <code>DISPATCH_SOURCE_TYPE_VNODE</code> on <code>/System/Library/Extensions/</code> directory; new personality plists drop into the registry without daemon restart.</p>
-
-<h3>4.2 Boot-time enumeration</h3>
-<p>At startup, before installing the devctl event source, kmodloader enumerates every device currently present on PCI, USB, ACPI buses. FreeBSD exposes this through <code>sysctl dev.&lt;driver&gt;.&lt;unit&gt;.%pnpinfo</code> for already-attached devices, and through reading the kernel's <code>devinfo</code> tree (libdevinfo) for unattached ones.</p>
-<p>For each device with no driver yet attached, kmodloader runs the matcher and (if a hit) issues <code>kldload</code>.</p>
-
-<h3>4.3 Hot-plug</h3>
-<p><code>/dev/devctl</code> is FreeBSD's kernel-event stream — devd reads it. We open a second reader (kernel allows multiple) and parse <code>!system=...</code> attach lines. On <code>type=ATTACH</code> with <code>cdev</code> implying an undriven bus position, we look up the device's PnP descriptor and run the matcher.</p>
-
-<h3>4.4 Match algorithm</h3>
-<p>For a device with attributes <code>{vendor: 0x8086, device: 0x9bc4, class: 0x030000, bus: PCI}</code>, walk the registry:</p>
-<ol>
-  <li>Lookup all personalities under the <code>"PCI"</code> key.</li>
-  <li>For each, check <code>IOPCIMatch</code>: a list of <code>"vendor:device"</code> hex tuples. Wildcards (<code>*:device</code>, <code>vendor:*</code>) supported.</li>
-  <li>Score each match: exact vendor+device = 100; vendor+class wildcard = 50; pure class = 10. (Algorithm parallels Apple's <code>IOProbeScore</code>.)</li>
-  <li>If multiple personalities match, highest score wins. Ties broken by load order (registry insertion order).</li>
-  <li>If the kmod named in the winning personality isn't loaded, <code>kldload</code> it.</li>
-</ol>
-
-<h2 id="schema">5. Personality plist schema</h2>
-
-<p>Apple-shaped, intentionally — anyone who knows kext bundles on macOS can read these without a manual.</p>
-
-<pre class="plist"><code>&lt;!-- /System/Library/Extensions/i915kms.kext/Contents/Info.plist --&gt;
-&lt;?xml version="1.0" encoding="UTF-8"?&gt;
-&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-                       "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
-&lt;plist version="1.0"&gt;
-&lt;dict&gt;
-    &lt;key&gt;CFBundleIdentifier&lt;/key&gt;
-    &lt;string&gt;org.freebsd.kext.i915kms&lt;/string&gt;
-    &lt;key&gt;CFBundleExecutable&lt;/key&gt;
-    &lt;string&gt;i915kms&lt;/string&gt; &lt;!-- the kld name to kldload --&gt;
-    &lt;key&gt;OSBundleRequired&lt;/key&gt;
-    &lt;string&gt;Graphics&lt;/string&gt;
-
-    &lt;key&gt;IOKitPersonalities&lt;/key&gt;
-    &lt;dict&gt;
-        &lt;key&gt;IntelGraphics&lt;/key&gt;
-        &lt;dict&gt;
-            &lt;key&gt;IOMatchCategory&lt;/key&gt; &lt;string&gt;PCI&lt;/string&gt;
-            &lt;key&gt;IOPCIMatch&lt;/key&gt;
-            &lt;array&gt;
-                &lt;string&gt;0x8086:0x1616&lt;/string&gt; &lt;!-- HD 5500 --&gt;
-                &lt;string&gt;0x8086:0x1626&lt;/string&gt; &lt;!-- HD 6000 --&gt;
-                &lt;string&gt;0x8086:0x9bc4&lt;/string&gt; &lt;!-- UHD CometLake --&gt;
-                &lt;!-- ...etc... --&gt;
-            &lt;/array&gt;
-            &lt;key&gt;IOProbeScore&lt;/key&gt; &lt;integer&gt;200&lt;/integer&gt;
-        &lt;/dict&gt;
-    &lt;/dict&gt;
-&lt;/dict&gt;
-&lt;/plist&gt;</code></pre>
-
-<p><strong>Match types we support in v1:</strong></p>
-<table>
-<thead><tr><th>Match key</th><th>Format</th><th>Meaning</th></tr></thead>
-<tbody>
-<tr><td><code>IOPCIMatch</code></td><td>array of <code>"vendor:device"</code> hex strings (or with <code>:subvendor:subdevice</code>)</td><td>PCI device match</td></tr>
-<tr><td><code>IOPCIClassMatch</code></td><td>array of <code>"class:subclass:progif"</code></td><td>PCI class match (e.g., all USB 3.0 controllers)</td></tr>
-<tr><td><code>IOUSBProductMatch</code></td><td>array of <code>"vid:pid"</code></td><td>USB device match</td></tr>
-<tr><td><code>IOUSBClassMatch</code></td><td>array of <code>"class:subclass:protocol"</code></td><td>USB class match (e.g., HID, Mass Storage)</td></tr>
-<tr><td><code>IOACPIMatch</code></td><td>array of ACPI HID strings (e.g., <code>"PNP0103"</code>)</td><td>ACPI device match (mostly for embedded sensors)</td></tr>
-</tbody>
-</table>
-
-<p>Future (Phase 2+): <code>IOResources</code> dependencies (this kext requires that one loaded first), <code>OSKernelResource</code>, <code>IOKitDebug</code>.</p>
-
-<h2 id="paths">6. Install paths</h2>
-
-<table>
-<thead>
-<tr><th>Artifact</th><th>Path</th><th>Why</th></tr>
-</thead>
-<tbody>
-<tr><td><code>kmodloader</code> binary</td><td><code>/usr/libexec/kmodloader</code></td><td>FreeBSD <code>hier(7)</code>: <code>libexec</code> for system daemons not invoked directly. Same tier as <code>/usr/libexec/getty</code>.</td></tr>
-<tr><td>System personality bundles</td><td><code>/System/Library/Extensions/&lt;name&gt;.kext/Contents/Info.plist</code></td><td>Apple convention. Project-shipped (graphics, etc.); untouched by users.</td></tr>
-<tr><td>Local personality bundles</td><td><code>/Local/Library/Extensions/&lt;name&gt;.kext/Contents/Info.plist</code></td><td>Admin-installed personalities (third-party drivers). Gershwin layout, parallels our <code>/Local/Library/LaunchDaemons</code> pattern.</td></tr>
-<tr><td>launchd plist</td><td><code>/System/Library/LaunchDaemons/org.freebsd.kmodloader.plist</code></td><td>Project-shipped daemon.</td></tr>
-<tr><td>Cached registry</td><td><code>/var/db/kmodloader-registry.bin</code></td><td>Optional Phase 4: pre-built binary index of all personality plists (parallel to <code>linker.hints</code>) for faster startup.</td></tr>
-</tbody>
-</table>
-
-<h2 id="decisions">7. Locked architectural decisions</h2>
+<h2 id="decisions">5. Locked architectural decisions</h2>
 
 <table>
 <thead>
@@ -343,181 +296,188 @@
 </thead>
 <tbody>
 <tr><td>Implementation language</td><td>Objective-C with GNUstep Foundation. Same substrate as launchd + configd.</td></tr>
-<tr><td>Event loop</td><td>libdispatch dispatch sources only.</td></tr>
-<tr><td>Kernel event source</td><td><code>/dev/devctl</code> via <code>DISPATCH_SOURCE_TYPE_READ</code>. Standard FreeBSD interface; same one devd uses.</td></tr>
+<tr><td>Event loop (Phase 1)</td><td>None. One-shot run, exit. Phase 2 adds libdispatch.</td></tr>
+<tr><td>Match data sources</td><td>Three: <code>linker.hints</code> via devmatch, <code>pciconf -l</code> for GPU PCI scan, <code>kern.vm_guest</code> for hypervisor scan.</td></tr>
 <tr><td>Kmod load mechanism</td><td><code>NSTask</code> wrapping <code>/sbin/kldload -n &lt;module&gt;</code>. The <code>-n</code> flag = "do not error if already loaded".</td></tr>
-<tr><td>Personality storage format</td><td>Apple-shaped <code>.kext</code> bundles (<code>Info.plist</code> inside <code>Contents/</code>). Familiar to anyone with macOS background.</td></tr>
-<tr><td>Match scoring</td><td>Apple-style integer probe scores. Highest wins. Ties broken by registry insertion order.</td></tr>
-<tr><td>Bus enumeration at startup</td><td><code>sysctl dev.</code> tree walk + libdevinfo. No raw <code>/dev/pci</code> ioctls in v1.</td></tr>
-<tr><td>Coexistence with devd</td><td>Both daemons run; both read <code>/dev/devctl</code>. Multiple readers are kernel-supported. devd handles non-load actions; kmodloader handles loads.</td></tr>
-<tr><td>Coexistence with <code>kld_list=</code></td><td>Honored — kmods loaded by loader.conf are already present; kmodloader skips matching for already-loaded modules.</td></tr>
-<tr><td>License (top-level)</td><td>BSD-2-Clause. No Apple per-file headers — clean-room implementation.</td></tr>
+<tr><td>devmatch invocation</td><td>Bare <code>/sbin/devmatch</code> (no flags). NOT <code>devmatch -a</code> &mdash; that flag's output format is wrong for our use.</td></tr>
+<tr><td>GPU vendor map</td><td>Three-vendor static map, no curated device-ID tables. The single per-device split (AMD radeonkms vs amdgpu) uses an upstream-frozen list vendored as <code>RadeonPCIIDs.h</code>.</td></tr>
+<tr><td>Hypervisor map</td><td>Static <code>kern.vm_guest</code> &rarr; kld-list. Two non-GENERIC hypervisors (vbox, vmware); everything else is no-op.</td></tr>
+<tr><td>nvidia-drm modeset</td><td>Required tunable in <code>/boot/loader.conf</code>: <code>hw.nvidiadrm.modeset="1"</code>. Set kenv-time, before kernel start. Harmless on non-NVIDIA systems since the kmod only loads when the PCI scan finds <code>0x10de</code>.</td></tr>
+<tr><td>NVIDIA license at build time</td><td>build.sh sets <code>LICENSES_ACCEPTED=NVIDIA</code> in the runtime-pkgs <code>pkg install</code> env. nvidia-drm-latest-kmod ships under restricted-distribution license.</td></tr>
+<tr><td>Coexistence with devd</td><td>devd is not currently installed. If added later: both daemons can read <code>/dev/devctl</code>; multiple readers are kernel-supported.</td></tr>
+<tr><td>License (top-level)</td><td>BSD-2-Clause. No Apple per-file headers &mdash; clean-room implementation.</td></tr>
 </tbody>
 </table>
 
-<h2 id="coverage">8. Hardware coverage</h2>
+<h2 id="integration">6. launchd integration</h2>
 
-<p>The hard requirement is "every hardware-class kmod autoloads". Phase 1 commits to the four classes that matter most for a usable desktop:</p>
-
-<table>
-<thead><tr><th>Class</th><th>Phase 1 personalities</th><th>Source of match data</th></tr></thead>
-<tbody>
-<tr><td>GPUs</td><td><code>i915kms</code>, <code>amdgpu</code>, <code>radeonkms</code>, <code>nvidia</code>, <code>nvidia-modeset</code></td><td>Hand-curated from drm-kmod / nvidia-driver supported-hardware lists. We ship the personality plists.</td></tr>
-<tr><td>NICs</td><td><code>if_re</code>, <code>if_em</code>, <code>if_igb</code>, <code>if_ix</code>, <code>if_iwlwifi</code>, <code>if_iwm</code>, <code>if_rtw89</code>, <code>if_rtwn</code></td><td>Most have <code>MODULE_PNP_INFO</code>; <code>linker.hints</code> covers them. Hand-fill any gaps.</td></tr>
-<tr><td>USB</td><td><code>uhid</code>, <code>ums</code>, <code>ukbd</code>, <code>umass</code>, <code>cdce</code>, <code>uhso</code>, <code>uhso</code>, <code>urndis</code>, <code>uaudio</code>, <code>uvideo</code></td><td>USB-class matching (e.g., HID = class 3); driver auto-binding via the kernel's USB stack already does most of this. Add personality plists for class-only fallbacks.</td></tr>
-<tr><td>Storage controllers</td><td><code>nvme</code>, <code>ahci</code>, <code>mfi</code>, <code>mpr</code>, <code>mps</code>, <code>virtio_blk</code>, <code>virtio_scsi</code></td><td>Most boot-loaded already (loader.conf <code>kld_list</code>). Personalities cover post-boot hot-plug (USB-attached storage, externally-connected SAS).</td></tr>
-</tbody>
-</table>
-
-<p>Phase 2+ adds: audio (<code>snd_*</code>), input (<code>uhid_*</code>, <code>moused</code>), bluetooth, sensors, smartcard, miscellaneous chipsets.</p>
-
-<h3>8.1 Where the personality lists come from</h3>
-<p>Three sources, in priority order:</p>
-<ol>
-  <li><strong><code>linker.hints</code> (kldxref-built):</strong> drivers with <code>MODULE_PNP_INFO()</code>. Free.</li>
-  <li><strong>Hand-curated <code>.kext</code> bundles in our repo:</strong> for drivers that don't declare PnP info. Manual upkeep cost, but only for the long-tail; Phase 1 covers the high-value gaps.</li>
-  <li><strong>Generated from upstream supported-hardware lists:</strong> drm-kmod's source, nvidia-driver's <code>supported-gpus.json</code>. We could autogenerate personality plists from these via a build-time script. Phase 3 nicety.</li>
-</ol>
-
-<h2 id="integration">9. launchd integration</h2>
-
-<h3>9.1 The plist</h3>
-<pre class="plist"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+<h3>6.1 The plist</h3>
+<pre><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
 &lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
 &lt;plist version="1.0"&gt;
 &lt;dict&gt;
     &lt;key&gt;Label&lt;/key&gt;             &lt;string&gt;org.freebsd.kmodloader&lt;/string&gt;
     &lt;key&gt;ProgramArguments&lt;/key&gt;  &lt;array&gt;&lt;string&gt;/usr/libexec/kmodloader&lt;/string&gt;&lt;/array&gt;
     &lt;key&gt;RunAtLoad&lt;/key&gt;         &lt;true/&gt;
-    &lt;key&gt;KeepAlive&lt;/key&gt;         &lt;true/&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;         &lt;false/&gt;
 &lt;/dict&gt;
 &lt;/plist&gt;</code></pre>
 
-<h3>9.2 Boot ordering</h3>
-<p>kmodloader is the <strong>first</strong> launchd daemon to start (after the very-early one-shots: varrun, sysctl). It has to finish boot enumeration before:</p>
-<ul>
-  <li><strong><code>configd</code></strong> — needs NIC kmods loaded so PF_ROUTE reports interfaces.</li>
-  <li><strong>any GUI</strong> — needs GPU kmods loaded.</li>
-  <li><strong>filesystem mounts</strong> beyond root — need storage controller kmods if not in loader.conf.</li>
-</ul>
+<p>One-shot at boot. <code>KeepAlive=false</code> &mdash; daemon exits when work is done; launchd does not respawn. Phase 2 will swap to a long-running shape with a <code>DISPATCH_SOURCE_TYPE_READ</code> source on <code>/dev/devctl</code> for hot-plug events.</p>
 
-<p>Mechanism: kmodloader writes <code>/var/run/.phase.kmods-loaded</code> after its boot-time enumeration completes. Other LaunchDaemons that depend on hardware use the proposed <code>RequiresPhase</code> plist key (launchd plan §11.3) to wait for it.</p>
+<h3>6.2 Boot ordering</h3>
+<p>kmodloader runs early. Plist filenames sort alphabetically; <code>org.freebsd.kmodloader</code> sorts before <code>org.freebsd.netconfigd</code>, so any NIC kld kmodloader brings in is visible by the time netconfigd does its <code>getifaddrs()</code> walk. That's the dependency that matters today; finer ordering (a <code>RequiresPhase</code> key, or per-job dependencies) is a launchd-side feature for later.</p>
 
-<h2 id="license">10. Licensing</h2>
+<h2 id="license">7. Licensing</h2>
 
-<p>BSD-2-Clause across the board. No Apple per-file headers — this is clean-room code, not a port. We do <em>reference</em> Apple's IOKit + kextd design (it's open source under <code>apple-oss-distributions/</code>), but we don't vendor any of it.</p>
+<p>BSD-2-Clause across the board. No Apple per-file headers &mdash; this is clean-room code, not a port. The original plan referenced Apple's <code>kextd</code> + IOKit design; the implementation that shipped is closer to FreeBSD's own <code>devmatch</code>. Either way, no Apple source is vendored.</p>
 
 <table>
 <thead><tr><th>Source</th><th>License</th><th>How we handle it</th></tr></thead>
 <tbody>
-<tr><td>This repo's code (daemon + personality bundles + scripts)</td><td>BSD-2-Clause</td><td>SPDX header in every file.</td></tr>
+<tr><td>This repo's code (daemon + Makefile + scripts)</td><td>BSD-2-Clause</td><td>SPDX header in every file.</td></tr>
+<tr><td><code>RadeonPCIIDs.h</code> generated table</td><td>Data &mdash; not copyrightable</td><td>Comment cites drm-kmod's drm_pciids.h as source.</td></tr>
 <tr><td>GNUstep Foundation, libdispatch, libobjc2 (linked, not in tree)</td><td>LGPL/MIT/Apache as applicable</td><td>Listed in NOTICE; same calculus as launchd + configd.</td></tr>
-<tr><td>Apple IOKitTools (referenced for design only)</td><td>Apache 2.0 / APSL</td><td><strong>Not vendored.</strong> Cited in §11 References for design provenance.</td></tr>
 </tbody>
 </table>
 
-<h2 id="phases">11. Phased delivery</h2>
+<h2 id="phases">8. Phased delivery</h2>
 
-<div class="phase">
-<h3>Phase 0 — repo scaffold</h3>
+<div class="phase done">
+<h3>Phase 0 &mdash; repo scaffold <span class="pill ok">DONE</span></h3>
 <ul>
-  <li>Create <code>kmodloader/</code> at the top of <code>freebsd-launchd</code>. Update top-level <code>NOTICE</code> to mention kmodloader.</li>
-  <li>Empty <code>kmodloader/src/</code>; placeholder <code>kmodloader/Makefile</code>.</li>
-  <li><code>overlays/System/Library/LaunchDaemons/org.freebsd.kmodloader.plist</code> stub — won't fire until Phase 1.</li>
+  <li><code>kmodloader/</code> created at the top of <code>freebsd-launchd</code>; placeholder Makefile.</li>
+  <li><code>NOTICE</code> updated.</li>
+  <li>Stub <code>org.freebsd.kmodloader.plist</code> in overlays.</li>
 </ul>
 </div>
 
-<div class="phase">
-<h3>Phase 1 — boot-time matching for the four core classes</h3>
+<div class="phase done">
+<h3>Phase 1a-c &mdash; personality plist approach (later abandoned) <span class="pill warn">SUPERSEDED</span></h3>
+<p>Initial implementation followed the original plan: Apple-shaped <code>.kext</code> bundles in <code>/System/Library/Extensions/</code>, an <code>NSDictionary</code> registry, probe-score matching against <code>sysctl dev.</code> walks. Shipped <code>i915kms.kext</code>, <code>if_em.kext</code>, <code>amdgpu.kext</code>, <code>radeonkms.kext</code>, <code>if_iwlwifi.kext</code>, <code>if_rtw88.kext</code>, <code>if_rtw89.kext</code>.</p>
+<p>Discarded in Phase 1d: hand-curating IOPCIMatch lists doesn't scale to FreeBSD's hardware coverage, and devmatch already had the data via <code>linker.hints</code>. Replaced by the three-path scan.</p>
+</div>
+
+<div class="phase done">
+<h3>Phase 1d &mdash; pivot to devmatch <span class="pill ok">DONE</span></h3>
 <ul>
-  <li>Daemon main loop (Foundation + libdispatch).</li>
-  <li><code>KMRegistry</code>: load <code>linker.hints</code> + iterate <code>/System/Library/Extensions/*.kext/</code>.</li>
-  <li><code>KMBusEnumerate</code>: walk <code>sysctl dev.</code> tree at startup; produce a list of unmatched devices.</li>
-  <li><code>KMMatch</code>: PCI + USB matching with probe scoring.</li>
-  <li>Ship personality plists for: <code>i915kms</code>, <code>amdgpu</code>, <code>radeonkms</code>, <code>nvidia</code>, the 8 most common NIC drivers, top USB classes.</li>
-  <li>Boot test extension: enumerate devices in qemu (typically <code>virtio-blk</code>, <code>virtio-net</code>, <code>e1000</code>); confirm at least one match-and-load fires by watching the boot log for <code>kmodloader[INFO]: matched ...</code>.</li>
+  <li>Deleted personality bundles + <code>KMRegistry</code> / <code>KMMatch</code> / <code>KMDevice</code> / <code>KMBusEnumerate</code> classes.</li>
+  <li>Replaced with shell-out to bare <code>devmatch</code>; parse one-kld-per-line output; <code>kldload</code> each.</li>
+  <li>Net change: ~900 LOC removed.</li>
 </ul>
 </div>
 
-<div class="phase">
-<h3>Phase 2 — hot-plug</h3>
+<div class="phase done">
+<h3>Phase 1e &mdash; GPU PCI scan <span class="pill ok">DONE</span></h3>
 <ul>
-  <li><code>KMDevctlSource</code>: open <code>/dev/devctl</code>, <code>DISPATCH_SOURCE_TYPE_READ</code>, parse attach lines.</li>
-  <li>Re-run matcher on attach events; load if hit.</li>
-  <li>Boot test: in CI, attach a USB device mid-run via qemu monitor, watch matched-and-loaded message.</li>
+  <li>Bench-tested on a Skylake laptop: devmatch covered NIC, WiFi, thermal, SD reader. Did not cover the Intel HD 520 GPU (drm-kmod has no <code>PNP_INFO</code>).</li>
+  <li>Added second match path: <code>pciconf -l</code> walk for class <code>0x0300xx</code>, three-vendor map.</li>
+  <li>Re-added <code>nvidia-drm-latest-kmod</code> to pkglist; added <code>LICENSES_ACCEPTED=NVIDIA</code> to build.sh's pkg env; added <code>hw.nvidiadrm.modeset="1"</code> to loader.conf.</li>
+  <li>Also fixed a long-shipped bug: kmodloader hardcoded <code>/usr/sbin/devmatch</code> but the actual binary is <code>/sbin/devmatch</code> &mdash; daemon had been silent no-op since shipped.</li>
 </ul>
 </div>
 
-<div class="phase">
-<h3>Phase 3 — extended hardware classes</h3>
+<div class="phase done">
+<h3>Phase 1f &mdash; AMD per-device split <span class="pill ok">DONE</span></h3>
 <ul>
-  <li>Audio (<code>snd_*</code>), bluetooth, input devices, sensors, smartcard, miscellaneous.</li>
-  <li>Generated personalities: build-time script ingests drm-kmod's supported list + nvidia-driver's <code>supported-gpus.json</code> and emits personality plists. Drops manual-upkeep cost on the GPU long-tail.</li>
-  <li>VNODE source on <code>/System/Library/Extensions/</code> for live registry reload.</li>
+  <li>Replaced "load both amdgpu + radeonkms when vendor is 0x1002" with per-device routing.</li>
+  <li>Vendored drm-kmod's <code>radeon_PCI_IDS</code> as <code>RadeonPCIIDs.h</code> (699 frozen device IDs).</li>
+  <li>Devices in the frozen set &rarr; <code>radeonkms</code>; everything else &rarr; <code>amdgpu</code>.</li>
+  <li>amdgpu becomes the open default: future AMD silicon picks up amdgpu without code changes.</li>
 </ul>
 </div>
 
-<div class="phase">
-<h3>Phase 4 — performance polish</h3>
+<div class="phase done">
+<h3>Phase 1g &mdash; hypervisor scan <span class="pill ok">DONE</span></h3>
 <ul>
-  <li>Cached binary registry at <code>/var/db/kmodloader-registry.bin</code>: skip parsing 100+ Info.plists on startup.</li>
-  <li>Concurrent kldload via dispatch concurrent queues (multiple devices match simultaneously).</li>
-  <li>Optional: prelinked-kernel-style boot manifest for the common case.</li>
+  <li>Third match path: <code>sysctl kern.vm_guest</code> &rarr; vbox / vmware kld lists; everything else no-op.</li>
+  <li>pkglist gains <code>virtualbox-ose-additions-nox11</code> + <code>open-vm-tools-nox11</code>.</li>
+  <li>~70 MB ISO size cost; out-of-box VirtualBox / VMware guest support.</li>
 </ul>
 </div>
 
-<div class="phase">
-<h3>Phase 5+ — optional, demand-driven</h3>
+<div class="phase todo">
+<h3>Phase 2 &mdash; hot-plug via /dev/devctl <span class="pill info">PLANNED</span></h3>
 <ul>
-  <li><code>kextstat</code>-equivalent CLI that lists loaded kmods + which personality matched them.</li>
-  <li>Personality validation (<code>plutil -lint</code>-equivalent for our schema).</li>
-  <li>Driver-update hooks (re-match when a new personality plist appears for already-attached hardware).</li>
+  <li>Switch <code>org.freebsd.kmodloader.plist</code> to <code>KeepAlive=true</code>.</li>
+  <li><code>KMDevctlSource</code>: open <code>/dev/devctl</code>, <code>DISPATCH_SOURCE_TYPE_READ</code>, parse newline-delimited messages of the form <code>!system=... type=ATTACH ...</code> (event format documented in <code>devd(8)</code> source).</li>
+  <li>On <code>type=ATTACH</code>: re-run the appropriate match path. PCI device &rarr; check vendor, possibly run GPU map. devmatch path: re-run devmatch (it'll only emit klds for newly-unattached devices).</li>
+  <li>On <code>type=DETACH</code>: log only. Phase 1 doesn't unload anything; same default for Phase 2.</li>
+  <li>Boot test extension: in CI, attach a USB device via qemu monitor mid-run; watch matched-and-loaded log line.</li>
 </ul>
 </div>
 
-<h2 id="open">12. Open questions</h2>
+<div class="phase todo">
+<h3>Phase 3 &mdash; firmware loading from /boot/firmware/ <span class="pill info">PLANNED</span></h3>
+<p>Bench testing surfaced a real problem: drm-kmod's GPU drivers and the iwlwifi LinuxKPI port load firmware via <code>firmware_get()</code> + <code>try_binary_file()</code> in <code>sys/kern/subr_firmware.c</code>. The function <code>vn_open</code>s <code>/boot/firmware/&lt;name&gt;</code>, but in our chroot setup the kernel context's namei resolves <code>/boot/firmware/</code> against the cd9660 root (loader-only files) instead of the unionfs upper layer (where pkg-installed firmware lives). Result: i915kms loads but DMC firmware fails with "could not load binary firmware"; iwlwifi reports "File size way too small!" on a 2.4 MB blob.</p>
+<p>Phase 3 work: fix the live-ISO path so <code>/boot/firmware/</code> in the kernel's vfs view sees the same files userspace sees. Likely candidates:</p>
+<ul>
+  <li>Copy firmware files into the cd9660 layer at build time so kernel namei finds them on the read-only path.</li>
+  <li>Or reshape the chroot/unionfs setup so kernel-context paths resolve through the union.</li>
+  <li>Or pre-load all firmware-as-kld wrapper modules at boot via loader.conf so <code>firmware_get()</code> hits the registered-kld path before the file-based fallback.</li>
+</ul>
+<p>Out of scope for kmodloader proper; tracked here because it's the next blocker for fully-automatic GPU + WiFi support on the live ISO.</p>
+</div>
 
-<div class="open-q">
-<strong>Q1. Coexistence with devd: read both /dev/devctl, or have devd call us?</strong> Decision: both read independently. The kernel allows multiple readers; both daemons see the same events. Cleaner than pipelining one through the other.
+<div class="phase todo">
+<h3>Phase 4 &mdash; performance polish <span class="pill info">FUTURE</span></h3>
+<ul>
+  <li>Concurrent <code>kldload</code> via dispatch concurrent queues (multiple devices' klds load in parallel).</li>
+  <li>Skip the <code>kldstat -v</code> shell-out: maintain the loaded-set in-process across the three paths so we don't re-fork for it.</li>
+</ul>
+</div>
+
+<div class="phase todo">
+<h3>Phase 5 &mdash; upstream contributions <span class="pill info">FUTURE</span></h3>
+<ul>
+  <li>File a drm-kmod PR adding <code>MODULE_PNP_INFO</code> declarations from amdgpu's and radeonkms's compiled-in supported tables. If accepted upstream, devmatch handles GPUs automatically and Path 2 collapses to "i915kms only" or disappears entirely.</li>
+  <li>Same for nvidia-drm-kmod (adds NVIDIA's binary's compiled-in supported list).</li>
+</ul>
+</div>
+
+<h2 id="open">9. Open questions</h2>
+
+<div class="resolved">
+<strong>RESOLVED &mdash; Coexistence with devd.</strong> devd is not installed on the live ISO. We replicate its essential parts case-by-case in launchd-driven daemons (kmodloader for kld loading, netconfigd for link-up DHCP). When/if devd comes back, multiple readers on <code>/dev/devctl</code> are kernel-supported; both daemons see the same events.
+</div>
+
+<div class="resolved">
+<strong>RESOLVED &mdash; Personality plists vs. devmatch.</strong> Phase 1d picked devmatch + linker.hints. Personality plists were the original plan; they shipped in 1a-c then got ripped out. The narrow gap (drm-kmod, VM additions) is closed with three vendor-map functions, not 700+ device IDs.
+</div>
+
+<div class="resolved">
+<strong>RESOLVED &mdash; AMD radeonkms vs. amdgpu split without curating IDs.</strong> radeonkms's upstream device list is frozen (Linux's radeon driver is in maintenance-only mode). Vendor it once as <code>RadeonPCIIDs.h</code>; everything not in the set defaults to amdgpu. Phase 1f delivered.
+</div>
+
+<div class="resolved">
+<strong>RESOLVED &mdash; Hybrid graphics (Optimus, switchable).</strong> The PCI scan finds both Intel and NVIDIA vendors; both kld sets load. Each driver attaches to its own card. Display routing policy belongs in a desktop layer, not in kmodloader.
 </div>
 
 <div class="open-q">
-<strong>Q2. Conflict between two personalities matching the same device.</strong> Apple uses probe scores; we adopt that. If two GPU drivers both claim a vendor:device pair, the higher-scored personality wins. If still tied, registry order (insertion-time) breaks. <strong>Edge case:</strong> a Phase 3 generated personality might score the same as a Phase 1 hand-curated one; resolve by giving hand-curated personalities priority via an <code>IOProbeScore</code> +50 nudge.
+<strong>Q. Firmware loading in live-ISO setup.</strong> See Phase 3. The kernel firmware loader's <code>try_binary_file()</code> reads from <code>/boot/firmware/</code> in kernel-thread context, which doesn't follow the chroot. On a normal FreeBSD install this is fine; on our unionfs+chroot live-ISO it's a real bug. Workarounds known; clean fix pending.
 </div>
 
 <div class="open-q">
-<strong>Q3. Hybrid graphics (Optimus, switchable).</strong> Both Intel and NVIDIA personalities match. Current plan: load both kmods; let the user / userspace tooling decide which to bind to outputs. Defer policy to gershwin's display manager.
+<strong>Q. Phase 2 hot-plug parsing.</strong> <code>/dev/devctl</code> events are textual, newline-delimited, with a single-character type prefix (<code>+</code> attach, <code>-</code> detach, <code>?</code> nomatch, <code>!</code> notify). Parser is straightforward; the design question is whether to re-fork devmatch on every nomatch event (simple, slow) or maintain our own incremental match state (complex, fast). Lean toward the former until profile says otherwise.
 </div>
 
 <div class="open-q">
-<strong>Q4. PCI bus enumeration: <code>sysctl dev.</code> tree or libdevinfo?</strong> Open. <code>sysctl dev.</code> is easier to parse but only reports <em>attached</em> devices; libdevinfo reports unattached too. Phase 1 starts with libdevinfo since the goal is matching <em>unattached</em> devices specifically.
+<strong>Q. PCI bridges that load drivers for downstream devices.</strong> If a bridge driver hasn't loaded yet at our scan time, devices behind it aren't visible to <code>pciconf -l</code> or <code>devmatch</code>. We may need a second pass after Phase 1's first kldload round &mdash; Phase 2's hot-plug source covers this incidentally (the bridge attaching emits a NOMATCH for its children).
 </div>
 
 <div class="open-q">
-<strong>Q5. <code>RequiresPhase</code> blocking semantic.</strong> If kmodloader's Phase 1 enumeration takes 2 seconds, configd waits 2 seconds. Acceptable on a desktop boot? Probably yes. If not: split into "must-have" (storage, NIC) and "want-have" (GPU) phases, only block configd on the must-have set.
+<strong>Q. nvidia-driver license interaction.</strong> nvidia-drm-latest-kmod is a binary-only blob under restricted-distribution license. We accept the license at pkg install time via <code>LICENSES_ACCEPTED=NVIDIA</code> in build.sh. Distributing the resulting ISO has its own license obligations &mdash; out of scope for this plan; tracked at the project level.
 </div>
 
-<div class="open-q">
-<strong>Q6. <code>nvidia-driver</code> license interaction.</strong> nvidia.ko is binary-only, NVIDIA-CLA. We ship a personality plist for it; we don't ship the kmod itself. Loading nvidia.ko requires the user to <code>pkg install nvidia-driver</code>. Our plist works whether the kmod is installed or not (kldload fails harmlessly if absent).
-</div>
-
-<div class="open-q">
-<strong>Q7. ACPI matches.</strong> ACPI HID matching (e.g., embedded sensors) requires reading ACPI namespace from <code>/dev/acpi</code> or via sysctl. Phase 3+ work; not blocking the Phase 1 GPU/NIC milestone.
-</div>
-
-<div class="open-q">
-<strong>Q8. Personality discovery for <code>/Local/Library/Extensions/</code>.</strong> Should kmodloader scan <code>/Local/Library/Extensions/</code> at startup like macOS does, so admin-installed pkg drivers (e.g., <code>nvidia-driver</code> from pkg) can ship their own personality bundle? Decision: yes, in Phase 1. Pkgs that ship a kmod can drop a <code>.kext/Contents/Info.plist</code> alongside the <code>.ko</code> file.
-</div>
-
-<h2 id="refs">13. References</h2>
+<h2 id="refs">10. References</h2>
 
 <ul>
-  <li>Apple <code>kextd</code> + <code>kextload</code> source: <a href="https://github.com/apple-oss-distributions/IOKitTools">github.com/apple-oss-distributions/IOKitTools</a> (referenced for design — not vendored).</li>
-  <li>Apple <code>IOKit</code> framework (kernel + userspace): <a href="https://github.com/apple-oss-distributions/IOKitUser">apple-oss-distributions/IOKitUser</a>.</li>
-  <li>Apple's IOKit Fundamentals (architecture overview): <a href="https://developer.apple.com/library/archive/documentation/DeviceDrivers/Conceptual/IOKitFundamentals/">developer.apple.com IOKit Fundamentals</a> (archived; concepts are stable).</li>
-  <li>FreeBSD <code>devctl(4)</code>: <code>man 4 devctl</code>.</li>
-  <li>FreeBSD <code>devd(8)</code>: <code>man 8 devd</code> — sibling daemon; coexistence reference.</li>
+  <li>FreeBSD <code>devmatch(8)</code>: <code>man 8 devmatch</code> &mdash; primary match-data tool.</li>
+  <li>FreeBSD <code>devctl(4)</code>: <code>man 4 devctl</code> &mdash; Phase 2 event source.</li>
   <li>FreeBSD <code>kldxref(8)</code> + <code>MODULE_PNP_INFO()</code>: <code>man 8 kldxref</code>, kernel docs in <code>sys/sys/module.h</code>.</li>
+  <li>FreeBSD <code>devd(8)</code>: <code>man 8 devd</code> &mdash; not used directly; reference for hot-plug semantics.</li>
+  <li>drm-kmod source: <a href="https://github.com/freebsd/drm-kmod">github.com/freebsd/drm-kmod</a>. <code>include/drm/drm_pciids.h</code> is the source for <code>RadeonPCIIDs.h</code>.</li>
+  <li>FreeBSD release engineering's <code>fwget(8)</code>: <code>man 8 fwget</code> &mdash; auto-detects firmware packages needed for current hardware. Useful diagnostic during bench testing.</li>
   <li>Companion plans: <a href="freebsd-launchd-plan.html">freebsd-launchd</a>, <a href="freebsd-configd-plan.html">freebsd-configd</a>.</li>
 </ul>
 

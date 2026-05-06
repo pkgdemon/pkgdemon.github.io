@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeBSD WiFi management — Apple stack research</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.objc { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  table.compact td, table.compact th { padding: .35rem .55rem; font-size: .88rem; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .gap { background: #fff5f5; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .gap strong { color: var(--bad); }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .yesno { font-weight: 600; }
+  .yesno.yes { color: var(--ok); }
+  .yesno.no  { color: var(--bad); }
+  .yesno.partial { color: var(--warn); }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#stack">Apple's stack</a>
+  <a href="#oss">Open source status</a>
+  <a href="#compare">vs wpa_supplicant</a>
+  <a href="#shipped">What we ship</a>
+  <a href="#hypothetical">Hypothetical wifid-fbsd</a>
+  <a href="#refs">References</a>
+</nav>
+
+<h1>FreeBSD WiFi management — Apple stack research <span class="pill info">RESEARCH</span></h1>
+<p class="subtitle">What macOS uses for WiFi (it's not <code>wpa_supplicant</code>), what's open source vs closed, why we use <code>wpa_supplicant</code> from ports anyway, and what a hypothetical Apple-shaped WiFi management daemon for FreeBSD would look like. Companion to the <a href="freebsd-ipconfiguration-plan.html">IPConfiguration porting plan</a>.</p>
+
+<section id="tldr" class="tldr">
+  <h3>TL;DR</h3>
+  <ul>
+    <li><strong>Apple does NOT use <code>wpa_supplicant</code>.</strong> macOS has its own proprietary WiFi stack centered on <code>wifid</code> (the WiFi management daemon), <code>Apple80211.framework</code> (private 802.11 API), and <code>CoreWLAN.framework</code> (public app API).</li>
+    <li><strong>Most of it is closed source.</strong> The IEEE 802.11 state machine on macOS — scanning, AP selection, WPA2/WPA3 PSK handshake, key management, AP roaming — is all in closed-source <code>wifid</code> talking to a closed-source <code>IO80211Family</code> kernel framework. Nobody outside Apple has visibility into it.</li>
+    <li><strong>The one open-source piece is <code>eapolclient</code>.</strong> Apple publishes the EAP / 802.1X authentication code as <a href="https://github.com/apple-oss-distributions/eap8021x">apple-oss-distributions/eap8021x</a> — handles EAP-TLS, EAP-PEAP, EAP-FAST, EAP-SIM, EAP-AKA. But this only covers the authentication side; it doesn't do 802.11 association.</li>
+    <li><strong>What we ship: <code>wpa_supplicant</code> from ports.</strong> Already in <code>pkglist.txt</code> alongside dhcpcd. Battle-tested, portable, full WPA3-SAE / OWE / EAP coverage, well-maintained upstream. Same client every Linux distro and FreeBSD-based system uses.</li>
+    <li><strong>Why this matters for the project:</strong> we can't port <code>wifid</code> — it's closed source, depends on closed-source <code>IO80211Family</code> kernel framework that doesn't exist on FreeBSD. But Apple's <em>API surface</em> (CoreWLAN, the <code>airport(8)</code>-equivalent) could be replicated in a FreeBSD-side daemon that talks to <code>wpa_supplicant</code> over its control socket. That's the only realistic Apple-shape WiFi path on FreeBSD. Out of scope for now; documented here so we don't relitigate.</li>
+  </ul>
+</section>
+
+<h2 id="stack">1. Apple's WiFi stack</h2>
+
+<p>Multiple components, layered. From hardware up:</p>
+
+<table class="compact">
+<thead>
+<tr><th>Component</th><th>Role</th><th>Source</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>IO80211Family.kext</code> + per-vendor drivers (<code>AirPortBrcmNIC</code>, <code>AppleBCMWLANCore</code>, etc.)</td>
+  <td>Kernel WiFi driver framework. Hardware-specific drivers attach here. Provides the IEEE 802.11 MAC/PHY layer to userspace.</td>
+  <td><span class="yesno no">Closed</span></td>
+</tr>
+<tr>
+  <td><code>wifid</code> (binary at <code>/usr/libexec/wifid</code>)</td>
+  <td>The main WiFi management daemon. Runs as a launchd job (<code>com.apple.wifid.plist</code>). Owns: AP scanning, BSS selection, association, WPA2/WPA3 4-way handshake, key management, autojoin policy, profile management, fast-roam (802.11r/k/v) coordination.</td>
+  <td><span class="yesno no">Closed</span></td>
+</tr>
+<tr>
+  <td><code>eapolclient</code> (binary at <code>/usr/libexec/eapolclient</code>)</td>
+  <td>Per-iface 802.1X authentication daemon. wifid spawns one per WiFi iface that needs EAP. Implements EAP-TLS, EAP-PEAP, EAP-TTLS, EAP-FAST, EAP-SIM, EAP-AKA, LEAP. Talks to wifid via Mach IPC for key delivery.</td>
+  <td><span class="yesno yes">Open</span> — <a href="https://github.com/apple-oss-distributions/eap8021x">apple-oss-distributions/eap8021x</a></td>
+</tr>
+<tr>
+  <td><code>EAPOLController.bundle</code></td>
+  <td>configd plugin coordinating EAP state across services. Acts as the dispatcher between configd's dynamic store and per-iface eapolclient processes.</td>
+  <td><span class="yesno partial">Partial</span> — interfaces in eap8021x repo, controller plugin closed</td>
+</tr>
+<tr>
+  <td><code>Apple80211.framework</code></td>
+  <td>Private 802.11 API the system uses internally. Wraps Mach IPC to wifid. Header in <code>/System/Library/PrivateFrameworks/Apple80211.framework/Headers/Apple80211API.h</code>.</td>
+  <td><span class="yesno no">Closed</span></td>
+</tr>
+<tr>
+  <td><code>CoreWLAN.framework</code></td>
+  <td>Public API for third-party apps. Wraps Apple80211. <code>CWInterface</code>, <code>CWNetwork</code>, <code>CWWiFiClient</code> classes. The <code>airport(8)</code> CLI tool is built on this.</td>
+  <td><span class="yesno partial">Headers public, impl closed</span></td>
+</tr>
+<tr>
+  <td><code>AirPort.framework</code></td>
+  <td>Older WiFi API; mostly superseded by CoreWLAN. Still present for compatibility.</td>
+  <td><span class="yesno no">Closed</span></td>
+</tr>
+<tr>
+  <td><code>networksetup(8)</code> / <code>airport(8)</code> CLIs</td>
+  <td>User-facing tools for WiFi config. <code>networksetup</code> for general network, <code>airport</code> for WiFi-specific (scan, info, sniff). Both are CoreWLAN clients.</td>
+  <td><span class="yesno no">Closed</span></td>
+</tr>
+<tr>
+  <td><code>SecKeychain</code> integration</td>
+  <td>WiFi passwords stored in the user's keychain via Security.framework. Per-network credentials, per-user.</td>
+  <td><span class="yesno partial">Security.framework partial open</span></td>
+</tr>
+</tbody>
+</table>
+
+<p>Net: <strong>only the EAP authentication piece is published.</strong> The 802.11 association layer, scanning, key management, profile storage — all closed.</p>
+
+<h3>1.1 The architecture diagram</h3>
+
+<div class="ascii-diagram">                   +----------------------+   +-----------------------+
+                   |  WiFi prefs UI       |   | Third-party apps      |
+                   |  (System Settings)   |   | (CWInterface, etc.)   |
+                   +-----------+----------+   +-----------+-----------+
+                               |                          |
+                               v                          v
+                   +-----------+--------------------------+-----------+
+                   |          CoreWLAN.framework (public API)         |
+                   +-----------+--------------------------+-----------+
+                               |
+                               v Mach IPC
+                   +-----------+----------+
+                   |  Apple80211.framework |
+                   +-----------+----------+
+                               |
+                               v Mach IPC (com.apple.wifi.client)
+                   +-----------+----------+      +--------------------+
+                   |       wifid          |      | eapolclient (per   |
+                   |  (.plist as launchd  |&lt;----&gt;|   wifi iface)      |
+                   |   job; closed src)   |      |  (eap8021x repo,   |
+                   +-----------+----------+      |   open src)        |
+                               |                 +---------+----------+
+                               v                           |
+                   +-----------+----------+                |
+                   |  IO80211 user client |                |
+                   |  (IOKit Mach port)   |                |
+                   +-----------+----------+                |
+                               |                           |
+                               v                           v
+                   +-----------+----------+      +---------+----------+
+                   |  IO80211Family.kext  |      | Keys via Mach back |
+                   |  + vendor drivers    |&lt;-----| to wifid for kernel|
+                   |  (closed src)        |      | install            |
+                   +----------------------+      +--------------------+</div>
+
+<h2 id="oss">2. Open source status — what's actually published</h2>
+
+<table class="compact">
+<thead>
+<tr><th>Repo</th><th>What's in it</th><th>Useful for FreeBSD?</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><a href="https://github.com/apple-oss-distributions/eap8021x">apple-oss-distributions/eap8021x</a></td>
+  <td>The <code>eapolclient</code> binary source, <code>libeap.a</code> (EAP method library), the EAP-TLS/PEAP/TTLS/FAST/SIM/AKA implementations, EAPOL state machine.</td>
+  <td><strong>Yes, partially.</strong> If we ever need EAP methods wpa_supplicant lacks (rare — wpa_supplicant covers all the standard ones). Would need glue to wpa_supplicant or its own supplicant layer.</td>
+</tr>
+<tr>
+  <td>(no repo) — <code>wifid</code></td>
+  <td>The main WiFi management daemon</td>
+  <td>n/a — closed source</td>
+</tr>
+<tr>
+  <td>(no repo) — <code>Apple80211.framework</code></td>
+  <td>Private 802.11 API</td>
+  <td>n/a — closed source. But the <code>Apple80211API.h</code> header is technically published (via dump tools); reverse-engineered Mach IPC shape is documented in projects like <a href="https://github.com/Karmaz95/HelloWifid">HelloWifid</a> (HelloSystem's exploratory wifid replacement).</td>
+</tr>
+<tr>
+  <td>(no repo) — <code>IO80211Family.kext</code></td>
+  <td>Kernel WiFi driver framework</td>
+  <td>n/a — closed source. FreeBSD has its own (<code>net80211(4)</code>); architecturally different.</td>
+</tr>
+<tr>
+  <td><a href="https://github.com/apple-oss-distributions/IOKitTools">apple-oss-distributions/IOKitTools</a></td>
+  <td>kextd, kextload, kextstat — kext loading infrastructure</td>
+  <td>For kmodloader plan, yes (referenced for design). For WiFi, no.</td>
+</tr>
+<tr>
+  <td><a href="https://github.com/apple-oss-distributions/Security">apple-oss-distributions/Security</a></td>
+  <td>Security.framework — Keychain Services, code signing, certificate handling</td>
+  <td>Maybe long-term for keychain-equivalent; not for WiFi specifically.</td>
+</tr>
+</tbody>
+</table>
+
+<p>So when people say "Apple uses <code>eapolclient</code>" — that's true for the 802.1X piece, and that piece IS open source. But "Apple's WiFi" as a whole is overwhelmingly closed.</p>
+
+<h2 id="compare">3. macOS WiFi stack vs <code>wpa_supplicant</code></h2>
+
+<p>Function-by-function comparison.</p>
+
+<table class="compact">
+<thead>
+<tr><th>Function</th><th>macOS</th><th>wpa_supplicant (FreeBSD/Linux)</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>WPA2-PSK 4-way handshake</td>
+  <td>wifid (closed)</td>
+  <td>wpa_supplicant (open, BSD)</td>
+</tr>
+<tr>
+  <td>WPA3-SAE association</td>
+  <td>wifid (closed)</td>
+  <td>wpa_supplicant (open) — full RFC 7664 SAE</td>
+</tr>
+<tr>
+  <td>OWE (Opportunistic Wireless Encryption)</td>
+  <td>wifid (closed)</td>
+  <td>wpa_supplicant (open) — RFC 8110</td>
+</tr>
+<tr>
+  <td>Open / WEP (legacy)</td>
+  <td>wifid</td>
+  <td>wpa_supplicant — though WEP is mostly removed/deprecated</td>
+</tr>
+<tr>
+  <td>EAP-TLS / EAP-PEAP / EAP-TTLS</td>
+  <td>eapolclient (semi-open via eap8021x)</td>
+  <td>wpa_supplicant (built-in)</td>
+</tr>
+<tr>
+  <td>EAP-FAST</td>
+  <td>eapolclient (open via eap8021x)</td>
+  <td>wpa_supplicant (built-in, less-tested than Apple's)</td>
+</tr>
+<tr>
+  <td>EAP-SIM / EAP-AKA</td>
+  <td>eapolclient (open via eap8021x)</td>
+  <td>wpa_supplicant (built-in but needs SIM card hardware integration)</td>
+</tr>
+<tr>
+  <td>AP scanning</td>
+  <td>wifid (closed)</td>
+  <td>wpa_supplicant + cfg80211/net80211 (open)</td>
+</tr>
+<tr>
+  <td>BSS selection / autojoin</td>
+  <td>wifid (closed; uses Apple's signal-strength + history heuristics)</td>
+  <td>wpa_supplicant (configurable; defaults to first match)</td>
+</tr>
+<tr>
+  <td>802.11r fast roaming</td>
+  <td>wifid (closed)</td>
+  <td>wpa_supplicant (open)</td>
+</tr>
+<tr>
+  <td>802.11k / 802.11v (radio resource mgmt)</td>
+  <td>wifid (closed)</td>
+  <td>wpa_supplicant (open, partial)</td>
+</tr>
+<tr>
+  <td>P2P / Wi-Fi Direct</td>
+  <td>wifid (closed; AirDrop is built on this)</td>
+  <td>wpa_supplicant (open, full P2P stack)</td>
+</tr>
+<tr>
+  <td>AP mode (host the network)</td>
+  <td>wifid (Internet Sharing)</td>
+  <td>hostapd (separate daemon, open)</td>
+</tr>
+<tr>
+  <td>Profile / credential storage</td>
+  <td>SecKeychain (per-network, per-user)</td>
+  <td><code>/etc/wpa_supplicant.conf</code> (system-wide) or per-iface configs</td>
+</tr>
+<tr>
+  <td>User control CLI</td>
+  <td><code>networksetup</code>, <code>airport(8)</code></td>
+  <td><code>wpa_cli</code></td>
+</tr>
+<tr>
+  <td>User control GUI</td>
+  <td>System Settings WiFi pane (CoreWLAN client)</td>
+  <td>NetworkManager-applet, iwd, wpa_gui, etc.</td>
+</tr>
+<tr>
+  <td>DHCP coordination</td>
+  <td>wifid → IPConfiguration via configd dynamic store</td>
+  <td>wpa_supplicant ASSOCIATED state → dhcpcd hook → DHCP attempt</td>
+</tr>
+</tbody>
+</table>
+
+<p><strong>Conclusion:</strong> wpa_supplicant covers everything that matters functionally. Apple's wifid has more sophisticated autojoin heuristics and tighter integration with proprietary features (AirDrop, Continuity), but the <em>protocol coverage</em> is essentially equal.</p>
+
+<h2 id="shipped">4. What this project ships today</h2>
+
+<p>Already in place from the <a href="freebsd-launchd-plan.html">launchd Phase 1</a> + <a href="freebsd-configd-plan.html">configd Phase 1d</a> work:</p>
+
+<ul>
+  <li><strong><code>security/wpa_supplicant</code></strong> from ports — supersedes the base FreeBSD wpa_supplicant. Newer WPA3-SAE / OWE coverage, current EAP methods, more aggressive CVE backports. Listed in <code>pkglist.txt</code>.</li>
+  <li><strong>dhcpcd's wpa_supplicant integration</strong> — dhcpcd's built-in <code>wpa_supplicant</code> hook detects the control socket on a wifi iface and gates DHCP behind ASSOCIATED state. Out-of-the-box pairing, no extra glue.</li>
+  <li><strong>No launchd plist for wpa_supplicant yet.</strong> Users still configure SSIDs manually via <code>/etc/wpa_supplicant.conf</code> or <code>wpa_cli</code>. A Phase 2+ enhancement (in the configd plan) is to introduce a netconfigd-managed flow where <code>Network.plist</code> declares wpa_supplicant config and netconfigd materializes it per wifi iface.</li>
+</ul>
+
+<div class="resolved">
+<strong>Pragmatic answer for FreeBSD WiFi today: <code>wpa_supplicant</code> + <code>wpa_cli</code></strong>. Battle-tested across many BSDs and Linux distros. Full WPA3 / SAE / OWE / EAP coverage. Coordinates cleanly with dhcpcd. The "not Apple-shaped" critique is real but the alternative (porting Apple's stack) is closed-source-blocked. wpa_supplicant is what every other FreeBSD-based desktop uses (GhostBSD, NomadBSD, HelloSystem, MidnightBSD — all of them).
+</div>
+
+<h2 id="hypothetical">5. Hypothetical: a wifid-shaped daemon for FreeBSD</h2>
+
+<p>If we ever wanted Apple-shape WiFi management on FreeBSD — exposing a CoreWLAN-equivalent API to apps — the realistic shape would be a thin daemon (call it <code>wifid-fbsd</code> or <code>org.freebsd.wifid</code>) that:</p>
+
+<ol>
+  <li><strong>Talks to <code>wpa_supplicant</code> via its UNIX control socket</strong> (<code>/var/run/wpa_supplicant/&lt;iface&gt;</code>). Standard protocol: <code>STATUS</code>, <code>SCAN</code>, <code>SCAN_RESULTS</code>, <code>LIST_NETWORKS</code>, <code>ADD_NETWORK</code>, <code>SET_NETWORK</code>, <code>ENABLE_NETWORK</code>, <code>SELECT_NETWORK</code>, plus event monitoring (<code>ATTACH</code> + async events: <code>CTRL-EVENT-CONNECTED</code>, <code>CTRL-EVENT-DISCONNECTED</code>, <code>CTRL-EVENT-SSID-TEMP-DISABLED</code>).</li>
+  <li><strong>Exposes a CoreWLAN-equivalent API over DO IPC</strong> (consistent with the project's Mach-IPC-replacement choice). ObjC <code>@protocol</code> sketch:
+    <pre class="objc"><code>@protocol NCWiFiClient
+- (NSArray&lt;NCWiFiInterface *&gt; *)interfaces;
+@end
+
+@protocol NCWiFiInterface
+- (NSString *)ssid;
+- (NSString *)bssid;
+- (NSNumber *)rssi;
+- (NSNumber *)txRate;
+- (NSString *)hardwareAddress;
+- (BOOL)powerOn;
+- (NCStatus)setPower:(BOOL)on;
+
+- (NSArray&lt;NCWiFiNetwork *&gt; *)scanForNetworksAndReturnError:(NSError **)err;
+- (NCStatus)associateToNetwork:(NCWiFiNetwork *)net
+                      password:(NSString *)pwd;
+- (NCStatus)disassociate;
+@end
+
+@protocol NCWiFiNetwork
+- (NSString *)ssid;
+- (NSString *)bssid;
+- (NSNumber *)rssi;
+- (NSNumber *)channel;
+- (NCSecurityType)securityType;  // open, WPA2-PSK, WPA3-SAE, EAP, etc.
+@end</code></pre>
+  </li>
+  <li><strong>Stores credentials</strong> in <code>/Local/Library/Preferences/Network.plist</code> (eventually keychain-backed when we have one). Translates user intent into wpa_supplicant <code>SET_NETWORK</code> calls. Persists across reboots.</li>
+  <li><strong>Coordinates with dhcpcd</strong> via the SCDynamicStore-equivalent. Publishes <code>State:/Network/Interface/&lt;wlan&gt;/AirPort</code> with <code>SSID_STR</code>, <code>BSSID</code>, <code>CHANNEL</code>, <code>SecurityType</code>. dhcpcd's hook reads this and times its DHCP attempts after associate.</li>
+  <li><strong>Optionally pulls in Apple's <code>eap8021x</code></strong> source for EAP methods wpa_supplicant lacks or implements differently. Only if needed; wpa_supplicant covers the standard ones.</li>
+</ol>
+
+<p>Effort estimate: ~3-4k LOC of ObjC, ~2 person-months. Way smaller than the IPConfiguration port because we're not reimplementing the protocol layer — wpa_supplicant stays as the protocol implementation. We're just wrapping it in an Apple-shape API.</p>
+
+<p><strong>Would we do this?</strong> Only if Gershwin's WiFi-config UI explicitly wants the CoreWLAN API surface for code symmetry with Mac apps. Today, users using <code>wpa_cli</code> + a launchd plist for wpa_supplicant works fine; nothing is functionally broken. This is a cosmetic / API-symmetry investment, not a functional one.</p>
+
+<h3>5.1 Prior art</h3>
+<ul>
+  <li><strong>HelloSystem</strong> explored a similar daemon in the <a href="https://github.com/Karmaz95/HelloWifid">HelloWifid</a> repo — never shipped, but documents the API shape.</li>
+  <li><strong>NetworkManager</strong> on Linux is the closest production analog — wraps wpa_supplicant via D-Bus, exposes higher-level GTK/Qt-friendly APIs. Different IPC choice (D-Bus vs DO) but same architectural shape.</li>
+  <li><strong>iwd</strong> (Intel's WiFi daemon, Linux) replaces wpa_supplicant entirely with a smaller, more modern codebase — D-Bus API, but no significant FreeBSD interest because of cfg80211 dependency.</li>
+</ul>
+
+<h2 id="open">6. Open questions</h2>
+
+<div class="open-q">
+<strong>Q1. Should we ship a launchd plist for wpa_supplicant?</strong> Today wpa_supplicant runs only when user-initiated. A plist (<code>org.freebsd.wpa_supplicant.plist</code>) running per wifi iface at boot would auto-associate to known SSIDs from <code>/etc/wpa_supplicant.conf</code>. Trivial to add — just hasn't been a priority given Phase 1 was wired-network focused.
+</div>
+
+<div class="open-q">
+<strong>Q2. Where do WiFi credentials live in the eventual netconfigd Phase 5+?</strong> Inline in <code>Network.plist</code> (plaintext, like wpa_supplicant.conf today) or a keychain-equivalent layer? Apple did inline initially, added keychain later. Probably the same path for us. Keychain port itself is its own multi-month project (Security.framework dependencies).
+</div>
+
+<div class="open-q">
+<strong>Q3. Would integrating <code>eap8021x</code> add value over wpa_supplicant?</strong> Apple's EAP-FAST and EAP-AKA implementations are reportedly more battle-tested in carrier (cellular) deployments. But we don't ship cellular hardware support, so this is academic. Defer.
+</div>
+
+<div class="open-q">
+<strong>Q4. P2P / Wi-Fi Direct support?</strong> Apple uses this for AirDrop. wpa_supplicant has full P2P stack. Wiring it up needs a discovery + transfer layer above (Apple has the AWDL/Bonjour layer). Punt to a future Bonjour / mDNSResponder phase.
+</div>
+
+<h2 id="refs">7. References</h2>
+
+<ul>
+  <li><strong>Apple's open-source EAP code:</strong> <a href="https://github.com/apple-oss-distributions/eap8021x">github.com/apple-oss-distributions/eap8021x</a></li>
+  <li><strong>wpa_supplicant upstream:</strong> <a href="https://w1.fi/wpa_supplicant/">w1.fi/wpa_supplicant/</a></li>
+  <li><strong>FreeBSD wpa_supplicant port:</strong> <a href="https://www.freshports.org/security/wpa_supplicant/">freshports.org/security/wpa_supplicant</a></li>
+  <li><strong>wpa_supplicant control interface protocol:</strong> <a href="https://w1.fi/wpa_supplicant/devel/ctrl_iface_page.html">w1.fi ctrl_iface docs</a></li>
+  <li><strong>HelloSystem's wifid exploration:</strong> <a href="https://github.com/Karmaz95/HelloWifid">github.com/Karmaz95/HelloWifid</a></li>
+  <li><strong>FreeBSD <code>net80211(4)</code>:</strong> <code>man 4 net80211</code></li>
+  <li><strong>CoreWLAN public API reference:</strong> <a href="https://developer.apple.com/documentation/corewlan">developer.apple.com/documentation/corewlan</a></li>
+  <li><strong>Companion plans:</strong> <a href="freebsd-launchd-plan.html">freebsd-launchd</a>, <a href="freebsd-configd-plan.html">freebsd-configd</a>, <a href="freebsd-ipconfiguration-plan.html">freebsd-IPConfiguration</a>, <a href="freebsd-mdnsresponder-plan.html">freebsd-mDNSResponder</a></li>
+</ul>
+
+</body>
+</html>

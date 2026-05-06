@@ -56,6 +56,8 @@
   .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
            padding: 1.2rem 1.4rem; margin: 1rem 0; }
   .phase h3 { margin-top: 0; }
+  .phase.done { border-left: 4px solid var(--ok); }
+  .phase.todo { border-left: 4px solid var(--accent2); }
   table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
   th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
   th { background: #eee5d6; }
@@ -89,208 +91,227 @@
 <nav class="nav">
   <a href="#tldr">Status</a>
   <a href="#goal">Goal</a>
-  <a href="#repo">Repo</a>
   <a href="#arch">Architecture</a>
-  <a href="#paths">Install paths</a>
+  <a href="#layer1">Layer 1: dhcpcd</a>
+  <a href="#layer2">Layer 2: netconfigd</a>
   <a href="#decisions">Decisions</a>
   <a href="#files">File-by-file</a>
-  <a href="#bsd-wins">FreeBSD wins</a>
-  <a href="#deps">Deps</a>
   <a href="#integration">launchd integration</a>
   <a href="#schema">Network.plist schema</a>
-  <a href="#cli">CLI tool</a>
-  <a href="#license">License</a>
   <a href="#phases">Phases</a>
   <a href="#open">Open questions</a>
 </nav>
 
 <h1>FreeBSD configd — porting plan</h1>
-<p class="subtitle">A FreeBSD-only port of Apple's <code>configd</code> — the network/system-configuration daemon — that drops Mach IPC, replaces it with GNUstep Distributed Objects (DO), uses libdispatch for all kernel/file/process events, and integrates as a launchd-supervised service. Owns the canonical state of every network interface, hostname, and DNS resolver setting on the system. Companion to the <a href="freebsd-launchd-plan.html">freebsd-launchd port</a>.</p>
+<p class="subtitle">A two-layer network and system-configuration stack for FreeBSD. The lower layer (Phase 1, shipped) is <code>dhcpcd</code> in master mode + <code>wpa_supplicant</code> &mdash; both run directly by launchd, handling DHCPv4/v6/RA/SLAAC, link-state, hot-plug, and WiFi association. The upper layer (Phase 2+, planned) is a port of Apple's <code>configd</code> as <code>netconfigd</code>, providing a SystemConfiguration-like dynamic store, Distributed Objects IPC for <code>scutil</code> and GUI tooling, and a declarative <code>Network.plist</code> watcher that translates user intent into <code>dhcpcd.conf</code> overrides. Companion to the <a href="freebsd-launchd-plan.html">freebsd-launchd port</a>.</p>
 
 <section id="tldr" class="tldr">
-  <h3>Status: planning <span class="pill info">v0</span></h3>
+  <h3>Status: Phase 1 shipped (autoconfig only) <span class="pill ok">v1</span></h3>
   <ul>
-    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a> — <strong>monorepo</strong>. configd source lives under <code>configd/</code> at the top of the launchd repo, alongside <code>src/</code> (launchd) and (eventually) <code>kmodloader/</code>. Single build pipeline, single CI, single boot test gates everything.</li>
-    <li><strong>Mission:</strong> replace FreeBSD's network configuration plumbing — <code>/etc/rc.d/netif</code>, <code>/etc/rc.d/dhclient</code>, <code>/etc/rc.d/wpa_supplicant</code>, <code>/etc/rc.d/hostname</code>, <code>/etc/rc.d/routing</code>, <code>/etc/resolv.conf</code> management — with one launchd-supervised <code>netconfigd</code> daemon backed by a single canonical plist (<code>/Local/Library/Preferences/Network.plist</code>).</li>
-    <li><strong>Source:</strong> Apple <code>configd-963.270.3</code> (latest tag at <code>apple-oss-distributions/configd</code>, Apache 2.0). 289 source files. Phase 1 amputation drops the Mach-only files; what remains needs FreeBSD-shaped rewrites for the IPC + event-loop + DHCP layers.</li>
-    <li><strong>No Mach IPC, no <code>libxpc</code>, no <code>IOKit</code>, no AirPort/CoreWLAN.</strong> All Mach/IOKit paths in the imported source are deleted; service-to-service IPC uses <strong>GNUstep Distributed Objects</strong> (<code>NSConnection</code> + <code>NSPortCoder</code> over AF_UNIX) instead of Mach ports + XPC.</li>
-    <li><strong>Event loop:</strong> <code>libdispatch</code> dispatch sources only. <code>DISPATCH_SOURCE_TYPE_READ</code> on <code>PF_ROUTE</code> for kernel iface events (replacing Darwin's <code>PF_SYSTEM</code>/<code>KEV_NETWORK_CLASS</code>); <code>DISPATCH_SOURCE_TYPE_VNODE</code> for live config-file reload; <code>DISPATCH_SOURCE_TYPE_PROC</code> for managed <code>dhclient</code>/<code>wpa_supplicant</code> child supervision; <code>DISPATCH_SOURCE_TYPE_SIGNAL</code> for shutdown/reload.</li>
-    <li><strong>Plist parsing:</strong> GNUstep <code>NSPropertyListSerialization</code> (already linked into launchd; no additional libraries).</li>
-    <li><strong>DHCP / IPv6 RA / WiFi:</strong> spawn FreeBSD's existing <code>dhclient</code>, <code>rtsold</code>, <code>wpa_supplicant</code> as <code>NSTask</code> children (Phase 1). <strong>Do not</strong> reimplement these protocols inside the daemon initially. Apple's configd absorbed DHCP into <code>IPConfiguration</code> after years of evolution; we earn that path the same way — only when there's a measurable reason.</li>
-    <li><strong>Single source of truth:</strong> <code>/Local/Library/Preferences/Network.plist</code> — the canonical config the daemon reads and the GUI edits. Live-reloaded via <code>WatchPaths</code>-equivalent libdispatch vnode source. No <code>/etc/rc.conf</code> parsing, no <code>/etc/hostname</code>, no <code>/etc/resolv.conf</code> as user-edited file (the daemon writes resolv.conf <em>from</em> the plist).</li>
-    <li><strong>Live ISO behavior:</strong> if no <code>Network.plist</code> exists, <code>netconfigd</code> auto-DHCPs every plugged ethernet interface and starts <code>rtsold</code> for IPv6 RA — matching the user's preferred rc.conf <code>network_interfaces="auto" ifconfig_DEFAULT="DHCP"</code> preset, without needing a config file.</li>
-    <li><strong>Licensing:</strong> BSD-2-Clause top-level (matches the launchd repo and FreeBSD ecosystem). Apple <code>configd</code> source files retain their Apache 2.0 headers per-file. NOTICE enumerates Apple, GNUstep, and us.</li>
+    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a> &mdash; <strong>monorepo</strong>. configd source lives under <code>configd/</code> at the top of the launchd repo, alongside <code>src/</code> (launchd) and <code>kmodloader/</code>.</li>
+    <li><strong>Architectural pivot:</strong> the original plan had <code>netconfigd</code> as one long-running daemon owning everything &mdash; spawning dhclient/rtsold/wpa_supplicant as managed children, parsing PF_ROUTE itself, exposing DO IPC. Phase 1 implementation showed the autoconfig portion is well-served by <code>dhcpcd</code> (master mode covers DHCP + RA + SLAAC + IPv4LL + link-state in one daemon, with proper bridge/lagg/vlan layering recognition and userspace RDNSS/DNSSL parsing the kernel can't do). Letting dhcpcd own that layer eliminates ~800 LOC of NCDaemon work and gives us features (DHCPv6, link-up recovery, IPv4LL fallback) we'd otherwise have to write.</li>
+    <li><strong>What's shipped (Phase 1):</strong>
+      <ul>
+        <li><code>dhcpcd</code> (port: <code>net/dhcpcd</code>) running in master mode via <code>org.freebsd.dhcpcd.plist</code>, foreground (<code>-B</code>), supervised by launchd with <code>KeepAlive=true</code>.</li>
+        <li><code>wpa_supplicant</code> (port: <code>security/wpa_supplicant</code>) supersedes the base version &mdash; faster WPA3-SAE/OWE uptake, current EAP methods, more aggressive CVE backports.</li>
+        <li><code>NCDaemon</code> in the configd source tree exists as a Phase 1 stub (logs and exits). The real port resumes in Phase 2.</li>
+      </ul>
+    </li>
+    <li><strong>What's planned (Phase 2+):</strong>
+      <ul>
+        <li>Resume the configd port: <code>netconfigd</code> as a launchd-supervised daemon that sits <em>above</em> dhcpcd. It owns the dynamic store, exposes DO IPC (<code>scutil</code> and GUI clients query it), watches <code>/Local/Library/Preferences/Network.plist</code> for declarative config, translates per-iface preferences into <code>dhcpcd.conf</code> drop-in overrides, and writes <code>/etc/resolv.conf</code> from the merged DHCP-supplied + plist-overridden DNS state.</li>
+        <li>Apple <code>configd-963.270.3</code> source already imported under <code>configd/src/</code>; Phase 1 amputation already done. The remaining ~14k LOC of port work is Phase 2 forward.</li>
+      </ul>
+    </li>
+    <li><strong>No Mach IPC, no <code>libxpc</code>, no <code>IOKit</code>, no AirPort/CoreWLAN.</strong> All Mach/IOKit paths in the imported source are deleted; service-to-service IPC uses GNUstep Distributed Objects (<code>NSConnection</code> + <code>NSPortCoder</code>) over AF_UNIX.</li>
+    <li><strong>Event loop:</strong> when netconfigd ships in Phase 2+, libdispatch dispatch sources only. <code>DISPATCH_SOURCE_TYPE_VNODE</code> on <code>Network.plist</code> for live config reload; <code>DISPATCH_SOURCE_TYPE_READ</code> on <code>PF_ROUTE</code> for state-query observation (not for action &mdash; dhcpcd does action); <code>DISPATCH_SOURCE_TYPE_PROC</code> for managed-child supervision (only if we need to manage anything beyond what dhcpcd already covers).</li>
+    <li><strong>Single source of truth (Phase 2+):</strong> <code>/Local/Library/Preferences/Network.plist</code> &mdash; the canonical config netconfigd reads and the GUI edits. netconfigd merges this with DHCP-supplied state and writes appropriate dhcpcd config and <code>/etc/resolv.conf</code>.</li>
+    <li><strong>Live ISO behavior (Phase 1):</strong> dhcpcd auto-DHCPs every plugged ethernet, handles IPv6 RA/SLAAC, recovers from link flap. No <code>Network.plist</code> needed for the auto path; that file's role begins when Phase 2 ships.</li>
+    <li><strong>Licensing:</strong> BSD-2-Clause top-level (matches the launchd repo). Apple <code>configd</code> source files retain their Apache 2.0 headers per-file. NOTICE enumerates Apple, GNUstep, dhcpcd, wpa_supplicant, and us.</li>
   </ul>
 </section>
 
 <h2 id="goal">1. Goal &amp; non-goals</h2>
 
 <h3>1.1 Goal</h3>
-<p>Port Apple's <code>configd</code> to FreeBSD as a launchd-supervised daemon (<code>netconfigd</code>), implementing the full Apple-style "one daemon owns network/system state" architecture: a single source-of-truth plist, kernel-event-driven reactivity, a Distributed Objects API the GUI uses to query/edit state, and supervised subprocesses (<code>dhclient</code>/<code>rtsold</code>/<code>wpa_supplicant</code>) for the protocols that already have working FreeBSD implementations. End state: a FreeBSD live ISO that boots with launchd as PID 1, <code>netconfigd</code> auto-configures every plugged interface (IPv4 DHCP + IPv6 RA), the user has a working network in seconds, and a future GUI tool can present/edit per-interface settings via a clean ObjC API.</p>
+<p>A FreeBSD live ISO that boots with launchd as PID 1, gets a working network in seconds without user intervention (Phase 1 shipped), and grows over Phase 2+ a SystemConfiguration-equivalent layer on top &mdash; declarative config via <code>Network.plist</code>, a clean ObjC API for GUI tooling, and a <code>scutil</code>-equivalent CLI &mdash; while delegating the protocol-level work (DHCP, RA, WiFi association) to the well-maintained ports daemons that already handle it.</p>
 
 <h3>1.2 Non-goals (this iteration)</h3>
 <ul>
-  <li><strong>No AirPort / CoreWLAN.</strong> WiFi authentication is delegated to <code>wpa_supplicant</code>, the FreeBSD-native tool. The plugin <code>AirPort.framework</code> stays out of tree.</li>
-  <li><strong>No IOKit.</strong> Apple's <code>InterfaceNamer</code> uses IOKit to assign persistent names from USB/PCI metadata; we let the FreeBSD kernel name interfaces and don't try to override.</li>
-  <li><strong>No Mach IPC.</strong> Same rule as the launchd port: every <code>mach/...</code> include, every <code>.defs</code> file, every <code>bootstrap_port</code> reference is amputated. <code>NSConnection</code> over AF_UNIX is the IPC.</li>
-  <li><strong>No XPC.</strong> XPC services are not in tree. DO covers the same use cases for our scale.</li>
-  <li><strong>No SimulatorSupport.</strong> The whole iOS/iPadOS-sim plugin is dropped.</li>
-  <li><strong>No QoSMarking.</strong> Apple-specific framework, not portable.</li>
-  <li><strong>No internal DHCP client (Phase 1).</strong> <code>dhclient</code> stays a subprocess. Phase 6+ may revisit.</li>
-  <li><strong>No captive-portal detection.</strong> Apple's URL-probe heuristic is out of scope; users handle this through the browser.</li>
-  <li><strong>No <code>/etc/rc.conf</code> compatibility layer.</strong> <code>Network.plist</code> is the only config file the daemon reads.</li>
+  <li><strong>No internal DHCP client.</strong> dhcpcd handles DHCPv4 + DHCPv6 in one daemon, including RDNSS, DNSSL, lease renewal, IPv4LL, link-state recovery. Re-implementing this inside netconfigd would burn months for no measurable gain.</li>
+  <li><strong>No internal RA processing.</strong> dhcpcd parses RAs in userspace &mdash; supports prefix info, RDNSS (RFC 8106), DNSSL, route preferences. The kernel's <code>accept_rtadv</code> path doesn't.</li>
+  <li><strong>No AirPort / CoreWLAN.</strong> WiFi authentication is delegated to <code>wpa_supplicant</code>. dhcpcd auto-coordinates with wpa_supplicant via its built-in hook for wifi-iface DHCP after association.</li>
+  <li><strong>No IOKit.</strong> Apple's <code>InterfaceNamer</code> uses IOKit to assign persistent names; FreeBSD names interfaces in-kernel.</li>
+  <li><strong>No Mach IPC.</strong> Same project rule: every <code>mach/...</code> include and every <code>.defs</code> file is amputated. <code>NSConnection</code> over AF_UNIX is the IPC.</li>
+  <li><strong>No XPC.</strong> Distributed Objects covers the same use cases.</li>
+  <li><strong>No SimulatorSupport / QoSMarking.</strong> Apple-only frameworks; not portable.</li>
+  <li><strong>No captive-portal detection.</strong> Apple's URL-probe heuristic is out of scope; users handle this in the browser.</li>
+  <li><strong>No <code>/etc/rc.conf</code> compatibility layer.</strong> <code>Network.plist</code> is the only declarative config netconfigd reads.</li>
 </ul>
 
-<h2 id="repo">2. Repository</h2>
+<h2 id="arch">2. Architecture: layered model</h2>
 
-<h3>2.1 Monorepo: configd lives inside <code>freebsd-launchd</code></h3>
+<p>Two layers, separable in time and ownership:</p>
 
-<p>One repo (<a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a>) holds launchd, configd, and any related tooling that follows. Reasons:</p>
+<div class="ascii-diagram">             +-----------------------------------+
+             |  GUI tooling, scutil, app code    |
+             +-----------------+-----------------+
+                               | DO calls (Phase 2+)
+                               v
+        +----------------------+----------------------+
+        |    netconfigd  (Phase 2+, planned)          |
+        |    --------------------------------         |
+        |    - Reads /Local/Library/Preferences/      |
+        |      Network.plist (vnode source)           |
+        |    - Maintains dynamic store                |
+        |    - Exposes DO IPC: SCDynamicStore,        |
+        |      SCNetworkReachability, scutil queries  |
+        |    - Translates declarative intent into     |
+        |      dhcpcd.conf overrides                  |
+        |    - Writes /etc/resolv.conf from merged    |
+        |      DHCP+plist DNS state                   |
+        |    - Watches PF_ROUTE for OBSERVATION       |
+        |      (action stays with dhcpcd)             |
+        +----------------------+----------------------+
+                               |
+                               | (writes config files,
+                               |  signals SIGHUP)
+                               v
+        +----------------------+----------------------+
+        |    dhcpcd  (Phase 1, shipped)               |
+        |    --------------------------------         |
+        |    - Master mode: discovers all ifaces,     |
+        |      watches RTM_NEWLINK for hot-plug       |
+        |    - DHCPv4 + DHCPv6 + RA/SLAAC + IPv4LL    |
+        |    - Recognizes bridge/lagg/vlan layering   |
+        |    - Link-state watcher: re-acquires lease  |
+        |      on flap                                |
+        |    - Coordinates with wpa_supplicant for    |
+        |      wifi-iface DHCP after association      |
+        |                                             |
+        |    wpa_supplicant  (Phase 1, shipped)       |
+        |    - WiFi association per wlan iface        |
+        |    - Exposes control socket dhcpcd reads    |
+        +----------------------+----------------------+
+                               |
+                               v
+                     kernel network stack</div>
 
-<ol>
-  <li><strong>Single build pipeline.</strong> <code>build.sh</code>, the chroot, the CI workflow, the boot test — all one. No second clone loop, no second CI surface, no version-skew between repos.</li>
-  <li><strong>Cross-component refactors are atomic.</strong> When the DO interface used by configd's <code>scutil</code>-port changes shape, both ends move in one commit. With separate repos, you'd have two PRs, two reviews, and a window where the system is broken.</li>
-  <li><strong>Discoverability.</strong> A new contributor clones one repo and sees the whole system. The pieces are obviously related; their separation across repos would be the artificial thing.</li>
-  <li><strong>Tooling parity with launchd's pattern.</strong> The launchd source already lives in <code>src/</code> with Apple's odd nested structure (<code>src/src/</code>); adding <code>configd/</code> and <code>kmodloader/</code> as siblings is a natural extension.</li>
-</ol>
+<h3>2.1 Why two layers instead of one</h3>
+<p>Apple's configd has both layers fused &mdash; <code>IPConfiguration</code> agent (DHCP/RA) lives inside the configd process. That's twenty years of Apple-internal work. FreeBSD's stack has a different shape: dhcpcd already does what IPConfiguration does, including features (DHCPv6, IPv4LL, RDNSS in userspace, master-mode hot-plug) that took Apple a long time to add. We get those for free by running dhcpcd directly, and free our <code>netconfigd</code> work for what's actually missing on FreeBSD: the SystemConfiguration <em>layer</em> (dynamic store + DO IPC + declarative config) on top.</p>
 
-<h3>2.2 Top-level layout (post-monorepo)</h3>
+<p>The boundary between layers is clean: dhcpcd owns <em>actions</em> (acquire lease, configure address, follow link state); netconfigd owns <em>policy</em> (read <code>Network.plist</code>, decide what to ask dhcpcd to do, expose state to clients). They communicate via dhcpcd's existing config files + signals + lease-state files; netconfigd doesn't need to talk a custom protocol to dhcpcd.</p>
 
-<pre><code>freebsd-launchd/
-├── LICENSE                       BSD-2-Clause (top-level)
-├── NOTICE                        Apple (launchd + configd), GNUstep, us
-├── README.md
-├── build.sh                      builds the whole monorepo end to end
-├── make-launchd.sh               STANDALONE — launchd build/install
-├── make-configd.sh               STANDALONE — configd build/install
-├── make-kmodloader.sh            STANDALONE — kmodloader build/install
-├── pkglist.txt
-├── buildpkgs.txt
-├── overlays/                     ISO overlay (plists, etc.)
-├── plists/                       launchd plists for shipped daemons
-├── boot/, ramdisk/, tests/, .github/, scripts/   (existing)
-│
-├── src/                          launchd Apple-imported source (existing
-│                                 location; not renamed for now to minimize
-│                                 churn against in-flight Phase 3+ work)
-│
-├── configd/                      Apple configd-imported source (NEW)
-│   ├── scripts/import-source.sh
-│   ├── Makefile
-│   ├── compat/
-│   └── src/                      forked Apple configd-963.270.3
-│       ├── configd.tproj/
-│       ├── Plugins/
-│       ├── libSystemConfiguration/
-│       ├── nwi/
-│       ├── scutil.tproj/
-│       ├── SystemConfiguration.fproj/
-│       ├── common/
-│       └── logging/
-│
-└── kmodloader/                   clean-room kmodloader (Phase 7+; see the
-                                  freebsd-kmodloader-plan.html)
-    ├── Makefile
-    ├── src/
-    └── personalities/
-</code></pre>
+<h2 id="layer1">3. Layer 1 (Phase 1, shipped): dhcpcd + wpa_supplicant</h2>
 
-<h3>2.3 How <code>build.sh</code> handles configd</h3>
-
-<p>No host-clone change — configd's source is already in the working tree. The chroot-side rsync that already brings <code>src/</code> in just brings <code>configd/</code> with it (via <code>rsync -a $ROOT/{src,configd}/...</code>). After <code>make-launchd.sh</code> finishes installing <code>/sbin/launchd</code>, <code>build.sh</code> calls <code>make-configd.sh</code> in the same chroot session, which compiles configd against the just-installed Foundation/libdispatch and installs <code>/usr/libexec/netconfigd</code> + <code>/usr/sbin/scutil</code>. Net additions to <code>build.sh</code>:</p>
+<h3>3.1 dhcpcd master mode</h3>
+<p>Run directly by launchd via <code>/System/Library/LaunchDaemons/org.freebsd.dhcpcd.plist</code>. <code>ProgramArguments=["/usr/local/sbin/dhcpcd", "-B"]</code> &mdash; the <code>-B</code> flag keeps dhcpcd in foreground so launchd's <code>KeepAlive=true</code> can supervise it. Master mode (no iface argument) means dhcpcd:</p>
 
 <ul>
-  <li>Extend the chroot rsync line: <code>rsync -a "$ROOT/src/" "$WORK/rootfs/tmp/launchd/src/"</code> → also stages <code>configd/</code>.</li>
-  <li>Append after the <code>make-launchd.sh</code> invocation: <code>chroot "$WORK/rootfs" /tmp/launchd/make-configd.sh</code>.</li>
-  <li>Add overlay file <code>/Local/Library/Preferences/Network.plist</code> (empty) so the daemon's auto-DHCP path fires on first boot.</li>
+  <li>Discovers every current network interface at startup.</li>
+  <li>Watches <code>RTM_NEWLINK</code>/equivalent for new ifaces appearing (hot-plug USB ethernet, etc.).</li>
+  <li>Runs DHCPv4 + DHCPv6 + RA processing on each iface as appropriate.</li>
+  <li>Recognizes FreeBSD's bridge/lagg/vlan layering &mdash; DHCP runs at the bridge level (not on members), at the lagg level (not on members), and on each VLAN iface independently.</li>
+  <li>Handles link-state changes: cable yanked &rarr; keeps lease state, stops sending packets; cable reconnected &rarr; re-acquires.</li>
+  <li>Falls back to IPv4LL (169.254.x.x) when no DHCP server responds &mdash; covers Bonjour-only network segments.</li>
+  <li>Clears <code>IFDISABLED</code> on the iface before sending IPv6 packets &mdash; we don't have to add <code>-ifdisabled</code> to ifconfig invocations.</li>
 </ul>
 
-<p><strong>Existing <code>src/</code> location not renamed</strong> in this plan to avoid churn against the ongoing Phase 3+ launchd work. A future cosmetic commit can move <code>src/</code> → <code>launchd/</code> for parity once everything has stabilized; both plans (configd, kmodloader) tolerate either layout.</p>
+<h3>3.2 wpa_supplicant from ports</h3>
+<p>Listed in <code>pkglist.txt</code>. Installs to <code>/usr/local/sbin/wpa_supplicant</code>, supersedes the base version. Reasons: faster WPA3-SAE / OWE feature uptake, current EAP method support, more aggressive CVE backports. dhcpcd has a built-in <code>wpa_supplicant</code> hook that detects the control socket and gates DHCP behind ASSOCIATED state &mdash; out-of-the-box pairing.</p>
 
-<h2 id="arch">3. Architecture</h2>
+<p>Phase 1 doesn't ship a launchd plist for wpa_supplicant. SSID configuration is still user-driven via <code>/etc/wpa_supplicant.conf</code> or <code>wpa_cli</code>. Phase 2+ will introduce a netconfigd-managed flow where <code>Network.plist</code> declares wpa_supplicant config that netconfigd materializes and starts wpa_supplicant per wifi iface.</p>
 
-<p>One long-running daemon (<code>netconfigd</code>) owns all network and system-configuration state. It is launchd-supervised (KeepAlive=true), reacts to kernel events (PF_ROUTE), reacts to file changes (Network.plist via libdispatch vnode source), supervises subprocesses (<code>dhclient</code>, <code>rtsold</code>, <code>wpa_supplicant</code> via libdispatch proc sources), and exposes a Distributed Objects API on a known AF_UNIX socket so other processes (<code>scutil</code>, GUI tools, application reachability code) can query and modify state.</p>
+<h3>3.3 What netconfigd is NOT doing in Phase 1</h3>
+<p>The Phase 1 NCDaemon is a stub:</p>
 
-<div class="ascii-diagram">                  +----------------------------+
-                  |  /Local/Library/Preferences|
-                  |       /Network.plist       |
-                  +-------------+--------------+
-                                | (vnode source: WRITE|EXTEND|DELETE)
-                                v
-+--------------------+     +----+-----+     +-------------------------+
-|   PF_ROUTE socket  |---->|netconfigd|<----| /var/run/netconfigd.sock|
-|  (RTM_NEWADDR/etc) |     |  (ObjC,  |     | (DO root: NetConfig-    |
-+--------------------+     |  GNUstep)|     |  Service @protocol)     |
-                           +----+-----+     +-----------+-------------+
-                                |                       |
-                  +-------------+--------------+        |  scutil(1) /
-                  | NSTask children            |        |  GUI tooling
-                  |   - dhclient -b -n &lt;iface&gt; |        v
-                  |   - rtsold -a              |    +-------+-------+
-                  |   - wpa_supplicant -i ...  |    | NSConnection  |
-                  |   (proc source per child)  |    | client proxy  |
-                  +----------------------------+    +---------------+
-                                |
-                                v
-                     +----------+----------+
-                     | kernel network stack|
-                     | (ifaddrs, routes,   |
-                     |  resolv.conf, ...)  |
-                     +---------------------+</div>
+<pre class="plist"><code>- (void)start {
+    NSLog(@"netconfigd: Phase 1 placeholder (pid=%d)", getpid());
+    NSLog(@"netconfigd: network auto-config is dhcpcd's job; "
+          @"this stub exits cleanly until Phase 2");
+}</code></pre>
 
-<h3>3.1 The dynamic store, GNUstep-flavored</h3>
+<p>It doesn't get launched (no plist references it). It builds and installs to <code>/usr/libexec/netconfigd</code> just to keep the configd build pipeline live; the binary sits unused until Phase 2 swaps it for the real implementation. Apple's imported source under <code>configd/src/</code> is intact and ready for Phase 2 work to begin against.</p>
 
-<p>Apple's configd publishes state to the SystemConfiguration "dynamic store" — a key-value space (keys like <code>State:/Network/Interface/en0/IPv4</code>) that processes subscribe to. We keep the same key naming for compatibility-of-mental-model, but back it with an <code>NSMutableDictionary</code> protected by a serial dispatch queue. Subscribers register interest via the DO connection; <code>NSDistributedNotificationCenter</code>-style fan-out notifies them when a subscribed key changes.</p>
+<h2 id="layer2">4. Layer 2 (Phase 2+, planned): netconfigd</h2>
 
-<h3>3.2 Interface state machine</h3>
+<p>The Apple <code>configd</code> port resumes in Phase 2. End state: a launchd-supervised long-running daemon that reads <code>/Local/Library/Preferences/Network.plist</code>, exposes DO IPC, and translates declarative config into dhcpcd / wpa_supplicant / kernel state. Distinct from the original plan in that it does <em>not</em> spawn DHCP/RA/WiFi children itself &mdash; it shapes what the lower layer does via files and signals.</p>
 
-<p>Each NIC the daemon manages has an <code>NCInterface</code> object whose state machine is:</p>
+<h3>4.1 Dynamic store, GNUstep-flavored</h3>
+<p>Apple's configd publishes state to the SystemConfiguration "dynamic store" &mdash; a key-value space (keys like <code>State:/Network/Interface/en0/IPv4</code>) that processes subscribe to. We keep the same key naming for compatibility-of-mental-model, back it with an <code>NSMutableDictionary</code> protected by a serial dispatch queue. Subscribers register interest via the DO connection; <code>NSDistributedNotificationCenter</code>-style fan-out notifies them when subscribed keys change.</p>
 
-<table>
-<thead><tr><th>State</th><th>Entered via</th><th>Active subprocess</th></tr></thead>
-<tbody>
-<tr><td><code>Down</code></td><td>iface attached, no link, or admin-down</td><td>none</td></tr>
-<tr><td><code>LinkUp</code></td><td>RTM_IFINFO link active</td><td>none yet</td></tr>
-<tr><td><code>DHCPv4</code></td><td>config method=DHCP, link active</td><td><code>dhclient -b -n &lt;iface&gt;</code></td></tr>
-<tr><td><code>StaticV4</code></td><td>config method=Static, link active</td><td>none (SIOCSIFADDR ioctls)</td></tr>
-<tr><td><code>WPA</code></td><td>WiFi method=WPA, link associating</td><td><code>wpa_supplicant -i &lt;iface&gt; -c &lt;file&gt;</code></td></tr>
-<tr><td><code>Up</code></td><td>v4 acquired (DHCP lease or static applied)</td><td>(possibly dhclient still alive in background)</td></tr>
-</tbody>
-</table>
+<p>Sources of state:</p>
+<ul>
+  <li><code>PF_ROUTE</code> socket: address adds/removes, link-state, route changes &rarr; populate <code>State:/Network/Interface/&lt;iface&gt;/IPv{4,6}</code>.</li>
+  <li>dhcpcd's lease files in <code>/var/db/</code> (or a ZeroMQ-style hook script dhcpcd runs on lease events): populate <code>State:/Network/Service/&lt;uuid&gt;/DHCP</code>.</li>
+  <li>wpa_supplicant control socket: populate <code>State:/Network/Interface/&lt;iface&gt;/WiFi</code> with associated SSID + auth state.</li>
+  <li><code>Network.plist</code>: populate <code>Setup:</code>-prefixed keys with the user's declared config.</li>
+</ul>
 
-<p>IPv6 is orthogonal: the daemon enables <code>accept_rtadv</code> via <code>SIOCSIFADDR</code> on every interface that reaches <code>LinkUp</code>, and ensures <code>rtsold -a</code> is running globally.</p>
+<h3>4.2 Translation: Network.plist &rarr; dhcpcd.conf</h3>
+<p>netconfigd's main outbound effect on the lower layer. When <code>Network.plist</code> changes:</p>
 
-<h3>3.3 Event sources (libdispatch)</h3>
+<ol>
+  <li>Read the plist via <code>NSPropertyListSerialization</code>.</li>
+  <li>Compute desired dhcpcd config: per-iface static addresses (<code>static ip_address=...</code>), DNS overrides (<code>static domain_name_servers=...</code>), iface excludes (<code>denyinterfaces ...</code>), per-iface profiles.</li>
+  <li>Write to <code>/etc/dhcpcd.conf.d/netconfigd.conf</code> (drop-in path dhcpcd reads).</li>
+  <li>Send <code>SIGHUP</code> to dhcpcd's pid (in <code>/var/run/dhcpcd.pid</code>); dhcpcd re-reads config.</li>
+</ol>
+
+<p>For DNS specifically: dhcpcd writes <code>/etc/resolv.conf</code> via resolvconf(8) by default. If <code>Network.plist</code> declares <code>DNS.Servers</code>, netconfigd merges those with DHCP-supplied servers and either uses dhcpcd's <code>nooption domain_name_servers</code> + <code>static domain_name_servers=...</code> shape, or takes resolv.conf ownership directly via <code>nohook resolv.conf</code> in dhcpcd.conf and writes resolv.conf itself.</p>
+
+<h3>4.3 Event sources</h3>
 
 <table>
 <thead><tr><th>Source type</th><th>Watches</th><th>Reaction</th></tr></thead>
 <tbody>
-<tr><td><code>DISPATCH_SOURCE_TYPE_READ</code></td><td>PF_ROUTE socket</td><td>parse routing message → call <code>handleRoutingMessage:</code> on <code>NCDaemon</code>; route to relevant <code>NCInterface</code></td></tr>
-<tr><td><code>DISPATCH_SOURCE_TYPE_VNODE</code></td><td><code>/Local/Library/Preferences/Network.plist</code></td><td>reload via <code>NSPropertyListSerialization</code>; diff against current state; apply changes per-interface</td></tr>
-<tr><td><code>DISPATCH_SOURCE_TYPE_PROC</code></td><td>each managed child PID</td><td>on <code>DISPATCH_PROC_EXIT</code>: log, decide whether to restart</td></tr>
-<tr><td><code>DISPATCH_SOURCE_TYPE_SIGNAL</code></td><td>SIGTERM / SIGHUP</td><td>SIGTERM: clean shutdown. SIGHUP: force config reload.</td></tr>
-<tr><td><code>DISPATCH_SOURCE_TYPE_TIMER</code></td><td>(Phase 2) DHCP retry backoff if needed</td><td>declarative</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_VNODE</code></td><td><code>/Local/Library/Preferences/Network.plist</code></td><td>reload via <code>NSPropertyListSerialization</code>; diff against last snapshot; regenerate <code>/etc/dhcpcd.conf.d/netconfigd.conf</code>; SIGHUP dhcpcd</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_READ</code></td><td><code>PF_ROUTE</code> socket</td><td>parse routing message; update dynamic store <code>State:/Network/Interface/&lt;iface&gt;/...</code>; fan out to DO subscribers</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_VNODE</code></td><td>dhcpcd lease database directory</td><td>refresh dynamic store DHCP-state keys when leases change</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_SIGNAL</code></td><td>SIGTERM / SIGHUP</td><td>SIGTERM: clean shutdown. SIGHUP: force config reload from plist.</td></tr>
 </tbody>
 </table>
 
-<h2 id="paths">4. Install paths</h2>
+<h2 id="repo">5. Repository</h2>
 
-<table>
-<thead>
-<tr><th>Artifact</th><th>Path</th><th>Why</th></tr>
-</thead>
-<tbody>
-<tr><td><code>netconfigd</code> binary</td><td><code>/usr/libexec/netconfigd</code></td><td>FreeBSD <code>hier(7)</code>: <code>libexec</code> for system daemons not invoked directly by users. Same tier as <code>/usr/libexec/getty</code>.</td></tr>
-<tr><td><code>scutil</code> binary</td><td><code>/usr/sbin/scutil</code></td><td>Admin-callable command-line tool; matches macOS path.</td></tr>
-<tr><td>launchd plist</td><td><code>/System/Library/LaunchDaemons/org.freebsd.netconfigd.plist</code></td><td>Project-shipped daemon; lives in the system tier.</td></tr>
-<tr><td>Canonical config</td><td><code>/Local/Library/Preferences/Network.plist</code></td><td>User-editable (admin tier). Gershwin layout — matches our use of <code>/Local/Library/LaunchDaemons</code>.</td></tr>
-<tr><td>DO socket</td><td><code>/var/run/netconfigd.sock</code></td><td>Conventional FreeBSD path for daemon UNIX sockets. launchd-opened via <code>Sockets={Listeners=...}</code>.</td></tr>
-<tr><td>SystemConfiguration framework</td><td><code>/System/Library/Libraries/libSystemConfiguration.so</code> + headers in <code>/System/Library/Headers/SystemConfiguration/</code></td><td>Linkable by application code; same convention as the GNUstep libs.</td></tr>
-<tr><td>Generated <code>/etc/resolv.conf</code></td><td><code>/etc/resolv.conf</code></td><td>Daemon writes this from the plist's <code>DNS</code> key. Marked machine-managed; manual edits are clobbered.</td></tr>
-</tbody>
-</table>
+<h3>5.1 Layout under <code>freebsd-launchd/configd/</code></h3>
 
-<h2 id="decisions">5. Locked architectural decisions</h2>
+<pre><code>freebsd-launchd/configd/
+├── Makefile                       gmake build, installs to /usr/libexec/netconfigd
+├── compat/                        FreeBSD shims for Apple-internal headers
+├── scripts/import-source.sh       (Phase 0) clones apple-oss-distributions/configd
+└── src/                           Apple configd-963.270.3 (post-amputation)
+    ├── configd.tproj/
+    │   ├── main.m                 (Phase 1) Foundation entry, calls NCDaemon
+    │   ├── NCDaemon.{h,m}         (Phase 1) stub; Phase 2 grows it
+    │   ├── _SC_dynamicStore_*.{c,h}  (Phase 2) ObjC rewrite
+    │   └── ...                    Apple imports, Mach paths amputated
+    ├── Plugins/
+    │   ├── IPMonitor/             (Phase 2 port — repurposed for resolv.conf merge)
+    │   ├── KernelEventMonitor/    (Phase 2 rewrite — PF_ROUTE source)
+    │   ├── LinkConfiguration/     (Phase 2 port)
+    │   ├── PreferencesMonitor/    (Phase 2 port — Network.plist watcher)
+    │   └── SCNetworkReachability/ (Phase 2 port — DO API)
+    ├── libSystemConfiguration/
+    ├── nwi/
+    ├── scutil.tproj/              (Phase 2 port — DO client)
+    ├── SystemConfiguration.fproj/
+    ├── common/
+    └── logging/
+</code></pre>
+
+<p>Top-level (<code>freebsd-launchd/</code>) hosts:</p>
+<ul>
+  <li><code>overlays/System/Library/LaunchDaemons/org.freebsd.dhcpcd.plist</code> &mdash; Phase 1, in place.</li>
+  <li><code>overlays/System/Library/LaunchDaemons/org.freebsd.netconfigd.plist</code> &mdash; <strong>removed in Phase 1</strong>; will return in Phase 2.</li>
+  <li><code>pkglist.txt</code> &mdash; lists <code>dhcpcd</code> + <code>wpa_supplicant</code>.</li>
+  <li><code>build.sh</code> &mdash; chroot-side, runs <code>make-configd.sh</code> after launchd build to keep the configd build live; the resulting binary is unused in Phase 1.</li>
+</ul>
+
+<h3>5.2 How <code>build.sh</code> handles configd</h3>
+<p>Same chroot session that builds launchd + kmodloader. <code>build.sh</code> rsyncs <code>configd/</code> into <code>chroot:/tmp/configd/</code> and runs <code>make-configd.sh</code> against the just-installed Foundation/libdispatch. Installs to <code>/usr/libexec/netconfigd</code>.</p>
+
+<h2 id="decisions">6. Locked architectural decisions</h2>
 
 <table>
 <thead>
@@ -298,113 +319,118 @@
 </thead>
 <tbody>
 <tr><td>Target kernel</td><td>FreeBSD 14.x and 15.x. No Linux, no NetBSD.</td></tr>
-<tr><td>Mach IPC</td><td>None. All <code>&lt;mach/...&gt;</code> deleted.</td></tr>
-<tr><td>XPC</td><td>None.</td></tr>
-<tr><td>IOKit</td><td>None.</td></tr>
-<tr><td>AirPort / CoreWLAN</td><td>None. WiFi via <code>wpa_supplicant</code> subprocess.</td></tr>
-<tr><td>Service-to-service IPC</td><td>GNUstep Distributed Objects (<code>NSConnection</code> + <code>NSPortCoder</code>) over AF_UNIX. No <code>gdomap</code> registration — direct <code>NSSocketPort</code> on a known path.</td></tr>
-<tr><td>Event loop</td><td>libdispatch dispatch sources only.</td></tr>
-<tr><td>Kernel event source</td><td>PF_ROUTE socket, parsed inside <code>NCRouteSource</code>. Not Darwin's <code>PF_SYSTEM</code>/<code>KEV_NETWORK_CLASS</code>.</td></tr>
-<tr><td>DHCP</td><td>FreeBSD's <code>/sbin/dhclient</code> as <code>NSTask</code> child of netconfigd. Phase 6+ may absorb DHCP into the daemon if there's a reason; not now.</td></tr>
-<tr><td>IPv6 router solicitation</td><td>FreeBSD's <code>/usr/sbin/rtsold -a</code> as a single <code>NSTask</code> child of netconfigd.</td></tr>
-<tr><td>WiFi authentication</td><td>FreeBSD's <code>/usr/sbin/wpa_supplicant</code> as <code>NSTask</code> child per wireless iface.</td></tr>
-<tr><td>Plist parsing</td><td>GNUstep <code>NSPropertyListSerialization</code> (XML + binary). Same Foundation already linked into launchd.</td></tr>
-<tr><td>Foundation in netconfigd</td><td>Yes. Cost ~10 MB linked, payable once. Same calculus as launchd.</td></tr>
-<tr><td>Source of truth for config</td><td><code>/Local/Library/Preferences/Network.plist</code>. No rc.conf parser. No <code>/etc/hostname</code>, no manually-edited <code>/etc/resolv.conf</code>.</td></tr>
-<tr><td>Auto-config default</td><td>If <code>Network.plist</code> is missing or empty, netconfigd auto-DHCPs every link-up ethernet iface and starts <code>rtsold</code>. Live ISO ships an empty <code>Network.plist</code> so the auto path fires.</td></tr>
+<tr><td>DHCPv4 / DHCPv6 / RA / SLAAC / IPv4LL</td><td>dhcpcd in master mode (Phase 1). NOT dhclient + rtsold + dhcp6c. NOT internal to netconfigd.</td></tr>
+<tr><td>WiFi authentication</td><td>wpa_supplicant from ports. dhcpcd auto-coordinates via built-in wpa_supplicant hook.</td></tr>
+<tr><td>Mach IPC / XPC / IOKit / AirPort / CoreWLAN</td><td>None. All Mach paths in imported source amputated; ObjC <code>NSConnection</code> over AF_UNIX is the IPC for Phase 2+.</td></tr>
+<tr><td>Service-to-service IPC</td><td>GNUstep Distributed Objects (Phase 2+). No <code>gdomap</code> &mdash; direct <code>NSSocketPort</code> on a known path.</td></tr>
+<tr><td>Event loop (Phase 2+)</td><td>libdispatch dispatch sources only.</td></tr>
+<tr><td>Plist parsing</td><td>GNUstep <code>NSPropertyListSerialization</code> (XML + binary).</td></tr>
+<tr><td>Source of truth for declarative config</td><td><code>/Local/Library/Preferences/Network.plist</code> (Phase 2+). No rc.conf parser. No manually-edited resolv.conf (netconfigd writes it).</td></tr>
+<tr><td>Auto-config default (Phase 1)</td><td>dhcpcd master mode covers everything &mdash; no <code>Network.plist</code> needed for working network. The plist's role begins in Phase 2.</td></tr>
 <tr><td>License (top-level)</td><td>BSD-2-Clause. Apple <code>configd</code> files retain Apache 2.0 per-file.</td></tr>
-<tr><td>Build platform</td><td>FreeBSD only, inside the same <code>vmactions/freebsd-vm</code> chroot the launchd build uses.</td></tr>
+<tr><td>Build platform</td><td>FreeBSD only, inside the same VM-action chroot the launchd build uses.</td></tr>
 </tbody>
 </table>
 
-<h2 id="files">6. File-by-file plan (<code>src/</code>)</h2>
+<h2 id="files">7. File-by-file plan (<code>configd/src/</code>)</h2>
 
-<p>Imported source: Apple <code>configd-963.270.3</code>. 289 source files; ~5.5 MB. Phase 1 amputation drops the wholly-Mach files and the explicit non-goals (AirPort, IOKit-based InterfaceNamer, SimulatorSupport, QoSMarking). What remains needs Phase 2 work.</p>
+<p>Imported source: Apple <code>configd-963.270.3</code>. 289 source files; ~5.5 MB. Phase 0 amputation already done (drops the wholly-Mach files and explicit non-goals: AirPort, IOKit-based InterfaceNamer, SimulatorSupport, QoSMarking). What remains needs Phase 2 work.</p>
 
-<h3>6.1 Deleted on import (Mach-only or out-of-scope)</h3>
+<h3>7.1 Already deleted on import</h3>
 <ul>
-  <li><code>configd.xcodeproj/</code>, <code>xcconfigs/</code>, <code>xcscripts/</code> — Xcode build infra</li>
-  <li><code>**/*.defs</code> — MIG interface definitions (Mach-RPC IDL)</li>
-  <li><code>configd.tproj/_SC_*.{c,h}</code> Mach-IPC plumbing — entire IPC server replaced by DO</li>
-  <li><code>Plugins/QoSMarking/</code> — Apple-specific QoS framework</li>
-  <li><code>Plugins/SimulatorSupport/</code> — iOS sim only</li>
-  <li><code>Plugins/InterfaceNamer/</code> — IOKit-based; FreeBSD names interfaces in-kernel</li>
-  <li><code>Plugins/IPMonitor/IPMonitorAWDReport.{c,h}</code> — Apple-Wireless-Diagnostics; not portable</li>
-  <li><code>SCTest-Swift/</code> — Swift test harness, depends on macOS Swift</li>
-  <li><code>libSystemConfiguration/SCDPlugin*.{c,h}</code> — plugin loader using Mach-style host-port lookup</li>
+  <li><code>configd.xcodeproj/</code>, <code>xcconfigs/</code>, <code>xcscripts/</code> &mdash; Xcode build infra</li>
+  <li><code>**/*.defs</code> &mdash; MIG interface definitions (Mach-RPC IDL)</li>
+  <li><code>configd.tproj/_SC_*.{c,h}</code> Mach-IPC plumbing &mdash; entire IPC server replaced by DO</li>
+  <li><code>Plugins/QoSMarking/</code>, <code>Plugins/SimulatorSupport/</code>, <code>Plugins/InterfaceNamer/</code></li>
+  <li><code>Plugins/IPMonitor/IPMonitorAWDReport.{c,h}</code> &mdash; Apple-Wireless-Diagnostics</li>
+  <li><code>SCTest-Swift/</code> &mdash; Swift test harness</li>
+  <li><code>libSystemConfiguration/SCDPlugin*.{c,h}</code> &mdash; Mach-style plugin loader</li>
 </ul>
 
-<h3>6.2 Retained — Phase 2 fate</h3>
+<h3>7.2 Retained — Phase 2 fate</h3>
 
 <table>
 <thead>
-<tr><th>File / dir</th><th>Apple LOC (rough)</th><th>Action</th><th>Target LOC</th></tr>
+<tr><th>File / dir</th><th>Apple LOC</th><th>Action</th><th>Target LOC</th></tr>
 </thead>
 <tbody>
-<tr><td><code>configd.tproj/configd.{c,h}</code></td><td>~1.5k</td><td>Rewrite from a near-empty file. Replace Mach <code>service_loop</code> with <code>dispatch_main</code>; replace Mach IPC server with <code>NSConnection</code> over AF_UNIX. Keep the dynamic-store data structure shape.</td><td>~600</td></tr>
-<tr><td><code>configd.tproj/_SC_dynamicStore_*.{c,h}</code></td><td>~3k</td><td>Rewrite as ObjC. Back the store with <code>NSMutableDictionary</code> + serial dispatch queue. Notification fan-out via DO callbacks.</td><td>~800</td></tr>
-<tr><td><code>Plugins/IPMonitor/</code></td><td>~8k</td><td>Port. Replace Apple's <code>IPConfiguration</code> calls with <code>NSTask</code> spawn of <code>/sbin/dhclient</code>. Keep the routing-table sanitization + IPv6 acceptance logic. Drop AWD reporter.</td><td>~3k</td></tr>
-<tr><td><code>Plugins/KernelEventMonitor/</code></td><td>~2k</td><td>Rewrite. Replace <code>PF_SYSTEM</code>+<code>KEV_NETWORK_CLASS</code> with <code>PF_ROUTE</code> socket parsing. Same event dispatch shape.</td><td>~600</td></tr>
-<tr><td><code>Plugins/LinkConfiguration/</code></td><td>~1k</td><td>Port. Translates link-state events to interface state-machine transitions. <code>SIOCGIFMEDIA</code> instead of Apple's link APIs.</td><td>~500</td></tr>
-<tr><td><code>Plugins/PreferencesMonitor/</code></td><td>~2k</td><td>Port. Watches <code>Network.plist</code> via <code>DISPATCH_SOURCE_TYPE_VNODE</code>; diffs against current state; applies changes.</td><td>~700</td></tr>
+<tr><td><code>configd.tproj/configd.{c,h}</code></td><td>~1.5k</td><td>Rewrite. <code>dispatch_main</code> loop; <code>NSConnection</code>-rooted DO server. Keep dynamic-store data shape.</td><td>~600</td></tr>
+<tr><td><code>configd.tproj/_SC_dynamicStore_*.{c,h}</code></td><td>~3k</td><td>Rewrite as ObjC. <code>NSMutableDictionary</code> + serial dispatch queue. DO callback fan-out.</td><td>~800</td></tr>
+<tr><td><code>Plugins/IPMonitor/</code></td><td>~8k</td><td>Repurpose. Original Apple role: drive <code>IPConfiguration</code> agent. New role: read dhcpcd lease files, populate dynamic store DHCP keys, merge with <code>Network.plist</code> overrides, write resolv.conf. Drop AWD reporter.</td><td>~2.5k</td></tr>
+<tr><td><code>Plugins/KernelEventMonitor/</code></td><td>~2k</td><td>Rewrite. Replace <code>PF_SYSTEM</code> / <code>KEV_NETWORK_CLASS</code> with <code>PF_ROUTE</code> socket parsing. <strong>Observation only</strong> — actions belong to dhcpcd.</td><td>~600</td></tr>
+<tr><td><code>Plugins/LinkConfiguration/</code></td><td>~1k</td><td>Trim heavily. dhcpcd handles link-state actions; this plugin's role shrinks to dynamic-store updates on link transitions.</td><td>~300</td></tr>
+<tr><td><code>Plugins/PreferencesMonitor/</code></td><td>~2k</td><td>Port. Watches <code>Network.plist</code>; diff against current; regenerate <code>/etc/dhcpcd.conf.d/netconfigd.conf</code>; SIGHUP dhcpcd. <strong>The new core.</strong></td><td>~700</td></tr>
 <tr><td><code>Plugins/SCNetworkReachability/</code></td><td>~3k</td><td>Port. Provides reachability API to apps via DO. Uses PF_ROUTE for change events.</td><td>~1.2k</td></tr>
-<tr><td><code>libSystemConfiguration/</code></td><td>~1k</td><td>Prune Mach refs; keep store-client API but back it with DO calls.</td><td>~600</td></tr>
-<tr><td><code>nwi/</code></td><td>~600</td><td>Keep mostly as-is. Pure data structures (network info dictionary).</td><td>~500</td></tr>
-<tr><td><code>scutil.tproj/</code></td><td>~5k</td><td>Substantial rewrite. Replace Mach store-client with DO client. Keep the shell-style command parsing (<code>show</code>, <code>get</code>, <code>set</code>, <code>watch</code>).</td><td>~2k</td></tr>
-<tr><td><code>SystemConfiguration.fproj/</code></td><td>~10k</td><td>Trim. Keep the public framework API surface that apps use (SCNetworkReachability, SCDynamicStore). Drop Apple-specific bits.</td><td>~3k</td></tr>
+<tr><td><code>libSystemConfiguration/</code></td><td>~1k</td><td>Prune Mach refs; back store-client API with DO calls.</td><td>~600</td></tr>
+<tr><td><code>nwi/</code></td><td>~600</td><td>Keep mostly as-is (pure data structures).</td><td>~500</td></tr>
+<tr><td><code>scutil.tproj/</code></td><td>~5k</td><td>Substantial rewrite. DO client; shell-style command parsing (<code>show</code>, <code>get</code>, <code>set</code>, <code>watch</code>).</td><td>~2k</td></tr>
+<tr><td><code>SystemConfiguration.fproj/</code></td><td>~10k</td><td>Trim. Keep public framework API surface; drop Apple-specific bits.</td><td>~3k</td></tr>
 <tr><td><code>common/</code>, <code>logging/</code></td><td>~1k</td><td>Keep mostly as-is.</td><td>~800</td></tr>
 </tbody>
 </table>
 
-<p>Total post-Phase-2: roughly <strong>14-15k LOC</strong> vs Apple's ~37k pre-amputation. About 60% deletion, similar to the launchd port's reduction ratio.</p>
+<p>Total post-Phase-2: roughly <strong>13-14k LOC</strong> vs Apple's ~37k pre-amputation. Slightly less than the original estimate because IPMonitor's role shrank with dhcpcd taking the IPConfiguration burden.</p>
 
-<h2 id="bsd-wins">7. FreeBSD-only wins (vs Apple's Darwin-tied configd)</h2>
+<h2 id="bsd-wins">8. FreeBSD-only wins (vs Apple's Darwin-tied configd)</h2>
 
 <table>
 <thead>
 <tr><th>Feature</th><th>Apple's configd does</th><th>This port (FreeBSD-only)</th></tr>
 </thead>
 <tbody>
-<tr><td>Kernel iface events</td><td><code>PF_SYSTEM</code> + <code>KEV_NETWORK_CLASS</code> + <code>kern_event</code></td><td><code>PF_ROUTE</code> socket — standard, simpler, less Darwin-specific glue</td></tr>
-<tr><td>Service IPC</td><td>Mach ports + XPC + bootstrap server</td><td>GNUstep DO over AF_UNIX. Full ObjC messaging; <code>NSPortCoder</code> for marshalling. Dramatically less plumbing.</td></tr>
-<tr><td>Plugin loading</td><td>Mach host port + bundle dlopen with <code>SCDPluginExecCommand</code></td><td>No plugins as separate dylibs initially — link statically into the daemon. Reach for dlopen only when there's a reason.</td></tr>
-<tr><td>DHCP</td><td>Internal <code>IPConfiguration</code> agent (years of Apple-internal work)</td><td><code>NSTask</code> spawn of FreeBSD's <code>/sbin/dhclient</code>. Trivially correct; well-tested.</td></tr>
-<tr><td>WiFi auth</td><td>AirPort framework + <code>eapolclient</code></td><td><code>wpa_supplicant</code> subprocess. Battle-tested on FreeBSD.</td></tr>
+<tr><td>DHCP</td><td>Internal <code>IPConfiguration</code> agent (years of Apple-internal work)</td><td><code>dhcpcd</code> port. DHCPv4 + DHCPv6 + IPv4LL out of the box; netconfigd drives policy via dhcpcd.conf.</td></tr>
+<tr><td>RA / SLAAC</td><td>Internal kernel <code>nd6</code> integration</td><td>dhcpcd userspace RA processing &mdash; supports RDNSS / DNSSL the kernel doesn't.</td></tr>
+<tr><td>Kernel iface events</td><td><code>PF_SYSTEM</code> + <code>KEV_NETWORK_CLASS</code> + <code>kern_event</code></td><td><code>PF_ROUTE</code> socket &mdash; standard, simpler, less Darwin-specific glue. Observation-only role; dhcpcd watches independently for action.</td></tr>
+<tr><td>Service IPC</td><td>Mach ports + XPC + bootstrap server</td><td>GNUstep DO over AF_UNIX. Full ObjC messaging; <code>NSPortCoder</code> for marshalling.</td></tr>
+<tr><td>WiFi auth</td><td>AirPort framework + <code>eapolclient</code></td><td><code>wpa_supplicant</code> from ports. dhcpcd auto-coordinates via built-in hook.</td></tr>
 <tr><td>Iface naming</td><td><code>InterfaceNamer</code> plugin: IOKit USB/PCI introspection</td><td>FreeBSD kernel handles this. Drop the plugin.</td></tr>
-<tr><td>Reachability events</td><td>Mach-port-based notifications + dispatch_source on a custom mach port type</td><td>DO callbacks + libdispatch sources. ObjC <code>-changed:</code> messages.</td></tr>
+<tr><td>Plugin loading</td><td>Mach host port + bundle dlopen</td><td>No plugins as separate dylibs; link statically into the daemon.</td></tr>
 <tr><td>Build-system gates</td><td>iOS / macOS / sim / catalyst <code>#if TARGET_OS_*</code></td><td>Delete them all. One target.</td></tr>
 </tbody>
 </table>
 
-<h2 id="deps">8. Dependencies</h2>
+<h2 id="deps">9. Dependencies</h2>
 
-<p>No new pkglist or buildpkgs entries beyond what <code>freebsd-launchd</code> already pulls in. The system domain (libdispatch + libobjc2 + tools-make + libs-base + libs-corebase) is already installed by the time configd builds. Configd needs:</p>
+<p><strong>Build-time</strong>: clang, lld (FreeBSD base); the gnustep-make framework already installed by the launchd build; pkgconf; system-domain headers/libraries at <code>/System/Library/</code>.</p>
 
+<p><strong>Runtime (Phase 1, on the ISO):</strong></p>
 <ul>
-  <li><strong>Build-time</strong>: clang, lld (FreeBSD base); the gnustep-make framework already installed; pkgconf; the system-domain headers/libraries at <code>/System/Library/</code>.</li>
-  <li><strong>Runtime</strong>: <code>libdispatch.so</code>, <code>libgnustep-base.so</code>, <code>libgnustep-corebase.so</code>, <code>libobjc.so</code>, <code>libBlocksRuntime.so</code> (all from system domain). Plus FreeBSD-base subprocesses: <code>/sbin/dhclient</code>, <code>/usr/sbin/rtsold</code>, <code>/usr/sbin/wpa_supplicant</code> (the last needs <code>pkg install wpa_supplicant</code> if not in base — verify).</li>
+  <li>Ports: <code>net/dhcpcd</code>, <code>security/wpa_supplicant</code> (in <code>pkglist.txt</code>).</li>
+  <li>Base: <code>resolvconf(8)</code> (used by dhcpcd to write <code>/etc/resolv.conf</code> via standard hooks).</li>
 </ul>
 
-<p><strong>The make-configd.sh dependency check:</strong> the script hard-checks <code>/System/Library/Libraries/libgnustep-base.so</code> + <code>libdispatch.so</code> (same pattern as <code>make-launchd.sh</code>). If they're missing, exit early with a clear error pointing to the system-domain build.</p>
+<p><strong>Runtime (Phase 2+, when netconfigd ships):</strong></p>
+<ul>
+  <li>Above plus: <code>libdispatch.so</code>, <code>libgnustep-base.so</code>, <code>libgnustep-corebase.so</code>, <code>libobjc.so</code>, <code>libBlocksRuntime.so</code> (all from system domain &mdash; already present from launchd).</li>
+</ul>
 
-<h2 id="integration">9. launchd integration</h2>
+<h2 id="integration">10. launchd integration</h2>
 
-<h3>9.1 The plist</h3>
-
+<h3>10.1 Phase 1: dhcpcd plist (in place)</h3>
 <pre class="plist"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
-&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
 &lt;plist version="1.0"&gt;
 &lt;dict&gt;
-    &lt;key&gt;Label&lt;/key&gt;
-    &lt;string&gt;org.freebsd.netconfigd&lt;/string&gt;
-    &lt;key&gt;ProgramArguments&lt;/key&gt;
-    &lt;array&gt;
-        &lt;string&gt;/usr/libexec/netconfigd&lt;/string&gt;
+    &lt;key&gt;Label&lt;/key&gt;             &lt;string&gt;org.freebsd.dhcpcd&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt;  &lt;array&gt;
+        &lt;string&gt;/usr/local/sbin/dhcpcd&lt;/string&gt;
+        &lt;string&gt;-B&lt;/string&gt;
     &lt;/array&gt;
-    &lt;key&gt;RunAtLoad&lt;/key&gt;     &lt;true/&gt;
-    &lt;key&gt;KeepAlive&lt;/key&gt;     &lt;true/&gt;
-    &lt;key&gt;Sockets&lt;/key&gt;       &lt;dict&gt;
-        &lt;key&gt;Listeners&lt;/key&gt; &lt;dict&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;         &lt;true/&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;         &lt;true/&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</code></pre>
+
+<p><code>-B</code> keeps dhcpcd in foreground for launchd supervision; without it dhcpcd would daemonize on its own and launchd would think the job ended. <code>KeepAlive=true</code> respawns dhcpcd if it dies.</p>
+
+<h3>10.2 Phase 2+: netconfigd plist (planned)</h3>
+<pre class="plist"><code>&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;            &lt;string&gt;org.freebsd.netconfigd&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt; &lt;array&gt;&lt;string&gt;/usr/libexec/netconfigd&lt;/string&gt;&lt;/array&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;        &lt;true/&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;        &lt;true/&gt;
+    &lt;key&gt;Sockets&lt;/key&gt;          &lt;dict&gt;
+        &lt;key&gt;Listeners&lt;/key&gt;    &lt;dict&gt;
             &lt;key&gt;SockPathName&lt;/key&gt; &lt;string&gt;/var/run/netconfigd.sock&lt;/string&gt;
             &lt;key&gt;SockType&lt;/key&gt;     &lt;string&gt;stream&lt;/string&gt;
             &lt;key&gt;SockPathMode&lt;/key&gt; &lt;integer&gt;438&lt;/integer&gt; &lt;!-- 0666 --&gt;
@@ -413,30 +439,13 @@
 &lt;/dict&gt;
 &lt;/plist&gt;</code></pre>
 
-<p>launchd opens the AF_UNIX listener at boot and hands the fd to <code>netconfigd</code> via the standard <code>launch_activate_socket</code> protocol (or our equivalent in the FreeBSD launchd port). Until netconfigd is up, queued connections from <code>scutil</code>/GUI tools sit in the kernel's socket queue.</p>
+<p>launchd opens the AF_UNIX listener at boot, hands the fd to netconfigd via the launchd-port's <code>launch_activate_socket</code>-equivalent. Until netconfigd is up, queued connections from <code>scutil</code> / GUI tools sit in the kernel's socket queue.</p>
 
-<h3>9.2 Boot ordering</h3>
+<h2 id="schema">11. <code>Network.plist</code> schema (Phase 2+)</h2>
 
-<p>netconfigd needs <code>/System/Library/</code> populated (the GNUstep libs it links against). At boot:</p>
-
-<ol>
-  <li>launchd starts as PID 1.</li>
-  <li>launchd scans <code>/System/Library/LaunchDaemons/</code>, finds <code>org.freebsd.netconfigd.plist</code>.</li>
-  <li>launchd opens <code>/var/run/netconfigd.sock</code> (the Sockets listener) and forks netconfigd with the fd in <code>LISTEN_FDS</code> environment.</li>
-  <li>netconfigd reads its socket from the env, wraps it in <code>NSSocketPort</code>, creates an <code>NSConnection</code> with <code>self</code> as root.</li>
-  <li>netconfigd reads <code>/Local/Library/Preferences/Network.plist</code>; if absent or empty, falls into the auto-DHCP path for every link-up ethernet iface.</li>
-  <li>netconfigd installs PF_ROUTE source, vnode source, signal sources; calls <code>dispatch_main()</code>.</li>
-</ol>
-
-<p>The <code>org.freebsd.network.auto.plist</code> + helper script we sketched in the launchd-plan amendment becomes <strong>obsolete</strong> once netconfigd ships — netconfigd absorbs that role natively.</p>
-
-<h2 id="schema">10. <code>Network.plist</code> schema</h2>
-
-<p>One canonical configuration file. Every per-host setting has a path here. The GUI tooling reads/writes this file directly (or talks to netconfigd over DO, which writes it back).</p>
+<p>One canonical declarative configuration file. The GUI tooling reads/writes it; netconfigd watches it and translates to dhcpcd config + resolv.conf.</p>
 
 <pre class="plist"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
-&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-                       "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
 &lt;plist version="1.0"&gt;
 &lt;dict&gt;
     &lt;key&gt;Hostname&lt;/key&gt;
@@ -473,11 +482,6 @@
         &lt;/dict&gt;
     &lt;/dict&gt;
 
-    &lt;key&gt;IPv6&lt;/key&gt;
-    &lt;dict&gt;
-        &lt;key&gt;Mode&lt;/key&gt; &lt;string&gt;Auto&lt;/string&gt; &lt;!-- Auto | Manual | Off --&gt;
-    &lt;/dict&gt;
-
     &lt;key&gt;DNS&lt;/key&gt;
     &lt;dict&gt;
         &lt;!-- Optional. If absent, DNS is taken from DHCP. --&gt;
@@ -487,171 +491,168 @@
             &lt;string&gt;1.0.0.1&lt;/string&gt;
         &lt;/array&gt;
         &lt;key&gt;Search&lt;/key&gt;
-        &lt;array&gt;
-            &lt;string&gt;example.com&lt;/string&gt;
-        &lt;/array&gt;
+        &lt;array&gt;&lt;string&gt;example.com&lt;/string&gt;&lt;/array&gt;
     &lt;/dict&gt;
 &lt;/dict&gt;
 &lt;/plist&gt;</code></pre>
 
-<p><strong>Empty / absent <code>Network.plist</code></strong> → the daemon auto-DHCPs every link-up ethernet, enables IPv6 RA via <code>rtsold -a</code>, leaves hostname as kernel default ("Amnesiac"), and lets DNS come from DHCP. This is the live-ISO default behavior; users get networking for free.</p>
+<p><strong>Empty / absent <code>Network.plist</code></strong> &rarr; dhcpcd's defaults apply (auto-DHCP everything, RA on every iface). This is the Phase 1 behavior; Phase 2+ keeps it as the no-config-needed default.</p>
 
-<p><strong>Per-iface dict missing</strong> → the iface defaults to DHCP if it's an ethernet that's link-up, untouched if it's anything else. A user who wants em0 to NOT auto-DHCP adds <code>{"Method": "Disabled"}</code>.</p>
+<p><strong>Per-iface dict missing</strong> &rarr; dhcpcd's defaults apply for that iface. A user who wants em0 to NOT auto-DHCP adds <code>{"Method": "Disabled"}</code>, which translates to <code>denyinterfaces em0</code> in the generated dhcpcd.conf.</p>
 
-<h3>10.1 Schema versioning</h3>
-
+<h3>11.1 Schema versioning</h3>
 <p>Add a top-level <code>"Version"</code> key (integer) once we have post-v1 schema changes. v1 is implicit; v2+ ships the daemon's accepted version range.</p>
 
-<h2 id="cli">11. <code>scutil</code> CLI tool</h2>
+<h2 id="cli">12. <code>scutil</code> CLI tool (Phase 2+)</h2>
 
-<p>Apple's <code>scutil</code> is the "system configuration shell" — interactive and one-shot commands to query and edit the dynamic store. We port it as a DO client of netconfigd. Initial command set:</p>
+<p>Apple's <code>scutil</code> is the system-configuration shell. Ported as a DO client of netconfigd. Initial command set:</p>
 
 <ul>
-  <li><code>scutil --show</code> — dump the entire dynamic store</li>
-  <li><code>scutil --get Hostname</code> / <code>--set Hostname my-host</code> — single-key edits</li>
-  <li><code>scutil --interfaces</code> — list managed interfaces with current state</li>
-  <li><code>scutil --reload</code> — force netconfigd to re-read Network.plist</li>
-  <li><code>scutil --watch &lt;key&gt;</code> — long-running, prints on store changes</li>
+  <li><code>scutil --show</code> &mdash; dump the entire dynamic store</li>
+  <li><code>scutil --get Hostname</code> / <code>--set Hostname my-host</code> &mdash; single-key edits</li>
+  <li><code>scutil --interfaces</code> &mdash; list managed interfaces with current state</li>
+  <li><code>scutil --reload</code> &mdash; force netconfigd to re-read Network.plist</li>
+  <li><code>scutil --watch &lt;key&gt;</code> &mdash; long-running, prints on store changes</li>
 </ul>
 
-<p>The interactive Mach-shell mode of Apple's scutil is dropped (it depended on Mach store semantics). One-shot mode covers what users actually use.</p>
+<p>The interactive Mach-shell mode is dropped (depended on Mach store semantics).</p>
 
-<h2 id="license">12. Licensing</h2>
+<h2 id="license">13. Licensing</h2>
 
-<p>Same model as the launchd port. Top-level BSD-2-Clause; Apple <code>configd</code> source files retain their Apache 2.0 headers per-file (inbound=outbound). Our new code is BSD-2-Clause with SPDX headers.</p>
+<p>Top-level BSD-2-Clause; Apple <code>configd</code> source files retain their Apache 2.0 headers per-file (inbound=outbound). New code is BSD-2-Clause with SPDX headers.</p>
 
 <table>
 <thead><tr><th>Source</th><th>License</th><th>How we handle it</th></tr></thead>
 <tbody>
-<tr><td>Apple <code>configd-963.270.3</code> (<code>@APPLE_OSREFERENCE_LICENSE_HEADER_START@</code> in every file)</td><td>Apache 2.0 (modern Apple OSRef license is Apache 2.0 with optional extra clause)</td><td>Keep the Apple header verbatim. Our edits inherit Apache 2.0 via inbound=outbound. Files stay Apache regardless of top-level.</td></tr>
-<tr><td>GNUstep base / corebase / libobjc2 (linked, not in tree)</td><td>LGPL 2.1+ / LGPL 3 (with linking exception) / MIT</td><td>Listed in <code>NOTICE</code>. Linking exception lets netconfigd link Foundation without becoming LGPL.</td></tr>
-<tr><td>libdispatch (linked, not in tree)</td><td>Apache 2.0 with Runtime Library Exception</td><td>Listed in <code>NOTICE</code>.</td></tr>
+<tr><td>Apple <code>configd-963.270.3</code></td><td>Apache 2.0 (Apple OSRef)</td><td>Keep Apple header verbatim. Files stay Apache regardless of top-level.</td></tr>
+<tr><td>dhcpcd, wpa_supplicant (linked separately, not in tree)</td><td>BSD-2-Clause / BSD-3-Clause</td><td>Listed in NOTICE.</td></tr>
+<tr><td>GNUstep base / corebase / libobjc2 (linked, not in tree)</td><td>LGPL 2.1+ / LGPL 3 (linking exception) / MIT</td><td>Listed in NOTICE.</td></tr>
+<tr><td>libdispatch (linked, not in tree)</td><td>Apache 2.0 with Runtime Library Exception</td><td>Listed in NOTICE.</td></tr>
 <tr><td>This repo's new code</td><td>BSD-2-Clause</td><td>Each new file gets a BSD-2-Clause SPDX header.</td></tr>
 </tbody>
 </table>
 
-<h2 id="phases">13. Phased delivery</h2>
+<h2 id="phases">14. Phased delivery</h2>
 
-<div class="phase">
-<h3>Phase 0 — repo scaffold</h3>
+<div class="phase done">
+<h3>Phase 0 &mdash; repo scaffold + Apple source import <span class="pill ok">DONE</span></h3>
 <ul>
-  <li>Create <code>configd/</code> at the top of <code>freebsd-launchd</code>. Update top-level <code>NOTICE</code> to enumerate Apple's configd in addition to launchd.</li>
-  <li>Add <code>configd/scripts/import-source.sh</code> that clones <code>apple-oss-distributions/configd</code> at <code>configd-963.270.3</code>, strips <code>.git</code>, drops it under <code>configd/src/</code>.</li>
-  <li>One-shot import commit (verbatim Apple tree).</li>
-  <li>Follow-up amputation commit per §6.1 (Mach + IOKit + AirPort + sim out).</li>
-  <li>No build wired up; ISO unchanged.</li>
+  <li><code>configd/</code> at the top of <code>freebsd-launchd</code>; <code>configd/scripts/import-source.sh</code> clones <code>apple-oss-distributions/configd</code> at <code>configd-963.270.3</code>.</li>
+  <li>Verbatim Apple import committed; follow-up amputation drops Mach + IOKit + AirPort + sim files (per §7.1).</li>
+  <li>NOTICE updated.</li>
 </ul>
 </div>
 
-<div class="phase">
-<h3>Phase 1 — minimal netconfigd (the "auto-DHCP" milestone)</h3>
+<div class="phase done">
+<h3>Phase 1a-c &mdash; netconfigd shipped own dhclient + rtsold orchestration <span class="pill warn">SUPERSEDED</span></h3>
+<p>Initial NCDaemon implementation enumerated ifaces via <code>getifaddrs(3)</code>, ran <code>ifconfig &lt;iface&gt; up</code>, <code>ifconfig &lt;iface&gt; inet6 accept_rtadv auto_linklocal</code>, <code>dhclient -b &lt;iface&gt;</code> per ethernet, and <code>rtsold -a</code> once. Bench testing surfaced gaps: no IPv6 (we never cleared <code>IFDISABLED</code>), no link-flap recovery (devd-shaped flow we'd never built), no DHCPv6 path, no IPv4LL fallback. Dropped in Phase 1d.</p>
+</div>
+
+<div class="phase done">
+<h3>Phase 1d &mdash; pivot to dhcpcd + ports wpa_supplicant <span class="pill ok">DONE</span></h3>
 <ul>
-  <li>Top-level <code>Makefile</code> + <code>make-configd.sh</code>.</li>
-  <li><code>main.m</code> + <code>NCDaemon</code> — reads <code>Network.plist</code> (or auto-everything if absent), forks <code>dhclient -b -n &lt;iface&gt;</code> for each link-up ethernet iface, exec's <code>rtsold -a</code> for IPv6 RA. dispatch_main() loop with no event sources yet.</li>
-  <li><code>freebsd-launchd/build.sh</code> extended to clone freebsd-configd, run make-configd.sh in chroot.</li>
-  <li><code>org.freebsd.netconfigd.plist</code> shipped in the ISO at <code>/System/Library/LaunchDaemons/</code>.</li>
-  <li>Boot test extension: third marker watches for <code>bound to 10.0.2.X</code> on the serial console (qemu's slirp DHCP) — proves DHCP fired and got a lease.</li>
-  <li><strong>Drops the auto-network shell-script overlay we drafted</strong> in favor of this proper daemon.</li>
+  <li>Added <code>dhcpcd</code> to <code>pkglist.txt</code>. Created <code>org.freebsd.dhcpcd.plist</code> running dhcpcd in master mode (<code>-B</code> for foreground supervision).</li>
+  <li>Added ports <code>wpa_supplicant</code> to pkglist (newer than base; better WPA3-SAE/OWE coverage).</li>
+  <li>Removed <code>org.freebsd.netconfigd.plist</code> from overlays. Simplified NCDaemon to a Phase-1 stub that logs and exits.</li>
+  <li>Net effect: IPv4 DHCP + IPv6 DHCPv6 + RA/SLAAC + IPv4LL + link-flap recovery + lagg/vlan/bridge layering recognition all work out of the box, no NCDaemon code needed.</li>
 </ul>
 </div>
 
-<div class="phase">
-<h3>Phase 2 — kernel events + live config reload</h3>
+<div class="phase todo">
+<h3>Phase 2 &mdash; netconfigd resumes: dynamic store + DO IPC + Network.plist watcher <span class="pill info">PLANNED</span></h3>
 <ul>
-  <li><code>NCRouteSource</code>: PF_ROUTE socket as <code>DISPATCH_SOURCE_TYPE_READ</code>. Parses RTM_NEWADDR / RTM_DELADDR / RTM_IFINFO / RTM_IFANNOUNCE.</li>
-  <li><code>NCInterface</code> objects per managed iface; route messages dispatched to the right object.</li>
-  <li><code>NCConfigWatcher</code>: vnode source on Network.plist; diffs and reapplies on change.</li>
-  <li>Hot-plug: plug a new ethernet, daemon DHCPs it without reboot.</li>
+  <li><code>configd.tproj/</code> rewrite: <code>NSConnection</code>-rooted DO server, <code>NSMutableDictionary</code>-backed dynamic store with serial dispatch queue.</li>
+  <li><code>Plugins/PreferencesMonitor/</code> port: vnode source on <code>Network.plist</code>; diff against current; regenerate <code>/etc/dhcpcd.conf.d/netconfigd.conf</code>; SIGHUP dhcpcd.</li>
+  <li><code>Plugins/KernelEventMonitor/</code> rewrite: PF_ROUTE source for state observation, populates dynamic store keys.</li>
+  <li><code>Plugins/IPMonitor/</code> repurpose: read dhcpcd lease state, merge with plist DNS overrides, write resolv.conf.</li>
+  <li>Reinstate <code>org.freebsd.netconfigd.plist</code> with the launchd Sockets entry for the DO listener.</li>
 </ul>
 </div>
 
-<div class="phase">
-<h3>Phase 3 — DO server + scutil port</h3>
+<div class="phase todo">
+<h3>Phase 3 &mdash; scutil port <span class="pill info">PLANNED</span></h3>
 <ul>
-  <li><code>NetConfigService</code> protocol; netconfigd registers <code>self</code> as DO root over launchd-handed AF_UNIX socket.</li>
-  <li><code>NCStore</code> dynamic-store-equivalent with KVO-style notifications over DO.</li>
-  <li>Port <code>scutil.tproj</code> as a DO client; <code>scutil --show</code> / <code>--get</code> / <code>--set</code> / <code>--watch</code> work.</li>
-  <li>Boot test: ssh in, run <code>scutil --interfaces</code>, verify it returns the expected dictionary.</li>
+  <li>Port <code>scutil.tproj</code> as a DO client.</li>
+  <li>Initial commands: <code>--show</code>, <code>--get</code>, <code>--set</code>, <code>--interfaces</code>, <code>--reload</code>, <code>--watch &lt;key&gt;</code>.</li>
 </ul>
 </div>
 
-<div class="phase">
-<h3>Phase 4 — IPv6 RA, hostname, DNS</h3>
+<div class="phase todo">
+<h3>Phase 4 &mdash; SCNetworkReachability for apps <span class="pill info">PLANNED</span></h3>
 <ul>
-  <li>IPv6 mode handling: <code>Auto</code> enables <code>accept_rtadv</code> per iface and runs <code>rtsold -a</code>; <code>Manual</code> applies static v6 from plist; <code>Off</code> disables.</li>
-  <li><code>Hostname</code> key: daemon calls <code>sethostname(3)</code> on startup and on key change.</li>
-  <li><code>DNS</code> key: daemon writes <code>/etc/resolv.conf</code> from the plist (with a "managed by netconfigd" header comment); falls back to DHCP-supplied DNS when key is absent.</li>
+  <li>Port the public reachability API. Apps link <code>libSystemConfiguration.so</code>; under the hood, DO calls to netconfigd.</li>
+  <li>This unlocks GUI tooling that reacts to "reachability of github.com changed" without polling.</li>
 </ul>
 </div>
 
-<div class="phase">
-<h3>Phase 5 — WiFi via wpa_supplicant</h3>
+<div class="phase todo">
+<h3>Phase 5 &mdash; declarative WiFi config <span class="pill info">FUTURE</span></h3>
 <ul>
-  <li><code>NCInterface</code> WPA state branch: spawn <code>wpa_supplicant -i &lt;iface&gt; -c &lt;file&gt;</code> as managed child.</li>
-  <li>Watch wpa_supplicant's control-socket for ASSOCIATED / DISCONNECTED events; gate DHCP behind ASSOCIATED.</li>
-  <li>Schema sketch for inline credentials (Phase 6+) vs always-pointing-at-/etc/wpa_supplicant.conf.</li>
+  <li>Inline credentials (SSID + PSK or EAP) in <code>Network.plist</code>.</li>
+  <li>netconfigd materializes <code>/etc/wpa_supplicant-&lt;iface&gt;.conf</code> from plist; manages a wpa_supplicant launchd job per wifi iface.</li>
+  <li>Keychain-equivalent storage for credentials (TBD; currently plain plist).</li>
 </ul>
 </div>
 
-<div class="phase">
-<h3>Phase 6 — SCNetworkReachability for apps</h3>
+<div class="phase todo">
+<h3>Phase 6+ &mdash; optional, demand-driven <span class="pill info">FUTURE</span></h3>
 <ul>
-  <li>Port the public reachability API. Apps call <code>SCNetworkReachabilityCreateWithName(...)</code> via the linked framework; under the hood it's a DO call to netconfigd.</li>
-  <li>This is what makes the GUI tooling actually pleasant — apps can subscribe to "reachability of github.com changed" and the GUI/daemon plumbing handles it.</li>
+  <li>Captive-portal probing &mdash; when someone needs it.</li>
+  <li>Multiple-DNS-policy support (per-domain resolvers) &mdash; when someone needs it.</li>
+  <li>VPN integration &mdash; route + firewall coordination with VPN clients.</li>
 </ul>
 </div>
 
-<div class="phase">
-<h3>Phase 7+ — optional, demand-driven</h3>
-<ul>
-  <li>Internal DHCP client (drop the dhclient subprocess) — only if dhclient's behavior or footprint becomes a concern.</li>
-  <li>Captive-portal probing — when someone needs it.</li>
-  <li>Multiple-DNS-policy support (per-domain resolvers, etc.) — when someone needs it.</li>
-</ul>
+<h2 id="open">15. Open questions</h2>
+
+<div class="resolved">
+<strong>RESOLVED &mdash; Internal DHCP client.</strong> Closed by Phase 1d. dhcpcd is the answer indefinitely; we don't reimplement DHCPv4/v6 inside the daemon. (Apple did, but it took years; we get the same outcome by using the right port.)
 </div>
 
-<h2 id="open">14. Open questions</h2>
-
-<div class="open-q">
-<strong>Q1. Repo layout. — SETTLED.</strong> Monorepo: configd lives under <code>configd/</code> at the top of <code>freebsd-launchd</code>. Reasons in §2.1: single build pipeline, atomic cross-component refactors, single CI surface, easier discoverability.
+<div class="resolved">
+<strong>RESOLVED &mdash; rtsold for IPv6 RA.</strong> Closed by Phase 1d. dhcpcd handles RA in userspace, supports RDNSS and DNSSL the kernel can't. rtsold is gone.
 </div>
 
-<div class="open-q">
-<strong>Q2. <code>gdomap</code> or direct <code>NSSocketPort</code>.</strong> Decision: direct <code>NSSocketPort</code> at <code>/var/run/netconfigd.sock</code>; no gdomap. Avoids running a name-registration daemon for one well-known service. If we end up with multiple DO services that need lookup, revisit.
+<div class="resolved">
+<strong>RESOLVED &mdash; Repo layout.</strong> Monorepo: configd lives under <code>configd/</code> at the top of <code>freebsd-launchd</code>.
 </div>
 
-<div class="open-q">
-<strong>Q3. Daemon binary path: <code>/usr/libexec</code> vs <code>/sbin</code>.</strong> Decision: <code>/usr/libexec/netconfigd</code>. Users don't invoke this directly; they invoke <code>scutil</code> at <code>/usr/sbin/scutil</code>. <code>libexec</code> is the FreeBSD <code>hier(7)</code> location for indirect-only daemons (<code>/usr/libexec/getty</code>, <code>/usr/libexec/sendmail</code>, etc.).
+<div class="resolved">
+<strong>RESOLVED &mdash; Daemon binary path.</strong> <code>/usr/libexec/netconfigd</code> for the daemon (Phase 2+); <code>/usr/sbin/scutil</code> for the CLI client.
 </div>
 
 <div class="open-q">
-<strong>Q4. WiFi credentials storage: Network.plist or <code>/etc/wpa_supplicant.conf</code>?</strong> Phase 5 starts with the plist pointing at <code>/etc/wpa_supplicant.conf</code> — wpa_supplicant's existing config format is well-tested. Inline credentials in Network.plist (with the daemon writing wpa_supplicant.conf from them) is Phase 6+. Decision deferrable.
+<strong>Q. <code>/etc/resolv.conf</code> ownership in Phase 2+.</strong> dhcpcd writes resolv.conf via <code>resolvconf(8)</code> by default. When netconfigd ships, it has the option to take over (<code>nohook resolv.conf</code> in dhcpcd.conf, netconfigd writes resolv.conf merging dhcpcd state with plist overrides) or to keep dhcpcd in charge and pass overrides via <code>static domain_name_servers=...</code>. Decision: probably the latter (less work, dhcpcd already integrates with resolvconf cleanly). Settle when Phase 2 implementation begins.
 </div>
 
 <div class="open-q">
-<strong>Q5. Replacing dhclient with internal DHCP.</strong> Open. Apple's path was years of <code>IPConfiguration</code> work; we shouldn't go there until there's a measurable reason (lease-renewal latency, footprint, etc.). Phase 7+ at earliest.
+<strong>Q. <code>Network.plist</code> &rarr; <code>dhcpcd.conf</code> translation: drop-in file or whole-file rewrite?</strong> dhcpcd reads <code>/etc/dhcpcd.conf.d/*.conf</code> drop-ins after the main <code>/etc/dhcpcd.conf</code>. netconfigd should write <code>/etc/dhcpcd.conf.d/netconfigd.conf</code> and leave the main file untouched &mdash; lets advanced users tune dhcpcd globals without netconfigd clobbering. Decision deferrable.
 </div>
 
 <div class="open-q">
-<strong>Q6. <code>/etc/resolv.conf</code> ownership.</strong> Daemon writes it from <code>Network.plist</code>'s <code>DNS</code> key on Phase 4. Manual edits clobber on next boot. If users need a "don't manage resolv.conf" escape hatch, add a top-level <code>"DNS": {"Mode": "Manual"}</code> key. Decision deferrable.
+<strong>Q. WiFi credentials storage in Phase 5.</strong> Inline in <code>Network.plist</code> (PSK in plist) is simple but plaintext. A keychain layer is more secure but more work. Apple did inline for the macOS first iterations; keychain came later. Probably the same path: Phase 5 inline, future phase keychain.
 </div>
 
 <div class="open-q">
-<strong>Q7. Schema versioning gate.</strong> v1 is implicit. Add the <code>"Version"</code> key when v2 ships (or earlier if a GUI tool needs to know which schema it's reading). Cheap to add later.
+<strong>Q. <code>gdomap</code> or direct <code>NSSocketPort</code>.</strong> Direct <code>NSSocketPort</code> at <code>/var/run/netconfigd.sock</code>; no gdomap. If we end up with multiple DO services that need lookup, revisit.
 </div>
 
 <div class="open-q">
-<strong>Q8. Reachability API in Phase 6 — public framework or DO-only?</strong> Open. Public framework matches Apple's surface but adds linker-soname-stability concerns. DO-only is simpler. Settle when apps actually need it.
+<strong>Q. Reachability API in Phase 4 &mdash; public framework or DO-only?</strong> Public framework matches Apple's surface but adds linker-soname-stability concerns. DO-only is simpler. Settle when apps actually need it.
 </div>
 
-<h2 id="refs">15. References</h2>
+<div class="open-q">
+<strong>Q. Schema versioning gate.</strong> v1 is implicit. Add the <code>"Version"</code> key when v2 ships, or when a GUI tool needs to know which schema it's reading.
+</div>
+
+<h2 id="refs">16. References</h2>
 
 <ul>
   <li>Apple source: <a href="https://github.com/apple-oss-distributions/configd">github.com/apple-oss-distributions/configd</a> (latest tag <code>configd-963.270.3</code>).</li>
-  <li>Companion plan: <a href="freebsd-launchd-plan.html">freebsd-launchd porting plan</a>.</li>
-  <li>GNUstep base (Foundation): <a href="https://github.com/gnustep/libs-base">github.com/gnustep/libs-base</a>.</li>
-  <li>GNUstep DO docs: <code>libs-base/Documentation/General/DistributedObjects.gsdoc</code>.</li>
-  <li>libdispatch dispatch sources: <a href="https://developer.apple.com/documentation/dispatch">developer.apple.com/documentation/dispatch</a>.</li>
+  <li>dhcpcd: <a href="https://roy.marples.name/projects/dhcpcd/">roy.marples.name/projects/dhcpcd/</a>. Master-mode docs in <code>man 8 dhcpcd</code>; config reference in <code>man 5 dhcpcd.conf</code>.</li>
+  <li>wpa_supplicant: <a href="https://w1.fi/wpa_supplicant/">w1.fi/wpa_supplicant/</a>. FreeBSD port at <code>security/wpa_supplicant</code>.</li>
+  <li>Companion plans: <a href="freebsd-launchd-plan.html">freebsd-launchd</a>, <a href="freebsd-kmodloader-plan.html">freebsd-kmodloader</a>.</li>
+  <li>GNUstep base: <a href="https://github.com/gnustep/libs-base">github.com/gnustep/libs-base</a>.</li>
   <li>FreeBSD <code>route(4)</code> / <code>PF_ROUTE</code>: <code>man 4 route</code>.</li>
 </ul>
 

@@ -86,6 +86,7 @@
   <a href="#macos">macOS kextd</a>
   <a href="#toonew">"Too-new" GPU case</a>
   <a href="#scorecard">Scorecard</a>
+  <a href="#ports-todo">Ports kld TODO</a>
   <a href="#refs">References</a>
 </nav>
 
@@ -548,7 +549,129 @@ or (recommended) check for kernel updates.</code></pre>
 </tbody>
 </table>
 
-<h2 id="refs">12. References</h2>
+<h2 id="ports-todo">12. Open TODOs — ports-shipped kld drivers</h2>
+
+<p>drm-kmod is the canonical case kmodloader's GPU PCI scan addresses. But it isn't the only ports kld package that may have the same problem &mdash; "the kld ships from ports without <code>MODULE_PNP_INFO</code>, so devmatch can't see it, so we'd need a vendor-scan-style fallback or speculative load." Each of these needs a one-shot investigation: install the package, run <code>kldxref -d /boot/modules/linker.hints | grep &lt;name&gt;</code>, and see whether devmatch picks it up. If yes, no kmodloader change &mdash; just add the package to <code>pkglist.txt</code>. If no, we need the same kind of targeted handling we do for GPUs.</p>
+
+<h3>12.1 Investigation procedure</h3>
+
+<p>For any ports kld package that ships an <code>if_*</code> / <code>wmt_*</code> / similar driver kmod:</p>
+
+<pre class="shell"><code># 1. Install on a test system
+pkg install &lt;package&gt;
+
+# 2. Re-build hints (pkg post-install does this, but be explicit)
+kldxref /boot/modules
+
+# 3. Look for the driver in the hints database
+kldxref -d /boot/modules/linker.hints | grep -i &lt;driver&gt;
+
+# 4. Look for PNP_INFO sections in the .ko binary
+strings /boot/modules/&lt;driver&gt;.ko | grep -i pnp_info
+
+# 5. Try devmatch directly (after kldunload to make the device unattached)
+devmatch | grep -i &lt;driver&gt;</code></pre>
+
+<p>Outcomes:</p>
+<ul>
+  <li><strong>kldxref shows entries + devmatch lists it</strong> → kmod is in the FreeBSD-canonical "data-driven" path. Add the package to <code>pkglist.txt</code>, devmatch handles the rest. Zero kmodloader code change.</li>
+  <li><strong>kldxref empty + devmatch silent</strong> → no <code>MODULE_PNP_INFO</code>. Same problem we have for drm-kmod. Two choices:
+    <ol>
+      <li><strong>File an upstream PR</strong> against the port adding <code>MODULE_PNP_INFO</code> declarations from the driver's compiled-in supported table. Best long-term answer; works for everyone.</li>
+      <li><strong>Speculative load via pkglist + kmodloader</strong>: ship the package on the ISO and add a one-line kldload to kmodloader's flow. Probe rejection is graceful (kmod stays resident, no attach, no crash &mdash; same as the "too-new GPU" analysis in §8). Cost: kernel RAM per stuck-resident kmod (~1-3 MB typical for non-GPU drivers).</li>
+    </ol>
+  </li>
+</ul>
+
+<h3>12.2 Known candidates to investigate</h3>
+
+<table class="compact">
+<thead>
+<tr>
+  <th>Package</th>
+  <th>What it ships</th>
+  <th>Why it might need help</th>
+  <th>Investigation status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>net/realtek-re-kmod</code></td>
+  <td>Newer Realtek 2.5G/5G ethernet driver (<code>if_re</code>) from Realtek's upstream source — supersedes the base <code>if_re</code> for RTL8125/8126 etc.</td>
+  <td>Ports build of a vendor-supplied tarball; PNP_INFO presence is upstream-source-dependent. Common on motherboards with 2.5GbE NICs (most boards 2022+).</td>
+  <td><strong>TODO</strong>: install on a test system with an RTL8125 NIC, run the procedure above. Likely outcome: has PNP_INFO (Realtek's source declares device IDs); just needs adding to pkglist.</td>
+</tr>
+<tr>
+  <td><code>net/rtl8821au-kmod</code> /<br><code>net/rtl88xxau-kmod</code> /<br><code>net/rtw88-kmod</code></td>
+  <td>Realtek USB WiFi drivers (LinuxKPI ports of out-of-tree Linux drivers).</td>
+  <td>LinuxKPI ports — the same drm-kmod issue applies. Linux's <code>MODULE_DEVICE_TABLE</code> doesn't auto-translate to FreeBSD's <code>MODULE_PNP_INFO</code> through the LinuxKPI shim. Almost certainly have the same gap as drm-kmod.</td>
+  <td><strong>TODO</strong>: confirm gap. If confirmed, options are: (a) speculative load — add to pkglist, kmodloader kldloads on USB-class match for known Realtek vendor IDs, similar to GPU pass; (b) extend devmatch's source data to include LinuxKPI's id-tables (upstream effort).</td>
+</tr>
+<tr>
+  <td><code>x11-drivers/xf86-input-evdev</code><br>+ kernel <code>evdev</code> support</td>
+  <td>Userspace X input driver consuming kernel evdev events. Touchscreens, multitouch trackpads, advanced HID devices.</td>
+  <td>The kernel side (<code>evdev</code>, <code>wmt</code>, <code>iichid</code>) is in base and has PNP_INFO via standard USB/IIC class match. The Xorg driver loads on top. Likely no kmodloader work needed.</td>
+  <td><strong>Verify</strong>: run <code>devmatch</code> on a system with a Precision Touchpad — should suggest <code>iichid</code>/<code>wmt</code>. If yes, fine.</td>
+</tr>
+<tr>
+  <td>"utouch" family (USB touch controllers via <code>uhid</code>+<code>hidraw</code>)</td>
+  <td>Various USB touchscreens, touch-bar-like devices, drawing tablets. Driven by <code>uhid</code>/<code>ums</code>/<code>wmt</code> in base; ports versions extend or supersede.</td>
+  <td>Mostly works via base USB class drivers (<code>uhid</code> matches USB HID class generically). The "ports needed" cases are usually graphics tablets with proprietary protocols (Wacom etc.). Some have FreeBSD support via <code>x11-drivers/xf86-input-wacom</code> + evdev.</td>
+  <td><strong>TODO</strong>: list specific devices that don't work via base USB classes; investigate per-device.</td>
+</tr>
+<tr>
+  <td><code>graphics/drm-kmod-experimental</code> /<br>future <code>drm-kmod-next</code></td>
+  <td>Bleeding-edge drm-kmod for hardware too new for the stable release (e.g., Intel Battlemage, latest RDNA).</td>
+  <td>Same shape as drm-kmod (no PNP_INFO via LinuxKPI). Our GPU PCI scan would route Intel/AMD GPUs to <code>i915kms</code>/<code>amdgpu</code> regardless — so users who install drm-kmod-experimental and uninstall drm-kmod get the right kld name; just a swap. Conflict if both installed.</td>
+  <td><strong>Trivial</strong>: document that experimental and stable are mutually exclusive; the kld name doesn't change so kmodloader's PCI scan handles either.</td>
+</tr>
+<tr>
+  <td>NVIDIA legacy <code>nvidia-driver-{340,390,470}-kmod</code></td>
+  <td>Older NVIDIA branches for Kepler / Fermi / Tesla generations.</td>
+  <td>Already flagged as a gap in §9. NomadBSD bakes all four branches; we ship one. Solving this needs a marketing-name → kmod-name map at the GPU pass.</td>
+  <td><strong>Open</strong>; tracked in §11 Recommendations as medium priority.</td>
+</tr>
+<tr>
+  <td><code>sysutils/xen-kmod</code></td>
+  <td>Xen guest extensions kld for newer Xen versions than base supports.</td>
+  <td>Xen guest base support is in GENERIC kernel. Ports kld is for newer features (PCI passthrough, etc.). Probably not auto-load territory; user-driven.</td>
+  <td><strong>Defer</strong>: not a common live-ISO scenario.</td>
+</tr>
+<tr>
+  <td><code>net/wireguard-kmod</code></td>
+  <td>WireGuard VPN as a kld (when not built into kernel).</td>
+  <td>Already in GENERIC kernel as of 13.x. Kld package is for older releases. Not relevant on 14.x/15.x targets.</td>
+  <td><strong>n/a</strong> on our target.</td>
+</tr>
+<tr>
+  <td><code>multimedia/v4l_compat</code> /<br><code>multimedia/webcamd</code></td>
+  <td>Video4Linux compat for webcams + USB webcam daemon.</td>
+  <td><code>webcamd</code> is a userspace daemon that talks to USB devices; not a kld. <code>v4l_compat</code> is a header-only port. Neither is a kmodloader concern; they're launchd-service-shaped.</td>
+  <td><strong>n/a</strong> for kmodloader; relevant for a future "media services" plan.</td>
+</tr>
+</tbody>
+</table>
+
+<h3>12.3 Strategy summary</h3>
+
+<p>For each port-shipped kld package we want on the ISO, the decision tree is:</p>
+
+<ol>
+  <li><strong>Install on a test system; run the §12.1 procedure.</strong> Get an empirical answer — has PNP_INFO or doesn't.</li>
+  <li><strong>If it has PNP_INFO</strong>: add the package to <code>pkglist.txt</code> with a comment citing the test result. Done. devmatch handles it on every boot via the existing path.</li>
+  <li><strong>If it doesn't</strong>: pick a path:
+    <ul>
+      <li><em>Best (long-term)</em>: file upstream PR adding <code>MODULE_PNP_INFO</code>. Upstream maintainer reviews, ships, FreeBSD pkg rebuilds, problem disappears for everyone using FreeBSD.</li>
+      <li><em>Pragmatic (now)</em>: add a targeted scan path in <code>KMDaemon.m</code>, similar to the GPU PCI scan but for the relevant device class (USB vendor:device for Realtek WiFi adapters; PCI vendor:device for Realtek 2.5G ethernet; etc.). Cost: per-driver code, but small.</li>
+      <li><em>Lazy (acceptable for niche cases)</em>: document that the user must <code>kldload &lt;name&gt;</code> manually after <code>pkg install</code>. Acceptable for low-priority hardware where the user is already in setup-mode.</li>
+    </ul>
+  </li>
+  <li><strong>Add the test result + chosen path to a per-package comment in pkglist.txt</strong> so future maintenance has the audit trail.</li>
+</ol>
+
+<p>None of these candidates are blocking Phase 1 functionality; they're TODOs to work through as users surface needs. The shape of the answer is the same for each: investigate empirically, then either pkglist-only or pkglist+code.</p>
+
+<h2 id="refs">13. References</h2>
 
 <h3>kmodloader</h3>
 <ul>

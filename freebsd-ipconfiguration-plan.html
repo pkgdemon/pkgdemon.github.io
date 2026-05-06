@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeBSD IPConfiguration — porting plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.objc { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  table.compact td, table.compact th { padding: .35rem .55rem; font-size: .88rem; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .phase.todo { border-left: 4px solid var(--accent2); }
+  .phase.future { border-left: 4px solid var(--warn); }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#goal">Goal</a>
+  <a href="#source">Source</a>
+  <a href="#arch">Architecture</a>
+  <a href="#files">File-by-file</a>
+  <a href="#ipc">Mach → DO</a>
+  <a href="#deps">Apple deps</a>
+  <a href="#hard">Hard parts</a>
+  <a href="#dhcpcd">vs dhcpcd</a>
+  <a href="#decisions">Decisions</a>
+  <a href="#phases">Phases</a>
+  <a href="#open">Open questions</a>
+</nav>
+
+<h1>FreeBSD IPConfiguration — porting plan <span class="pill warn">DEFERRED</span></h1>
+<p class="subtitle">A phased plan to eventually replace dhcpcd in this project with a port of Apple's <code>IPConfiguration</code> daemon-as-plugin. Sequenced after <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-configd-plan.html">configd</a>, and <a href="freebsd-mdnsresponder-plan.html">mDNSResponder</a> are substantially complete. <strong>Recommendation: defer to Phase 7+ unless dhcpcd-with-netconfigd-shim shows real friction.</strong> This page exists to document the path so we don't relitigate the decision.</p>
+
+<section id="tldr" class="tldr">
+  <h3>TL;DR</h3>
+  <ul>
+    <li><strong>What it is:</strong> Apple's DHCPv4 + DHCPv6 + IPv4LL + RA/SLAAC client. Runs as a configd <em>plugin</em>, not a standalone daemon. Source lives in the <code>apple-oss-distributions/bootp</code> repo (currently bootp-534.100.6) under <code>IPConfiguration.bproj/</code>; total port surface ~57k LOC.</li>
+    <li><strong>Why we'd want it:</strong> architectural symmetry with macOS. Exposes the same <code>State:/Network/Service/&lt;UUID&gt;/IPv4</code> dynamic-store keys and the same <code>IPConfigurationServiceCreate</code> client API that Mac apps consume. Removes a third-party port dependency. Tightens integration with eventual <code>netconfigd</code>.</li>
+    <li><strong>Why we won't do it now:</strong> 6-9 person-months of porting work for zero functional improvement over dhcpcd. The DHCPv6 "spam on broken networks" problem is RFC-mandated retry behavior — IPConfiguration has the same problem (verified in source, see §11). dhcpcd is mature, cross-platform, and Roy Marples' upstream is responsive. If Gershwin GUI needs Apple API symmetry later we revisit; until then the cost-benefit favors keeping dhcpcd.</li>
+    <li><strong>Sequencing constraint:</strong> IPConfiguration is a configd plugin in Apple's design. Our port can mirror that — load the bundle into <code>netconfigd</code>'s address space. That requires netconfigd Phase 2-3 (KernelEventMonitor over PF_ROUTE + SCDynamicStore-equivalent) substantially shipped first. We aren't there yet (configd is in Phase 1d stub state per the <a href="freebsd-configd-plan.html">configd plan</a>).</li>
+    <li><strong>The honest framing:</strong> protocol cores (~30k LOC of bootplib + DHCP/DHCPv6 state machines) are clean portable C from Dieter Siegmund. The cost is ~25k LOC of plugin shell, Mach IPC rewrite, IOKit amputation, and Apple80211 → wpa_supplicant translation. The Apple-shape we want from this port is real but incrementally achievable — at the cost of months we don't have today.</li>
+    <li><strong>Licensing:</strong> Apple OSReference 2.0 (Apache-licensed Apple OSS sources). BSD-2-Clause for our new code. No Apple per-file headers on new files; preserve them on imported ones.</li>
+  </ul>
+</section>
+
+<h2 id="goal">1. Goal &amp; non-goals</h2>
+
+<h3>1.1 Goal</h3>
+<p>Eventually replace dhcpcd in the freebsd-launchd project with a port of Apple's IPConfiguration. End state: <code>netconfigd</code> loads <code>IPConfiguration.bundle</code> at startup; the bundle owns DHCPv4/DHCPv6/IPv4LL/RA processing for every interface; state lands in netconfigd's dynamic store under the canonical Apple key namespace; client tools (<code>scutil</code>, <code>ipconfig(8)</code>, GUI apps) reach the daemon via Distributed Objects over AF_UNIX.</p>
+
+<h3>1.2 Non-goals</h3>
+<ul>
+  <li><strong>No Mach IPC.</strong> The 196-line MIG IDL <code>bootplib/ipconfig.defs</code> is replaced by an ObjC <code>@protocol</code> served over <code>NSConnection</code>.</li>
+  <li><strong>No IOKit power-management integration.</strong> Apple's <code>IORegisterForSystemPower</code> + <code>IOPMConnectionCreate</code> + scheduled wake events have no FreeBSD equivalent. Live without sleep-coordinated lease renewal in v1.</li>
+  <li><strong>No <code>Apple80211</code>.</strong> Wi-Fi association state comes from <code>wpa_supplicant</code>'s control socket, not Apple's private 802.11 framework.</li>
+  <li><strong>No <code>SymptomReporter</code> / <code>IPv6AWDReport</code>.</strong> Apple wireless diagnostics telemetry — delete on import.</li>
+  <li><strong>No <code>MobileGestalt</code>.</strong> One call site in <code>dhcp.c</code>; stub returns "FreeBSD".</li>
+  <li><strong>No NetBoot / BSDP.</strong> The <code>bootp</code> repo contains <code>bootpd</code>, <code>BSDPClient</code>, <code>netbootdisk</code>, etc. — out of scope for this port.</li>
+  <li><strong>No <code>EAPOLController</code>.</strong> 802.1X auth coordination skipped in v1; if needed later, route through wpa_supplicant.</li>
+  <li><strong>No CLAT46 / L4S</strong> ioctls. Darwin-private; <code>#ifdef</code>'d out.</li>
+</ul>
+
+<h2 id="source">2. Source overview</h2>
+
+<table class="compact">
+<thead><tr><th>Component</th><th>Apple LOC</th><th>Action</th><th>Post-port LOC</th></tr></thead>
+<tbody>
+<tr><td><code>IPConfiguration.bproj/</code> (the daemon plugin)</td><td>39,722</td><td>port + reshape</td><td>~28,000</td></tr>
+<tr><td><code>bootplib/</code> (shared protocol library, also used by sibling daemons)</td><td>26,997</td><td>cherry-pick: keep DHCP/DHCPv6 cores, drop NetBoot</td><td>~16,000</td></tr>
+<tr><td><code>IPConfiguration_framework/</code> (client API library)</td><td>5,228</td><td>rewrite Mach client → DO client</td><td>~2,500</td></tr>
+<tr><td><code>IPConfigurationHelper/</code> (XPC helper for PvD HTTPS fetch)</td><td>1,250</td><td>fold into main daemon or DO helper</td><td>~800</td></tr>
+<tr><td><code>ipconfig.tproj/</code> (CLI tool)</td><td>1,630</td><td>rewrite as DO client</td><td>~700</td></tr>
+<tr><td><strong>Total port target</strong></td><td><strong>~74,827</strong></td><td></td><td><strong>~48,000</strong></td></tr>
+<tr><td>Out-of-scope siblings (<code>bootpd</code>, <code>bsdpd</code>, <code>dhcp6d</code>, <code>rtadvd</code>, <code>BSDPClient</code>, <code>netbootdisk</code>, <code>tests</code>)</td><td>~24,000</td><td>delete</td><td>0</td></tr>
+</tbody>
+</table>
+
+<p><strong>Largest single files</strong>:</p>
+<ul>
+  <li><code>IPConfiguration.bproj/ipconfigd.c</code> — 10,312 LOC. Plugin shell + IFState + SCDynamicStore + power events + service lifecycle. The bulk of the port effort.</li>
+  <li><code>IPConfiguration.bproj/dhcp.c</code> — 4,660 LOC. DHCPv4 state machine. <strong>Port verbatim</strong> (one MobileGestalt call to amputate).</li>
+  <li><code>IPConfiguration.bproj/DHCPv6Client.c</code> — 3,717 LOC. DHCPv6 state machine. <strong>Port verbatim.</strong></li>
+  <li><code>bootplib/RouterAdvertisement.c</code> — 1,788 LOC. RA parser/builder. Port verbatim.</li>
+  <li><code>bootplib/dhcp_options.c</code> — 1,716 LOC. 113 known DHCPv4 options. Port verbatim.</li>
+  <li><code>bootplib/DHCPv6Options.c</code> — 1,637 LOC. DHCPv6 options. Port verbatim.</li>
+  <li><code>bootplib/interfaces.c</code> — 1,589 LOC. Already uses <code>getifaddrs(3)</code> and <code>SIOCGIFMEDIA</code>. Minor BSD <code>#ifdef</code>s.</li>
+</ul>
+
+<h2 id="arch">3. Architecture (target)</h2>
+
+<div class="ascii-diagram">                         +-----------------------------------+
+                         |   GUI / scutil / ipconfig(8) / VPN |
+                         +------------------+----------------+
+                                            | DO over AF_UNIX
+                                            v
++-------------------+               +-------+---------+
+|  /Local/Library/  |  vnode src    |   netconfigd    |
+|  Preferences/     |&lt;------------->|   (loads        |
+|  Network.plist    |  Setup: keys  |   IPConfig.bundle)
++-------------------+               |                 |
+                                    |  +-----------+  |
++-------------------+               |  |IPConfig   |  |
+|  PF_ROUTE socket  |  KEM plugin   |  |.bundle    |  |
+|  (RTM_NEWADDR/etc)|&lt;------------->|  |- dhcp.c   |  |
++-------------------+               |  |- DHCPv6   |  |
+                                    |  |- arp_ses  |  |
++-------------------+               |  |- linklocal|  |
+|  wpa_supplicant   |  ctrl socket  |  |- rtadv    |  |
+|  /var/run/wpa_*   |&lt;------------->|  |- DHCPLease|  |
++-------------------+               |  +-----------+  |
+                                    +--------+--------+
+                                             |
+                                             v
+                                     +-------+-------+
+                                     | kernel        |
+                                     | (BPF, route,  |
+                                     |  resolv.conf, |
+                                     |  ifconfig)    |
+                                     +---------------+</div>
+
+<p>Same shape as Apple's: IPConfiguration is a plugin <em>inside</em> netconfigd's process, not a separate daemon. Shares the SCDynamicStore + DO IPC infrastructure netconfigd provides.</p>
+
+<h2 id="files">4. File-by-file plan</h2>
+
+<h3>4.1 Delete on import</h3>
+<ul>
+  <li>Whole subtrees: <code>bootpd.tproj</code>, <code>bootpdutil.tproj</code>, <code>bsdpc.tproj</code>, <code>BSDPClient/</code>, <code>dhcp6d.tproj/</code>, <code>DHCPServer/</code>, <code>netbootdisk/</code>, <code>rtadvd/</code> — all sibling daemons not in scope.</li>
+  <li><code>IPConfiguration.bproj/IPv6AWDReport.{h,m}</code> — Apple Wireless Diagnostics telemetry.</li>
+  <li><code>IPConfiguration.bproj/report_symptoms.{c,h}</code> — same.</li>
+  <li><code>IPConfiguration.bproj/Embedded-Info.plist</code> — iOS variant manifest.</li>
+  <li><code>IPConfiguration.bproj/wireless-entitlements.plist</code> — code-signing entitlements.</li>
+  <li><code>bootplib/ioregpath.{c,h}</code> — IORegistry walker, only used for NetBoot.</li>
+  <li><code>bootplib/{nbimages,nbsp,bsdplib,macnc_options,netinfo,subnets}.{c,h}</code> — NetBoot internals.</li>
+  <li><code>SCTest-Swift/</code>, <code>tests/IPConfigurationTest/</code> Xcode test schemes — replace with our own.</li>
+  <li>All Xcode project files (<code>*.xcodeproj</code>, <code>xcconfigs/</code>).</li>
+</ul>
+
+<h3>4.2 Rewrite (Mach → DO, Darwin → BSD)</h3>
+
+<table class="compact">
+<thead>
+<tr><th>File</th><th>Apple LOC</th><th>Why rewrite</th><th>Target LOC</th></tr>
+</thead>
+<tbody>
+<tr><td><code>IPConfiguration.bproj/server.c</code></td><td>654</td><td>Mach RPC server stubs (<code>_ipconfig_*</code>) → <code>NSConnection</code>-rooted DO server. <code>audit_token_t</code> entitlement checks → <code>getpeereid(2)</code> uid checks.</td><td>~700</td></tr>
+<tr><td><code>IPConfiguration.bproj/ipconfigd.c</code></td><td>10,312</td><td>Plugin shell uses <code>SCDynamicStore</code> via Mach. Power event handlers (<code>IORegisterForSystemPower</code>) need stubbing or FreeBSD <code>devd</code> bridge. ~70% of file is portable IFState/state-machine logic that ports as-is.</td><td>~7,500</td></tr>
+<tr><td><code>IPConfiguration.bproj/wireless.c</code></td><td>789</td><td>Replace <code>IO80211/Apple80211API.h</code> with <code>wpa_supplicant</code> control-socket reader (<code>STATUS</code>, <code>SIGNAL_POLL</code>, attached event mode).</td><td>~250</td></tr>
+<tr><td><code>IPConfiguration.bproj/ifutil.c</code></td><td>2,211</td><td>~30% Darwin-specific ioctls: <code>SIOCAUTOADDR</code>, <code>SIOCSIFL4S</code>, <code>SIOCCLAT46_*</code>, <code>SIOCPROTOATTACH</code>, <code>IFEF_AWDL</code>, <code>IFRTYPE_L4S_*</code>. Ifdef out CLAT46/L4S; use FreeBSD ioctls for the rest.</td><td>~1,200</td></tr>
+<tr><td><code>IPConfiguration.bproj/HostUUID.c</code></td><td>56</td><td><code>gethostuuid(3)</code> → <code>sysctlbyname("kern.hostuuid", ...)</code>.</td><td>~30</td></tr>
+<tr><td><code>IPConfiguration_framework/IPConfigurationService.c</code></td><td>1,245</td><td>Mach client → DO client. Public API surface (<code>IPConfigurationServiceCreate</code>, etc.) preserved.</td><td>~600</td></tr>
+<tr><td><code>IPConfiguration_framework/DHCPv6PDService.c</code></td><td>565</td><td>Same: Mach client → DO client.</td><td>~300</td></tr>
+<tr><td><code>ipconfig.tproj/client.c</code></td><td>1,630</td><td>CLI tool, Mach client → DO client. Subcommand parser stays.</td><td>~700</td></tr>
+<tr><td><code>IPConfigurationHelper/IPHXPCServer.m</code> + <code>IPHPvDInfoRequestServer.m</code></td><td>1,167</td><td>XPC helper for PvD HTTPS fetch. Either fold into main daemon or implement as small DO helper. <strong>Defer until PvD support actually matters.</strong></td><td>0 (Phase 4+)</td></tr>
+<tr><td><code>bootplib/IPConfigurationLog.c</code></td><td>~200</td><td><code>os_log_t</code> handle plumbing → <code>syslog(3)</code> wrapper, same shape as launchd's <code>mylog.h</code>.</td><td>~150</td></tr>
+</tbody>
+</table>
+
+<h3>4.3 Port verbatim (or near)</h3>
+
+<table class="compact">
+<thead>
+<tr><th>File</th><th>Apple LOC</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>IPConfiguration.bproj/dhcp.c</code></td><td>4,660</td><td>DHCPv4 state machine. One <code>MobileGestalt</code> call at line 447 to stub.</td></tr>
+<tr><td><code>IPConfiguration.bproj/DHCPv6Client.c</code></td><td>3,717</td><td>DHCPv6 state machine. RFC 8415 retry constants in <code>bootplib/DHCPv6.h:79-94</code> — no source changes.</td></tr>
+<tr><td><code>IPConfiguration.bproj/arp_session.c</code></td><td>2,505</td><td>ARP probe/announce/conflict via BPF. <code>bpflib</code> is BSD-portable.</td></tr>
+<tr><td><code>IPConfiguration.bproj/rtadv.c</code></td><td>2,133</td><td>RA consumer; PIO/RDNSS/DNSSL/PvD state.</td></tr>
+<tr><td><code>IPConfiguration.bproj/bootp_session.c</code></td><td>827</td><td>Raw IP/UDP DHCPv4 socket on port 68.</td></tr>
+<tr><td><code>IPConfiguration.bproj/RTADVSocket.c</code></td><td>801</td><td>ICMPv6 RS sender / RA receiver via <code>&lt;netinet6/nd6.h&gt;</code>.</td></tr>
+<tr><td><code>IPConfiguration.bproj/CGA.c</code></td><td>711</td><td>RFC 3972 Cryptographically Generated Addresses.</td></tr>
+<tr><td><code>IPConfiguration.bproj/DHCPv6Socket.c</code></td><td>685</td><td>UDP socket on port 546.</td></tr>
+<tr><td><code>IPConfiguration.bproj/linklocal.c</code></td><td>577</td><td>IPv4LL (RFC 3927).</td></tr>
+<tr><td><code>IPConfiguration.bproj/manual.c</code> + <code>manual_v6.c</code></td><td>742</td><td>Static IP config method.</td></tr>
+<tr><td><code>IPConfiguration.bproj/DHCPDUIDIAID.c</code></td><td>371</td><td>DUID/IAID generation, persisted to <code>DUID_IA.plist</code>.</td></tr>
+<tr><td><code>IPConfiguration.bproj/timer.c</code> + <code>FDSet.c</code></td><td>494</td><td>libdispatch-source timers + FD wrappers.</td></tr>
+<tr><td><code>bootplib/RouterAdvertisement.c</code></td><td>1,788</td><td>RA parser/builder.</td></tr>
+<tr><td><code>bootplib/dhcp_options.c</code></td><td>1,716</td><td>DHCPv4 option parse/build.</td></tr>
+<tr><td><code>bootplib/DHCPv6Options.c</code></td><td>1,637</td><td>DHCPv6 option parse/build.</td></tr>
+<tr><td><code>bootplib/DNSEncryptedServers.c</code> + <code>DNSNameList.c</code></td><td>2,868</td><td>RFC 1035 DNS-name compression + DDR.</td></tr>
+<tr><td><code>bootplib/interfaces.c</code></td><td>1,589</td><td><code>getifaddrs</code> + <code>SIOCGIFMEDIA</code>; few Darwin-only <code>IFEF_</code>/<code>IFXNAMSIZ</code> usages.</td></tr>
+<tr><td><code>bootplib/cfutil.c</code></td><td>1,068</td><td>CFPropertyList helpers — corebase already provides.</td></tr>
+<tr><td><code>bootplib/IPv4ClasslessRoute.c</code></td><td>651</td><td>Option 121 parser.</td></tr>
+<tr><td><code>bootplib/NICache.c</code></td><td>646</td><td>DHCPv4 binding cache.</td></tr>
+<tr><td><code>bootplib/arp.c</code></td><td>633</td><td>ARP packet build/parse.</td></tr>
+<tr><td><code>bootplib/{ptrlist,dynarray,util}.c</code></td><td>~700</td><td>Utility types.</td></tr>
+<tr><td><code>bootplib/DHCPDUID.c</code></td><td>283</td><td>DUID factory.</td></tr>
+<tr><td><code>bootplib/inetroute.c</code></td><td>263</td><td>Route table reader.</td></tr>
+<tr><td><code>bootplib/udp_transmit.c</code></td><td>245</td><td>Raw UDP send.</td></tr>
+<tr><td><code>bootplib/bpflib.c</code></td><td>204</td><td>BPF socket open/filter.</td></tr>
+</tbody>
+</table>
+
+<h2 id="ipc">5. Mach IPC → Distributed Objects</h2>
+
+<p>The single MIG IDL <code>bootplib/ipconfig.defs</code> (196 LOC, 21 routines) becomes an ObjC <code>@protocol</code> over <code>NSConnection</code> on a known AF_UNIX path. Same shape as the configd plan.</p>
+
+<pre class="objc"><code>@protocol NCIPConfiguration
+
+// Counts and lookups
+- (NSNumber *)interfaceCount;
+- (NSArray *)interfaceList;
+
+// DHCPv4 state queries
+- (NSData *)optionForInterface:(NSString *)ifname code:(int)code
+                        status:(out NCStatus *)status;
+- (NSString *)addressForInterface:(NSString *)ifname
+                           status:(out NCStatus *)status;
+- (NSData *)lastDHCPPacketForInterface:(NSString *)ifname
+                                status:(out NCStatus *)status;
+- (NSDictionary *)summaryForInterface:(NSString *)ifname;
+
+// Service lifecycle
+- (NSString *)addServiceOnInterface:(NSString *)ifname
+                         methodPlist:(NSDictionary *)plist
+                              status:(out NCStatus *)status;
+- (NCStatus)removeServiceOnInterface:(NSString *)ifname
+                            serviceID:(NSString *)sid;
+- (NCStatus)refreshServiceOnInterface:(NSString *)ifname
+                             serviceID:(NSString *)sid;
+- (NCStatus)setMethodForInterface:(NSString *)ifname
+                       methodPlist:(NSDictionary *)plist;
+
+// IPv6 / DHCPv6
+- (NSData *)lastDHCPv6PacketForInterface:(NSString *)ifname
+                                  status:(out NCStatus *)status;
+- (NSData *)lastRAForInterface:(NSString *)ifname;
+- (NSData *)dhcpDUID;
+- (NSNumber *)iaidForInterface:(NSString *)ifname;
+
+// Operational
+- (NCStatus)setVerbose:(BOOL)verbose;
+- (NCStatus)forgetNetworkForInterface:(NSString *)ifname;
+
+@end</code></pre>
+
+<p>Per-call uid/gid check via <code>getpeereid(2)</code> on the AF_UNIX socket replaces Apple's BSM audit-token entitlement check (<code>server.c:79-115</code>). Same caller identity, much simpler than maintaining libbsm + an entitlement DB.</p>
+
+<h2 id="kev">6. Kernel events: SCDynamicStore, not direct</h2>
+
+<p>Important finding: IPConfiguration does <strong>not</strong> subscribe to <code>KEV_NETWORK_CLASS</code> directly. <code>grep -rln 'KEV_DL\|KEV_INET\|KEV_NETWORK_CLASS' IPConfiguration.bproj</code> returns nothing. All kernel events arrive translated as SCDynamicStore key changes from the sibling <code>KernelEventMonitor.bundle</code> configd plugin. This is a clean win — our port can subscribe to the same key suffixes through netconfigd's KernelEventMonitor port (a Phase 2 item in the configd plan), and the PF_ROUTE knowledge stays in one place.</p>
+
+<p>Keys IPConfiguration subscribes to (<code>ipconfigd.c:9303-9333</code>):</p>
+<ul>
+  <li><code>kSCEntNetLink</code> — link up/down → <code>link_key_changed()</code></li>
+  <li><code>kSCEntNetAirPort</code> — Wi-Fi association change → <code>ap_key_changed()</code></li>
+  <li><code>kSCEntNetRefreshConfiguration</code> — explicit RENEW request → <code>link_refresh()</code></li>
+  <li><code>kSCEntNetIPv6</code> — IPv6 address-list change → <code>ipv6_interface_address_changed()</code></li>
+  <li><code>kSCEntNetIPv4ARPCollision</code> — ARP collision detected → <code>arp_collision()</code></li>
+  <li><code>kSCEntNetIPv6RouterExpired</code> — router lifetime expired → <code>ipv6_router_expired()</code></li>
+  <li><code>kSCEntNetNAT64</code> — PLAT discovery complete → <code>process_plat_discovery_complete()</code></li>
+</ul>
+
+<p>The PF_ROUTE → SC-key translation table goes in netconfigd's KernelEventMonitor port:</p>
+
+<table class="compact">
+<thead><tr><th>FreeBSD PF_ROUTE message</th><th>SC key suffix</th></tr></thead>
+<tbody>
+<tr><td><code>RTM_IFINFO</code> (link state from <code>if_data.ifi_link_state</code>)</td><td><code>State:/Network/Interface/&lt;bsd&gt;/Link</code></td></tr>
+<tr><td><code>RTM_NEWADDR</code> (AF_INET)</td><td><code>State:/Network/Interface/&lt;bsd&gt;/IPv4</code></td></tr>
+<tr><td><code>RTM_NEWADDR</code> (AF_INET6)</td><td><code>State:/Network/Interface/&lt;bsd&gt;/IPv6</code></td></tr>
+<tr><td><code>RTM_DELADDR</code></td><td>same keys, recomputed</td></tr>
+<tr><td><code>RTM_IFANNOUNCE</code> (IFAN_ARRIVAL/IFAN_DEPARTURE)</td><td>recompute interface list</td></tr>
+</tbody>
+</table>
+
+<h2 id="deps">7. Apple-specific dependencies</h2>
+
+<table class="compact">
+<thead>
+<tr><th>Dependency</th><th>Where</th><th>FreeBSD plan</th></tr>
+</thead>
+<tbody>
+<tr><td><code>IORegisterForSystemPower</code> + <code>IOPMConnectionCreate</code></td><td><code>ipconfigd.c:8469, 8530</code></td><td>Drop in v1; FreeBSD has no pmset-equivalent. Sleep-coordinated lease renewal not supported. Future: bridge from <code>devd</code> ACPI events.</td></tr>
+<tr><td><code>IOPMCopyScheduledPowerEvents</code> / <code>IOPMCancelScheduledPowerEvent</code></td><td><code>ipconfigd.c:1515, 1531</code></td><td>Drop. No scheduled-wake support.</td></tr>
+<tr><td><code>gethostuuid(3)</code></td><td><code>HostUUID.c:52</code></td><td>Replace with <code>sysctlbyname("kern.hostuuid", ...)</code>. Caveat: ISO first-boot needs to seed <code>kern.hostuuid</code> if blank.</td></tr>
+<tr><td><code>MGCopyAnswer(kMGQProductType, ...)</code></td><td><code>dhcp.c:447</code></td><td>One-line stub: return <code>"FreeBSD"</code>.</td></tr>
+<tr><td><code>IO80211/Apple80211API.h</code></td><td><code>wireless.c:178</code></td><td>Replace with wpa_supplicant control-socket consumer (<code>/var/run/wpa_supplicant/&lt;ifname&gt;</code>, <code>STATUS</code> command).</td></tr>
+<tr><td><code>SymptomReporter.framework</code></td><td><code>report_symptoms.c</code>, <code>DHCPv6Client.c:2692</code></td><td>Delete entirely. Apple wireless-diag telemetry.</td></tr>
+<tr><td><code>os_log</code> family</td><td>throughout</td><td>Map to <code>syslog(3)</code> via opaque handle wrapper. Keep call-sites unchanged.</td></tr>
+<tr><td><code>bsm/libbsm.h</code> <code>audit_token_to_au32()</code></td><td><code>server.c:79-115</code></td><td>Replace with <code>getpeereid(2)</code> on the DO socket. Drop the entitlement-DB concept.</td></tr>
+<tr><td><code>IODeviceTree:/chosen</code> NetBoot blob</td><td><code>ipconfigd.c:2933</code> via <code>ioregpath.c</code></td><td>Delete (NetBoot out of scope).</td></tr>
+<tr><td>Darwin-only ioctls (<code>SIOCAUTOADDR</code>, <code>SIOCSIFL4S</code>, <code>SIOCCLAT46_*</code>, <code>SIOCPROTOATTACH</code>)</td><td><code>ifutil.c</code> (~12 ioctls)</td><td><code>#ifdef __APPLE__</code> them out. CLAT46 (464XLAT) and L4S features unavailable.</td></tr>
+<tr><td><code>SCPreferences</code> watcher</td><td>throughout for tunables file</td><td>Requires netconfigd Phase 2+ SCPreferences-equivalent. Sequencing constraint.</td></tr>
+</tbody>
+</table>
+
+<h2 id="hard">8. The hard parts</h2>
+
+<ol>
+  <li><strong><code>ipconfigd.c</code> is 10,312 LOC of mixed concerns.</strong> Plugin shell + IFState + SCDynamicStore plumbing + power events + DHCP renew scheduling + wireless coordination + service-list ordering. Splitting into a portable core + Darwin-specific shell is the largest single sub-task. No clean cut at any function boundary above ~150 LOC.</li>
+  <li><strong>Mach IPC is concentrated server-side, but framework client uses it too.</strong> <code>server.c</code> (654 LOC) is the only server. But <code>IPConfigurationService.c</code> (1,245 LOC), <code>DHCPv6PDService.c</code> (565 LOC), and <code>ipconfig.tproj/client.c</code> (1,630 LOC) are all pure Mach clients. Our DO rewrite lands in four places.</li>
+  <li><strong>DUID UUID-mode requires deterministic <code>kern.hostuuid</code>.</strong> First-boot ISOs may have <code>kern.hostuuid</code> blank or all-zeros. Need a seed step (UUIDv4 from <code>/dev/random</code>, persisted) that runs before IPConfiguration first runs. Extend the launchd <code>varrun</code> one-shot to handle this.</li>
+  <li><strong><code>SymptomReporter</code> + <code>IOPMCopyScheduledPowerEvents</code> sprinkled across files.</strong> Simple amputation but ~30 call sites in <code>ipconfigd.c</code>, <code>DHCPv6Client.c:2692</code>, <code>dhcp.c</code> retry paths, <code>report_symptoms.c</code>.</li>
+  <li><strong><code>os_log_t</code> handle plumbing.</strong> Every translation unit takes <code>os_log_t</code> parameters in macros. Rewrite as opaque <code>void *</code> wrapping our logger, or replace the entire module with a <code>syslog(3)</code> wrapper.</li>
+  <li><strong><code>ifutil.c</code> Darwin-specific ioctls.</strong> About 12 with no FreeBSD equivalent. <code>#ifdef</code> out; CLAT46 + L4S features unavailable.</li>
+  <li><strong>PvD HTTPS fetch helper is XPC.</strong> <code>IPConfigurationHelper</code> is a separate launchd-managed sandboxed helper that does NSURLSession TLS fetches. We don't have XPC. Either fold into main daemon (loses sandbox isolation) or implement DO-based helper. Defer until PvD support actually matters — RFC 8801 deployment is rare.</li>
+  <li><strong>BSM audit-token entitlement gating.</strong> Replace with getpeereid uid checks; the "entitlement" concept (code-signed plist key on caller binary) doesn't translate to FreeBSD.</li>
+  <li><strong>Two configd plugin dependencies (<code>InterfaceNamer</code>, <code>KernelEventMonitor</code>) must exist before IPConfiguration loads.</strong> netconfigd's responsibility — both are Phase 2 work in the configd plan. <strong>Sequencing constraint.</strong></li>
+  <li><strong>SCPreferences watcher for the tunables plist.</strong> netconfigd Phase 2+ SCPreferences-equivalent.</li>
+</ol>
+
+<h2 id="dhcpv6-spam">9. The DHCPv6-spam-on-broken-networks problem</h2>
+
+<p>Confirmed: <strong>IPConfiguration has the same problem as dhcpcd.</strong> Both implement RFC 8415 verbatim. RFC 8415 says DHCPv6 Solicit has no max retransmission count (<code>SOL_MAX_RC = 0</code> = infinite). Both clients retry Solicit forever on networks where the router advertises the M-flag but the DHCPv6 server returns "No Addresses Available." Both cap at one Solicit per hour with random jitter (<code>SOL_MAX_RT = 3600</code>).</p>
+
+<p>Source citations:</p>
+<ul>
+  <li>IPConfiguration: <code>bootplib/DHCPv6.h:79-94</code> defines constants. <code>DHCPv6Client.c:2641-2691</code> sends Solicit with <code>DHCPv6ClientNextRetransmit(client, DHCPv6_SOL_TIMEOUT, DHCPv6_SOL_MAX_RT)</code>. No max-retry check.</li>
+  <li>dhcpcd: <code>src/dhcp6.h:120-121</code> defines same constants. <code>src/dhcp6.c:1723</code> sets <code>state->MRC = SOL_MAX_RC</code> (= 0).</li>
+</ul>
+
+<p>The Apple-vs-FreeBSD difference is purely <strong>logging policy</strong>:</p>
+<ul>
+  <li>Apple's <code>os_log</code> infrastructure suppresses <code>LOG_INFO</code> "Solicit Transmit (try=N)" messages from default user-visible streams. Packets still go out the wire; users don't see them.</li>
+  <li>FreeBSD's <code>syslog(3)</code> shows everything at default priority. dhcpcd at <code>LOG_NOTICE</code> for "DHCPv6 REPLY: No Addresses Available" → spammy.</li>
+</ul>
+
+<p>Knob to disable in IPConfiguration: <code>DHCPv6Enabled</code> boolean in <code>Embedded-Info.plist</code> (default <code>true</code>). Per-service: set <code>kSCNetworkProtocolTypeIPv6 ConfigMethod</code> to <code>Manual</code> or <code>LinkLocal</code>. <strong>Our port should default to <code>DHCPv6Enabled=false</code></strong>, requiring per-service opt-in via the <code>ConfigMethod</code> Setup-key. This matches the <code>nodhcp6</code> default we're shipping in dhcpcd today.</p>
+
+<p><strong>Conclusion:</strong> porting IPConfiguration does NOT solve the spam problem; it merely renames it. The fix in either world is the same: don't enable DHCPv6 by default on networks where it doesn't function. Not a reason to port; not a reason not to either.</p>
+
+<h2 id="dhcpcd">10. Comparison with dhcpcd</h2>
+
+<table class="compact">
+<thead>
+<tr><th>Feature</th><th>IPConfiguration</th><th>dhcpcd</th></tr>
+</thead>
+<tbody>
+<tr><td>DHCPv4 (RFC 2131)</td><td>✓</td><td>✓</td></tr>
+<tr><td>DHCPv4 rapid commit (RFC 4039)</td><td>✗</td><td>✗ (yes for v6)</td></tr>
+<tr><td>BOOTP (RFC 951)</td><td>✓ (separate ConfigMethod)</td><td>partial (frame layout shared)</td></tr>
+<tr><td>IPv4LL (RFC 3927)</td><td>✓ (<code>linklocal.c</code>)</td><td>✓ (<code>src/ipv4ll.c</code>)</td></tr>
+<tr><td>DHCPv6 stateful (RFC 8415)</td><td>✓</td><td>✓</td></tr>
+<tr><td>DHCPv6 IA_PD prefix delegation</td><td>✓</td><td>✓</td></tr>
+<tr><td>DHCPv6 Information-Request (RFC 3736)</td><td>✓</td><td>✓</td></tr>
+<tr><td>DHCPv6 Reconfigure (RFC 8415 §18)</td><td>partial (option codes, no full handler)</td><td>✓</td></tr>
+<tr><td>RS/RA (RFC 4861)</td><td>✓</td><td>✓</td></tr>
+<tr><td>RDNSS / DNSSL (RFC 8106)</td><td>✓</td><td>✓</td></tr>
+<tr><td>DHCP authentication (RFC 3118)</td><td>✗</td><td>✓</td></tr>
+<tr><td>Dynamic SOL_MAX_RT learning</td><td>✗ (fixed 3600)</td><td>✓</td></tr>
+<tr><td>Bonjour Sleep Proxy coordination</td><td>✓ (Apple-only)</td><td>✗</td></tr>
+<tr><td>IOKit power-management awareness</td><td>✓ (Apple-only)</td><td>✗</td></tr>
+<tr><td>CGA (RFC 3972)</td><td>✓</td><td>✗</td></tr>
+<tr><td>RFC 7217 stable IIDs</td><td>✗</td><td>✓ (<code>slaac private</code>)</td></tr>
+<tr><td>Captive portal URL option (RFC 8910)</td><td>✓ (DHCPv6 code 103)</td><td>partial</td></tr>
+<tr><td>Hook-script framework</td><td>✗ (publishes to SCDynamicStore instead)</td><td>✓ (<code>/lib/dhcpcd/dhcpcd-hooks/</code>)</td></tr>
+<tr><td><code>resolvconf(8)</code> integration</td><td>writes <code>/etc/resolv.conf</code> directly via configd plugin chain</td><td>✓ via hook</td></tr>
+<tr><td>WiFi association coordination</td><td>via Apple80211 (<code>wireless.c</code>)</td><td>via wpa_supplicant hook</td></tr>
+<tr><td>Bridge / lagg / vlan layering</td><td>partial (Apple's interface model)</td><td>✓</td></tr>
+<tr><td>Per-iface profiles</td><td>✓ (each Service has its own UUID)</td><td>✓</td></tr>
+<tr><td>Privsep</td><td>✗ (runs in configd as root)</td><td>✓ (<code>src/privsep*.c</code>)</td></tr>
+<tr><td>Cross-platform</td><td>macOS only</td><td>NetBSD, FreeBSD, OpenBSD, DragonFly, Linux, Solaris, Haiku</td></tr>
+<tr><td>SCDynamicStore publication</td><td>✓ (canonical Apple keys)</td><td>✗ (lease file + hooks)</td></tr>
+<tr><td>Native ObjC client API (<code>IPConfigurationServiceCreate</code>)</td><td>✓</td><td>✗ (control socket protocol)</td></tr>
+</tbody>
+</table>
+
+<p><strong>What IPConfiguration has that we'd gain:</strong> SCDynamicStore-keyed publication (cleaner integration with netconfigd), <code>IPConfigurationServiceCreate</code> framework API (Mac app symmetry), Bonjour Sleep Proxy + IOKit power coordination (irrelevant on FreeBSD without their kernel infra), CGA.</p>
+
+<p><strong>What dhcpcd has that we'd lose:</strong> RFC 3118 authentication (rare in real deployments), Reconfigure handler, dynamic SOL_MAX_RT learning, hook-script ecosystem, bridge/lagg/vlan layering recognition (the killer for our use case if we don't replace it), privilege separation, RFC 7217 stable IIDs, cross-platform maintenance burden shared with NetBSD/Linux/etc.</p>
+
+<h2 id="decisions">11. Locked architectural decisions</h2>
+
+<table>
+<thead><tr><th>Decision</th><th>Choice</th></tr></thead>
+<tbody>
+<tr><td>Deployment shape</td><td>Configd plugin (loaded into netconfigd's process), not standalone daemon. Mirrors Apple.</td></tr>
+<tr><td>Source repo</td><td><a href="https://github.com/apple-oss-distributions/bootp">apple-oss-distributions/bootp</a> at the latest tag (currently <code>bootp-534.100.6</code>). Strip everything outside <code>IPConfiguration.bproj/</code>, <code>bootplib/</code>, <code>IPConfiguration_framework/</code>, <code>ipconfig.tproj/</code>.</td></tr>
+<tr><td>Mach IPC</td><td>None. Replace with GNUstep DO over AF_UNIX. <code>bootplib/ipconfig.defs</code> rewritten as <code>NCIPConfiguration</code> <code>@protocol</code>.</td></tr>
+<tr><td>SCDynamicStore</td><td>Use netconfigd's port (Phase 2+ work). IPConfiguration subscribes to existing store keys; doesn't reach into the kernel directly.</td></tr>
+<tr><td>Power management</td><td>Drop. No FreeBSD equivalent for IOPMConnection. Sleep-coordinated renew unsupported.</td></tr>
+<tr><td>Wi-Fi coordination</td><td>wpa_supplicant control socket replaces Apple80211. Our dhcpcd switch already added wpa_supplicant from ports — same daemon.</td></tr>
+<tr><td>EAPOL / 802.1X</td><td>Skip in v1. Route through wpa_supplicant if needed later.</td></tr>
+<tr><td>NetBoot / BSDP</td><td>Out of scope.</td></tr>
+<tr><td>Logging</td><td><code>syslog(3)</code> wrapper around the <code>os_log</code> macros.</td></tr>
+<tr><td>Privsep</td><td>Inherit launchd's UID model (configd plugins run as configd's UID — root in our case). No separate sandboxing in v1.</td></tr>
+<tr><td>License</td><td>BSD-2-Clause for new code; preserve Apple OSReference 2.0 (Apache) headers on imported files.</td></tr>
+<tr><td>DHCPv6 default</td><td><strong>Disabled</strong>. Per-service opt-in via <code>ConfigMethod</code> Setup-key. Matches our dhcpcd <code>nodhcp6</code> posture.</td></tr>
+</tbody>
+</table>
+
+<h2 id="phases">12. Phased delivery</h2>
+
+<div class="phase future">
+<h3>Phase 0 — Repo scaffold + Apple source import + amputation <span class="pill warn">FUTURE</span></h3>
+<ul>
+  <li>Create <code>ipconfiguration/</code> at the top of <code>freebsd-launchd</code>, mirror the configd shape (<code>scripts/import-source.sh</code>, <code>src/</code>, <code>compat/</code>, <code>Makefile</code>).</li>
+  <li>Pull <code>bootp-534.100.6</code> (or HEAD) into <code>src/</code>.</li>
+  <li>Apply per-file amputation per §4.1: delete sibling daemons, NetBoot internals, telemetry, entitlements, Xcode infra.</li>
+  <li>NOTICE updated; LICENSE annotated; per-file Apache-2.0 headers preserved on imports.</li>
+</ul>
+</div>
+
+<div class="phase future">
+<h3>Phase 1 — Plugin loads, no DHCP work <span class="pill warn">FUTURE</span></h3>
+<ul>
+  <li>Replace <code>os_log_t</code> wiring with <code>syslog(3)</code>-backed wrapper.</li>
+  <li>Compile <code>IPConfiguration.bundle</code> against netconfigd's plugin loader. <code>load()</code> / <code>prime()</code> resolve cleanly.</li>
+  <li>Plugin logs "IPConfiguration starting" to syslog, sets up dispatch queue, exits cleanly when netconfigd unloads.</li>
+  <li>No DHCP traffic. Stub <code>bootp_session_init</code>, <code>DHCPv6Client_*</code>, <code>arp_session_init</code>.</li>
+  <li>Stub <code>wireless.c</code> to return "no Wi-Fi info ever".</li>
+  <li>Delete or stub <code>IORegisterForSystemPower</code> calls.</li>
+  <li>Milestone: bundle exists, netconfigd loads it without crashing.</li>
+</ul>
+</div>
+
+<div class="phase future">
+<h3>Phase 2 — DHCPv4 working on Ethernet <span class="pill warn">FUTURE</span></h3>
+<ul>
+  <li>Wire up <code>bootp_session.c</code>, <code>dhcp.c</code>, <code>arp_session.c</code>, <code>linklocal.c</code>, <code>manual.c</code>.</li>
+  <li>Wire <code>DHCPLease.c</code> against <code>/var/db/dhcpclient/</code>.</li>
+  <li>Implement DUID using <code>kern.hostuuid</code> in <code>HostUUID.c</code>.</li>
+  <li><code>ifutil.c</code> ifdef-cut: Darwin-specific ioctls disabled; FreeBSD equivalents for <code>SIOCAIFADDR</code> / <code>SIOCDIFADDR</code> / <code>SIOCSIFFLAGS</code> / <code>SIOCSIFMTU</code>.</li>
+  <li>Subscribe to <code>kSCEntNetLink</code> via netconfigd's SCDynamicStore. Requires netconfigd Phase 3 (KernelEventMonitor) shipped.</li>
+  <li>Milestone: an Ethernet iface gets a DHCPv4 lease, lease renews at T1, route is installed.</li>
+</ul>
+</div>
+
+<div class="phase future">
+<h3>Phase 3 — Dynamic store + DO IPC for clients <span class="pill warn">FUTURE</span></h3>
+<ul>
+  <li>Implement DO IPC server in netconfigd's process replacing Mach dispatch.</li>
+  <li>Convert <code>IPConfigurationService.c</code> to a DO client over AF_UNIX. Ship as <code>libIPConfiguration.so</code>.</li>
+  <li>Port <code>ipconfig.tproj/client.c</code> to use DO client. <code>ipconfig getoption en0 router</code> works.</li>
+  <li>All 21 protocol routines reachable.</li>
+</ul>
+</div>
+
+<div class="phase future">
+<h3>Phase 4 — DHCPv6 + RA processing <span class="pill warn">FUTURE</span></h3>
+<ul>
+  <li>Wire up <code>DHCPv6Client.c</code>, <code>DHCPv6Socket.c</code>, <code>RTADVSocket.c</code>, <code>rtadv.c</code>, <code>linklocal_v6.c</code>, <code>manual_v6.c</code>, <code>ICMPv6Socket.c</code>, <code>CGA.c</code>.</li>
+  <li>Tunable: <code>DHCPv6Enabled=false</code> by default in our <code>Info.plist</code>.</li>
+  <li>Verify SLAAC + RA RDNSS/DNSSL → <code>State:/Network/Service/&lt;UUID&gt;/DNS</code> works.</li>
+</ul>
+</div>
+
+<div class="phase future">
+<h3>Phase 5 — IPv4LL fallback + integration tests <span class="pill warn">FUTURE</span></h3>
+<ul>
+  <li>Verify <code>linklocal.c</code> activates after DHCP fails N retries.</li>
+  <li>Port the relevant Apple <code>tests/</code> XCTest plans as <code>tests/run-tests.sh</code> against a netns/qemu fixture.</li>
+</ul>
+</div>
+
+<div class="phase future">
+<h3>Phase 6 — Wi-Fi coordination via wpa_supplicant <span class="pill warn">FUTURE</span></h3>
+<ul>
+  <li>Replace <code>wireless.c</code> with <code>wireless_wpa.c</code> that opens <code>/var/run/wpa_supplicant/&lt;ifname&gt;</code> and does <code>STATUS</code> / <code>SIGNAL_POLL</code> / event monitoring.</li>
+  <li>Restore SSID/BSSID-keyed DHCPLease behavior.</li>
+  <li>Verify a Wi-Fi association change invalidates the lease cache and triggers DHCP rebind.</li>
+</ul>
+</div>
+
+<div class="phase future">
+<h3>Phase 7 — Cutover from dhcpcd <span class="pill warn">FUTURE</span></h3>
+<ul>
+  <li>Update <code>org.freebsd.dhcpcd.plist</code> → load IPConfiguration as a netconfigd plugin instead.</li>
+  <li>Migrate config: dhcpcd <code>interface em0 { dhcp; }</code> translates to a netconfigd Setup-key <code>ConfigMethod=DHCP</code>.</li>
+  <li>Decommission <code>dhcpcd</code>; <code>wpa_supplicant</code> stays as the WiFi association daemon.</li>
+</ul>
+</div>
+
+<h2 id="open">13. Open questions</h2>
+
+<div class="open-q">
+<strong>Q1. Should we do this at all?</strong> <strong>Defer.</strong> dhcpcd is the right tool today. Revisit when (a) Gershwin GUI hits walls with the dhcpcd-shim model, (b) we have netconfigd Phase 2-3 substantially shipped, or (c) someone genuinely wants the months-of-porting cost for architectural symmetry. None of these are true today.
+</div>
+
+<div class="open-q">
+<strong>Q2. Hybrid extraction option.</strong> Could we take just <code>bootplib/</code> (DHCP option tables, DHCPv6 option parser, DHCPDUID/IAID, packet structs — pure C, no Mach) as static libraries inside a thin FreeBSD daemon, and skip the <code>ipconfigd.c</code> reshape? Tempting but the protocol cores are tightly coupled to <code>ipconfigd_threads.h</code> + <code>timer.c</code> + the IFEvent state machine. Extracting cleanly is itself a multi-month project. Not obviously cheaper than the full port.
+</div>
+
+<div class="open-q">
+<strong>Q3. PvD (RFC 8801) HTTPS helper.</strong> The XPC-based helper for fetching Provisioning Domain HTTPS metadata (<code>IPConfigurationHelper</code>) requires an XPC-equivalent we don't have. Defer until PvD deployment matters — currently rare.
+</div>
+
+<div class="open-q">
+<strong>Q4. Power-management integration.</strong> Apple's <code>IORegisterForSystemPower</code> + scheduled wake events let IPConfiguration coordinate lease renewal across sleep. FreeBSD has no pmset-equivalent. Build a bridge from <code>devd</code> ACPI events later, or live without sleep coordination on laptops.
+</div>
+
+<div class="open-q">
+<strong>Q5. Bonjour Sleep Proxy support.</strong> <code>ipconfigd.c:978-1098</code> coordinates with mDNSResponder so a sleep proxy answers ARP/ND while the host sleeps. Useful on a Mac; less useful on a desktop. Requires <a href="freebsd-mdnsresponder-plan.html">freebsd-mdnsresponder</a> shipped first. Punt to a Phase 8+ once mDNSResponder lands.
+</div>
+
+<h2 id="refs">14. References</h2>
+
+<ul>
+  <li>Apple source: <a href="https://github.com/apple-oss-distributions/bootp">github.com/apple-oss-distributions/bootp</a> (latest tag <code>bootp-534.100.6</code>). The <code>IPConfiguration.bproj/</code> directory is what we port.</li>
+  <li>RFC 2131 — DHCPv4. <a href="https://www.rfc-editor.org/rfc/rfc2131">rfc-editor.org/rfc/rfc2131</a></li>
+  <li>RFC 8415 — DHCPv6. <a href="https://www.rfc-editor.org/rfc/rfc8415">rfc-editor.org/rfc/rfc8415</a></li>
+  <li>RFC 4861 — IPv6 Neighbor Discovery (RS/RA). <a href="https://www.rfc-editor.org/rfc/rfc4861">rfc-editor.org/rfc/rfc4861</a></li>
+  <li>RFC 8106 — RDNSS / DNSSL. <a href="https://www.rfc-editor.org/rfc/rfc8106">rfc-editor.org/rfc/rfc8106</a></li>
+  <li>RFC 3927 — IPv4LL (link-local). <a href="https://www.rfc-editor.org/rfc/rfc3927">rfc-editor.org/rfc/rfc3927</a></li>
+  <li>RFC 3972 — Cryptographically Generated Addresses. <a href="https://www.rfc-editor.org/rfc/rfc3972">rfc-editor.org/rfc/rfc3972</a></li>
+  <li>dhcpcd source (the alternative we ship today): <a href="https://github.com/NetworkConfiguration/dhcpcd">github.com/NetworkConfiguration/dhcpcd</a></li>
+  <li>Companion plans: <a href="freebsd-launchd-plan.html">freebsd-launchd</a>, <a href="freebsd-configd-plan.html">freebsd-configd</a>, <a href="freebsd-mdnsresponder-plan.html">freebsd-mDNSResponder</a>, <a href="freebsd-kmodloader-plan.html">freebsd-kmodloader</a>.</li>
+</ul>
+
+</body>
+</html>

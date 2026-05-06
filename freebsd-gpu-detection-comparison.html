@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU autodetection on FreeBSD — comparison</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.objc { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  table.compact td, table.compact th { padding: .35rem .55rem; font-size: .88rem; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .risk { background: #fff5e6; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .risk strong { color: var(--warn); }
+  .gap { background: #fff5f5; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .gap strong { color: var(--bad); }
+  .win { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .win strong { color: var(--ok); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .yesno { font-weight: 600; }
+  .yesno.yes { color: var(--ok); }
+  .yesno.no  { color: var(--bad); }
+  .yesno.partial { color: var(--warn); }
+  ul.terse li { margin: .15rem 0; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#matrix">Comparison matrix</a>
+  <a href="#kmodloader">kmodloader</a>
+  <a href="#xconfig">GhostBSD xconfig</a>
+  <a href="#initgfx">NomadBSD initgfx</a>
+  <a href="#xlibre">xlibre</a>
+  <a href="#linux">Linux udev</a>
+  <a href="#toonew">"Too-new" GPU case</a>
+  <a href="#scorecard">Scorecard</a>
+  <a href="#refs">References</a>
+</nav>
+
+<h1>GPU autodetection on FreeBSD — kmodloader vs. xconfig vs. initgfx vs. xlibre vs. Linux</h1>
+<p class="subtitle">An honest comparison of how this project's <a href="freebsd-kmodloader-plan.html">kmodloader</a> stacks up against the GPU/driver autodetection mechanisms in GhostBSD, NomadBSD, the xlibre X server, and Linux's udev+modprobe stack. Includes the failure-mode analysis: what happens when a DRM kmod loads but doesn't recognize your GPU.</p>
+
+<section id="tldr" class="tldr">
+  <h3>TL;DR</h3>
+  <ul>
+    <li>All five systems solve the same problem differently. None has a clean answer for "the kmod loaded but the GPU is too new for it" — all rely on graceful fallback through stacked framebuffer drivers.</li>
+    <li><strong>Where kmodloader wins:</strong> single ObjC daemon under launchd handling three independent match paths (devmatch, GPU PCI scan, hypervisor scan) with no per-boot shell churn; the AMD radeonkms-vs-amdgpu split uses an upstream-frozen list rather than a hand-curated table; full-system view (covers NICs, WiFi, storage, USB, GPU all in one) instead of GPU-only.</li>
+    <li><strong>Where kmodloader has gaps</strong> (most fixable):
+      <ul class="terse">
+        <li>No live validation step — NomadBSD's <code>test_x</code> rolls back on Xorg failure; we don't verify the kmod actually attached.</li>
+        <li>No <code>kldunload</code> cleanup pass for kmods that loaded but didn't bind.</li>
+        <li>No NVIDIA-driver-version selection (legacy 340/390/470 vs. current); we ship one nvidia-drm-kmod.</li>
+        <li>No hot-plug yet (Phase 2 work — <code>/dev/devctl</code> watcher).</li>
+      </ul>
+    </li>
+    <li><strong>"Too new" failure mode is benign on FreeBSD.</strong> If <code>i915kms</code> loads but the chip isn't in its supported table, the LinuxKPI shim returns <code>ENXIO</code> from <code>pci_probe</code>. The kmod stays resident (~10MB RAM), no <code>drmn</code> child attaches, <code>vgapci0</code> keeps owning the slot, <code>vt_efifb</code> keeps owning the console, and Xorg falls back to <code>scfb</code> (UEFI) or <code>vesa</code> (BIOS). No crash, no console disruption.</li>
+    <li><strong>xlibre (and Xorg generally) doesn't help us pick kmods.</strong> Its detection runs <em>after</em> the DRM kmod is loaded; the vendor-switch table maps to userspace X driver names (<code>intel</code>/<code>modesetting</code>/<code>amdgpu</code>), not kmod names. Doesn't tell us which kmods to load or skip.</li>
+    <li><strong>Linux's udev+modprobe is the right shape</strong> — and FreeBSD has the equivalent (devmatch + linker.hints). The only reason kmodloader needs a GPU PCI scan at all is that drm-kmod doesn't declare <code>MODULE_PNP_INFO</code>. Upstream PR to drm-kmod adding it would let our GPU pass collapse into devmatch.</li>
+  </ul>
+</section>
+
+<h2 id="matrix">1. Comparison matrix</h2>
+
+<p>Eight axes that matter for GPU autodetection on FreeBSD.</p>
+
+<table class="compact">
+<thead>
+<tr>
+  <th>Axis</th>
+  <th>kmodloader (this project)</th>
+  <th>GhostBSD <code>xconfig</code></th>
+  <th>NomadBSD <code>initgfx</code></th>
+  <th>xlibre</th>
+  <th>Linux udev+modprobe</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Implementation language</td>
+  <td>Objective-C (Foundation) under launchd</td>
+  <td>POSIX shell (1411 LOC)</td>
+  <td>POSIX shell (467 LOC) + sourced DB (1782 LOC)</td>
+  <td>C, inside Xorg server</td>
+  <td>C (libkmod) inside udevd</td>
+</tr>
+<tr>
+  <td>Cadence</td>
+  <td>One-shot at boot (<code>RunAtLoad</code>); Phase 2 will add hot-plug</td>
+  <td>Boot via rc.d, <strong>every boot unconditionally</strong></td>
+  <td>Boot via rc.d, but PCI-hash short-circuit if hardware unchanged</td>
+  <td>Server start; not autoload-related</td>
+  <td>Hot-plug + boot, event-driven</td>
+</tr>
+<tr>
+  <td>Detection input</td>
+  <td><code>pciconf -l</code> (class 0x0300xx) + <code>devmatch(8)</code> + <code>kern.vm_guest</code></td>
+  <td><code>pciconf -lv</code> grep + <code>kern.vm_guest</code> + <code>dmesg</code></td>
+  <td><code>pciconf -lv</code> awk-parsed + <code>hw.pci.default_vgapci_unit</code></td>
+  <td>libpciaccess + udev DRM enum + <code>drmGetVersion</code></td>
+  <td>kernel <code>MODALIAS</code> uevent → pattern match</td>
+</tr>
+<tr>
+  <td>(vendor:device) → driver source</td>
+  <td>3 vendor IDs in code; for AMD split, <strong>699-ID frozen list</strong> sourced from drm-kmod's <code>drm_pciids.h</code></td>
+  <td>701-ID inline regex sourced from drm-kmod's <code>drm_pciids.h</code>; NVIDIA branches by marketing-name string</td>
+  <td>~507 AMD IDs + ~56 legacy Intel IDs in sourced DB; NVIDIA branches by marketing-name string</td>
+  <td>Inline <code>switch(vendor)</code> in C; modern Intel falls through to <code>modesetting</code></td>
+  <td><code>MODULE_DEVICE_TABLE</code> in each <code>.ko</code>; <code>depmod</code> emits <code>modules.alias</code></td>
+</tr>
+<tr>
+  <td>Validation that the driver actually works</td>
+  <td><span class="yesno no">No</span> &mdash; load and trust</td>
+  <td><span class="yesno no">No</span> &mdash; load and trust</td>
+  <td><span class="yesno yes">Yes</span> &mdash; <code>test_x</code> runs <code>xinit</code> with the proposed config; rollback on failure</td>
+  <td>n/a (post-kmod)</td>
+  <td><span class="yesno no">No</span> at module level (PCI probe is the validation)</td>
+</tr>
+<tr>
+  <td>Fallback to scfb/vesa/efifb</td>
+  <td>Implicit: <code>vt_efifb</code> stays in console if no DRM attaches; user/Xorg picks scfb</td>
+  <td>Explicit <code>scfb</code> default; <code>vesa</code> manual subcommand</td>
+  <td>Explicit, picks <code>vesa</code> on BIOS / <code>scfb</code> on EFI from <code>machdep.bootmethod</code></td>
+  <td>Falls back through <code>fbdev</code>/<code>scfb</code>/<code>vesa</code> in compile-time order</td>
+  <td>n/a (kmod stays loaded; userspace X handles fallback)</td>
+</tr>
+<tr>
+  <td>"Kmod loaded but didn't attach" cleanup</td>
+  <td><span class="yesno no">No</span> &mdash; ~10MB stuck per stale kmod</td>
+  <td><span class="yesno no">No</span></td>
+  <td><span class="yesno partial">Indirect</span> &mdash; <code>test_x</code> failure rolls back next-boot config but doesn't <code>kldunload</code></td>
+  <td>n/a</td>
+  <td><span class="yesno no">No</span> &mdash; same shape: probe-fail leaves module resident</td>
+</tr>
+<tr>
+  <td>Hot-plug coverage</td>
+  <td><span class="yesno partial">Phase 2</span> &mdash; planned but not shipped</td>
+  <td><span class="yesno no">No</span></td>
+  <td><span class="yesno partial">Non-DRM only</span> via <code>dsbdriverd</code> (DRM kmods explicitly excluded)</td>
+  <td>n/a</td>
+  <td><span class="yesno yes">Yes</span> &mdash; udev rules trigger libkmod on every uevent</td>
+</tr>
+<tr>
+  <td>Multi-GPU / Optimus</td>
+  <td>Both vendors load (Intel + NVIDIA), each driver attaches to its own card</td>
+  <td>First vendor wins (Intel → AMD → NVIDIA); single GPU loaded</td>
+  <td>Walks each vgapci device and tries handlers; default vgapci first</td>
+  <td>Iterates platform devices, multi-card supported</td>
+  <td>All matching modules load; kernel binds each to its card</td>
+</tr>
+<tr>
+  <td>NVIDIA driver-version selection</td>
+  <td>One package only (current). <strong>Gap:</strong> no 340/390/470 legacy support</td>
+  <td>Marketing-name pattern picks <code>nvidia-driver</code>/<code>-470</code>/<code>-390</code>/<code>-340</code> at runtime via <code>pkg install</code></td>
+  <td>All four NVIDIA branches pre-staged at image-build time; runtime symlinks the right one</td>
+  <td>Lists <code>nvidia</code> as one option; selection is xorg.conf-side</td>
+  <td>Per-distro packaging picks one branch</td>
+</tr>
+<tr>
+  <td>Scope</td>
+  <td>Whole-system: GPU + NICs + WiFi + storage + USB classes + VM guest additions</td>
+  <td>GPU + Xorg config only</td>
+  <td>GPU + Xorg config only (non-GPU via separate <code>dsbdriverd</code>)</td>
+  <td>X server only</td>
+  <td>All hardware classes</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="kmodloader">2. kmodloader (this project)</h2>
+
+<p>An ObjC daemon at <code>/usr/libexec/kmodloader</code>, started by launchd's <code>org.freebsd.kmodloader.plist</code> with <code>RunAtLoad=true</code>, <code>KeepAlive=false</code>. Three match paths run sequentially in a single <code>runOneShot</code>:</p>
+
+<div class="ascii-diagram">  +------------------+   +-------------------+   +----------------+
+  |  pciconf -l      |   |  kern.vm_guest    |   |  devmatch      |
+  |  class=0x0300xx  |   |                   |   |  (linker.hints)|
+  +--------+---------+   +---------+---------+   +-------+--------+
+           |                       |                     |
+           v                       v                     v
+  vendor 0x8086 → i915kms      vbox → vboxguest,      if_em, if_iwlwifi,
+  vendor 0x10de → nvidia-drm        vboxvideo        umass, ahci, ...
+  vendor 0x1002 → frozen list  vmware → vmci,         (anything with
+    radeon? radeonkms : amdgpu        vmmemctl,        PNP_INFO macro)
+                                      vmxnet3,
+                                      vmware_drv
+           \\__________________________________________________/
+                                |
+                                v
+                  NSMutableOrderedSet (dedupe)
+                                |
+                                v
+                  /sbin/kldload -n &lt;name&gt; (per kld)</div>
+
+<h3>2.1 What's distinctive</h3>
+<ul>
+  <li><strong>Single daemon, single ObjC binary</strong> versus the shell-script-per-purpose pattern of GhostBSD/NomadBSD. Code lives at <code>kmodloader/src/KMDaemon.m</code> (~250 LOC) plus <code>RadeonPCIIDs.h</code> (the frozen 699-entry uint16_t array generated from upstream).</li>
+  <li><strong>devmatch path</strong> covers everything in the FreeBSD driver tree that declares <code>PNP_INFO</code> — <code>if_em</code>, <code>if_iwlwifi</code>, <code>if_iwm</code>, <code>if_rtw88</code>/<code>89</code>, <code>ahci</code>, <code>nvme</code>, <code>umass</code>, ACPI HID drivers, etc. GhostBSD and NomadBSD don't have an equivalent — they handle <em>only</em> GPU and rely on either base-kernel auto-attach (anything in GENERIC) or a separate tool (NomadBSD's <code>dsbdriverd</code>) for the rest.</li>
+  <li><strong>Three vendor IDs</strong> (Intel <code>0x8086</code>, AMD <code>0x1002</code>, NVIDIA <code>0x10de</code>) instead of hundreds. The AMD split uses the upstream-frozen radeon list (sourced from drm-kmod's <code>include/drm/drm_pciids.h</code> — same source GhostBSD uses), then defaults to <code>amdgpu</code> for everything else. New AMD silicon picks up <code>amdgpu</code> with no code change.</li>
+  <li><strong>Hypervisor path</strong> for VirtualBox / VMware additions kmods. Only kmodloader handles this in the comparison set.</li>
+  <li><strong>No xorg.conf generation.</strong> kmodloader is concerned with <em>kernel modules</em>; X11 configuration is downstream and not its job.</li>
+</ul>
+
+<h2 id="xconfig">3. GhostBSD <code>xconfig</code></h2>
+
+<p>Single shell script <code>bin/xconfig</code> (1411 lines) plus an rc.d wrapper. Runs every boot via rc.d (logged to <code>/var/log/xconfig_boot.log</code>), persists choices in <code>/etc/rc.conf</code>'s <code>kld_list</code>.</p>
+
+<h3>3.1 How it works</h3>
+<ol>
+  <li><code>kern.vm_guest</code> + <code>dmesg</code> grep for hypervisor type.</li>
+  <li><code>pciconf -lv | grep -B4 VGA | grep -qi Intel|AMD|ATI|NVIDIA</code> for vendor.</li>
+  <li>For AMD: a giant inline 701-entry regex (<code>RADEON_DEVICE</code> at <code>bin/xconfig:33</code>) determines radeonkms vs amdgpu. Comment cites drm-kmod's <code>drm_pciids.h</code> as source.</li>
+  <li>For NVIDIA: <code>detect_nvidia_driver_version</code> matches the GPU's pretty-print description against five marketing-name pipe-strings (latest / 580 / 470 / 390 / 340) checked newest-first. <strong>No PCI IDs for NVIDIA at all.</strong></li>
+  <li>Loads kmod via <code>kldload</code>, persists via <code>sysrc -f /etc/rc.conf kld_list+=...</code>. Generates X config: deletes <code>xorg.conf</code> for Intel/AMD (modesetting handles it); uses <code>X -configure</code> + <code>sed</code> for NVIDIA.</li>
+  <li>Fallback: applies static <code>XF86Config.scfb</code> template pinning <code>Driver "scfb"</code>. <code>vesa</code> only via manual subcommand.</li>
+</ol>
+
+<h3>3.2 What it doesn't do</h3>
+<ul>
+  <li>No validation. Loads the kmod, writes config, declares success. If i915kms loads but doesn't bind, X just fails next start.</li>
+  <li>No hot-plug.</li>
+  <li>First-vendor-wins in vendor order (Intel → AMD → NVIDIA) means hybrid GPUs only get one driver.</li>
+  <li>No efifb awareness — code knows scfb and vesa, not efifb specifically.</li>
+</ul>
+
+<h3>3.3 NVIDIA delivery</h3>
+<p>Calls <code>pkg install nvidia-driver-NNN</code> at runtime, or pulls from offline <code>/xdrivers/drivers-list</code> for live ISOs. Means a live boot may need network for NVIDIA support unless the offline pkg cache is staged.</p>
+
+<h2 id="initgfx">4. NomadBSD <code>initgfx</code></h2>
+
+<p>Shell script <code>config/etc/rc.d/initgfx</code> (467 lines) plus sourced DB <code>config/etc/initgfx_device.db</code> (1782 lines) and Xorg templates. Runs at boot; persists via <code>initgfx_kmods=</code> in <code>/etc/rc.conf</code>; smart-skip on PCI hash unchanged.</p>
+
+<h3>4.1 The validation feature</h3>
+<p>The standout: <code>test_x</code> at <code>initgfx:120-137</code>. After loading the candidate kmod and writing the proposed Xorg config:</p>
+<ol>
+  <li>Run a short <code>xinit</code> session against the proposed config (<code>xmessage -timeout 3</code>).</li>
+  <li>If <code>xinit</code> exits non-zero, call <code>__reset</code>: revert config, try the next handler.</li>
+  <li>For NVIDIA, on <code>test_x</code> failure fall through to <code>setup_nv</code> (basic <code>nv</code> driver) before going to <code>vesa</code>/<code>scfb</code>.</li>
+</ol>
+<p>This catches the "kmod loaded but didn't attach" case <em>indirectly</em> via Xorg failing to start. None of the other systems do this.</p>
+
+<h3>4.2 NVIDIA via per-version pre-staged trees</h3>
+<p>Build-time, NomadBSD packs every NVIDIA branch (340 / 390 / 470 / latest per <code>build.cfg:NVIDIA_DRIVERS</code>) into <code>/usr/local/nvidia/&lt;ver&gt;/</code>. At boot, <code>setup_nvidia</code> picks the right version from marketing-name match, then symlinks the version's libGL / Xorg modules into place, runs <code>ldconfig -m</code>, installs <code>libmap.d/nvidia.conf</code>. Trades image size (~150MB extra) for offline reliability.</p>
+
+<h3>4.3 Fallback</h3>
+<pre class="shell"><code>get_fallback_driver() {
+    case "$(sysctl -n machdep.bootmethod)" in
+        BIOS) echo vesa ;;
+        UEFI) echo scfb ;;
+    esac
+}</code></pre>
+<p>Cleaner than GhostBSD's "always scfb." Matches the FreeBSD Handbook's Xorg recommendation exactly.</p>
+
+<h3>4.4 dsbdriverd cooperation</h3>
+<p>NomadBSD ships <code>dsbdriverd</code> for non-GPU drivers (NICs, sound, etc.). Its config explicitly excludes DRM kmods: <code>exclude_kmods = { "radeonkms", "amdgpu", "i915kms" }</code>. Two daemons, clean split. kmodloader collapses these into one process via the three-path scan.</p>
+
+<h2 id="xlibre">5. xlibre detection (post-kmod)</h2>
+
+<p>xlibre is a fork of Xorg. Its detection runs at server start, <em>after</em> the DRM kmod is loaded. The vendor-switch table at <code>hw/xfree86/common/xf86pciBus.c:1046-1264</code> maps PCI vendor → X driver name, not kmod:</p>
+
+<table class="compact">
+<thead><tr><th>Vendor</th><th>X driver(s) tried</th></tr></thead>
+<tbody>
+<tr><td><code>0x1002</code> (AMD)</td><td><code>ati</code> (a metadriver dispatching to radeon/amdgpu/r128/mach64 in userspace)</td></tr>
+<tr><td><code>0x8086</code> (Intel)</td><td><code>intel</code> for pre-Gen3 only; modern Intel falls through to <code>modesetting</code></td></tr>
+<tr><td><code>0x10de</code> (NVIDIA)</td><td><code>nouveau</code> (Linux/NetBSD) → <code>modesetting</code> → <code>nvidia</code> → <code>nv</code></td></tr>
+</tbody>
+</table>
+
+<h3>5.1 Why this doesn't help kmodloader</h3>
+<ul>
+  <li>xlibre runs <em>after</em> <code>/dev/dri/cardN</code> exists. It consumes the result of kmod loading; it doesn't produce guidance for it.</li>
+  <li>The X driver name space ("intel", "modesetting", "ati") is not the kmod name space ("i915kms", "amdgpu", "radeonkms"). xlibre's <code>ati</code> driver covers all AMD generations and dispatches based on <code>drmGetVersion</code> output — there's no "skip radeonkms because xlibre would never use it" signal.</li>
+  <li>xlibre's <code>xf86LoadKernelModule</code> exists but is a legacy DRI1 hook (<code>dri.c:823</code>) that's effectively dead on modern KMS systems. xlibre does NOT autoload <code>i915kms</code>/<code>amdgpu</code>/etc.</li>
+  <li>The user concern "make sure we only load modules we really need" — xlibre cannot answer this because it sees the world post-kmod. Filtering decisions belong to the kmod-load layer (us), not the X layer.</li>
+</ul>
+
+<h3>5.2 The PCI_TXT_IDS_PATH supplement (Linux only)</h3>
+<p><code>xf86MatchDriverFromFiles()</code> at <code>xf86pciBus.c:1266</code> reads a directory of <code>&lt;driver&gt;.ids</code> files at compile-time-configured path. Disabled by default; only meaningful on Linux. Lets external X drivers advertise (vendor:device) support without source patches. Not a model we'd benefit from copying for kmod loading.</p>
+
+<h2 id="linux">6. Linux udev + modprobe</h2>
+
+<p>The reference design. Five steps:</p>
+
+<ol>
+  <li><strong>Compile time</strong>: each Linux kernel module declares <code>MODULE_DEVICE_TABLE(pci, ...)</code>; emitted into the <code>.ko</code>'s <code>.modinfo</code> ELF section as strings like <code>pci:v00008086d00009A49sv*sd*bc03sc*i*</code>.</li>
+  <li><strong>Module install time</strong>: <code>depmod -a</code> reads <code>.modinfo</code> from every <code>.ko</code> and writes <code>/lib/modules/$(uname -r)/modules.alias</code>.</li>
+  <li><strong>Boot/hotplug</strong>: kernel emits a uevent on netlink with <code>MODALIAS=pci:...</code>.</li>
+  <li><strong>udev</strong> catches it. <code>/lib/udev/rules.d/80-drivers.rules</code> contains <code>RUN{builtin}+="kmod load $env{MODALIAS}"</code>.</li>
+  <li>The <code>kmod</code> builtin (linked into udevd) calls <code>libkmod</code> in-process; libkmod fnmatch-globs MODALIAS against <code>modules.alias</code>, finds <code>i915</code>, calls <code>init_module(2)</code>.</li>
+</ol>
+
+<h3>6.1 The mapping to FreeBSD</h3>
+<p>This is exactly what FreeBSD already implements:</p>
+
+<table class="compact">
+<thead><tr><th>Concept</th><th>Linux</th><th>FreeBSD</th></tr></thead>
+<tbody>
+<tr><td>Per-module device table embedded in .ko</td><td><code>MODULE_DEVICE_TABLE</code></td><td><code>MODULE_PNP_INFO</code></td></tr>
+<tr><td>Tool that grovels device tables out of modules</td><td><code>depmod</code> → <code>modules.alias</code></td><td><code>kldxref</code> → <code>linker.hints</code></td></tr>
+<tr><td>Hotplug dispatcher</td><td>udev + libkmod</td><td>devd → devmatch → kldload</td></tr>
+<tr><td>Boot enumeration</td><td>kernel uevents on init</td><td><code>devmatch -a</code> reads device tree at boot</td></tr>
+</tbody>
+</table>
+
+<h3>6.2 The single difference that matters</h3>
+<p>Linux's drm modules (<code>i915.ko</code>, <code>amdgpu.ko</code>, <code>nouveau.ko</code>) all declare <code>MODULE_DEVICE_TABLE</code>. FreeBSD's drm-kmod (a LinuxKPI port of the same code) <em>doesn't</em> — the LinuxKPI shim doesn't translate <code>MODULE_DEVICE_TABLE</code> into <code>MODULE_PNP_INFO</code>. That single missing translation is why we need a GPU PCI scan at all. Devmatch handles every other driver in tree.</p>
+
+<h3>6.3 Linux "too new" handling</h3>
+<p>If the .ko loads but the live device ID isn't in the module's <code>pci_ids</code>: the driver's <code>.probe()</code> is never called, the device sits unbound. Modern kernels expose <code>i915.force_probe=</code>, <code>amdgpu.force_probe=</code> etc. for users with too-new hardware. There is no userspace "fall back to a different kernel module" mechanism — udev hands MODALIAS to libkmod, gets a hit or miss, and that's it.</p>
+
+<h2 id="toonew">7. The "too-new GPU" failure case</h2>
+
+<p>The user's specific concern: <em>what happens in our case when the device is too new for the latest drm-kmods</em>? Detailed answer with FreeBSD source citations.</p>
+
+<h3>7.1 Probe path (LinuxKPI shim)</h3>
+<p>drm-kmod's <code>i915kms</code> registers as a <code>pci_driver</code> via LinuxKPI. Newbus calls <code>linux_pci_probe()</code> at <code>sys/compat/linuxkpi/common/src/linux_pci.c:506</code>:</p>
+
+<pre><code>if ((pdrv = linux_pci_find(dev, &amp;id)) == NULL)
+    return (ENXIO);</code></pre>
+
+<p><code>linux_pci_find()</code> walks the driver's <code>id_table</code> matching on vendor/device/subvendor/subdevice. <strong>If the chip isn't in the table, probe returns ENXIO.</strong> Newbus tries the next driver in priority order; <code>vgapci(4)</code> wins by default at <code>BUS_PROBE_GENERIC</code>.</p>
+
+<p>If the chip <em>is</em> in the table but flagged <code>require_force_probe</code>, drm-kmod's <code>i915_pci.c</code> emits the canonical "too-new" dmesg line:</p>
+
+<pre><code>Your graphics device 0xNNNN is not properly supported by i915 in this
+kernel version. To force driver probe anyway, use i915.force_probe=NNNN
+module parameter or CONFIG_DRM_I915_FORCE_PROBE=NNNN configuration option,
+or (recommended) check for kernel updates.</code></pre>
+
+<p>And returns <code>-ENODEV</code>. Same outcome: no <code>drmn</code> child attaches.</p>
+
+<h3>7.2 What the user sees</h3>
+
+<table class="compact">
+<thead><tr><th>Layer</th><th>State after probe failure</th></tr></thead>
+<tbody>
+<tr><td>kmod</td><td>Stays loaded. <code>kldstat</code> shows <code>i915kms.ko</code> resident (~10MB). No CPU, no IRQ, no <code>/dev/dri/cardN</code>.</td></tr>
+<tr><td><code>vgapci0</code></td><td>Stays attached to the GPU's PCI slot. No regression.</td></tr>
+<tr><td>Console (UEFI boot)</td><td><code>vt_efifb</code> stays in charge. Full-resolution framebuffer, unaccelerated. Works.</td></tr>
+<tr><td>Console (BIOS boot)</td><td><code>vt_vga</code> stays in charge. Text mode. Works.</td></tr>
+<tr><td>Xorg (any boot)</td><td>Falls through <code>modesetting</code> (no DRM, fails) → <code>scfb</code> (UEFI) or <code>vesa</code> (BIOS). Native res on UEFI, low VESA modes on BIOS. No crash.</td></tr>
+</tbody>
+</table>
+
+<h3>7.3 NVIDIA edge case</h3>
+<p><code>nvidia.ko</code> + <code>nvidia-modeset.ko</code> + <code>nvidia-drm.ko</code> behave differently:</p>
+<ul>
+  <li>If <code>hw.nvidiadrm.modeset</code> is unset (or 0), <code>nvidia-drm</code> loads but skips DRM device creation. Kmod resident, no <code>/dev/dri/cardN</code>. Set in <code>/boot/loader.conf</code>; kmodloader does this.</li>
+  <li>On unsupported NVIDIA GPU: prints <code>NVRM: The NVIDIA &lt;chip&gt; GPU installed in this system is not supported by the &lt;ver&gt; NVIDIA driver</code> and refuses. Same end state — no <code>/dev/dri/cardN</code>, no crash.</li>
+</ul>
+
+<h3>7.4 kmodloader's risk profile</h3>
+<div class="resolved">
+<strong>Loading drm-kmod / nvidia kmods speculatively is safe.</strong> Probe rejection is the designed-in path. The only cost is ~10MB resident kernel memory per loaded-but-unbound kmod. No panic, no console disruption, no Xorg breakage. The <code>vt_efifb</code> framebuffer is the universal fallback and stays in place exactly because no DRM driver attached to take it over.
+</div>
+
+<h2 id="scorecard">8. Scorecard — wins and gaps</h2>
+
+<h3>8.1 Where kmodloader wins</h3>
+
+<div class="win">
+<strong>Single ObjC daemon under launchd</strong> versus shell-script-per-purpose. Code is in one place, gets exercised by CI, has the GNUstep stack available for future Phase 2+ features (hot-plug via <code>DISPATCH_SOURCE_TYPE_READ</code> on <code>/dev/devctl</code>, structured logging, optional kldunload cleanup pass).
+</div>
+
+<div class="win">
+<strong>Three-path coverage</strong>: GPU + everything-else-with-PNP_INFO + VM additions. GhostBSD/NomadBSD only handle GPU. NomadBSD has dsbdriverd for everything else; GhostBSD relies on whatever's in GENERIC. Linux's udev handles all classes, but we get there with one daemon vs. udev's rule-file ecosystem.
+</div>
+
+<div class="win">
+<strong>AMD radeonkms split via upstream-frozen list</strong>. Same source GhostBSD uses (drm-kmod's <code>drm_pciids.h</code>), but baked into <code>RadeonPCIIDs.h</code> at build time so we can iterate the array directly in C without shell regex. amdgpu becomes the open default — no maintenance for new AMD silicon.
+</div>
+
+<div class="win">
+<strong>Hypervisor scan</strong> (kern.vm_guest → vbox/vmware kld lists). Only kmodloader has this in the comparison set; matters for "boot the live ISO in VirtualBox and have guest additions auto-load."
+</div>
+
+<div class="win">
+<strong>Built on launchd not rc.d</strong>. Plist describes the job declaratively; the same launchd that runs everything else supervises it. No bespoke rc.d ordering.
+</div>
+
+<h3>8.2 Where kmodloader has gaps</h3>
+
+<div class="gap">
+<strong>No live validation step.</strong> NomadBSD's <code>test_x</code> runs a real <code>xinit</code> after loading the kmod and rolls back the choice if Xorg can't start. We don't. If our vendor map is wrong (shouldn't happen for the three vendors but possible if drm-kmod renames a kld), the user discovers it when X doesn't come up. Mitigation path: add an optional Phase 2+ check that <code>dev.drmn.0.%pnpinfo</code> exists after kmod load; if not, log warning. Doesn't replicate test_x's full smoke test but catches the obvious case.
+</div>
+
+<div class="gap">
+<strong>No kldunload cleanup pass.</strong> If we load <code>amdgpu</code> on a system whose AMD GPU is in the radeonkms-frozen list (so our split routed correctly to radeonkms), <code>amdgpu</code> doesn't get loaded — fine. But if we load all four GPU kmods speculatively and only one binds, the others sit at ~10MB each. Phase 2+ enhancement: post-load, check for <code>drmn</code> children under each <code>vgapci</code>; <code>kldunload</code> the unbound ones. Current behavior is correct (we only load per-vendor, not all four), so this is a future polish, not a fix.
+</div>
+
+<div class="gap">
+<strong>No NVIDIA driver-version selection.</strong> Older NVIDIA cards (Kepler / Fermi / Tesla) need <code>nvidia-driver-470</code>, <code>-390</code>, or <code>-340</code> instead of current. We ship one <code>nvidia-drm-latest-kmod</code>. NomadBSD bakes all four branches at build time and picks at boot via marketing-name match; GhostBSD <code>pkg install</code>s the right one at runtime. Fix: add the three legacy nvidia-driver packages to <code>pkglist.txt</code> and extend the GPU-vendor scan to map NVIDIA marketing-name strings to specific kmod names. Cost: ~200MB on the ISO (NomadBSD's penalty for the same coverage).
+</div>
+
+<div class="gap">
+<strong>No hot-plug yet.</strong> kmodloader Phase 1 is a one-shot at boot. Plug a USB ethernet adapter or hot-add a PCI device after boot and nothing fires. Linux/dsbdriverd both handle this; we don't. Phase 2 plan: <code>DISPATCH_SOURCE_TYPE_READ</code> on <code>/dev/devctl</code>, parse <code>+</code>/<code>?</code> events (attach / nomatch), re-run the appropriate match path.
+</div>
+
+<div class="gap">
+<strong>Indirect efifb awareness only.</strong> When DRM kmod fails to bind, <code>vt_efifb</code> keeps the console on UEFI systems — works correctly without us doing anything. But we don't <em>verify</em> this; we don't generate an Xorg fallback config. Acceptable today (Xorg autoconfig handles scfb fallback); becomes a policy question if we ship an X server with strict driver requirements.
+</div>
+
+<h2 id="xlibre-takeaway">9. Specific takeaway: xlibre devmatch detection</h2>
+
+<p>The user's prompt asked specifically about xlibre's devmatch detection so kmodloader doesn't load too aggressively. Conclusion after deep-reading xlibre source:</p>
+
+<div class="resolved">
+<strong>xlibre's detection happens after the DRM kmod is loaded</strong> and therefore can't tell us which kmods to skip. Its vendor-switch table maps to userspace X driver names, not kmod names. The "ati" X driver (metadriver) handles all AMD generations regardless of whether we loaded amdgpu or radeonkms — xlibre couldn't object even if we loaded the wrong one. The X server will use whatever DRM device exists at <code>/dev/dri/cardN</code> and falls through to <code>scfb</code>/<code>vesa</code>/<code>fbdev</code> if none does. This is graceful but not a guidance signal.
+</div>
+
+<p>The right framing is: <strong>don't expect xlibre to filter our kmod-load decisions</strong>. Filtering belongs to the kmod-load layer (us). What xlibre does provide is a clean fallback through its <code>listPossibleVideoDrivers()</code> chain (modesetting → fbdev/scfb → vesa) that handles "no DRM kmod attached" without panic — confirming that loading drm-kmod kmods speculatively is safe.</p>
+
+<h2 id="recommendations">10. Recommendations</h2>
+
+<table>
+<thead><tr><th>Priority</th><th>Item</th><th>Effort</th></tr></thead>
+<tbody>
+<tr><td>High</td><td>Phase 2 hot-plug (devctl source). Closes the biggest functional gap vs Linux.</td><td>~300 LOC ObjC + plist KeepAlive=true.</td></tr>
+<tr><td>Medium</td><td>NVIDIA legacy driver-version selection. Add nvidia-driver-{470,390,340}-kmod to pkglist; extend GPU-vendor scan with marketing-name → kmod map.</td><td>~50 LOC + ~200MB pkglist.</td></tr>
+<tr><td>Medium</td><td>Optional <code>kldunload</code> cleanup pass for unbound kmods. Check <code>dev.drmn.*</code> after load; unload if no children.</td><td>~30 LOC.</td></tr>
+<tr><td>Low</td><td>Live validation lite: log warning if a loaded GPU kmod has no <code>drmn</code> child after a brief settle delay.</td><td>~20 LOC.</td></tr>
+<tr><td>Long-term</td><td>Upstream PR to drm-kmod adding <code>MODULE_PNP_INFO</code> declarations from each driver's compiled-in supported list. Would let our GPU PCI scan collapse into devmatch.</td><td>Out of our control; coordinate with drm-kmod maintainers.</td></tr>
+</tbody>
+</table>
+
+<h2 id="refs">11. References</h2>
+
+<h3>kmodloader</h3>
+<ul>
+  <li>Plan: <a href="freebsd-kmodloader-plan.html">freebsd-kmodloader-plan.html</a></li>
+  <li>Source: <a href="https://github.com/pkgdemon/freebsd-launchd/tree/main/kmodloader">github.com/pkgdemon/freebsd-launchd/tree/main/kmodloader</a></li>
+  <li>Frozen radeon ID list: <code>kmodloader/src/RadeonPCIIDs.h</code> (generated from <a href="https://github.com/freebsd/drm-kmod/blob/master/include/drm/drm_pciids.h">drm-kmod's drm_pciids.h</a>)</li>
+</ul>
+
+<h3>GhostBSD xconfig</h3>
+<ul>
+  <li>Repo: <a href="https://github.com/ghostbsd/xconfig">github.com/ghostbsd/xconfig</a></li>
+  <li>Detection logic: <code>bin/xconfig:374-403</code> (vendor probes), <code>:456-462</code> (radeon split), <code>:641-672</code> (NVIDIA branch)</li>
+  <li>Fallback templates: <code>cardDetect/XF86Config.{scfb,vesa,safe}</code></li>
+</ul>
+
+<h3>NomadBSD initgfx</h3>
+<ul>
+  <li>Repo: <a href="https://github.com/nomadbsd/NomadBSD">github.com/nomadbsd/NomadBSD</a></li>
+  <li>Detection logic: <code>config/etc/rc.d/initgfx:140-219</code> (PCI parser), <code>:240-345</code> (handlers), <code>:374-390</code> (fallback)</li>
+  <li>Validation: <code>config/etc/rc.d/initgfx:120-137</code> (<code>test_x</code>)</li>
+  <li>ID database: <code>config/etc/initgfx_device.db</code></li>
+  <li>dsbdriverd cooperation: <code>config/usr/local/etc/dsbdriverd/config.lua:7</code></li>
+</ul>
+
+<h3>xlibre</h3>
+<ul>
+  <li>Repo: <a href="https://github.com/X11Libre/xserver">github.com/X11Libre/xserver</a></li>
+  <li>Detection: <code>hw/xfree86/common/xf86AutoConfig.c:166-225</code> (top-level), <code>xf86pciBus.c:1046-1264</code> (vendor → driver table)</li>
+  <li>Platform/DRM match: <code>hw/xfree86/common/xf86platformBus.c:206</code>, <code>os-support/shared/drm_platform.c:24</code></li>
+</ul>
+
+<h3>Linux</h3>
+<ul>
+  <li><code>MODULE_DEVICE_TABLE</code> macro: kernel <code>include/linux/module.h</code></li>
+  <li><code>depmod</code> / <code>modules.alias</code>: <a href="https://git.kernel.org/pub/scm/utils/kernel/kmod/kmod.git/">kernel.org kmod</a></li>
+  <li>udev rules: <code>/lib/udev/rules.d/80-drivers.rules</code> (RUN{builtin}+="kmod load $env{MODALIAS}")</li>
+  <li>i915 force_probe doc: <a href="https://docs.kernel.org/gpu/i915.html">docs.kernel.org/gpu/i915.html</a></li>
+</ul>
+
+<h3>FreeBSD failure-mode</h3>
+<ul>
+  <li><code>linux_pci.c:506</code> — LinuxKPI probe returning ENXIO on id_table miss</li>
+  <li><code>vga_pci.c:344</code> — vgapci probe at <code>BUS_PROBE_GENERIC</code></li>
+  <li><code>vt_core.c:3275</code> — <code>vt_replace_backend()</code> only fires when DRM attaches</li>
+  <li>FreeBSD Handbook x11 chapter: official Xorg fallback statement (UEFI→scfb, BIOS→vesa)</li>
+</ul>
+
+</body>
+</html>

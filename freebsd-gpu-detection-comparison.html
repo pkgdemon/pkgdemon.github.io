@@ -83,6 +83,7 @@
   <a href="#initgfx">NomadBSD initgfx</a>
   <a href="#xlibre">xlibre</a>
   <a href="#linux">Linux udev</a>
+  <a href="#macos">macOS kextd</a>
   <a href="#toonew">"Too-new" GPU case</a>
   <a href="#scorecard">Scorecard</a>
   <a href="#refs">References</a>
@@ -107,6 +108,7 @@
     <li><strong>"Too new" failure mode is benign on FreeBSD.</strong> If <code>i915kms</code> loads but the chip isn't in its supported table, the LinuxKPI shim returns <code>ENXIO</code> from <code>pci_probe</code>. The kmod stays resident (~10MB RAM), no <code>drmn</code> child attaches, <code>vgapci0</code> keeps owning the slot, <code>vt_efifb</code> keeps owning the console, and Xorg falls back to <code>scfb</code> (UEFI) or <code>vesa</code> (BIOS). No crash, no console disruption.</li>
     <li><strong>xlibre (and Xorg generally) doesn't help us pick kmods.</strong> Its detection runs <em>after</em> the DRM kmod is loaded; the vendor-switch table maps to userspace X driver names (<code>intel</code>/<code>modesetting</code>/<code>amdgpu</code>), not kmod names. Doesn't tell us which kmods to load or skip.</li>
     <li><strong>Linux's udev+modprobe is the right shape</strong> — and FreeBSD has the equivalent (devmatch + linker.hints). The only reason kmodloader needs a GPU PCI scan at all is that drm-kmod doesn't declare <code>MODULE_PNP_INFO</code>. Upstream PR to drm-kmod adding it would let our GPU pass collapse into devmatch.</li>
+    <li><strong>macOS kextd + IOKit was our original reference architecture.</strong> Phase 1a-c shipped a literal port (.kext bundles, IOPCIMatch arrays, IOProbeScore). We ripped it out in Phase 1d because hand-curated personality plists don't scale to FreeBSD's hardware breadth — Apple's full-time staff curates IOPCIMatch tables for the SoCs Apple ships; we'd be doing the same work for every PC ever made. Apple's <code>kextcache</code> prelink optimization remains an interesting Phase 4+ idea.</li>
   </ul>
 </section>
 
@@ -123,6 +125,7 @@
   <th>NomadBSD <code>initgfx</code></th>
   <th>xlibre</th>
   <th>Linux udev+modprobe</th>
+  <th>macOS kextd / IOKit</th>
 </tr>
 </thead>
 <tbody>
@@ -133,6 +136,7 @@
   <td>POSIX shell (467 LOC) + sourced DB (1782 LOC)</td>
   <td>C, inside Xorg server</td>
   <td>C (libkmod) inside udevd</td>
+  <td>C++ (kextd, IOKit), launchd-supervised</td>
 </tr>
 <tr>
   <td>Cadence</td>
@@ -141,6 +145,7 @@
   <td>Boot via rc.d, but PCI-hash short-circuit if hardware unchanged</td>
   <td>Server start; not autoload-related</td>
   <td>Hot-plug + boot, event-driven</td>
+  <td>Boot (kextcache prelink) + hot-plug (IOKit matching notifications)</td>
 </tr>
 <tr>
   <td>Detection input</td>
@@ -149,6 +154,7 @@
   <td><code>pciconf -lv</code> awk-parsed + <code>hw.pci.default_vgapci_unit</code></td>
   <td>libpciaccess + udev DRM enum + <code>drmGetVersion</code></td>
   <td>kernel <code>MODALIAS</code> uevent → pattern match</td>
+  <td>IOKit IORegistry walk; IOService::probe per matching kext</td>
 </tr>
 <tr>
   <td>(vendor:device) → driver source</td>
@@ -157,6 +163,7 @@
   <td>~507 AMD IDs + ~56 legacy Intel IDs in sourced DB; NVIDIA branches by marketing-name string</td>
   <td>Inline <code>switch(vendor)</code> in C; modern Intel falls through to <code>modesetting</code></td>
   <td><code>MODULE_DEVICE_TABLE</code> in each <code>.ko</code>; <code>depmod</code> emits <code>modules.alias</code></td>
+  <td><code>IOKitPersonalities</code> dict in each <code>.kext/Info.plist</code> with <code>IOPCIMatch</code> arrays</td>
 </tr>
 <tr>
   <td>Validation that the driver actually works</td>
@@ -165,6 +172,7 @@
   <td><span class="yesno yes">Yes</span> &mdash; <code>test_x</code> runs <code>xinit</code> with the proposed config; rollback on failure</td>
   <td>n/a (post-kmod)</td>
   <td><span class="yesno no">No</span> at module level (PCI probe is the validation)</td>
+  <td><span class="yesno yes">Yes</span> &mdash; <code>IOService::probe</code> returns <code>IOProbeScore</code>; highest-scoring kext wins; non-matching kexts never attach</td>
 </tr>
 <tr>
   <td>Fallback to scfb/vesa/efifb</td>
@@ -173,6 +181,7 @@
   <td>Explicit, picks <code>vesa</code> on BIOS / <code>scfb</code> on EFI from <code>machdep.bootmethod</code></td>
   <td>Falls back through <code>fbdev</code>/<code>scfb</code>/<code>vesa</code> in compile-time order</td>
   <td>n/a (kmod stays loaded; userspace X handles fallback)</td>
+  <td>n/a &mdash; Apple ships hardware + drivers as a unit; "no matching driver" effectively can't happen</td>
 </tr>
 <tr>
   <td>"Kmod loaded but didn't attach" cleanup</td>
@@ -181,6 +190,7 @@
   <td><span class="yesno partial">Indirect</span> &mdash; <code>test_x</code> failure rolls back next-boot config but doesn't <code>kldunload</code></td>
   <td>n/a</td>
   <td><span class="yesno no">No</span> &mdash; same shape: probe-fail leaves module resident</td>
+  <td><span class="yesno yes">Yes</span> &mdash; kexts that don't pass probe never load; kextcache only fuses kexts whose match succeeds</td>
 </tr>
 <tr>
   <td>Hot-plug coverage</td>
@@ -189,6 +199,7 @@
   <td><span class="yesno partial">Non-DRM only</span> via <code>dsbdriverd</code> (DRM kmods explicitly excluded)</td>
   <td>n/a</td>
   <td><span class="yesno yes">Yes</span> &mdash; udev rules trigger libkmod on every uevent</td>
+  <td><span class="yesno yes">Yes</span> &mdash; IOKit matching notifications fire on every IORegistry change</td>
 </tr>
 <tr>
   <td>Multi-GPU / Optimus</td>
@@ -197,6 +208,7 @@
   <td>Walks each vgapci device and tries handlers; default vgapci first</td>
   <td>Iterates platform devices, multi-card supported</td>
   <td>All matching modules load; kernel binds each to its card</td>
+  <td>IOService probe scores per device; multiple GPUs each get their best-scoring kext</td>
 </tr>
 <tr>
   <td>NVIDIA driver-version selection</td>
@@ -205,6 +217,7 @@
   <td>All four NVIDIA branches pre-staged at image-build time; runtime symlinks the right one</td>
   <td>Lists <code>nvidia</code> as one option; selection is xorg.conf-side</td>
   <td>Per-distro packaging picks one branch</td>
+  <td>n/a since 10.13 (NVIDIA support dropped); historically Apple shipped the kext, no version selection</td>
 </tr>
 <tr>
   <td>Scope</td>
@@ -213,6 +226,16 @@
   <td>GPU + Xorg config only (non-GPU via separate <code>dsbdriverd</code>)</td>
   <td>X server only</td>
   <td>All hardware classes</td>
+  <td>All hardware classes (IOKit owns everything driver-shaped)</td>
+</tr>
+<tr>
+  <td>Pre-link / boot speedup</td>
+  <td><span class="yesno no">No</span> &mdash; load on demand at boot</td>
+  <td><span class="yesno no">No</span></td>
+  <td><span class="yesno no">No</span></td>
+  <td>n/a</td>
+  <td><span class="yesno no">No</span> at the module-load layer (initramfs is a separate concept)</td>
+  <td><span class="yesno yes">Yes</span> &mdash; <code>kextcache</code> fuses kernel + matched kexts into a single boot image</td>
 </tr>
 </tbody>
 </table>
@@ -358,7 +381,59 @@
 <h3>6.3 Linux "too new" handling</h3>
 <p>If the .ko loads but the live device ID isn't in the module's <code>pci_ids</code>: the driver's <code>.probe()</code> is never called, the device sits unbound. Modern kernels expose <code>i915.force_probe=</code>, <code>amdgpu.force_probe=</code> etc. for users with too-new hardware. There is no userspace "fall back to a different kernel module" mechanism — udev hands MODALIAS to libkmod, gets a hit or miss, and that's it.</p>
 
-<h2 id="toonew">7. The "too-new GPU" failure case</h2>
+<h2 id="macos">7. macOS: kextd + IOKit (the reference architecture)</h2>
+
+<p>The original kmodloader plan was modeled directly on Apple's <code>kextd</code> + IOKit personality matching. Phase 1a-c shipped a literal port of that idea (<code>.kext</code> bundles in <code>/System/Library/Extensions/</code>, <code>IOKitPersonalities</code> dicts, integer probe scores, highest-scoring kext wins). Phase 1d ripped it out in favor of <code>devmatch</code> for FreeBSD-specific reasons. Worth showing the reference architecture both for design provenance and to answer "why don't you just do what Apple does?"</p>
+
+<h3>7.1 The kextd loop</h3>
+<p><code>kextd</code> is a launchd-supervised daemon (<code>com.apple.kextd.plist</code>). On startup it:</p>
+<ol>
+  <li>Walks <code>/System/Library/Extensions/*.kext/</code> and <code>/Library/Extensions/*.kext/</code>.</li>
+  <li>Reads each bundle's <code>Contents/Info.plist</code>, extracts the <code>IOKitPersonalities</code> dict.</li>
+  <li>Hands all personalities to the kernel via <code>kextload(8)</code>-equivalent.</li>
+  <li>Listens on a Mach port for <code>kAppleEventLoopMessage</code>-style notifications: when a new device appears in IOKit's IORegistry, kextd is told and re-runs matching for that device.</li>
+</ol>
+<p>The kernel keeps a personality registry indexed by match category (<code>"PCI"</code>, <code>"USB"</code>, <code>"USBClass"</code>, etc.). When IOKit sees a new device, it walks the registry, calls <code>IOService::probe</code> on every personality whose match dict could apply, and binds the device to the highest-scoring service.</p>
+
+<h3>7.2 IOPCIMatch + IOProbeScore (the design our Phase 1a-c shipped)</h3>
+<p>An IOKit personality looks like this (Apple's actual i915 driver, simplified):</p>
+
+<pre class="objc"><code>&lt;dict&gt;
+    &lt;key&gt;CFBundleIdentifier&lt;/key&gt;
+    &lt;string&gt;com.apple.driver.AppleIntelKBLGraphicsFramebuffer&lt;/string&gt;
+    &lt;key&gt;IOClass&lt;/key&gt;          &lt;string&gt;AppleIntelKBLFramebuffer&lt;/string&gt;
+    &lt;key&gt;IOMatchCategory&lt;/key&gt;  &lt;string&gt;IOFramebuffer&lt;/string&gt;
+    &lt;key&gt;IOPCIMatch&lt;/key&gt;
+    &lt;array&gt;
+        &lt;string&gt;0x59168086&lt;/string&gt; &lt;!-- HD Graphics 620 --&gt;
+        &lt;string&gt;0x591B8086&lt;/string&gt; &lt;!-- HD Graphics 630 --&gt;
+        &lt;!-- ... --&gt;
+    &lt;/array&gt;
+    &lt;key&gt;IOProbeScore&lt;/key&gt;     &lt;integer&gt;90000&lt;/integer&gt;
+&lt;/dict&gt;</code></pre>
+
+<p>The probe call returns either <code>0</code> (don't match, skip) or a positive score. Higher score wins; ties broken by personality registration order. Non-matching personalities never get a probe call &mdash; the match dict is the gate.</p>
+
+<p><strong>This is what kmodloader Phase 1a-c implemented</strong> in <code>kmodloader/personalities/*.kext/Contents/Info.plist</code> with our own probe-score algorithm. Worked correctly for hardware we hand-curated; failed scaling because FreeBSD's drm-kmod doesn't ship Info.plists with IOPCIMatch arrays, so we'd be hand-curating ~2000 device IDs ourselves &mdash; without Apple's full-time staff to maintain them.</p>
+
+<h3>7.3 kextcache prelinking</h3>
+<p>Apple's optimization for boot speed: <code>kextcache</code> fuses the kernel binary plus every kext that matched at last-boot into a single signed boot image (<code>/System/Library/PrelinkedKernels/prelinkedkernel</code>). At boot the loader maps the prelinked kernel directly &mdash; no per-boot scan of <code>/System/Library/Extensions/</code>, no per-kext load decisions, no probe loop. The matching work happened once at install time.</p>
+<p>Plan §11 Phase 4 flagged this as a future optimization for kmodloader; it remains a Phase-4 idea. The Apple-shape parallel is roughly: at install time, run kmodloader's three-path scan, write the result to a manifest, have <code>/boot/loader</code> consume the manifest and pre-load on next boot. Defers all the "vendor scan + devmatch + vm_guest" work from boot to install.</p>
+
+<h3>7.4 DriverKit (modern Apple userspace drivers)</h3>
+<p>Since macOS 10.15 / iOS 14, Apple has been moving drivers out of the kernel and into sandboxed userspace processes called <code>.dext</code> bundles (DriverExtension). Each dext is a launchd-launched signed binary that talks to a small in-kernel "personality" stub via IOKit's <code>DriverKit</code> framework. Match logic stays the same (<code>IOPCIMatch</code> in the dext's Info.plist); the actual driver code runs in userspace.</p>
+<p>Genuinely interesting as a long-term direction but not on kmodloader's roadmap. FreeBSD has no equivalent to DriverKit's userspace-driver kernel infrastructure today, and porting one is a project comparable to launchd itself.</p>
+
+<h3>7.5 Why we don't do exactly this on FreeBSD</h3>
+<p>We started here (Phase 1a-c) and reached a different place (Phase 1d-1g) for three reasons:</p>
+<ol>
+  <li><strong>Apple ships finite hardware.</strong> A handful of staff curate the IOPCIMatch tables for the SoCs/GPUs Apple ships. FreeBSD targets every PC ever made; hand-curated personality plists don't scale to that hardware breadth.</li>
+  <li><strong>FreeBSD already has the data, just in a different format.</strong> <code>linker.hints</code> built from <code>MODULE_PNP_INFO</code> macros gives us the same (vendor:device → kld) map for every in-tree driver. <code>devmatch(8)</code> is the canonical reader. We don't need to reinvent the registry; we need to use the one FreeBSD already has.</li>
+  <li><strong>The narrow gap (drm-kmod) is closeable with a 3-vendor map plus one frozen 699-ID list.</strong> No need for Apple-style full personality plists when the actual missing data is "which of three vendor IDs do I have."</li>
+</ol>
+<p>The Apple-shape design we kept: launchd supervision, ObjC implementation, plist-based config, the conceptual model of "a daemon that owns kernel-extension loading." The Apple-shape design we dropped: the per-driver IOPCIMatch personality plist as the load-decision data structure.</p>
+
+<h2 id="toonew">8. The "too-new GPU" failure case</h2>
 
 <p>The user's specific concern: <em>what happens in our case when the device is too new for the latest drm-kmods</em>? Detailed answer with FreeBSD source citations.</p>
 
@@ -404,7 +479,7 @@ or (recommended) check for kernel updates.</code></pre>
 <strong>Loading drm-kmod / nvidia kmods speculatively is safe.</strong> Probe rejection is the designed-in path. The only cost is ~10MB resident kernel memory per loaded-but-unbound kmod. No panic, no console disruption, no Xorg breakage. The <code>vt_efifb</code> framebuffer is the universal fallback and stays in place exactly because no DRM driver attached to take it over.
 </div>
 
-<h2 id="scorecard">8. Scorecard — wins and gaps</h2>
+<h2 id="scorecard">9. Scorecard — wins and gaps</h2>
 
 <h3>8.1 Where kmodloader wins</h3>
 
@@ -450,7 +525,7 @@ or (recommended) check for kernel updates.</code></pre>
 <strong>Indirect efifb awareness only.</strong> When DRM kmod fails to bind, <code>vt_efifb</code> keeps the console on UEFI systems — works correctly without us doing anything. But we don't <em>verify</em> this; we don't generate an Xorg fallback config. Acceptable today (Xorg autoconfig handles scfb fallback); becomes a policy question if we ship an X server with strict driver requirements.
 </div>
 
-<h2 id="xlibre-takeaway">9. Specific takeaway: xlibre devmatch detection</h2>
+<h2 id="xlibre-takeaway">10. Specific takeaway: xlibre devmatch detection</h2>
 
 <p>The user's prompt asked specifically about xlibre's devmatch detection so kmodloader doesn't load too aggressively. Conclusion after deep-reading xlibre source:</p>
 
@@ -460,7 +535,7 @@ or (recommended) check for kernel updates.</code></pre>
 
 <p>The right framing is: <strong>don't expect xlibre to filter our kmod-load decisions</strong>. Filtering belongs to the kmod-load layer (us). What xlibre does provide is a clean fallback through its <code>listPossibleVideoDrivers()</code> chain (modesetting → fbdev/scfb → vesa) that handles "no DRM kmod attached" without panic — confirming that loading drm-kmod kmods speculatively is safe.</p>
 
-<h2 id="recommendations">10. Recommendations</h2>
+<h2 id="recommendations">11. Recommendations</h2>
 
 <table>
 <thead><tr><th>Priority</th><th>Item</th><th>Effort</th></tr></thead>
@@ -473,7 +548,7 @@ or (recommended) check for kernel updates.</code></pre>
 </tbody>
 </table>
 
-<h2 id="refs">11. References</h2>
+<h2 id="refs">12. References</h2>
 
 <h3>kmodloader</h3>
 <ul>
@@ -519,6 +594,15 @@ or (recommended) check for kernel updates.</code></pre>
   <li><code>vga_pci.c:344</code> — vgapci probe at <code>BUS_PROBE_GENERIC</code></li>
   <li><code>vt_core.c:3275</code> — <code>vt_replace_backend()</code> only fires when DRM attaches</li>
   <li>FreeBSD Handbook x11 chapter: official Xorg fallback statement (UEFI→scfb, BIOS→vesa)</li>
+</ul>
+
+<h3>macOS / IOKit</h3>
+<ul>
+  <li>Apple <code>kextd</code> source: <a href="https://github.com/apple-oss-distributions/IOKitTools">github.com/apple-oss-distributions/IOKitTools</a> (referenced for design — not vendored)</li>
+  <li>IOKit framework: <a href="https://github.com/apple-oss-distributions/IOKitUser">apple-oss-distributions/IOKitUser</a></li>
+  <li>IOKit Fundamentals (architecture overview, archived): <a href="https://developer.apple.com/library/archive/documentation/DeviceDrivers/Conceptual/IOKitFundamentals/">developer.apple.com IOKit Fundamentals</a></li>
+  <li>DriverKit framework reference: <a href="https://developer.apple.com/documentation/driverkit">developer.apple.com/documentation/driverkit</a></li>
+  <li><code>kextcache(8)</code> man page (prelinked-kernel construction): <a href="https://developer.apple.com/documentation/macos-release-notes">macOS man pages</a> — search <code>kextcache</code></li>
 </ul>
 
 </body>

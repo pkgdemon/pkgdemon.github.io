@@ -91,6 +91,7 @@
   <a href="#phase1">Phase 1: livecd</a>
   <a href="#phase2">Phase 2: launchd</a>
   <a href="#phase3">Phase 3: polish</a>
+  <a href="#cleanup">Cleanup</a>
   <a href="#loginwindow">LoginWindow</a>
   <a href="#files">Files</a>
   <a href="#open">Open questions</a>
@@ -115,6 +116,7 @@
     </li>
     <li><strong>Phase 2 (launchd) — pending review:</strong> Phase 1 leaves the boot one line away from launchd. Swap <code>init.sh</code>'s final <code>kenv init_chroot=/sysroot</code> for <code>exec chroot /sysroot /sbin/launchd</code>; switch <code>loader.conf</code> to Option&nbsp;D (drop <code>init_script</code>/<code>init_shell</code>); clone freebsd-launchd into <code>/Developer/Library/Sources/</code> and build it after gershwin-developer's stack; convert the rc.d service-enables in <code>configure_system</code> to LaunchDaemon plists one-by-one; add a <code>org.gershwin.loginwindow.plist</code> launchd job (separate concept from the existing <code>LoginWindow.plist</code> state file).</li>
     <li><strong>Phase 3 (polish):</strong> bring in kmodloader, configd stub, ASL when each lands and earns its keep.</li>
+    <li><strong>Post-launchd cleanup (deferred):</strong> once Phase 2's launchd + loginwindow plist are stable, restore the polished boot UX (re-enable <code>boot_mute</code>, drop the verbose / dual-console diagnostics) and retire the CI boot-test gate (collapse the workflow back to a single build → publish job, delete <code>tests/boot-test.sh</code>). See <a href="#cleanup">§Cleanup</a>.</li>
     <li><strong>Packages constraint:</strong> <code>resources/packages/{base,vital-base,gershwin,drivers,vital-gershwin}</code> are the source of truth, and the existing entries are <strong>not re-audited</strong>. We don't re-derive what gershwin's pkg-base list should contain — that work is done. <strong>No new kernel modules / GPU drivers</strong> (no <code>nvidia-drm-kmod</code>, etc.). Phase 2 swaps the DHCP/WPA stacks: <code>dhcpcd</code> and <code>wpa_supplicant</code> from ports get added to <code>resources/packages/gershwin</code>; <code>FreeBSD-dhclient</code> and <code>FreeBSD-wpa</code> get removed from <code>resources/packages/base</code> (and <code>vital-base</code>) in the same commit. The ISO ships exactly one DHCP client and one supplicant.</li>
     <li><strong>Base system:</strong> already pkg-base in gershwin-on-freebsd — no change. freebsd-launchd's <code>base.txz</code>+<code>tar -xJf</code> approach is dropped on the floor when the work moves over.</li>
     <li><strong>LoginWindow:</strong> no port of Apple's <code>loginwindow.app</code>. Phase 2 ships a launchd plist that starts gershwin's existing greeter binary (or wraps the existing <code>loginwindow_enable=YES</code> rc.d service). Real Cocoa-style LoginWindow is a Phase 4+ research item gated on a per-session launchd domain model and a keychain substitute that don't exist yet.</li>
@@ -440,6 +442,27 @@ exit 0</code></pre>
     <tr><td><a href="freebsd-disk-arbitration-plan.html">DiskArbitration</a></td><td>Workspace File Viewer's ad-hoc kqueue polling</td><td>When the Devices sidebar needs proper attach/detach events.</td></tr>
   </tbody>
 </table>
+
+<h2 id="cleanup">Post-launchd cleanup <span class="pill info">deferred</span></h2>
+
+<p>Once Phase 2 lands and gershwin boots reliably with launchd as PID&nbsp;1 + a working <code>org.gershwin.loginwindow.plist</code>, do this single follow-up commit on <code>pkgdemon/gershwin-on-freebsd:main</code>. End-user UX takes precedence over development diagnostics from this point.</p>
+
+<h3>Revert the Phase 1 boot diagnostics (commit 02e4e9a)</h3>
+<ul>
+  <li><code>resources/overlays/boot/loader.mute.d/loader.conf</code> — uncomment <code>boot_mute="YES"</code> (restore the polished animation).</li>
+  <li><code>resources/overlays/boot/loader.conf</code> — drop the diagnostics block: <code>boot_verbose="YES"</code>, <code>console="comconsole vidconsole"</code>, <code>comconsole_speed="115200"</code>.</li>
+</ul>
+
+<h3>Retire the CI boot-test gate (commit 7caefbf)</h3>
+<ul>
+  <li><code>.github/workflows/build.yml</code> — collapse the build → test → release split back to the original single-job build + publish flow. Drop the <code>test</code> job and its <code>needs:</code> wiring on <code>release</code>.</li>
+  <li><code>tests/boot-test.sh</code> — delete.</li>
+  <li><code>tests/</code> — delete the directory if no other tests live there.</li>
+</ul>
+
+<p><strong>Why deferred, not skipped:</strong> during Phase 1/2 the verbose boot output + the boot-test gate are valuable diagnostic surface — both for catching kernel/init regressions in CI and for reading dmesg on real hardware while the architecture is in flux. After launchd + loginwindow stabilize, neither earns its keep. The CI overhead of a per-push boot-test (build + qemu run on every push) becomes pure tax once the fast-iteration phase ends.</p>
+
+<p><strong>Single commit suggested title:</strong> "post-Phase-2 cleanup: restore quiet boot, retire CI boot-test gate" with reference to commits 02e4e9a + 7caefbf in the body.</p>
 
 <h2 id="loginwindow">LoginWindow plist</h2>
 

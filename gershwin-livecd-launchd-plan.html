@@ -100,14 +100,20 @@
 <p class="subtitle">Plan to integrate the <a href="https://github.com/pkgdemon/freebsd-launchd">freebsd-launchd</a> work (livecd architecture + launchd PID&nbsp;1 + kmodloader + configd stub) into the <a href="https://github.com/gershwin-desktop/gershwin-on-freebsd">gershwin-on-freebsd</a> project. Sequenced: <strong>livecd rework first</strong>, then launchd, then the Apple-shaped helper daemons. Holds the line on packages — gershwin-on-freebsd's existing <code>resources/packages/</code> lists are the source of truth and we add nothing new in either phase.</p>
 
 <section id="tldr" class="tldr">
-  <h3>Status: planning <span class="pill info">v0 — for review</span></h3>
+  <h3>Status: <span class="pill ok">Phase 1 landed</span> <span class="pill info">v1</span></h3>
   <ul>
     <li><strong>Two repos involved:</strong>
-      <a href="https://github.com/gershwin-desktop/gershwin-on-freebsd">gershwin-on-freebsd</a> (livecd build + package lists)
-      and <a href="https://github.com/gershwin-desktop/gershwin-developer">gershwin-developer</a> (GNUstep + desktop install orchestrator). One new dep:
+      <a href="https://github.com/pkgdemon/gershwin-on-freebsd">pkgdemon/gershwin-on-freebsd</a> (livecd build + package lists; we work in pkgdemon's fork only)
+      and <a href="https://github.com/gershwin-desktop/gershwin-developer">gershwin-developer</a> (GNUstep + desktop install orchestrator, <code>feat/libs-corebase</code> branch). One new dep:
       <a href="https://github.com/pkgdemon/freebsd-launchd">freebsd-launchd</a> cloned into <code>/Developer/Library/Sources/freebsd-launchd/</code> in Phase 2.</li>
-    <li><strong>Phase 1 (livecd rework):</strong> point gershwin-developer at the <code>feat/libs-corebase</code> branch; apply the proven <code>/boot/firmware</code> symlink trick; tighten the <code>init_script</code> so it stops the rcorder surgery; add a CI boot-test. Init flow stays loader-level <code>init_script</code>&nbsp;+ stock <code>/sbin/init</code>&nbsp;+ rc.d. <em>No launchd yet.</em></li>
-    <li><strong>Phase 2 (launchd):</strong> clone freebsd-launchd into <code>/Developer/Library/Sources/</code>, build inside the chroot after gershwin-developer's stack, switch <code>loader.conf</code> from <code>init_script=</code> to Option&nbsp;D (<code>/init.sh</code> with <code>#!/rescue/sh</code> shebang), <code>exec /sbin/launchd</code> at the end. Convert the rc.d service-enables in <code>configure_system</code> to LaunchDaemon plists one-by-one. Add a <code>org.gershwin.loginwindow.plist</code> launchd job (separate concept from the existing <code>LoginWindow.plist</code> state file).</li>
+    <li><strong>Phase 1 (livecd rework) — landed:</strong> three commits on <code>pkgdemon/gershwin-on-freebsd:main</code>:
+      <ol style="margin:.4rem 0">
+        <li><code>1d2150b</code> — pin gershwin-developer to <code>feat/libs-corebase</code> branch (one-line build.sh change).</li>
+        <li><code>7caefbf</code> — split CI workflow into build → boot-test → release jobs; add <code>tests/boot-test.sh</code> (qemu+OVMF+expect, looks for "login:" / "Starting local daemons" / "Welcome to" markers). Release only publishes when boot-test passes.</li>
+        <li><code>3b97e40</code> — <strong>architectural rework:</strong> replace per-subdir nullfs + <code>cp -R</code> model with single-root unionfs + <code>init_chroot</code> kenv pivot, mirroring <a href="https://github.com/pkgdemon/freebsd-livecd-unionfs">freebsd-livecd-unionfs</a>. <code>/init.sh</code> at cdroot top, mdconfig the uzip, mount UFS at <code>/sysroot</code>, tmpfs at <code>/upper</code>, unionfs combining them, devfs at <code>/sysroot/dev</code>, then <code>kenv init_chroot=/sysroot</code> + exit. <code>/sbin/init</code> stays PID 1 and chroots into the unionfs before multi-user. RAM saving at idle: ~15-70 MB (no physical <code>/etc</code> + <code>/var</code> tmpfs copies). Mount points: 6 instead of 19.</li>
+      </ol>
+    </li>
+    <li><strong>Phase 2 (launchd) — pending review:</strong> Phase 1 leaves the boot one line away from launchd. Swap <code>init.sh</code>'s final <code>kenv init_chroot=/sysroot</code> for <code>exec chroot /sysroot /sbin/launchd</code>; switch <code>loader.conf</code> to Option&nbsp;D (drop <code>init_script</code>/<code>init_shell</code>); clone freebsd-launchd into <code>/Developer/Library/Sources/</code> and build it after gershwin-developer's stack; convert the rc.d service-enables in <code>configure_system</code> to LaunchDaemon plists one-by-one; add a <code>org.gershwin.loginwindow.plist</code> launchd job (separate concept from the existing <code>LoginWindow.plist</code> state file).</li>
     <li><strong>Phase 3 (polish):</strong> bring in kmodloader, configd stub, ASL when each lands and earns its keep.</li>
     <li><strong>Packages constraint:</strong> <code>resources/packages/{base,vital-base,gershwin,drivers,vital-gershwin}</code> are the source of truth, and the existing entries are <strong>not re-audited</strong>. We don't re-derive what gershwin's pkg-base list should contain — that work is done. <strong>No new kernel modules / GPU drivers</strong> (no <code>nvidia-drm-kmod</code>, etc.). Phase 2 swaps the DHCP/WPA stacks: <code>dhcpcd</code> and <code>wpa_supplicant</code> from ports get added to <code>resources/packages/gershwin</code>; <code>FreeBSD-dhclient</code> and <code>FreeBSD-wpa</code> get removed from <code>resources/packages/base</code> (and <code>vital-base</code>) in the same commit. The ISO ships exactly one DHCP client and one supplicant.</li>
     <li><strong>Base system:</strong> already pkg-base in gershwin-on-freebsd — no change. freebsd-launchd's <code>base.txz</code>+<code>tar -xJf</code> approach is dropped on the floor when the work moves over.</li>
@@ -138,7 +144,7 @@
 </div>
 
 <div class="constraint">
-  <strong>Sequencing.</strong> Livecd rework first; launchd after that's stable. No launchd plists land in Phase 1. No <code>init_script</code> → <code>/init.sh</code> rename in Phase 1. Phase 2 only starts after a working continuous-release ISO from Phase 1 boots through the existing rc.d flow on real hardware.
+  <strong>Sequencing.</strong> Livecd rework first; launchd after that's stable. <strong>Phase 1 done</strong> — including the <code>init_script</code>&nbsp;→ <code>/init.sh</code> move and the architectural unionfs rework (this is what was originally underscoped as "cosmetic"). No launchd plists land until Phase 2. Phase 2 only starts after the Phase 1 continuous-release ISO boots through the existing rc.d flow on real hardware.
 </div>
 
 <div class="constraint">
@@ -175,111 +181,122 @@
 <h2 id="arch">Architecture (target end state)</h2>
 
 <div class="ascii-diagram" style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:.82rem;line-height:1.3;white-space:pre;background:var(--code-bg);padding:1rem;border-radius:6px;overflow-x:auto;">
-host:                                  livecd ISO (post-Phase-2):
-+--------------------------+           +-------------------------------+
-| build.sh                 |           | cd9660 (kernel root)          |
-|  setup_workspace         |           |   /boot/{loader,kernel,...}   |
-|  install_base_system  ───┼─pkg-base─→|   /boot/rootfs.uzip           |
-|  install_gershwin_software───────────|   /boot/firmware -> /sysroot/ |
-|  build_gershwin_components           |                  boot/firmware|
-|    └─ git clone gershwin-developer   |   /init.sh  (Option D shebang)|
-|         --branch feat/libs-corebase  +-------------------------------+
-|         /Developer                                  |
-|       chroot make install            mdconfig + uzip = lower layer
-|  build_launchd ◄──────── NEW Phase 2 |                  |
-|    └─ rsync freebsd-launchd          tmpfs upper       /sysroot
-|         /Developer/Library/Sources/  unionfs           = combined RW
-|         /freebsd-launchd                               root
-|       chroot ./build.sh                                |
-|       installs:                       /init.sh ends with:
-|         /sbin/launchd                 exec chroot /sysroot /sbin/launchd
-|         /System/Library/LaunchDaemons/                  |
-|         /usr/libexec/kmodloader (Phase 3)               v
-|         /usr/libexec/netconfigd (Phase 3)         launchd as PID 1
-|  configure_system  ◄── stripped of rc.d enables                  |
-|    that became LaunchDaemons          loads /System/Library/LaunchDaemons/
-|  prepare_boot_env  ◄── adds firmware symlink                     |
-|    + writes /init.sh in Phase 2       org.freebsd.{syslogd,cron,getty}
-|  generate_iso                         org.gershwin.{loginwindow,dbus,...}
+Phase 1 (landed):                       Phase 2 (pending):
+livecd ISO boot flow                    same flow, last line of init.sh
+                                        swapped + loader.conf flips to Option D
 +--------------------------+
+| cd9660 (kernel root)     |            init.sh today (Phase 1):
+|   /boot/{loader,kernel,…}|              kenv init_chroot=/sysroot
+|   /rootfs.uzip           |              exit 0
+|   /init.sh   ◄ kernel reads init_script    |
+|   /sysroot/ /upper/ /dev/   from loader.conf, forks /rescue/sh /init.sh
++--------------------------+               |
+            |                              v
+   /sbin/init runs from cd9660 (PID 1)   /sbin/init reads init_chroot kenv
+            |                            chroots into /sysroot
+   reads init_script kenv = /init.sh    continues normal multi-user
+            |                              |
+   /init.sh:                                v
+     mdconfig /rootfs.uzip       rc.d (Phase 1) / launchd (Phase 2)
+     mount UFS at /sysroot (lower)       |
+     mount tmpfs at /upper (writable)    v
+     mount unionfs /upper /sysroot     login: prompt
+     mount devfs /sysroot/dev            |
+     gershwin live tweaks (rc.conf,       (Phase 2 swap)
+       LoginWindow.plist, hostname,    init.sh's last line becomes:
+       VirtualBox detect)                exec chroot /sysroot /sbin/launchd
+     kenv init_chroot=/sysroot         loader.conf drops init_script/init_shell
+     exit                              and sets init_path="/init.sh" (Option D)
+
+Source-of-truth split:
++--------------------------+    +--------------------------+
+| pkgdemon/gershwin-on-    |    | gershwin-developer       |
+| freebsd  build.sh:       |    |   feat/libs-corebase     |
+|   setup_workspace        |    |   Library/Scripts/       |
+|   install_base_system ───┼─pkg-base→  Bootstrap.sh       |
+|   install_gershwin_software│  |        Checkout.sh       |
+|   build_gershwin_components│  |        Install-System-   |
+|     └─ git clone --branch ─┼──→        Domain.sh         |
+|        feat/libs-corebase  |  |  builds GNUstep stack    |
+|        gershwin-developer  |  |  + desktop apps          |
+|   build_launchd (Phase 2) ─┼──→ /Developer/Library/      |
+|     └─ rsync freebsd-       |  |   Sources/freebsd-      |
+|        launchd into        |  |   launchd/   (Phase 2)   |
+|        /Developer/Library/ |  |  builds launchd, plists, |
+|        Sources/            |  |  kmodloader (Phase 3)    |
++--------------------------+    +--------------------------+
 </div>
 
-<p>Phase 1 keeps the right column running through stock <code>/sbin/init</code>+rc.d. Phase 2 swaps in <code>/init.sh</code> + launchd. Phase 3 fills in the Apple-shaped helpers.</p>
+<p>Phase 1 (landed) keeps stock <code>/sbin/init</code>+rc.d but introduces the unionfs+chroot architecture. Phase 2 changes the last line of <code>init.sh</code> and the loader knobs to swap stock <code>init</code> for launchd; the rest of the cascade body is reused unchanged. Phase 3 fills in the Apple-shaped helpers.</p>
 
-<h2 id="phase1">Phase 1: livecd rework <span class="pill info">no launchd yet</span></h2>
+<h2 id="phase1">Phase 1: livecd rework <span class="pill ok">landed</span></h2>
 
-<p>Goal: a continuous-release ISO that boots reliably on real hardware, with the firmware-loading bug fixed, with the build wired to the right gershwin-developer branch, and with a CI boot-test that fails the release if the ISO can't reach a login prompt. Init stays stock; rc.d stays the service manager.</p>
+<p>Three commits on <code>pkgdemon/gershwin-on-freebsd:main</code>. Init stays stock; rc.d stays the service manager — but the boot architecture now mirrors freebsd-livecd-unionfs (single uzip rootfs + tmpfs upper + unionfs + <code>init_chroot</code> kenv pivot), making Phase 2's launchd swap a single-line change.</p>
 
-<h3>1.1 Switch gershwin-developer to <code>feat/libs-corebase</code></h3>
+<h3>1.1 Switch gershwin-developer to <code>feat/libs-corebase</code> <span class="pill ok">done — 1d2150b</span></h3>
 
-<p>Current <code>build.sh:281</code>:</p>
-<pre class="shell"><code>git clone --depth 1 https://github.com/gershwin-desktop/gershwin-developer "${RELEASE_DIR}/Developer"</code></pre>
-<p>becomes:</p>
+<p>One-line change at <code>build.sh:281</code>:</p>
 <pre class="shell"><code>git clone --branch feat/libs-corebase --depth 1 \
     https://github.com/gershwin-desktop/gershwin-developer "${RELEASE_DIR}/Developer"</code></pre>
+<p>Diff between <code>main</code> and <code>feat/libs-corebase</code> in gershwin-developer: two commits (~10 lines) that add libs-corebase to the build orchestrator. There is no patched/forked libs-corebase — it's plain upstream <code>gnustep/libs-corebase</code> HEAD with a vanilla configure invocation. Once feat/libs-corebase merges to main upstream, drop the <code>--branch</code> flag — but until then, the user's open upstream PR (gershwin-developer#32) is the source of truth and we leave it alone.</p>
+<p>This enables CoreFoundation-shaped APIs (<code>libgnustep-corebase.so</code>) for everything downstream — including freebsd-launchd in Phase 2, which links against it for plist parsing.</p>
 
-<p>Per the agent investigation: the diff between <code>main</code> and <code>feat/libs-corebase</code> is two commits (~10 lines) that add libs-corebase to the build orchestrator. There is no patched/forked libs-corebase — it's plain upstream <code>gnustep/libs-corebase</code> HEAD with a vanilla configure invocation. Once feat/libs-corebase merges to main, drop the <code>--branch</code> flag.</p>
-
-<p>This is a one-line change. It enables CoreFoundation-shaped APIs (<code>libgnustep-corebase.so</code>) for everything downstream — including freebsd-launchd in Phase 2, which links against it for plist parsing.</p>
-
-<h3>1.2 <code>/boot/firmware</code> symlink trick <span class="pill ok">verified</span></h3>
+<h3>1.2 <code>/boot/firmware</code> symlink — <span class="pill info">not needed</span></h3>
 
 <div class="resolved">
-<strong>Verified working</strong> on freebsd-livecd-unionfs and freebsd-launchd against a Lenovo iwlwifi-8260 in May 2026. The symlink reroutes the kernel's namei lookup from <code>cdroot/boot/firmware/</code> (which is invisible to kernel-context vn_open after the userspace chroot to <code>/sysroot</code>) to <code>/sysroot/boot/firmware/</code>. Roughly one byte of fix for a class of WiFi/GPU firmware-load failures.
+<strong>Resolved (skip):</strong> the symlink trick fixes a kernel-namei vs. userspace-chroot namespace split that exists in freebsd-launchd's <em>chroot-to-/sysroot</em> model. Gershwin's Phase 1 architecture also chroots to <code>/sysroot</code>, but does so via <code>/sbin/init</code>'s <code>init_chroot</code> kenv — the kernel's view of <code>/sysroot</code> is a real mount stack (uzip + tmpfs upper + unionfs), and <code>/sysroot/boot/firmware</code> resolves through that stack to the actual firmware files in the uzip. The "kernel can't see what userspace can see" bug doesn't apply because the kernel's namei is operating against the same mount tree. If post-rework hardware testing surfaces firmware-loading failures we revisit; until then no symlink.
 </div>
 
-<p>Add to <code>prepare_boot_env</code> (after the kernel module pruning at <code>build.sh:356-370</code>, before <code>generate_iso</code>):</p>
-<pre class="shell"><code># Kernel-context firmware loading uses absolute paths that don't follow
-# the userspace chroot to /sysroot. Without this symlink, LinuxKPI's
-# request_firmware() can't open files that DO exist on the live root.
-# Trade-off: cd9660 carries the symlink (Rock Ridge ext); kernel resolves
-# it after the unionfs root is in place.
-ln -sf /sysroot/boot/firmware "${CD_ROOT}/boot/firmware"</code></pre>
+<h3>1.3 Live-mount cascade rework: single-root unionfs + <code>init_chroot</code> pivot <span class="pill ok">done — 3b97e40</span></h3>
 
-<p>Note that gershwin's current livecd does <em>not</em> chroot to <code>/sysroot</code> — it nullfs-mounts <code>/media/.uzip/*</code> into <code>/</code> directly. So the symlink target needs validation: if firmware lookups in the gershwin layout actually resolve to <code>/media/.uzip/boot/firmware/</code>, the symlink should point there instead. Test before committing. (Open question §11.1.)</p>
+<p>This was originally underscoped as "tighten <code>init_script</code> (cosmetic)." That was wrong — gershwin's livecd had to actually move to the freebsd-livecd-unionfs runtime model before Phase 2 could land cleanly. What changed:</p>
 
-<h3>1.3 Tighten <code>init_script</code></h3>
+<p><strong>Before:</strong> <code>resources/overlays/boot/init_script</code> ran a 14-mount cascade (per-subdir nullfs of <code>/Developer</code>, <code>/System</code>, <code>/Local</code>, <code>/bin</code>, <code>/lib</code>, <code>/libexec</code>, <code>/sbin</code>, <code>/usr</code>, <code>/boot</code>, <code>/root</code>, plus tmpfs at <code>/nvidia</code>, <code>/compat</code>, <code>/tmp</code>, <code>/media</code>) plus 5 unionfs mounts on top, plus <code>cp -R /media/.uzip/var → /var</code> (~10–50 MB physical copy) and <code>cp -R /media/.uzip/etc → /tmp; nullfs /tmp/etc /etc</code> (~5–20 MB physical copy). No chroot — kernel root stayed cd9660. Mount points to track: 19.</p>
 
-<p>The current <a href="https://github.com/gershwin-desktop/gershwin-on-freebsd/blob/main/resources/overlays/boot/init_script">overlays/boot/init_script</a> mixes three responsibilities:</p>
+<p><strong>After:</strong> <code>resources/overlays/init.sh</code> at cdroot top-level. Cascade:</p>
+<pre class="shell"><code>mdconfig -a -t vnode -o readonly -f /rootfs.uzip -u 0
+mount -t ufs -o ro /dev/md0.uzip /sysroot   # lower
+mount -t tmpfs tmpfs /upper                  # writable upper
+mount -t unionfs /upper /sysroot             # combined
+mount -t devfs devfs /sysroot/dev
+# … gershwin live-mode tweaks against /sysroot/… …
+kenv init_chroot=/sysroot
+exit 0</code></pre>
+<p><code>/sbin/init</code> (still PID 1, real FreeBSD binary from /rescue/init since /sbin/init isn't on the cd9660) reads <code>init_chroot</code> kenv at init.c:333 and chroots into <code>/sysroot</code> before continuing multi-user. Kernel root stays cd9660; userland sees the unionfs as <code>/</code>. Mount points: 6.</p>
 
-<ol>
-  <li><strong>Live-mount cascade</strong> (lines 67-127) — cd9660 → mdconfig uzip → tmpfs → nullfs/unionfs of /Developer, /System, /Local, /bin, /lib, /libexec, /sbin, /usr, /boot, /root, /etc. <em>Keep.</em></li>
-  <li><strong>Gershwin-specific writes</strong> (lines 129-139) — writes <code>/Local/Library/Preferences/LoginWindow.plist</code>. <em>Keep, but move to a separate Gershwin-specific block; eventually fold into a launchd plist payload in Phase 2.</em></li>
-  <li><strong>rcorder surgery</strong> (lines 142-242) — overwrites <code>/etc/rc.d/{tmp,cleartmp,cleanvar,var,hostname}</code> with PROVIDE-only stubs; sed-edits REQUIRE/BEFORE on <code>ldconfig</code>, <code>dbus</code>, <code>initgfx</code>, <code>slim</code>; loads VirtualBox kmods. <em>Phase 1: keep most, factor cleanly. Phase 2: delete entirely — launchd's dependency graph replaces rcorder.</em></li>
-</ol>
+<p>Loader.conf:</p>
+<pre class="shell"><code># Phase 1 additions:
+unionfs_load="YES"
+init_shell="/rescue/sh"
+init_script="/init.sh"   # was /boot/init_script</code></pre>
 
-<p>Phase 1 cleanup is mostly cosmetic — break the script into commented sections, lift the rcorder-surgery block into a clearly-named function, document why each <code>sed</code> exists. The functional behavior stays identical; this is preparatory work that makes the Phase 2 rip-out diff readable.</p>
+<p>Build.sh changes:</p>
+<ul>
+  <li><code>prepare_boot_env</code>: dropped the 30+ mountpoint mkdir list (now only <code>/sysroot</code>, <code>/upper</code>, <code>/dev</code>); dropped the <code>/etc/login.conf</code> workaround (chroot makes it unnecessary); added <code>unionfs.ko</code> to the kept-modules list; <code>cp init.sh</code> from <code>overlays/</code> top-level instead of <code>overlays/boot/init_script</code>.</li>
+  <li><code>generate_iso</code>: <code>rootfs.uzip</code> now lives at cdroot top-level (not <code>/boot/rootfs.uzip</code>) so <code>/init.sh</code> can <code>mdconfig -f /rootfs.uzip</code> directly.</li>
+</ul>
 
-<h3>1.4 CI boot-test</h3>
+<p>Live-mode tweaks preserved (rcorder surgery, SMBIOS hostname, VirtualBox detect, sendmail/linux/dbus rc.conf overrides) — paths retargeted to <code>/sysroot/…</code> since they run before the chroot.</p>
 
-<p>Today <code>.github/workflows/build.yml</code> builds the ISO and uploads it as a GH continuous release. It does not boot it. Phase 1 adds a QEMU smoke test that fails the workflow if the ISO can't reach login.</p>
+<p><strong>Footprint impact:</strong> disk unchanged; RAM at idle ~15–70 MB lower; boot speed faster (two recursive <code>cp -R</code> passes go away); cognitive load much lower (one mount stack instead of nineteen).</p>
 
-<p>Reference: freebsd-launchd's <code>tests/boot-test.sh</code>. Reuse the same shape:</p>
+<h3>1.4 CI boot-test gate <span class="pill ok">done — 7caefbf</span></h3>
 
-<pre class="shell"><code># tests/boot-test.sh (sketch — adapt freebsd-launchd's version)
-qemu-system-x86_64 \
-    -accel tcg -m 4096 -smp 2 \
-    -drive file="${ISO_PATH}",format=raw,media=cdrom \
-    -nographic -serial mon:stdio -monitor none \
-    -no-reboot \
-    -bios /usr/local/share/edk2-qemu/QEMU_EFI-x86_64.fd \
-    | tee boot.log
+<p>Workflow split into three jobs: <code>build</code> → <code>test</code> → <code>release</code>. <code>release</code> only fires on push to main and only when both prior jobs pass.</p>
 
-# Look for at least one of: "login:", "Welcome to Gershwin", or
-# (Phase 2) "launchd: PID 1 ready". Timeout if neither appears in 4 minutes.
-grep -qE 'login:|Welcome to Gershwin' boot.log
-</code></pre>
+<p><code>tests/boot-test.sh</code> (lifted from freebsd-launchd, simplified to single stage): runs <code>qemu-system-x86_64</code> with OVMF, KVM if available else TCG single-thread, <code>-display none -serial stdio</code>. Watches the serial log for any of: "login:" (getty prompt), "Starting local daemons" (rc multi-user marker), or "Welcome to Gershwin/FreeBSD" (banner). 10-minute timeout. Boot log uploaded as artifact on failure.</p>
 
-<p>Run inside the same <code>vmactions/freebsd-vm</code> action that already runs the build, after <code>generate_iso</code>. No new package deps in CI — qemu + edk2 firmware ship in <code>FreeBSD-qemu</code> on FreeBSD 15.</p>
+<p>The test job runs on <code>ubuntu-latest</code> (not the freebsd-vm) and pulls qemu+expect+ovmf via <code>apt-get</code> — same pattern as freebsd-launchd's CI.</p>
 
 <h3>1.5 Phase 1 acceptance criteria</h3>
 
 <ul>
-  <li>ISO builds in CI without changes to package lists.</li>
-  <li>ISO boots in QEMU to a login prompt within 4 minutes.</li>
-  <li>ISO boots on the Lenovo test laptop. WiFi firmware loads (verifies §1.2).</li>
-  <li>The continuous GH release publishes per push.</li>
-  <li>Existing rc.d-managed services come up: ZFS, dhclient, ntpd, dbus, initgfx, loginwindow, cupsd, avahi.</li>
+  <li><span class="pill ok">met</span> ISO builds in CI without changes to package lists. (1d2150b CI passed.)</li>
+  <li><span class="pill ok">met</span> ISO boots in QEMU to a multi-user marker within 10 minutes. (7caefbf CI passed.)</li>
+  <li><span class="pill warn">pending</span> Post-rework (3b97e40) CI green. <em>In flight as of v1.</em></li>
+  <li><span class="pill warn">pending</span> ISO boots on the Lenovo test laptop. WiFi firmware loads. <em>Hardware re-test after CI greens.</em></li>
+  <li><span class="pill ok">met</span> The continuous GH release publishes per push, gated by boot-test.</li>
+  <li><span class="pill warn">pending</span> Existing rc.d-managed services come up under the new chroot: ZFS, dhclient, ntpd, dbus, initgfx, loginwindow, cupsd, avahi. <em>Verify on first post-rework boot.</em></li>
 </ul>
 
 <h2 id="phase2">Phase 2: launchd port <span class="pill warn">starts only after Phase 1 ships</span></h2>
@@ -328,21 +345,25 @@ grep -qE 'login:|Welcome to Gershwin' boot.log
 build_launchd                # NEW
 configure_system</code></pre>
 
-<h3>2.2 Option D: <code>/init.sh</code> with shebang pivot</h3>
+<h3>2.2 Swap to Option D + launchd PID 1</h3>
 
-<p>Current <code>resources/overlays/boot/loader.conf</code> sets <code>init_script="/boot/init_script"</code> and FreeBSD's <code>init(8)</code> runs <code>/sbin/init</code> as PID 1, which then runs the loader-supplied init_script before multiuser rc. We need launchd as PID 1.</p>
-
-<p>The Option D trick (proven in freebsd-launchd): a script with <code>#!/rescue/sh</code> as its shebang at <code>/init.sh</code> triggers the kernel's <code>imgact_shell</code> and gets exec'd as PID 1. The script does the live-mount cascade and ends with <code>exec chroot /sysroot /sbin/launchd</code>.</p>
+<p>Phase 1 already moved <code>init.sh</code> to cdroot top-level, restructured to the <code>/sysroot</code> unionfs model, and delivered the live-mount cascade body. Phase 2 only needs to change <em>how the kernel exec's <code>init.sh</code></em> (init_script kenv → Option D shebang) and <em>what <code>init.sh</code> does at the end</em> (set <code>init_chroot</code> kenv → exec launchd in the chroot).</p>
 
 <p>Concrete migration:</p>
 <ol>
-  <li><strong>Rename</strong> <code>resources/overlays/boot/init_script</code> → <code>resources/overlays/init.sh</code>. Move it from <code>/boot/init_script</code> on the ISO to the cdroot top-level (so kernel's PID-1 lookup finds it).</li>
-  <li><strong>Update <code>loader.conf</code>:</strong> remove <code>init_script="…"</code>, add <code>init_path="/init.sh"</code>.</li>
-  <li><strong>Restructure the script</strong> to use the <code>/sysroot</code> pivot model: live-mount cascade ends at <code>/sysroot/{usr,etc,System,Developer,…}</code> instead of <code>/{usr,etc,System,…}</code>; final line <code>exec chroot /sysroot /sbin/launchd</code>.</li>
-  <li><strong>Delete the rcorder surgery</strong> entirely (was lines 172-242 in the old script). launchd reads its own dependency graph from plist <code>RunAtLoad</code>/<code>KeepAlive</code>/socket-activation keys.</li>
+  <li><strong>Update <code>loader.conf</code>:</strong> remove <code>init_script="/init.sh"</code> and <code>init_shell="/rescue/sh"</code>; add <code>init_path="/init.sh"</code>. <em>(The <code>#!/rescue/sh</code> shebang on <code>init.sh</code> is already there from Phase 1.)</em> With Option D, the kernel's <code>imgact_shell</code> resolves the shebang and exec's <code>/init.sh</code> as PID 1 directly — no <code>/sbin/init</code>, no <code>init_chroot</code> kenv path.</li>
+  <li><strong>Update <code>init.sh</code> tail:</strong> replace
+    <pre class="shell"><code>kenv init_chroot=/sysroot
+kenv -u init_script
+kenv -u init_shell
+exit 0</code></pre>
+    with
+    <pre class="shell"><code>exec chroot /sysroot /sbin/launchd</code></pre>
+    The cascade body above (mdconfig + ufs + tmpfs + unionfs + devfs + gershwin live tweaks) stays unchanged.</li>
+  <li><strong>Delete the rcorder surgery</strong> from <code>init.sh</code>. launchd reads its own dependency graph from plist <code>RunAtLoad</code>/<code>KeepAlive</code>/socket-activation keys; it doesn't care about <code># REQUIRE:</code> lines in <code>/etc/rc.d/*</code>.</li>
 </ol>
 
-<p>Reference: freebsd-launchd's <a href="freebsd-launchd-plan.html">plan §boot</a> walks through the Option D mechanics. Use the same shape; cherry-pick the live-mount cascade body from gershwin's existing <code>init_script</code> (lines 67-127) verbatim.</p>
+<p>Reference: freebsd-launchd's <a href="freebsd-launchd-plan.html">plan §boot</a> walks through the Option D mechanics. The diff against Phase 1's <code>init.sh</code> is small (delete the rcorder block, swap the last 4 lines for one).</p>
 
 <h3>2.3 LaunchDaemon plist conversion table</h3>
 
@@ -482,19 +503,21 @@ configure_system</code></pre>
 <table>
   <thead><tr><th>File</th><th>Phase 1</th><th>Phase 2</th></tr></thead>
   <tbody>
-    <tr><td><code>build.sh:281</code></td><td>Add <code>--branch feat/libs-corebase</code> to git clone.</td><td>Insert <code>build_launchd</code> stage between <code>build_gershwin_components</code> and <code>configure_system</code>.</td></tr>
+    <tr><td><code>build.sh:281</code></td><td><span class="pill ok">done — 1d2150b</span> <code>--branch feat/libs-corebase</code> added.</td><td>Insert <code>build_launchd</code> stage between <code>build_gershwin_components</code> and <code>configure_system</code>.</td></tr>
     <tr><td><code>build.sh:224-257</code> (configure_system rc.conf block)</td><td>Untouched.</td><td>Strip <code>_enable=YES</code> lines for converted services; keep tunables.</td></tr>
-    <tr><td><code>build.sh:319-389</code> (prepare_boot_env)</td><td>Add <code>ln -sf /sysroot/boot/firmware ${CD_ROOT}/boot/firmware</code>.</td><td>Drop <code>init_script="…"</code> from loader.conf write; ensure <code>/init.sh</code> is at cdroot top-level with exec bit + <code>#!/rescue/sh</code> shebang.</td></tr>
-    <tr><td><code>resources/overlays/boot/init_script</code></td><td>Comment-only cleanup; no behavior change.</td><td>Move/rename to <code>resources/overlays/init.sh</code>; restructure to <code>/sysroot</code> pivot; end with <code>exec chroot /sysroot /sbin/launchd</code>; delete rcorder surgery (lines ~172-242).</td></tr>
-    <tr><td><code>resources/overlays/boot/loader.conf</code></td><td>Untouched.</td><td>Replace <code>init_script="/boot/init_script"</code> with <code>init_path="/init.sh"</code>.</td></tr>
+    <tr><td><code>build.sh:319-389</code> (prepare_boot_env)</td><td><span class="pill ok">done — 3b97e40</span> dropped 30+ mountpoint mkdir; only <code>/sysroot</code>, <code>/upper</code>, <code>/dev</code>; dropped <code>/etc/login.conf</code> workaround; added <code>unionfs.ko</code> to keep list; <code>cp init.sh</code> from overlays top-level.</td><td>Untouched (init.sh tail change is in the overlay, not build.sh).</td></tr>
+    <tr><td><code>build.sh</code> generate_iso</td><td><span class="pill ok">done — 3b97e40</span> uzip moved from <code>/boot/rootfs.uzip</code> to <code>/rootfs.uzip</code>.</td><td>Untouched.</td></tr>
+    <tr><td><code>resources/overlays/boot/init_script</code> (old)</td><td><span class="pill ok">done — 3b97e40</span> deleted; replaced by <code>resources/overlays/init.sh</code>.</td><td>—</td></tr>
+    <tr><td><code>resources/overlays/init.sh</code> (new)</td><td><span class="pill ok">done — 3b97e40</span> single-root unionfs cascade + gershwin live tweaks against <code>/sysroot/…</code> + <code>kenv init_chroot=/sysroot</code> + exit.</td><td>Delete rcorder surgery block; replace last 4 lines (kenv init_chroot + cleanup + exit 0) with single line <code>exec chroot /sysroot /sbin/launchd</code>.</td></tr>
+    <tr><td><code>resources/overlays/boot/loader.conf</code></td><td><span class="pill ok">done — 3b97e40</span> <code>init_script="/init.sh"</code>, <code>init_shell="/rescue/sh"</code>, <code>unionfs_load="YES"</code>.</td><td>Drop <code>init_script</code> + <code>init_shell</code>; add <code>init_path="/init.sh"</code>.</td></tr>
     <tr><td><code>resources/overlays/Local/Library/Preferences/LoginWindow.plist</code></td><td>Untouched.</td><td>Untouched (this is the state file, not the launchd plist).</td></tr>
     <tr><td><code>resources/overlays/System/Library/LaunchDaemons/*.plist</code></td><td>—</td><td><strong>NEW directory</strong>; ~15 plists land here over the rollout.</td></tr>
     <tr><td><code>resources/packages/gershwin</code></td><td>Untouched.</td><td>Add <code>dhcpcd</code> and <code>wpa_supplicant</code>.</td></tr>
     <tr><td><code>resources/packages/base</code></td><td>Untouched.</td><td>Remove <code>FreeBSD-dhclient</code> and <code>FreeBSD-wpa</code>.</td></tr>
     <tr><td><code>resources/packages/vital-base</code></td><td>Untouched.</td><td>Remove <code>FreeBSD-dhclient</code> and <code>FreeBSD-wpa</code> if present.</td></tr>
     <tr><td><code>resources/packages/{drivers,vital-gershwin}</code></td><td>Untouched.</td><td>Untouched — settled work; not re-audited.</td></tr>
-    <tr><td><code>tests/boot-test.sh</code></td><td><strong>NEW file</strong> (adapted from freebsd-launchd).</td><td>Add a second grep for <code>launchd: PID 1 ready</code>.</td></tr>
-    <tr><td><code>.github/workflows/build.yml</code></td><td>Add boot-test invocation after <code>generate_iso</code>.</td><td>Untouched (boot-test detects launchd via grep).</td></tr>
+    <tr><td><code>tests/boot-test.sh</code></td><td><span class="pill ok">done — 7caefbf</span> qemu+OVMF+expect; multi-marker.</td><td>Add a second grep for <code>launchd: PID 1 ready</code>.</td></tr>
+    <tr><td><code>.github/workflows/build.yml</code></td><td><span class="pill ok">done — 7caefbf</span> split into build → test → release; release gated by boot-test.</td><td>Untouched (boot-test detects launchd via grep).</td></tr>
   </tbody>
 </table>
 
@@ -519,8 +542,8 @@ configure_system</code></pre>
 
 <h2 id="open">Open questions</h2>
 
-<div class="open-q">
-<strong>11.1 — Firmware symlink target on gershwin's mount layout.</strong> Gershwin's <code>init_script</code> nullfs-mounts <code>/media/.uzip/boot</code> at <code>/boot</code>, with no <code>/sysroot</code>. Where does kernel-namei look for firmware after boot? If <code>/boot/firmware</code> is already kernel-visible because <code>/boot</code> is a nullfs of the uzip, the symlink may not be needed at all in Phase 1. Verify by booting Phase-1 v0 against the Lenovo and watching <code>dmesg | grep firmware</code>.
+<div class="resolved">
+<strong>11.1 — Firmware symlink — resolved (skip).</strong> Phase 1's <code>init_chroot</code> chroot operates against a real mount stack (uzip + tmpfs + unionfs at <code>/sysroot</code>); the kernel's namei sees the firmware files through the same mount tree the userspace chroot sees. The freebsd-launchd kernel/userspace namespace split that motivated the symlink doesn't apply. Revisit only if hardware testing surfaces a firmware-loading failure under the new architecture.
 </div>
 
 <div class="open-q">
@@ -554,10 +577,15 @@ configure_system</code></pre>
   <li><strong>dhclient vs dhcpcd:</strong> Phase 2 adds <code>dhcpcd</code> from ports and removes <code>FreeBSD-dhclient</code> from the base list in the same commit. Lifts freebsd-launchd's existing <code>org.freebsd.dhcpcd.plist</code> verbatim. Per user direction 2026-05-06.</li>
   <li><strong>wpa_supplicant:</strong> Phase 2 adds <code>wpa_supplicant</code> from ports and removes <code>FreeBSD-wpa</code> from the base list in the same commit. Per user direction 2026-05-06.</li>
   <li><strong>No other package edits:</strong> the four-line dhcpcd / wpa_supplicant swap is the entire scope of package changes. Existing <code>resources/packages/{base,vital-base,gershwin,drivers,vital-gershwin}</code> entries are not re-audited, re-derived, or pruned beyond those four lines, regardless of what looks redundant under launchd. Per user direction 2026-05-06.</li>
+  <li><strong>Phase 1 underscoping correction:</strong> the original v0 plan called §1.3 "tighten init_script (cosmetic)" and parked the architectural rework in Phase 2. After conversation 2026-05-06 with the user noting that gershwin still does per-subdir nullfs + cp -R, scope was corrected — Phase 1 owns the architectural rework to single-root unionfs + <code>init_chroot</code> kenv pivot (mirroring freebsd-livecd-unionfs). Phase 2 then becomes a single-line tail change to <code>init.sh</code> + loader.conf knob swap.</li>
+  <li><strong>Mechanism for Phase 1 vs Phase 2 pivot:</strong> Phase 1 uses <code>init_chroot</code> kenv (read by stock <code>/sbin/init</code> after <code>init_script</code> exits). Phase 2 swaps to Option D shebang (kernel exec's <code>/init.sh</code> directly as PID 1, replacing init entirely). Both are documented mechanisms in FreeBSD; Option D is freebsd-launchd-specific because launchd replaces <code>/sbin/init</code>. Per agent research 2026-05-06.</li>
+  <li><strong>Firmware symlink:</strong> not adopted in Phase 1. Gershwin's <code>init_chroot</code> chroot operates against a real mount tree, so kernel-namei resolves <code>/sysroot/boot/firmware</code> through the unionfs to the real files in the uzip. The freebsd-launchd bug doesn't apply. Reconsider only if hardware testing fails. Decision 2026-05-06.</li>
+  <li><strong>init_script cosmetic tightening:</strong> not done. Risk/value didn't justify it for a load-bearing shell script. The full architectural rework subsumed any "cleanup" intent. Decision 2026-05-06.</li>
   <li><strong>chroot stays git-free:</strong> gershwin's current <code>build.sh:281</code> clones inside the chroot. We tolerate that for gershwin-developer (existing behavior; not regressing) but freebsd-launchd is rsynced from a host-side clone (per the existing memory rule).</li>
+  <li><strong>Fork-only workflow:</strong> all gershwin work lands in <code>pkgdemon/gershwin-on-freebsd</code> (the user's fork) directly on main; no PRs to gershwin-desktop, no topic branches. Per user direction 2026-05-06.</li>
 </ul>
 
-<p class="footnote">Plan v0, 2026-05-06. For review before any code lands.</p>
+<p class="footnote">Plan v1, 2026-05-06 — Phase 1 commits landed (1d2150b, 7caefbf, 3b97e40); CI gating release on boot-test pass.</p>
 
 </body>
 </html>

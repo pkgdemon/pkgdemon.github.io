@@ -212,9 +212,26 @@ mfs_type="mfs_root"</code></pre>
 
 <p>The FreeBSD loader reads <code>/rootfs.uzip</code> from the cd9660 boot media at loader time, before kernel boot. Loads the entire file into RAM. Kernel sees <code>md0</code> already configured at boot — backed by RAM, not by a vnode on cd9660.</p>
 
-<p>After loader hands off to kernel: cd9660 mounts as initial root (for kernel binary access), but nothing on cd9660 is held busy. <code>/init.sh</code> can later trigger reroot and <code>vfs_unmountall()</code> succeeds.</p>
+<p>After loader hands off to kernel: cd9660 mounts as initial root (for kernel binary access), but nothing on cd9660 is held busy by a vnode-backed mdconfig (because md0 came from the loader, not from a runtime <code>mdconfig -t vnode -f /rootfs.uzip</code>).</p>
 
-<p><strong>Pros:</strong> standard FreeBSD pattern (mfsBSD has used it for decades). Loader-handled, simple init.sh.</p>
+<p><strong>cd9660 is the rescue environment.</strong> It already contains <code>/rescue/sh</code>, <code>/sbin/gunion</code>, <code>/sbin/mdconfig</code>, <code>/sbin/reboot</code>, <code>/sbin/kenv</code> — everything <code>/init.sh</code> needs to run gunion-create and reroot. We do NOT build or load a separate "rescue.img" memdisk. The cd9660 IS the rescue env.</p>
+
+<p>Flow:</p>
+
+<pre class="shell"><code># /init.sh on cd9660 (Option D shebang as PID 1):
+
+# /dev/md0.uzip already exists, RAM-backed (loader preloaded rootfs.uzip)
+
+# Layer gunion on top for writable upper
+gunion create /dev/md0.uzip       # /dev/gunion0
+
+# Hand kernel the new root and trigger reroot
+kenv vfs.root.mountfrom="ufs:/dev/gunion0"
+exec /sbin/reboot -r              # process is replaced; kernel reroots</code></pre>
+
+<p>After <code>reboot -r</code>: <code>kern_reroot()</code> calls <code>vfs_unmountall()</code> which unmounts cd9660 cleanly (no busy vnodes). <code>vfs_mountroot()</code> mounts <code>/dev/gunion0</code> as the new kernel root. <code>/sbin/init</code> runs from the gunion-backed UFS. From this point the kernel root and userspace root are the same view; firmware loading works natively.</p>
+
+<p><strong>Pros:</strong> standard FreeBSD pattern (mfsBSD has used it for decades). Loader-handled, simple init.sh, no separate rescue.img to build or maintain.</p>
 
 <p><strong>Cons:</strong> loader has to slurp ~400MB into RAM at boot — slower boot by 5-15 seconds depending on read speed (USB stick, optical, network). Loader has size limits in some BIOSes/UEFI firmwares; needs verification on the target hardware.</p>
 
@@ -247,6 +264,14 @@ reboot -r</code></pre>
 <h3>4.3 Recommendation</h3>
 
 <p>Try Approach A first — it's the canonical pattern, less code, and if the loader supports the file size we get a clean boot. Fall back to B if loader-preload fails on real hardware.</p>
+
+<h3>4.4 Rejected: separate rescue.img + dual-memdisk</h3>
+
+<p>Considered briefly: build a tiny <code>rescue.img</code> (~30MB, separate UFS image with just init + tools) that the loader preloads alongside <code>rootfs.uzip</code>. Kernel boots from rescue.img; rescue's init.sh sets up gunion over the second memdisk; reroots to gunion-backed UFS. Eventually rescue.img unmounts.</p>
+
+<p>Rejected because: <strong>cd9660 already serves the same role.</strong> The cd9660 has <code>/rescue/sh</code>, <code>/sbin/mdconfig</code>, <code>/sbin/gunion</code>, <code>/sbin/reboot</code>, <code>/sbin/kenv</code> — every tool /init.sh needs. Building a separate rescue.img adds an entire build pipeline (extra UFS image, extra Makefile target, extra place to track tool versions) for zero functional gain. The mfsBSD model has a separate rescue image because mfsBSD targets installation media where you might want to eject the boot media or boot over network — neither applies to a livecd where the cd9660 is the rootfs origin and stays accessible until reroot.</p>
+
+<p>The cd9660 IS the rescue environment. Don't reinvent it.</p>
 
 <h2 id="why-gunion">5. Why gunion specifically (vs. unionfs, vs. tmpfs root)</h2>
 

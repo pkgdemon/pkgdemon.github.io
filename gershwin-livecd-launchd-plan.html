@@ -101,7 +101,7 @@
 <p class="subtitle">Plan to integrate the <a href="https://github.com/pkgdemon/freebsd-launchd">freebsd-launchd</a> work (livecd architecture + launchd PID&nbsp;1 + kmodloader + configd stub) into the <a href="https://github.com/gershwin-desktop/gershwin-on-freebsd">gershwin-on-freebsd</a> project. Sequenced: <strong>livecd rework first</strong>, then launchd, then the Apple-shaped helper daemons. Holds the line on packages — gershwin-on-freebsd's existing <code>resources/packages/</code> lists are the source of truth and we add nothing new in either phase.</p>
 
 <section id="tldr" class="tldr">
-  <h3>Status: <span class="pill ok">Phase 1 landed (CI-green)</span> <span class="pill info">v2 — Phase 2 cleared to start</span></h3>
+  <h3>Status: <span class="pill ok">Phase 1 + Phase 2 landed (CI-green)</span> <span class="pill info">v3 — Phase 3 polish next</span></h3>
   <ul>
     <li><strong>Two repos involved:</strong>
       <a href="https://github.com/pkgdemon/gershwin-on-freebsd">pkgdemon/gershwin-on-freebsd</a> (livecd build + package lists; we work in pkgdemon's fork only)
@@ -120,7 +120,21 @@
       </ol>
       <strong>Result:</strong> CI run 25495932941 is green — build (12-13m) → boot-test (~3m, real multi-user reach) → release publish.
     </li>
-    <li><strong>Phase 2 (launchd) — cleared to start:</strong> Phase 1 leaves the boot one line away from launchd. Swap <code>init.sh</code>'s final <code>kenv init_chroot=/sysroot</code> for <code>exec chroot /sysroot /sbin/launchd</code>; switch <code>loader.conf</code> to Option&nbsp;D (drop <code>init_script</code>/<code>init_shell</code>); clone freebsd-launchd into <code>/Developer/Library/Sources/</code> and build it after gershwin-developer's stack; ship the bedrock plists from freebsd-launchd (varrun, syslogd, cron, getty, dhcpcd, kmodloader); author <strong>two</strong> gershwin-specific plists (<code>org.gershwin.dshelper</code>, <code>org.gershwin.loginwindow</code>). <strong>No other rc.d-to-plist conversions.</strong> dbus / cupsd / avahi / ntpd / smartd etc. don't start under launchd PID 1; they're Phase 3+ adds, one at a time on user signal (dbus is the likely first follow-up).</li>
+    <li><strong>Phase 2 (launchd) — landed and CI-green:</strong> three commits on <code>pkgdemon/gershwin-on-freebsd:main</code>:
+      <ol style="margin:.4rem 0">
+        <li><code>fc6cbce</code> — cutover commit. New <code>build_launchd</code> stage (host-clone freebsd-launchd, run <code>make-launchd.sh</code> in chroot, install bedrock plists + getty wrapper, copy gershwin overlays). 3 gershwin plists authored (<code>org.gnustep.gdomap</code>, <code>org.gershwin.dshelper</code>, <code>org.gershwin.loginwindow</code>). <code>init.sh</code> tail swapped to <code>exec chroot /sysroot /sbin/launchd</code>. <code>loader.conf</code> flipped to Option D (<code>init_path="/init.sh"</code>). Packages: added <code>dhcpcd</code> + <code>wpa_supplicant</code>; removed <code>FreeBSD-dhclient</code> + <code>FreeBSD-wpa</code>. <code>configure_system</code>: stripped the two replaced <code>_enable=YES</code> lines.</li>
+        <li><code>8da5b4d</code> — round 1 fixes from first CI. Dropped <code>vidconsole</code> from <code>console=</code> (dual-console claimed ttyu0 as kernel console-session, blocking getty). Added <code>/System/Library/Libraries</code> to <code>ldconfig -m</code> so dshelper finds <code>libdispatch.so</code>. Added <code>-f</code> to gdomap's ProgramArguments to stop it from forking-and-detaching.</li>
+        <li><code>ebe7320</code> — round 2 fixes. Dropped getty plists (<code>console</code> + <code>vty0</code>) entirely — gershwin uses LoginWindow as the login UI; getty was redundant and looping on <code>login_tty: Operation not permitted</code>. Updated boot-test markers to LoginWindow- and dhcpcd-derived signals (<code>LoginWindow[</code>, <code>Successfully registered</code>, <code>em0: leased</code>). The "no getty" decision matches macOS shape (loginwindow.app on macOS isn't paired with text getty either).</li>
+      </ol>
+      <strong>Result:</strong> CI run 25504336947 — build (16m38s) → boot-test (~3m, real LoginWindow reach) → release publish.
+      <br><br>
+      <strong>Known non-blocking issues to clean up later:</strong>
+      <ul>
+        <li><code>dshelper</code>: first instance runs fine; subsequent KeepAlive respawns log <em>"Already running, PID 103"</em> from dshelper's own pidfile guard. Cosmetic noise. Fix: change dshelper's daemonization to be launchd-friendly (don't fork-and-detach; let launchd track the foreground PID).</li>
+        <li><code>gdomap</code>: <em>"I can't find the loopback interface"</em>. lo0 isn't auto-up. Need a one-shot plist or init.sh step to <code>ifconfig lo0 up</code> before gdomap probes. Not blocking the boot today.</li>
+        <li>Single-user mode gap: documented further down.</li>
+      </ul>
+    </li>
     <li><strong>Phase 3 (polish):</strong> bring in kmodloader, configd stub, ASL when each lands and earns its keep.</li>
     <li><strong>Post-launchd cleanup (deferred):</strong> once Phase 2's launchd + loginwindow plist are stable, restore the polished boot UX (re-enable <code>boot_mute</code>, drop the verbose / dual-console diagnostics) and retire the CI boot-test gate (collapse the workflow back to a single build → publish job, delete <code>tests/boot-test.sh</code>). See <a href="#cleanup">§Cleanup</a>.</li>
     <li><strong>Packages constraint:</strong> <code>resources/packages/{base,vital-base,gershwin,drivers,vital-gershwin}</code> are the source of truth, and the existing entries are <strong>not re-audited</strong>. We don't re-derive what gershwin's pkg-base list should contain — that work is done. <strong>No new kernel modules / GPU drivers</strong> (no <code>nvidia-drm-kmod</code>, etc.). Phase 2 swaps the DHCP/WPA stacks: <code>dhcpcd</code> and <code>wpa_supplicant</code> from ports get added to <code>resources/packages/gershwin</code>; <code>FreeBSD-dhclient</code> and <code>FreeBSD-wpa</code> get removed from <code>resources/packages/base</code> (and <code>vital-base</code>) in the same commit. The ISO ships exactly one DHCP client and one supplicant.</li>
@@ -421,12 +435,12 @@ exit 0</code></pre>
 <h3>2.5 Phase 2 acceptance criteria</h3>
 
 <ul>
-  <li>launchd is PID 1 (verified via <code>ps -o pid,command 1</code> at the login console).</li>
-  <li>Boot-test ISO reaches a getty <code>login:</code> prompt under the new launchd PID-1 path.</li>
-  <li>The two gershwin plists (<code>org.gershwin.dshelper</code>, <code>org.gershwin.loginwindow</code>) load and the daemons run.</li>
-  <li>dhcpcd leases an IP on the test interface (replaces dhclient under launchd).</li>
-  <li>No regression on the Lenovo hardware test (firmware still loads, WiFi still associates).</li>
-  <li>QEMU boot-test in CI gates releases.</li>
+  <li><span class="pill ok">met</span> launchd is PID 1 — verified by reaching LoginWindow under the launchd path.</li>
+  <li><span class="pill ok">met</span> Boot-test reaches the gershwin GUI greeter — LoginWindow comes up, Eau theme bridge registers via DO. (Replaces the original "getty <code>login:</code> prompt" criterion — getty isn't shipped under Phase 2's gershwin shape.)</li>
+  <li><span class="pill ok">met</span> The gershwin plists (<code>org.gershwin.dshelper</code>, <code>org.gershwin.loginwindow</code>, <code>org.gnustep.gdomap</code>) load — dshelper PID 103 confirmed running in CI run 25504336947.</li>
+  <li><span class="pill ok">met</span> <code>dhcpcd</code> leases an IP on the test interface (em0: leased 10.0.2.15 from QEMU's NAT).</li>
+  <li><span class="pill warn">deferred</span> Lenovo hardware test. Architecture is structurally validated under QEMU; hardware boot to LoginWindow before final ship.</li>
+  <li><span class="pill ok">met</span> QEMU boot-test in CI gates releases.</li>
 </ul>
 
 <p><strong>Out of scope for Phase 2:</strong> dbus, cupsd, avahi, ntpd, smartd, moused, webcamd. Those start under rc.d today; with launchd as PID 1 they don't start at all. Their plists land in Phase 3+ on user signal.</p>
@@ -627,7 +641,7 @@ exit 0</code></pre>
   </li>
 </ul>
 
-<p class="footnote">Plan v2, 2026-05-07 — Phase 1 fully landed and CI-green (run 25495932941, commit 6ff5abe). Phase 2 cleared to start.</p>
+<p class="footnote">Plan v3, 2026-05-07 — Phase 1 + Phase 2 fully landed and CI-green (Phase 2 ends at run 25504336947, commit ebe7320). Phase 3 polish (dbus, kmodloader, gdomap lo0 fix, dshelper daemonization, ASL, single-user mode) follows on user signal.</p>
 
 </body>
 </html>

@@ -156,7 +156,7 @@
 </div>
 
 <div class="constraint">
-  <strong>freebsd-launchd source location.</strong> Cloned into <code>/Developer/Library/Sources/freebsd-launchd/</code>, matching the convention in <code>gershwin-developer/Library/Scripts/Checkout.sh:10</code>. The host clone is rsynced into the chroot to honor the "chroot stays git-free" rule.
+  <strong>freebsd-launchd source location.</strong> Cloned into <code>/Developer/Library/Sources/freebsd-launchd/</code> via <code>chroot git clone</code> from inside <code>build.sh</code>, matching gershwin's existing pattern (<code>build.sh:281</code> already clones gershwin-developer in-chroot). The standalone freebsd-launchd repo's "chroot stays git-free + rsync from host" rule is project-local — when integrating into gershwin we follow gershwin's pattern.
 </div>
 
 <h2 id="sot">Source-of-truth split</h2>
@@ -312,23 +312,23 @@ init_script="/init.sh"   # was /boot/init_script</code></pre>
 
 <h3>2.1 Build launchd in the chroot</h3>
 
-<p>Add a new build stage in <code>build.sh</code>, between <code>build_gershwin_components</code> and <code>configure_system</code>:</p>
+<p>Add a new build stage in <code>build.sh</code>, between <code>build_gershwin_components</code> and <code>configure_system</code>. Cloned <em>inside</em> the chroot to match gershwin's existing pattern (<code>build.sh:281</code> already clones gershwin-developer the same way).</p>
 
 <pre class="shell"><code>build_launchd() {
     log "Building freebsd-launchd from source..."
 
-    # Host-side clone (chroot stays git-free).
-    if [ ! -d "${WORKDIR}/freebsd-launchd/.git" ]; then
-        git clone https://github.com/pkgdemon/freebsd-launchd "${WORKDIR}/freebsd-launchd"
-    else
-        ( cd "${WORKDIR}/freebsd-launchd" && git pull --ff-only )
-    fi
+    # Host-side git clone writing into the chroot's Sources tree.
+    # Matches gershwin's existing build.sh:281 pattern verbatim — same
+    # destination convention (gershwin-developer's $SCRIPT_DIR/../Sources
+    # from Checkout.sh:10) and same in-chroot Sources layout. Lands as
+    # a sibling to libdispatch, tools-make, libobjc2, libs-base,
+    # libs-corebase, libs-gui, libs-back already cloned by Checkout.sh.
+    git clone --depth 1 https://github.com/pkgdemon/freebsd-launchd \
+        "${RELEASE_DIR}/Developer/Library/Sources/freebsd-launchd"
 
-    # Rsync into the chroot at gershwin convention.
-    mkdir -p "${RELEASE_DIR}/Developer/Library/Sources/freebsd-launchd"
-    rsync -a --delete "${WORKDIR}/freebsd-launchd/" \
-        "${RELEASE_DIR}/Developer/Library/Sources/freebsd-launchd/"
-
+    # Build setup mirrors build_gershwin_components: resolv.conf for
+    # any network-touching configure step, devfs for /dev/null-style
+    # subprocess pipes that gmake/configure want.
     cp /etc/resolv.conf "${RELEASE_DIR}/etc/resolv.conf"
     mount -t devfs devfs "${RELEASE_DIR}/dev" 2>/dev/null || true
 
@@ -611,7 +611,7 @@ exit 0</code></pre>
   <li><strong>Mechanism for Phase 1 vs Phase 2 pivot:</strong> Phase 1 uses <code>init_chroot</code> kenv (read by stock <code>/sbin/init</code> after <code>init_script</code> exits). Phase 2 swaps to Option D shebang (kernel exec's <code>/init.sh</code> directly as PID 1, replacing init entirely). Both are documented mechanisms in FreeBSD; Option D is freebsd-launchd-specific because launchd replaces <code>/sbin/init</code>. Per agent research 2026-05-06.</li>
   <li><strong>Firmware symlink:</strong> not adopted in Phase 1. Gershwin's <code>init_chroot</code> chroot operates against a real mount tree, so kernel-namei resolves <code>/sysroot/boot/firmware</code> through the unionfs to the real files in the uzip. The freebsd-launchd bug doesn't apply. Reconsider only if hardware testing fails. Decision 2026-05-06.</li>
   <li><strong>init_script cosmetic tightening:</strong> not done. Risk/value didn't justify it for a load-bearing shell script. The full architectural rework subsumed any "cleanup" intent. Decision 2026-05-06.</li>
-  <li><strong>chroot stays git-free:</strong> gershwin's current <code>build.sh:281</code> clones inside the chroot. We tolerate that for gershwin-developer (existing behavior; not regressing) but freebsd-launchd is rsynced from a host-side clone (per the existing memory rule).</li>
+  <li><strong>chroot stays git-free — exception for gershwin integration:</strong> the freebsd-launchd standalone repo follows the rule (host-side clone + rsync into chroot). gershwin-on-freebsd's existing pattern is the opposite — <code>build.sh:281</code> clones gershwin-developer inside the chroot, and Checkout.sh (running in chroot) clones each upstream into <code>/Developer/Library/Sources/</code>. Phase 2's <code>build_launchd</code> follows gershwin's pattern (<code>chroot git clone</code>) to keep one consistent integration shape. Per user direction 2026-05-07.</li>
   <li><strong>Fork-only workflow:</strong> all gershwin work lands in <code>pkgdemon/gershwin-on-freebsd</code> (the user's fork) directly on main; no PRs to gershwin-desktop, no topic branches. Per user direction 2026-05-06.</li>
   <li><strong>Post-rework debugging trail (2026-05-07):</strong>
     <ul>

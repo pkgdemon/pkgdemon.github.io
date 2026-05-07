@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>freebsd-livecd-gunion-reroot — experimental architecture</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  table.compact td, table.compact th { padding: .35rem .55rem; font-size: .88rem; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .phase.todo { border-left: 4px solid var(--accent2); }
+  .phase.future { border-left: 4px solid var(--warn); }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .gap { background: #fff5f5; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .gap strong { color: var(--bad); }
+  .win { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .win strong { color: var(--ok); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#goal">Goal</a>
+  <a href="#problem">Problem</a>
+  <a href="#arch">Architecture</a>
+  <a href="#busy">The busy-cd9660 problem</a>
+  <a href="#why-gunion">Why gunion</a>
+  <a href="#phases">Phases</a>
+  <a href="#risks">Risks</a>
+  <a href="#vs-others">Vs. siblings</a>
+  <a href="#open">Open questions</a>
+  <a href="#refs">References</a>
+</nav>
+
+<h1>freebsd-livecd-gunion-reroot — experimental architecture <span class="pill warn">EXPERIMENTAL</span></h1>
+<p class="subtitle">A research-grade attempt to fix the kernel-vs-userspace namespace split that today blocks kernel-context firmware loading on all our livecd variants. Combines <code>gunion</code> (block-level RAM overlay) with FreeBSD's <code>reboot -r</code> reroot mechanism, sidestepping the chroot pattern entirely. Intended as a separate sibling repo (<code>freebsd-livecd-gunion-reroot</code>) so we can iterate without disturbing the working <a href="freebsd-livecd-plan.html">freebsd-livecd</a> projects.</p>
+
+<section id="tldr" class="tldr">
+  <h3>TL;DR</h3>
+  <ul>
+    <li><strong>Status:</strong> not yet built. This document plans the experiment. Sibling repos <a href="https://github.com/pkgdemon/freebsd-livecd-gunion">freebsd-livecd-gunion</a> and <a href="https://github.com/pkgdemon/freebsd-livecd-unionfs">freebsd-livecd-unionfs</a> are working today using a chroot-based pattern; this is a clean-sheet re-architecture attempt that does NOT touch them.</li>
+    <li><strong>The problem:</strong> our existing livecds boot from cd9660, mount rootfs.uzip via mdconfig, overlay it (unionfs or gunion), and chroot into the overlay. The kernel's root stays as cd9660 forever. Userspace and kernel see different views of <code>/boot/firmware/</code>. Result: when iwlwifi/i915kms etc. ask for firmware via kernel-context <code>vn_open</code>, the file is invisible. Wifi doesn't come up; GPU acceleration is degraded.</li>
+    <li><strong>The proposed fix:</strong> use <code>reboot -r</code> after early init.sh setup, so the kernel actually re-mounts root from the gunion-backed UFS. Now the kernel and userspace see the same root. Kernel-context firmware loading works.</li>
+    <li><strong>The catch:</strong> <code>kern_reroot()</code> calls <code>vfs_unmountall()</code> before re-mounting root. cd9660 has the rootfs.uzip vnode held busy by mdconfig — unmount fails. Either the system gets stuck half-rerooted or, worse, panics in <code>vfs_mountroot()</code> due to inconsistent root-vnode state.</li>
+    <li><strong>The workaround:</strong> preload rootfs.uzip into a memdisk (RAM-backed) BEFORE reroot, so cd9660 isn't holding it busy. Two ways: loader-preload via <code>loader.conf</code> mfsBSD-style, or copy rootfs.uzip into a malloc-md in init.sh and detach the vnode-md before reroot.</li>
+    <li><strong>Why a separate repo:</strong> sibling iteration is safer than mutating <a href="https://github.com/pkgdemon/freebsd-livecd-gunion">freebsd-livecd-gunion</a>. We can compare side-by-side, easily roll back, and use the experience to inform whether the other livecd variants should follow the same architecture later.</li>
+    <li><strong>RAM cost:</strong> ~600MB-1GB floor (rootfs.uzip in RAM, plus gunion writable upper). Up from ~200MB on the chroot variants. Excludes machines with ≤2GB RAM but acceptable for any laptop in 2026.</li>
+    <li><strong>Effort:</strong> ~3-5 days of focused work + boot testing on real hardware. Risk of breaking the boot path entirely; needs careful staging.</li>
+  </ul>
+</section>
+
+<h2 id="goal">1. Goal &amp; non-goals</h2>
+
+<h3>1.1 Goal</h3>
+<p>Build a livecd variant where the kernel's root mount IS the writable rootfs (via gunion + reroot), so kernel-context filesystem operations (firmware loading, kld auto-search, etc.) see the same view as userspace. Specifically: iwlwifi/i915kms/amdgpu firmware loads correctly without needing a 1GB cdroot bloat or a `/boot/firmware → /sysroot/boot/firmware` symlink workaround.</p>
+
+<h3>1.2 Non-goals (this experiment)</h3>
+<ul>
+  <li><strong>No replacement for existing livecd variants in production.</strong> If this works, we evaluate whether to retire <code>freebsd-livecd-gunion</code> in favor of it; until then both coexist.</li>
+  <li><strong>No optimization for low-RAM systems.</strong> The reroot architecture inherently needs the rootfs in RAM (or some non-cd9660-backed location). Machines with &lt;3GB are out of scope.</li>
+  <li><strong>No kernel patches.</strong> We use FreeBSD's existing <code>kern_reroot()</code>, <code>mdconfig(8)</code>, <code>gunion(8)</code>, <code>loader(8)</code> features. If any of those need bug fixes to make this work, file upstream tickets, don't carry patches.</li>
+  <li><strong>No fancy GUI installer flow.</strong> Same boot-test-in-qemu cycle as the other livecd projects.</li>
+  <li><strong>No pivot to mfsBSD entirely.</strong> The "use a memdisk for the rootfs" trick comes from mfsBSD, but we keep gunion as the writable overlay (not pure tmpfs root). This preserves the layered-RO-with-RAM-overlay model.</li>
+</ul>
+
+<h2 id="problem">2. The problem we're solving</h2>
+
+<p>All three of our existing livecd projects share the same architectural shape, and it has the same kernel-firmware-loading bug.</p>
+
+<table class="compact">
+<thead>
+<tr><th>Project</th><th>Overlay</th><th>Handoff</th><th>Firmware bug?</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="https://github.com/pkgdemon/freebsd-launchd">freebsd-launchd</a></td><td>unionfs</td><td>chroot via Option D shebang on <code>/init.sh</code></td><td>Yes</td></tr>
+<tr><td><a href="https://github.com/pkgdemon/freebsd-livecd-unionfs">freebsd-livecd-unionfs</a></td><td>unionfs</td><td>chroot via <code>init_chroot</code> kenv</td><td>Yes</td></tr>
+<tr><td><a href="https://github.com/pkgdemon/freebsd-livecd-gunion">freebsd-livecd-gunion</a></td><td>gunion</td><td>chroot via <code>init_chroot</code> kenv</td><td>Yes</td></tr>
+</tbody>
+</table>
+
+<p><strong>The bug</strong>: kernel-context <code>vn_open</code> in <code>sys/kern/subr_firmware.c</code>'s <code>try_binary_file()</code> resolves <code>/boot/firmware/&lt;name&gt;</code> against the kernel's root namespace, which on these livecds is the cd9660 mount. Userspace processes (post-chroot) see <code>/boot/firmware/</code> in the unionfs/gunion view, which has the pkg-installed firmware files. The kernel's view is the cd9660 root, which contains only the bootloader-stage firmware (a small subset). Result: <code>iwlwifi-8000C-36.ucode</code> exists for userspace but not for kernel; wifi doesn't come up.</p>
+
+<p>Verified empirically on a Lenovo laptop running freebsd-launchd's continuous-release ISO: file present (2.4MB) via <code>ls /boot/firmware/iwlwifi-8000C-36.ucode</code>; iwlwifi attaches at the bus level but reports <code>"could not load binary firmware /boot/firmware/iwlwifi-8000C-36.ucode either"</code> followed by <code>"File size way too small!"</code> — the kernel's read returned zero bytes despite the file being right there from userspace.</p>
+
+<h2 id="arch">3. The proposed architecture</h2>
+
+<p>The fix is conceptually simple: make the kernel's root mount the same thing userspace sees. <code>chroot</code> can't do this (chroot only changes the userspace process's view, kernel root stays put). <code>kern_reroot()</code> can — it actually unmounts the kernel's root and re-mounts a new one. After reroot, kernel namei resolves paths against the new root.</p>
+
+<div class="ascii-diagram">    Boot from cd9660:
+      vfs.root.mountfrom="cd9660:/dev/iso9660/LIVECD"
+              |
+              v
+    Loader preloads rootfs.uzip into RAM (mfsBSD pattern):
+      mfs_load="YES"
+      mfs_name="/rootfs.uzip"
+              |
+              v
+    Kernel sees /dev/md0 already configured (RAM-backed)
+    geom_uzip auto-creates /dev/md0.uzip
+              |
+              v
+    /init.sh runs as PID 1:
+      1. gunion create /dev/md0.uzip   →  /dev/gunion0  (writable, RAM upper)
+      2. mount -t ufs /dev/gunion0 /sysroot   (sanity check; could skip)
+      3. kenv vfs.root.mountfrom="ufs:/dev/gunion0"
+      4. kenv init_path="/sbin/init"
+      5. reboot -r
+              |
+              v
+    kern_reroot():
+      vfs_unmountall()              ← cd9660 unmounts CLEANLY (no busy
+                                       vnodes — rootfs.uzip lives in
+                                       memdisk, not on cd9660 anymore)
+      vfs_mountroot()               ← re-mounts root from gunion0
+                                       kernel root is now the writable
+                                       gunion-backed UFS
+      exec /sbin/init               ← new init in new root
+              |
+              v
+    Normal boot continues, but:
+      - kernel root  =  gunion-backed UFS  =  same as userspace view
+      - /boot/firmware/foo.ucode is visible to kernel namei
+      - iwlwifi attaches → firmware loads → wlan0 appears</div>
+
+<p>Three architectural improvements over the chroot variants:</p>
+<ul>
+  <li><strong>Kernel namespace = userspace namespace.</strong> No split. Firmware loads. Future kernel-context filesystem operations (kld_load search paths, etc.) see the right view.</li>
+  <li><strong>Rootfs is in RAM, not on cd9660.</strong> Reads are faster (no decompression hit on every page-fault into uzip-backed pages). Trade-off: higher RAM floor.</li>
+  <li><strong>cd9660 can be fully unmounted post-reroot.</strong> Frees the optical/USB device for other use (uncommon but a valid operation).</li>
+</ul>
+
+<h2 id="busy">4. The busy-cd9660 problem and how to dodge it</h2>
+
+<p>The naive version of this — set up gunion + reroot without preloading the rootfs.uzip — fails because:</p>
+
+<pre class="warn-pre"><code>1. /init.sh runs in cd9660 root
+2. mdconfig -a -t vnode -f /rootfs.uzip   ← holds /rootfs.uzip vnode busy
+   /dev/md0 is now backed by the FILE on cd9660
+3. gunion create /dev/md0.uzip            ← /dev/gunion0
+4. reboot -r with vfs.root.mountfrom=ufs:/dev/gunion0
+5. kern_reroot() → vfs_unmountall()
+6. unmount cd9660 → EBUSY  (md is holding /rootfs.uzip vnode)
+7. cd9660 stays mounted; vfs_mountroot() runs anyway with old root still half-mounted
+8. Inconsistent rootvnode state → panic in vfs_mountroot() OR
+   half-rerooted system in unstable state</code></pre>
+
+<p>The exact failure mode (panic vs hang vs error) depends on FreeBSD's <code>vfs_mountroot</code> implementation details I haven't traced exactly. Either way it's bad enough that "don't try this naively" is the correct stance.</p>
+
+<h3>4.1 Approach A: loader preload (mfsBSD pattern)</h3>
+
+<p>Add to cdroot's <code>/boot/loader.conf</code>:</p>
+
+<pre class="shell"><code>mfs_load="YES"
+mfs_name="/rootfs.uzip"
+mfs_type="mfs_root"</code></pre>
+
+<p>The FreeBSD loader reads <code>/rootfs.uzip</code> from the cd9660 boot media at loader time, before kernel boot. Loads the entire file into RAM. Kernel sees <code>md0</code> already configured at boot — backed by RAM, not by a vnode on cd9660.</p>
+
+<p>After loader hands off to kernel: cd9660 mounts as initial root (for kernel binary access), but nothing on cd9660 is held busy. <code>/init.sh</code> can later trigger reroot and <code>vfs_unmountall()</code> succeeds.</p>
+
+<p><strong>Pros:</strong> standard FreeBSD pattern (mfsBSD has used it for decades). Loader-handled, simple init.sh.</p>
+
+<p><strong>Cons:</strong> loader has to slurp ~400MB into RAM at boot — slower boot by 5-15 seconds depending on read speed (USB stick, optical, network). Loader has size limits in some BIOSes/UEFI firmwares; needs verification on the target hardware.</p>
+
+<h3>4.2 Approach B: in-init.sh memdisk copy</h3>
+
+<p>Same end state, done in init.sh instead of loader:</p>
+
+<pre class="shell"><code># Inside /init.sh, before any other md/gunion setup:
+
+# 1. Create a malloc-backed memdisk sized for the rootfs
+mdconfig -a -t malloc -s 400m -u 1   # /dev/md1, RAM-backed, empty
+
+# 2. Copy rootfs.uzip into it
+dd if=/rootfs.uzip of=/dev/md1 bs=1m
+
+# 3. Detach the vnode-backed md (if we created one)
+mdconfig -d -u 0 2&gt;/dev/null    # no-op if we never created md0
+
+# 4. /dev/md1.uzip is now RAM-backed; cd9660 is no longer needed
+gunion create /dev/md1.uzip      # /dev/gunion0
+
+# 5. Set reroot target and trigger
+kenv vfs.root.mountfrom="ufs:/dev/gunion0"
+reboot -r</code></pre>
+
+<p><strong>Pros:</strong> doesn't depend on loader behavior. Easier to debug (it's a shell script, can be poked at interactively).</p>
+
+<p><strong>Cons:</strong> dd-copy of ~400MB takes 1-3 seconds on RAM. cd9660 stays mounted for the duration of the copy. Init.sh becomes more complex and order-sensitive.</p>
+
+<h3>4.3 Recommendation</h3>
+
+<p>Try Approach A first — it's the canonical pattern, less code, and if the loader supports the file size we get a clean boot. Fall back to B if loader-preload fails on real hardware.</p>
+
+<h2 id="why-gunion">5. Why gunion specifically (vs. unionfs, vs. tmpfs root)</h2>
+
+<table class="compact">
+<thead>
+<tr><th>Overlay</th><th>Layer</th><th>Can be reroot target?</th><th>RAM cost</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td>unionfs</td><td>vnode-stacking</td><td><strong>No</strong></td><td>low (writes only)</td><td>Can't be a single-spec root mount; can't be mounted over /. Per <code>unionfs(8)</code>: "meaningless to mount unionfs over a root mount point."</td></tr>
+<tr><td>gunion</td><td>GEOM block-device</td><td><strong>Yes</strong></td><td>low-medium</td><td>Creates a writable virtual block device backed by RO underlying + RAM upper. UFS on top mounts cleanly as root via standard <code>vfs.root.mountfrom=ufs:/dev/gunion0</code>.</td></tr>
+<tr><td>tmpfs root</td><td>tmpfs (RAM)</td><td>Yes</td><td>HIGH (entire rootfs in RAM uncompressed, ~1-2GB)</td><td>Works but burns RAM. mfsBSD does this for tiny rootfs; ours is too big.</td></tr>
+<tr><td>RO UFS + selective tmpfs subdirs</td><td>UFS + tmpfs</td><td>Yes (UFS as root)</td><td>low (only writable subdirs in RAM)</td><td>The mfsBSD/Path-A pattern. Simpler than gunion. Trade: only writable where we explicitly mount tmpfs.</td></tr>
+</tbody>
+</table>
+
+<p>gunion gives us the cleanest "writable root" semantic — no thinking about which subdirs are writable, no skeleton-population dance, no per-iface tmpfs-mount choreography. Everything is writable; writes go to RAM via gunion's upper layer; reads come from the RO uzip via gunion's lower.</p>
+
+<p>Trade-off vs. RO UFS + tmpfs subdirs: gunion has a known performance overhead (block-level overlay isn't free) and write coalescing/syncing semantics that have caused issues historically. We moved <em>off</em> gunion to unionfs in <a href="https://github.com/pkgdemon/freebsd-livecd-unionfs">freebsd-livecd-unionfs</a> partly because of these.</p>
+
+<p>For this experimental architecture, gunion is the right pick because it's the only writable-everywhere overlay that can be a reroot target. The performance trade-off is worth re-evaluating now that we have the rootfs entirely in RAM (less I/O contention than gunion-over-cd9660-uzip).</p>
+
+<h2 id="phases">6. Phased delivery</h2>
+
+<div class="phase todo">
+<h3>Phase 0 — repo scaffold <span class="pill info">PLANNED</span></h3>
+<ul>
+  <li>Create <code>github.com/pkgdemon/freebsd-livecd-gunion-reroot</code> repo. Fork from <code>freebsd-livecd-gunion</code> as a starting point so we inherit the working build.sh + cdroot setup + boot-test infrastructure.</li>
+  <li>Update README to clearly mark as experimental.</li>
+  <li>NOTICE / LICENSE same as parent.</li>
+  <li>CI workflow inherits from parent; same matrix (FreeBSD 15.0 amd64).</li>
+</ul>
+</div>
+
+<div class="phase todo">
+<h3>Phase 1 — loader preload of rootfs.uzip <span class="pill info">PLANNED</span></h3>
+<ul>
+  <li>Modify <code>build.sh</code>: copy <code>rootfs.uzip</code> from <code>$WORK/cdroot/rootfs.uzip</code> to also be readable by loader (it should already be — loader reads from the cd9660 root). Verify path.</li>
+  <li>Modify <code>boot/loader.conf</code> to add:
+    <pre><code>mfs_load="YES"
+mfs_name="/rootfs.uzip"
+mfs_type="mfs_root"</code></pre>
+  </li>
+  <li>Boot test: confirm kernel sees <code>/dev/md0</code> at boot (memdisk-backed). Confirm <code>/dev/md0.uzip</code> auto-created by geom_uzip. Confirm cd9660 has no busy vnodes.</li>
+  <li><strong>Milestone:</strong> kernel boots, loader took ~10-30s longer than current, /dev/md0 shows up at boot, otherwise unchanged.</li>
+</ul>
+</div>
+
+<div class="phase todo">
+<h3>Phase 2 — gunion + reroot in init.sh <span class="pill info">PLANNED</span></h3>
+<ul>
+  <li>Rewrite <code>/init.sh</code>:
+    <pre><code>#!/rescue/sh
+# /dev/md0.uzip already exists (loader preloaded)
+
+# Layer gunion on top for writable upper
+gunion create /dev/md0.uzip       # /dev/gunion0
+gunion commit /dev/gunion0 ON     # ensure writable, RAM upper
+
+# Hand kernel the new root and reroot
+kenv vfs.root.mountfrom="ufs:/dev/gunion0"
+exec /sbin/reboot -r</code></pre>
+  </li>
+  <li>Boot test: kernel reroots successfully, <code>/sbin/init</code> runs from gunion-backed UFS, normal boot continues.</li>
+  <li>Verify <code>kldstat</code>, <code>mount</code>, <code>ifconfig</code> all behave as expected.</li>
+  <li><strong>Milestone:</strong> system boots end-to-end through reroot, lands at login prompt.</li>
+</ul>
+</div>
+
+<div class="phase todo">
+<h3>Phase 3 — kernel-firmware loading verification <span class="pill info">PLANNED</span></h3>
+<ul>
+  <li>Boot on a Lenovo laptop with iwlwifi-8260 hardware (the one we tested freebsd-launchd on).</li>
+  <li>Verify: <code>kldstat | grep iwlwifi</code> shows loaded; <code>dmesg | grep iwlwifi</code> shows successful firmware load (no "File size way too small!"); <code>ifconfig | grep wlan</code> shows wlan0; <code>sysctl net.wlan.devices</code> non-empty.</li>
+  <li>Verify GPU firmware too: i915kms's DMC firmware should load (<code>dmesg | grep DMC</code>).</li>
+  <li><strong>Milestone:</strong> wifi + GPU firmware both load via kernel namei. The architectural fix is real.</li>
+</ul>
+</div>
+
+<div class="phase todo">
+<h3>Phase 4 — boot test extension in CI <span class="pill info">PLANNED</span></h3>
+<ul>
+  <li>Update boot-test workflow to verify reroot completed (e.g., grep dmesg for the post-reroot init startup line).</li>
+  <li>Add a check that <code>mount</code> shows <code>/dev/gunion0</code> as <code>/</code>, not cd9660.</li>
+  <li><strong>Milestone:</strong> CI boot test catches reroot regressions.</li>
+</ul>
+</div>
+
+<div class="phase todo">
+<h3>Phase 5 — comparison + decision <span class="pill info">PLANNED</span></h3>
+<ul>
+  <li>Compare against the symlink-trick approach in freebsd-launchd (commit 51e1b80). Three axes:
+    <ul>
+      <li>Does it work? (Both should — different mechanisms, same end goal.)</li>
+      <li>RAM cost?</li>
+      <li>Boot time?</li>
+      <li>Code complexity?</li>
+      <li>Future-proofness for similar issues?</li>
+    </ul>
+  </li>
+  <li>If reroot is meaningfully better: plan migration of freebsd-launchd to the same model.</li>
+  <li>If symlink trick is "good enough": keep this as a reference architecture but don't migrate.</li>
+</ul>
+</div>
+
+<h2 id="risks">7. Risks</h2>
+
+<div class="gap">
+<strong>Boot-path regression.</strong> Reroot is invasive. Anything that goes wrong between init.sh's <code>reboot -r</code> and the new init's first log line is a black-box failure. Mitigation: aggressive serial-console logging, test on real hardware before declaring success in CI.
+</div>
+
+<div class="gap">
+<strong>Loader file-size limits.</strong> Some BIOSes/UEFI firmwares limit loader-mapped file sizes. If <code>rootfs.uzip</code> at ~400MB exceeds the limit, loader fails to preload and we fall back to in-init.sh memdisk copy (Approach B). Need to test on multiple firmware vendors.
+</div>
+
+<div class="gap">
+<strong>gunion performance regressions.</strong> We moved off gunion to unionfs because of perf issues. They may resurface when gunion is the root filesystem rather than a sub-mount. Mitigation: profile fs operations during boot test; compare against unionfs baseline.
+</div>
+
+<div class="gap">
+<strong>RAM floor too high for older hardware.</strong> ~600MB-1GB RAM minimum. Excludes a meaningful chunk of older laptops still in service. Mitigation: document the requirement; recommend the chroot-based variants for low-RAM systems.
+</div>
+
+<div class="gap">
+<strong>Half-rerooted state.</strong> If <code>kern_reroot()</code> partially succeeds but <code>vfs_mountroot()</code> fails, the system can land in a state where neither the old nor new root is fully mounted. Behavior is undefined; might panic. Mitigation: extensive boot testing; have a recovery serial console available.
+</div>
+
+<h2 id="vs-others">8. Comparison with sibling livecd projects</h2>
+
+<table class="compact">
+<thead>
+<tr><th>Axis</th><th>freebsd-launchd (today)</th><th>freebsd-livecd-unionfs</th><th>freebsd-livecd-gunion</th><th>freebsd-livecd-gunion-reroot (this)</th></tr>
+</thead>
+<tbody>
+<tr><td>Overlay</td><td>unionfs</td><td>unionfs</td><td>gunion</td><td>gunion</td></tr>
+<tr><td>Handoff</td><td>chroot (Option D)</td><td>chroot (init_chroot)</td><td>chroot (init_chroot)</td><td><strong>reboot -r</strong></td></tr>
+<tr><td>Kernel root after boot</td><td>cd9660</td><td>cd9660</td><td>cd9660</td><td><strong>gunion-backed UFS</strong></td></tr>
+<tr><td>Kernel firmware loading</td><td>broken (workaround: symlink)</td><td>broken</td><td>broken</td><td><strong>works natively</strong></td></tr>
+<tr><td>Rootfs.uzip location at runtime</td><td>vnode on cd9660</td><td>vnode on cd9660</td><td>vnode on cd9660</td><td><strong>RAM (loader-preloaded)</strong></td></tr>
+<tr><td>RAM floor</td><td>~200MB</td><td>~200MB</td><td>~200MB</td><td><strong>~600-800MB</strong></td></tr>
+<tr><td>Writable surface</td><td>everywhere (unionfs)</td><td>everywhere (unionfs)</td><td>everywhere (gunion)</td><td>everywhere (gunion)</td></tr>
+<tr><td>Boot time</td><td>fast</td><td>fast</td><td>fast</td><td><strong>+10-30s (loader preload)</strong></td></tr>
+<tr><td>cd9660 stays mounted post-boot</td><td>yes (kernel root)</td><td>yes</td><td>yes</td><td><strong>no (unmounted by reroot)</strong></td></tr>
+<tr><td>Architectural risk</td><td>known-good</td><td>known-good</td><td>known-good</td><td><strong>experimental</strong></td></tr>
+</tbody>
+</table>
+
+<h2 id="open">9. Open questions</h2>
+
+<div class="open-q">
+<strong>Q1. Does the loader actually preload 400MB cleanly on FreeBSD 15.0?</strong> Only one way to find out — try it. If it fails on real hardware, fall back to Approach B (init.sh memdisk copy).
+</div>
+
+<div class="open-q">
+<strong>Q2. Does <code>vfs.root.mountfrom=ufs:/dev/gunion0</code> work as expected?</strong> gunion presents as a normal block device with a UFS filesystem. Should mount via standard root-mount machinery. Verify in Phase 2.
+</div>
+
+<div class="open-q">
+<strong>Q3. Does <code>reboot -r</code> from a shell-as-PID-1 (Option D pattern) work?</strong> Our existing init.sh patterns set things up and exec the real init. <code>reboot -r</code> is a syscall (<code>reboot(2)</code> with <code>RB_REROOT</code>), should be callable from any process. But "shell as PID 1 calling reboot -r" is unusual; needs verification.
+</div>
+
+<div class="open-q">
+<strong>Q4. What happens to file descriptors/processes during reroot?</strong> All processes (init included) get killed and restarted. So our shell init script that calls <code>reboot -r</code> will be killed mid-execution. The kernel re-mounts root and execs <code>init_path</code> in the new root. The shell script's "after reboot -r" code never runs. Need to make sure <code>reboot -r</code> is the LAST thing in init.sh.
+</div>
+
+<div class="open-q">
+<strong>Q5. Symlink trick vs. reroot — which wins?</strong> The symlink trick (<a href="https://github.com/pkgdemon/freebsd-launchd/commit/51e1b80">freebsd-launchd commit 51e1b80</a>) is much smaller and might solve the same problem. Phase 5 of this plan compares the two head-to-head. If symlink wins, this experimental architecture stays as a reference but doesn't get adopted.
+</div>
+
+<div class="open-q">
+<strong>Q6. Does this approach generalize to the freebsd-launchd architecture (Option D shebang init)?</strong> Probably yes — Option D is just "shell as PID 1 via imgact_shell"; that shell can call <code>reboot -r</code> the same way. But verifying is post-Phase-5 work, not in scope for this plan.
+</div>
+
+<h2 id="refs">10. References</h2>
+
+<ul>
+  <li>FreeBSD <code>kern_reroot</code>: <code>sys/kern/kern_shutdown.c</code> in the FreeBSD source tree.</li>
+  <li>FreeBSD <code>vfs_mountroot</code>: <code>sys/kern/vfs_mountroot.c</code>.</li>
+  <li><code>gunion(8)</code>: <code>man 8 gunion</code>.</li>
+  <li><code>mdconfig(8)</code>: <code>man 8 mdconfig</code>.</li>
+  <li><code>reboot(8)</code> (specifically the <code>-r</code> flag): <code>man 8 reboot</code>.</li>
+  <li>mfsBSD source (canonical mfs-loaded-from-loader pattern): <a href="https://github.com/mmatuska/mfsbsd">github.com/mmatuska/mfsbsd</a>.</li>
+  <li>Sibling livecd projects:
+    <ul>
+      <li><a href="https://github.com/pkgdemon/freebsd-livecd-gunion">freebsd-livecd-gunion</a> (the parent — gunion + chroot, working today)</li>
+      <li><a href="https://github.com/pkgdemon/freebsd-livecd-unionfs">freebsd-livecd-unionfs</a> (unionfs + chroot)</li>
+      <li><a href="https://github.com/pkgdemon/freebsd-launchd">freebsd-launchd</a> (unionfs + Option D chroot, also has the symlink-trick fix)</li>
+    </ul>
+  </li>
+  <li>Companion plans: <a href="freebsd-livecd-plan.html">freebsd-livecd</a>, <a href="freebsd-squashfs-research.html">SquashFS on FreeBSD research</a>.</li>
+</ul>
+
+</body>
+</html>

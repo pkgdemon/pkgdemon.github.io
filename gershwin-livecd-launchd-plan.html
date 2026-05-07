@@ -109,7 +109,7 @@
     <li><strong>Phase 1 (livecd rework):</strong> point gershwin-developer at the <code>feat/libs-corebase</code> branch; apply the proven <code>/boot/firmware</code> symlink trick; tighten the <code>init_script</code> so it stops the rcorder surgery; add a CI boot-test. Init flow stays loader-level <code>init_script</code>&nbsp;+ stock <code>/sbin/init</code>&nbsp;+ rc.d. <em>No launchd yet.</em></li>
     <li><strong>Phase 2 (launchd):</strong> clone freebsd-launchd into <code>/Developer/Library/Sources/</code>, build inside the chroot after gershwin-developer's stack, switch <code>loader.conf</code> from <code>init_script=</code> to Option&nbsp;D (<code>/init.sh</code> with <code>#!/rescue/sh</code> shebang), <code>exec /sbin/launchd</code> at the end. Convert the rc.d service-enables in <code>configure_system</code> to LaunchDaemon plists one-by-one. Add a <code>org.gershwin.loginwindow.plist</code> launchd job (separate concept from the existing <code>LoginWindow.plist</code> state file).</li>
     <li><strong>Phase 3 (polish):</strong> bring in kmodloader, configd stub, ASL when each lands and earns its keep.</li>
-    <li><strong>Packages constraint:</strong> <code>resources/packages/{base,vital-base,gershwin,drivers,vital-gershwin}</code> are the source of truth, and the existing entries are <strong>not re-audited</strong>. We don't re-derive what gershwin's pkg-base list should contain — that work is done. <strong>No new kernel modules / GPU drivers</strong> (no <code>nvidia-drm-kmod</code>, etc.). The Phase 2 launchd port adds two userland packages — <code>dhcpcd</code> and <code>wpa_supplicant</code> from ports — to <code>resources/packages/gershwin</code>. <code>FreeBSD-dhclient</code> and <code>FreeBSD-wpa</code> stay in <code>resources/packages/base</code>; we simply don't start them under launchd.</li>
+    <li><strong>Packages constraint:</strong> <code>resources/packages/{base,vital-base,gershwin,drivers,vital-gershwin}</code> are the source of truth, and the existing entries are <strong>not re-audited</strong>. We don't re-derive what gershwin's pkg-base list should contain — that work is done. <strong>No new kernel modules / GPU drivers</strong> (no <code>nvidia-drm-kmod</code>, etc.). Phase 2 swaps the DHCP/WPA stacks: <code>dhcpcd</code> and <code>wpa_supplicant</code> from ports get added to <code>resources/packages/gershwin</code>; <code>FreeBSD-dhclient</code> and <code>FreeBSD-wpa</code> get removed from <code>resources/packages/base</code> (and <code>vital-base</code>) in the same commit. The ISO ships exactly one DHCP client and one supplicant.</li>
     <li><strong>Base system:</strong> already pkg-base in gershwin-on-freebsd — no change. freebsd-launchd's <code>base.txz</code>+<code>tar -xJf</code> approach is dropped on the floor when the work moves over.</li>
     <li><strong>LoginWindow:</strong> no port of Apple's <code>loginwindow.app</code>. Phase 2 ships a launchd plist that starts gershwin's existing greeter binary (or wraps the existing <code>loginwindow_enable=YES</code> rc.d service). Real Cocoa-style LoginWindow is a Phase 4+ research item gated on a per-session launchd domain model and a keychain substitute that don't exist yet.</li>
   </ul>
@@ -123,7 +123,14 @@
 <h2 id="constraints">Constraints (hard)</h2>
 
 <div class="constraint">
-  <strong>Packages.</strong> <code>gershwin-on-freebsd/resources/packages/</code> is the canonical package set, and <strong>we do not re-audit it</strong>. Don't redo the work of figuring out what pkg-base entries gershwin needs — that's been settled. <strong>No new kernel modules / GPU drivers</strong> (no <code>nvidia-drm-kmod</code>; existing <code>drm-kmod</code> in <code>drivers</code> stays as-is). Phase 2 adds two ports to <code>resources/packages/gershwin</code>: <code>dhcpcd</code> and <code>wpa_supplicant</code>. The existing <code>FreeBSD-dhclient</code> and <code>FreeBSD-wpa</code> stay in the base list — left in place but unused. Cost is small; the alternative (auditing whether anything else in base depends on them) is exactly the kind of work this constraint forbids.
+  <strong>Packages.</strong> <code>gershwin-on-freebsd/resources/packages/</code> is the canonical package set, and <strong>we do not re-audit it</strong>. Don't redo the work of figuring out what pkg-base entries gershwin needs — that's been settled. <strong>No new kernel modules / GPU drivers</strong> (no <code>nvidia-drm-kmod</code>; existing <code>drm-kmod</code> in <code>drivers</code> stays as-is). The <strong>only</strong> package edits across this whole plan are four lines, all in Phase 2:
+  <ul>
+    <li>add <code>dhcpcd</code> to <code>resources/packages/gershwin</code></li>
+    <li>add <code>wpa_supplicant</code> to <code>resources/packages/gershwin</code></li>
+    <li>remove <code>FreeBSD-dhclient</code> from <code>resources/packages/{base,vital-base}</code></li>
+    <li>remove <code>FreeBSD-wpa</code> from <code>resources/packages/{base,vital-base}</code></li>
+  </ul>
+  Nothing else changes package-wise. No package list reorganization, no other strip-outs, no other adds, regardless of whether some other entry "looks redundant" under launchd.
 </div>
 
 <div class="constraint">
@@ -349,7 +356,7 @@ configure_system</code></pre>
     <tr><td><code>hostname="gershwin"</code></td><td>Stays — written to <code>/etc/rc.conf</code> as a tunable launchd reads at boot.</td></tr>
     <tr><td><code>zfs_enable="YES"</code></td><td>Stays as kld autoload. ZFS is module-load + mount, not a daemon.</td></tr>
     <tr><td><code>defaultroute_delay="0"</code></td><td>Drop. Was a workaround for rc.d serialization; launchd's KeepAlive handles network-dependent jobs.</td></tr>
-    <tr><td><code>ifconfig_DEFAULT="DHCP"</code><br><code>synchronous_dhclient="NO"</code><br><code>dhclient_flags="-n"</code><br><code>background_dhclient="YES"</code></td><td>→ <code>org.freebsd.dhcpcd.plist</code> (KeepAlive=true, RunAtLoad=true, Program=<code>/usr/local/sbin/dhcpcd</code>, ProgramArguments=<code>[-B]</code> for foreground/master mode). Lifted verbatim from freebsd-launchd. <code>FreeBSD-dhclient</code> remains installed but unused.</td></tr>
+    <tr><td><code>ifconfig_DEFAULT="DHCP"</code><br><code>synchronous_dhclient="NO"</code><br><code>dhclient_flags="-n"</code><br><code>background_dhclient="YES"</code></td><td>→ <code>org.freebsd.dhcpcd.plist</code> (KeepAlive=true, RunAtLoad=true, Program=<code>/usr/local/sbin/dhcpcd</code>, ProgramArguments=<code>[-B]</code> for foreground/master mode). Lifted verbatim from freebsd-launchd. <code>FreeBSD-dhclient</code> drops out of the base pkg list in the same commit.</td></tr>
     <tr><td><code>ipv6_activate_all_interfaces="YES"</code><br><code>ipv6_cpe_wanif="auto"</code><br><code>rtsold_enable="YES"</code></td><td>→ <code>org.freebsd.rtsold.plist</code>. The two ipv6 sysctls become <code>/etc/sysctl.conf</code> entries.</td></tr>
     <tr><td><code>ntpd_enable="YES"</code><br><code>ntpd_sync_on_start="YES"</code><br><code>ntpd_flags="-g"</code></td><td>→ <code>org.freebsd.ntpd.plist</code> (ProgramArguments=<code>[-g]</code>; KeepAlive=true).</td></tr>
     <tr><td><code>kld_list="linux linux64 cuse fusefs hgame"</code></td><td>Stays — kernel module preload. Not a launchd job.</td></tr>
@@ -483,7 +490,9 @@ configure_system</code></pre>
     <tr><td><code>resources/overlays/Local/Library/Preferences/LoginWindow.plist</code></td><td>Untouched.</td><td>Untouched (this is the state file, not the launchd plist).</td></tr>
     <tr><td><code>resources/overlays/System/Library/LaunchDaemons/*.plist</code></td><td>—</td><td><strong>NEW directory</strong>; ~15 plists land here over the rollout.</td></tr>
     <tr><td><code>resources/packages/gershwin</code></td><td>Untouched.</td><td>Add <code>dhcpcd</code> and <code>wpa_supplicant</code>.</td></tr>
-    <tr><td><code>resources/packages/{base,vital-base,drivers,vital-gershwin}</code></td><td>Untouched.</td><td>Untouched — gershwin's existing list is settled work; we don't re-audit.</td></tr>
+    <tr><td><code>resources/packages/base</code></td><td>Untouched.</td><td>Remove <code>FreeBSD-dhclient</code> and <code>FreeBSD-wpa</code>.</td></tr>
+    <tr><td><code>resources/packages/vital-base</code></td><td>Untouched.</td><td>Remove <code>FreeBSD-dhclient</code> and <code>FreeBSD-wpa</code> if present.</td></tr>
+    <tr><td><code>resources/packages/{drivers,vital-gershwin}</code></td><td>Untouched.</td><td>Untouched — settled work; not re-audited.</td></tr>
     <tr><td><code>tests/boot-test.sh</code></td><td><strong>NEW file</strong> (adapted from freebsd-launchd).</td><td>Add a second grep for <code>launchd: PID 1 ready</code>.</td></tr>
     <tr><td><code>.github/workflows/build.yml</code></td><td>Add boot-test invocation after <code>generate_iso</code>.</td><td>Untouched (boot-test detects launchd via grep).</td></tr>
   </tbody>
@@ -542,9 +551,9 @@ configure_system</code></pre>
   <li><strong>gershwin-developer branch:</strong> <code>feat/libs-corebase</code>. Per user direction 2026-05-06.</li>
   <li><strong>freebsd-launchd source location:</strong> <code>/Developer/Library/Sources/freebsd-launchd/</code>, matching gershwin-developer's <code>$SCRIPT_DIR/../Sources</code> convention. Per user direction 2026-05-06.</li>
   <li><strong>LoginWindow:</strong> launchd plist in Phase 2; no port of Apple's loginwindow.app. Research-confirmed unportable as of 2026-05-06.</li>
-  <li><strong>dhclient vs dhcpcd:</strong> Phase 2 adds <code>dhcpcd</code> from ports and runs it under launchd. Lifts freebsd-launchd's existing <code>org.freebsd.dhcpcd.plist</code> verbatim. <code>FreeBSD-dhclient</code> stays in the base list, unused. Per user direction 2026-05-06.</li>
-  <li><strong>wpa_supplicant:</strong> Phase 2 adds <code>wpa_supplicant</code> from ports. <code>FreeBSD-wpa</code> stays in the base list, unused. Per user direction 2026-05-06.</li>
-  <li><strong>No re-audit of gershwin's package list:</strong> the existing <code>resources/packages/{base,vital-base,gershwin,drivers,vital-gershwin}</code> entries are not re-derived or pruned. That work is settled. The only adds are dhcpcd + wpa_supplicant. Per user direction 2026-05-06.</li>
+  <li><strong>dhclient vs dhcpcd:</strong> Phase 2 adds <code>dhcpcd</code> from ports and removes <code>FreeBSD-dhclient</code> from the base list in the same commit. Lifts freebsd-launchd's existing <code>org.freebsd.dhcpcd.plist</code> verbatim. Per user direction 2026-05-06.</li>
+  <li><strong>wpa_supplicant:</strong> Phase 2 adds <code>wpa_supplicant</code> from ports and removes <code>FreeBSD-wpa</code> from the base list in the same commit. Per user direction 2026-05-06.</li>
+  <li><strong>No other package edits:</strong> the four-line dhcpcd / wpa_supplicant swap is the entire scope of package changes. Existing <code>resources/packages/{base,vital-base,gershwin,drivers,vital-gershwin}</code> entries are not re-audited, re-derived, or pruned beyond those four lines, regardless of what looks redundant under launchd. Per user direction 2026-05-06.</li>
   <li><strong>chroot stays git-free:</strong> gershwin's current <code>build.sh:281</code> clones inside the chroot. We tolerate that for gershwin-developer (existing behavior; not regressing) but freebsd-launchd is rsynced from a host-side clone (per the existing memory rule).</li>
 </ul>
 

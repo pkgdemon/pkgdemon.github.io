@@ -265,13 +265,54 @@ reboot -r</code></pre>
 
 <p>Try Approach A first — it's the canonical pattern, less code, and if the loader supports the file size we get a clean boot. Fall back to B if loader-preload fails on real hardware.</p>
 
-<h3>4.4 Rejected: separate rescue.img + dual-memdisk</h3>
+<h3>4.4 Approach C: separate rescue.img + dual-memdisk (mfsBSD pattern)</h3>
 
-<p>Considered briefly: build a tiny <code>rescue.img</code> (~30MB, separate UFS image with just init + tools) that the loader preloads alongside <code>rootfs.uzip</code>. Kernel boots from rescue.img; rescue's init.sh sets up gunion over the second memdisk; reroots to gunion-backed UFS. Eventually rescue.img unmounts.</p>
+<p>The mfsBSD-canonical alternative: build a tiny <code>rescue.img</code> (~30MB UFS with just init + tools) and have the loader preload it alongside <code>rootfs.uzip</code>. Kernel boots from rescue.img (RAM-backed memdisk); rescue's init.sh sets up gunion over the second RAM-backed memdisk; reroots to gunion-backed UFS. cd9660 may not even be mounted at runtime.</p>
 
-<p>Rejected because: <strong>cd9660 already serves the same role.</strong> The cd9660 has <code>/rescue/sh</code>, <code>/sbin/mdconfig</code>, <code>/sbin/gunion</code>, <code>/sbin/reboot</code>, <code>/sbin/kenv</code> — every tool /init.sh needs. Building a separate rescue.img adds an entire build pipeline (extra UFS image, extra Makefile target, extra place to track tool versions) for zero functional gain. The mfsBSD model has a separate rescue image because mfsBSD targets installation media where you might want to eject the boot media or boot over network — neither applies to a livecd where the cd9660 is the rootfs origin and stays accessible until reroot.</p>
+<pre class="shell"><code># cdroot/boot/loader.conf:
+mfs_load="YES"
+mfs_name="/rescue.img"
+mfs_type="mfs_root"
 
-<p>The cd9660 IS the rescue environment. Don't reinvent it.</p>
+# Second memdisk (rootfs payload) loaded as a separate kernel preload:
+rootfs_load="YES"
+rootfs_name="/rootfs.uzip"
+rootfs_type="md_image"</code></pre>
+
+<pre class="shell"><code># /init.sh inside rescue.img:
+gunion create /dev/md1.uzip          # md1 is the rootfs payload
+kenv vfs.root.mountfrom="ufs:/dev/gunion0"
+exec /sbin/reboot -r</code></pre>
+
+<h4>What this pattern fixes (for mfsBSD's use cases)</h4>
+
+<table class="compact">
+<thead><tr><th>Scenario</th><th>Why miniroot helps</th><th>Applies to our livecd?</th></tr></thead>
+<tbody>
+<tr><td>PXE / netboot</td><td>kernel + rescue.img are small files PXE-servable in seconds. The big payload can come later over NFS / HTTP / wherever, decoupled from the boot path.</td><td>No — we boot from cd9660 / USB optical media.</td></tr>
+<tr><td>Eject-boot-media-mid-install</td><td>Once the rescue is in RAM, the user can yank the USB stick / eject the disc; install continues from a target disk. Useful for "USB stick → install to internal NVMe, eject USB."</td><td>No — our livecd assumes media stays attached. We don't currently have an installer.</td></tr>
+<tr><td>Multiple payload images</td><td>Rescue can pick at boot time which rootfs to load (minimal / full / desktop / server). One disc, several flavors.</td><td>No — we ship a single rootfs.uzip. Could become useful if we ever ship "freebsd-launchd minimal" + "freebsd-launchd full Plasma" on the same image.</td></tr>
+<tr><td>Diskless workstations</td><td>Rescue is the fixed in-RAM boot env; payload comes from a network server. Common in fleet deployments.</td><td>No — single-machine livecd, no fleet scenario.</td></tr>
+<tr><td>Offline rescue when rootfs is broken</td><td>If the big rootfs fails to load (corrupt download, hardware failure mid-install), the rescue is guaranteed-working in RAM and the user gets a shell.</td><td>Partial — our cd9660 already serves this role. If <code>/rootfs.uzip</code> is corrupt, the cd9660 is still mounted with all its tools and the user is in a working shell.</td></tr>
+<tr><td>Smaller loader I/O footprint</td><td>Loader handles only ~30MB rescue, not 400MB+ rootfs. Faster initial boot on slow media.</td><td>Marginal — Approach A's loader-preload of the full rootfs costs 5-15s extra. Acceptable tradeoff for build simplicity.</td></tr>
+</tbody>
+</table>
+
+<h4>Why we're not adopting this</h4>
+
+<p>None of the scenarios where miniroot earns its complexity apply to our livecd today:</p>
+
+<ul>
+  <li>We don't PXE-boot.</li>
+  <li>We don't eject media mid-boot.</li>
+  <li>We ship a single rootfs payload.</li>
+  <li>We're not diskless.</li>
+  <li>The cd9660 already provides offline-rescue behavior — its <code>/rescue/sh</code> + tools are reachable any time the cd9660 is mounted, which is "until reroot." Anything that fails before reroot lands the user in cd9660's rescue shell.</li>
+</ul>
+
+<p>Cost of adopting it anyway: an entire second build pipeline (rescue.img generation, separate Makefile target, separate set of binaries to keep version-aligned with the rootfs), debug surface (two stages of init), and the mfsBSD-canonical pattern's quirks (loader configuration of multiple memdisks, kernel preload type for the secondary md, etc.). All for "the same outcome we already get from cd9660."</p>
+
+<p><strong>Verdict: keep this pattern documented as the right choice for mfsBSD-shape use cases (PXE, ejectable media, multi-payload, diskless rescue).</strong> If freebsd-launchd ever grows into one of those use cases — most plausibly an installer that wants to eject the USB stick after install completes — this is the right architecture to revisit. For the current livecd, Approach A (cd9660 as rescue + loader-preloaded rootfs) is correct and simpler.</p>
 
 <h2 id="why-gunion">5. Why gunion specifically (vs. unionfs, vs. tmpfs root)</h2>
 

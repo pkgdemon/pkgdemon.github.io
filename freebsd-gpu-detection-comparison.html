@@ -97,7 +97,7 @@
   <h3>TL;DR</h3>
   <ul>
     <li>All five systems solve the same problem differently. None has a clean answer for "the kmod loaded but the GPU is too new for it" — all rely on graceful fallback through stacked framebuffer drivers.</li>
-    <li><strong>Where kmodloader wins:</strong> single ObjC daemon under launchd handling three independent match paths (devmatch, GPU PCI scan, hypervisor scan) with no per-boot shell churn; the AMD radeonkms-vs-amdgpu split uses an upstream-frozen list rather than a hand-curated table; full-system view (covers NICs, WiFi, storage, USB, GPU all in one) instead of GPU-only.</li>
+    <li><strong>Where kmodloader wins:</strong> single ObjC daemon under launchd handling two independent match paths (devmatch, GPU PCI scan) with no per-boot shell churn; the AMD radeonkms-vs-amdgpu split uses an upstream-frozen list rather than a hand-curated table; full-system view (covers NICs, WiFi, storage, USB, GPU all in one) instead of GPU-only.</li>
     <li><strong>Where kmodloader has gaps</strong> (most fixable):
       <ul class="terse">
         <li>No live validation step — NomadBSD's <code>test_x</code> rolls back on Xorg failure; we don't verify the kmod actually attached.</li>
@@ -150,7 +150,7 @@
 </tr>
 <tr>
   <td>Detection input</td>
-  <td><code>pciconf -l</code> (class 0x0300xx) + <code>devmatch(8)</code> + <code>kern.vm_guest</code></td>
+  <td><code>pciconf -l</code> (class 0x0300xx) + <code>devmatch(8)</code></td>
   <td><code>pciconf -lv</code> grep + <code>kern.vm_guest</code> + <code>dmesg</code></td>
   <td><code>pciconf -lv</code> awk-parsed + <code>hw.pci.default_vgapci_unit</code></td>
   <td>libpciaccess + udev DRM enum + <code>drmGetVersion</code></td>
@@ -245,24 +245,23 @@
 
 <p>An ObjC daemon at <code>/usr/libexec/kmodloader</code>, started by launchd's <code>org.freebsd.kmodloader.plist</code> with <code>RunAtLoad=true</code>, <code>KeepAlive=false</code>. Three match paths run sequentially in a single <code>runOneShot</code>:</p>
 
-<div class="ascii-diagram">  +------------------+   +-------------------+   +----------------+
-  |  pciconf -l      |   |  kern.vm_guest    |   |  devmatch      |
-  |  class=0x0300xx  |   |                   |   |  (linker.hints)|
-  +--------+---------+   +---------+---------+   +-------+--------+
-           |                       |                     |
-           v                       v                     v
-  vendor 0x8086 → i915kms      vbox → vboxguest,      if_em, if_iwlwifi,
-  vendor 0x10de → nvidia-drm        vboxvideo        umass, ahci, ...
-  vendor 0x1002 → frozen list  vmware → vmci,         (anything with
-    radeon? radeonkms : amdgpu        vmmemctl,        PNP_INFO macro)
-                                      vmxnet3,
-                                      vmware_drv
-           \\__________________________________________________/
-                                |
-                                v
+<div class="ascii-diagram">          +------------------+              +-------------------+
+          |  pciconf -l      |              |  devmatch         |
+          |  class=0x0300xx  |              |  (linker.hints)   |
+          +--------+---------+              +---------+---------+
+                   |                                  |
+                   v                                  v
+          vendor 0x8086 → i915kms               if_em, if_iwlwifi,
+          vendor 0x10de → nvidia-drm            umass, ahci, ...
+          vendor 0x1002 → frozen list           (anything with
+            radeon? radeonkms : amdgpu            PNP_INFO macro)
+                   |                                  |
+                   +-----------+----------------------+
+                               |
+                               v
                   NSMutableOrderedSet (dedupe)
-                                |
-                                v
+                               |
+                               v
                   /sbin/kldload -n &lt;name&gt; (per kld)</div>
 
 <h3>2.1 What's distinctive</h3>
@@ -270,7 +269,7 @@
   <li><strong>Single daemon, single ObjC binary</strong> versus the shell-script-per-purpose pattern of GhostBSD/NomadBSD. Code lives at <code>kmodloader/src/KMDaemon.m</code> (~250 LOC) plus <code>RadeonPCIIDs.h</code> (the frozen 699-entry uint16_t array generated from upstream).</li>
   <li><strong>devmatch path</strong> covers everything in the FreeBSD driver tree that declares <code>PNP_INFO</code> — <code>if_em</code>, <code>if_iwlwifi</code>, <code>if_iwm</code>, <code>if_rtw88</code>/<code>89</code>, <code>ahci</code>, <code>nvme</code>, <code>umass</code>, ACPI HID drivers, etc. GhostBSD and NomadBSD don't have an equivalent — they handle <em>only</em> GPU and rely on either base-kernel auto-attach (anything in GENERIC) or a separate tool (NomadBSD's <code>dsbdriverd</code>) for the rest.</li>
   <li><strong>Three vendor IDs</strong> (Intel <code>0x8086</code>, AMD <code>0x1002</code>, NVIDIA <code>0x10de</code>) instead of hundreds. The AMD split uses the upstream-frozen radeon list (sourced from drm-kmod's <code>include/drm/drm_pciids.h</code> — same source GhostBSD uses), then defaults to <code>amdgpu</code> for everything else. New AMD silicon picks up <code>amdgpu</code> with no code change.</li>
-  <li><strong>Hypervisor path</strong> for VirtualBox / VMware additions kmods. Only kmodloader handles this in the comparison set.</li>
+  <li><strong>Hypervisor guest additions deliberately out of scope.</strong> Earlier draft included a third "hypervisor scan" path that read <code>kern.vm_guest</code> and kldloaded VBox/VMware additions; removed because guest additions are services (loaded by their own launchd plist), not hardware drivers.</li>
   <li><strong>No xorg.conf generation.</strong> kmodloader is concerned with <em>kernel modules</em>; X11 configuration is downstream and not its job.</li>
 </ul>
 
@@ -325,7 +324,7 @@
 <p>Cleaner than GhostBSD's "always scfb." Matches the FreeBSD Handbook's Xorg recommendation exactly.</p>
 
 <h3>4.4 dsbdriverd cooperation</h3>
-<p>NomadBSD ships <code>dsbdriverd</code> for non-GPU drivers (NICs, sound, etc.). Its config explicitly excludes DRM kmods: <code>exclude_kmods = { "radeonkms", "amdgpu", "i915kms" }</code>. Two daemons, clean split. kmodloader collapses these into one process via the three-path scan.</p>
+<p>NomadBSD ships <code>dsbdriverd</code> for non-GPU drivers (NICs, sound, etc.). Its config explicitly excludes DRM kmods: <code>exclude_kmods = { "radeonkms", "amdgpu", "i915kms" }</code>. Two daemons, clean split. kmodloader collapses these into one process via the two-path scan.</p>
 
 <h2 id="xlibre">5. xlibre detection (post-kmod)</h2>
 
@@ -419,7 +418,7 @@
 
 <h3>7.3 kextcache prelinking</h3>
 <p>Apple's optimization for boot speed: <code>kextcache</code> fuses the kernel binary plus every kext that matched at last-boot into a single signed boot image (<code>/System/Library/PrelinkedKernels/prelinkedkernel</code>). At boot the loader maps the prelinked kernel directly &mdash; no per-boot scan of <code>/System/Library/Extensions/</code>, no per-kext load decisions, no probe loop. The matching work happened once at install time.</p>
-<p>Plan §11 Phase 4 flagged this as a future optimization for kmodloader; it remains a Phase-4 idea. The Apple-shape parallel is roughly: at install time, run kmodloader's three-path scan, write the result to a manifest, have <code>/boot/loader</code> consume the manifest and pre-load on next boot. Defers all the "vendor scan + devmatch + vm_guest" work from boot to install.</p>
+<p>Plan §11 Phase 4 flagged this as a future optimization for kmodloader; it remains a Phase-4 idea. The Apple-shape parallel is roughly: at install time, run kmodloader's two-path scan, write the result to a manifest, have <code>/boot/loader</code> consume the manifest and pre-load on next boot. Defers all the "vendor scan + devmatch" work from boot to install.</p>
 
 <h3>7.4 DriverKit (modern Apple userspace drivers)</h3>
 <p>Since macOS 10.15 / iOS 14, Apple has been moving drivers out of the kernel and into sandboxed userspace processes called <code>.dext</code> bundles (DriverExtension). Each dext is a launchd-launched signed binary that talks to a small in-kernel "personality" stub via IOKit's <code>DriverKit</code> framework. Match logic stays the same (<code>IOPCIMatch</code> in the dext's Info.plist); the actual driver code runs in userspace.</p>
@@ -497,7 +496,7 @@ or (recommended) check for kernel updates.</code></pre>
 </div>
 
 <div class="win">
-<strong>Hypervisor scan</strong> (kern.vm_guest → vbox/vmware kld lists). Only kmodloader has this in the comparison set; matters for "boot the live ISO in VirtualBox and have guest additions auto-load."
+<strong>(Removed)</strong> Earlier draft included a hypervisor scan (<code>kern.vm_guest</code> → vbox/vmware kld lists). Pulled out: guest additions are services, not hardware drivers; they belong in their own launchd plist (<code>org.freebsd.vboxservice.plist</code> Phase 2+) which kldloads its supporting kmods before launching the userspace daemon.
 </div>
 
 <div class="win">

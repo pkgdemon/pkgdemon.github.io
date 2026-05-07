@@ -109,14 +109,14 @@
   <ul>
     <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a> &mdash; <strong>monorepo</strong>. kmodloader source lives under <code>kmodloader/</code> at the top of the launchd repo, alongside <code>src/</code> (launchd) and <code>configd/</code>.</li>
     <li><strong>Mission:</strong> on this OS, hardware that has a FreeBSD driver works without manual <code>kldload</code> or <code>kld_list=</code> edits. GPUs auto-engage DRM/KMS. NICs come up. WiFi cards register. USB classes attach. VM guest additions load when in a VM.</li>
-    <li><strong>Architecture:</strong> three parallel match paths feed one kldload loop:
+    <li><strong>Architecture:</strong> two parallel match paths feed one kldload loop:
       <ol>
         <li><strong>devmatch(8) + linker.hints</strong> &mdash; covers anything in-tree with <code>PNP_INFO</code> macros (NICs, USB classes, ACPI HID, most storage). Zero curation; FreeBSD's <code>kldxref</code> already built the index.</li>
         <li><strong>PCI scan for display class 0x0300xx</strong> &mdash; covers drm-kmod GPU drivers (no <code>PNP_INFO</code>). Routes by vendor: Intel &rarr; <code>i915kms</code>, NVIDIA &rarr; <code>nvidia-drm</code>, AMD &rarr; per-device split via a frozen radeonkms ID list vs. amdgpu default.</li>
-        <li><strong>Hypervisor scan (<code>kern.vm_guest</code>)</strong> &mdash; covers VirtualBox / VMware guest additions (ports kmods). KVM/QEMU/bhyve, Hyper-V, Xen are already covered by GENERIC.</li>
       </ol>
     </li>
-    <li><strong>What we do NOT do anymore:</strong> hand-curated IOPCIMatch personality plists. Phase 1a-c shipped them; Phase 1d ripped them out in favor of the three-path scan. Reason: hand-curation doesn't scale to FreeBSD's hardware coverage. devmatch already has the data (<code>linker.hints</code>); we just have to use it. The narrow gap (drm-kmod and VM additions) is closed with three vendor-map functions, not 700+ device IDs.</li>
+    <li><strong>What we do NOT do anymore:</strong> hand-curated IOPCIMatch personality plists. Phase 1a-c shipped them; Phase 1d ripped them out in favor of devmatch + a small targeted GPU PCI scan. Reason: hand-curation doesn't scale to FreeBSD's hardware coverage. devmatch already has the data (<code>linker.hints</code>); we just have to use it. The narrow gap (drm-kmod) is closed with a three-vendor map, not 700+ device IDs.</li>
+    <li><strong>What's NOT in kmodloader's scope:</strong> hypervisor guest additions (vboxguest, vboxvfs). Those are <em>service</em>-related kmods, not hardware drivers. The right home is the eventual <code>org.freebsd.vboxservice.plist</code> (Phase 2+) which kldloads its own kmods before launching VBoxService &mdash; matching FreeBSD's <code>rc.d/vboxservice</code> pattern. open-vm-tools ships zero kmods; the kernel side (vmx) is in GENERIC. Phase 1g's hypervisor scan (briefly shipped) was reaching outside kmodloader's lane and got removed.</li>
     <li><strong>Boot timing:</strong> Phase 1 is one-shot at boot &mdash; <code>RunAtLoad=true</code>, <code>KeepAlive=false</code>. Phase 2 (planned) keeps the daemon alive on a <code>DISPATCH_SOURCE_TYPE_READ</code> source over <code>/dev/devctl</code> for hot-plug.</li>
     <li><strong>No Apple source vendored.</strong> The original plan was modeled on Apple's <code>kextd</code> + <code>IOKitPersonalities</code>; the implementation that shipped is closer in spirit to FreeBSD's own <code>devmatch</code>. Clean-room ObjC throughout.</li>
     <li><strong>Licensing:</strong> BSD-2-Clause. No Apple per-file headers &mdash; clean-room code, not a port.</li>
@@ -142,44 +142,45 @@
 
 <p>Three independent match paths run sequentially in <code>KMDaemon.runOneShot</code>. Each emits a list of kld names. Lists are concatenated, deduplicated, and the GPU set is pulled to the front so the framebuffer is owned by a DRM driver before peripheral driver attaches happen. Then <code>kldload -n</code> each.</p>
 
-<div class="ascii-diagram">  +----------------------------+   +---------------------------+   +-------------------+
-  |  pciconf -l                |   |  sysctl -n kern.vm_guest  |   |  devmatch         |
-  |  (display-class scan)      |   |  (hypervisor probe)       |   |  (linker.hints)   |
-  +-------------+--------------+   +-------------+-------------+   +----------+--------+
-                |                                |                            |
-    vendor map  |               vm_guest map     |        kld names           |
-                v                                v                            v
-        [i915kms]                        [vboxguest, ...]              [if_em, umass, ...]
-        [amdgpu/radeonkms]               [vmci, ...]
-        [nvidia-drm]                     [] (kvm/hv/xen/bare)
-                |                                |                            |
-                +------------------+-------------+                            |
-                                   |                                          |
-                                   v                                          |
-                         [GPU klds first]                                     |
-                                   |   ............................<--------+
-                                   v
-                           NSMutableOrderedSet (dedupe)
-                                   |
-                                   v
-                         /sbin/kldload -n &lt;name&gt;  (per kld)
-                                   |
-                                   v
-                         kernel newbus probe + driver attach</div>
+<div class="ascii-diagram">              +----------------------------+   +-------------------+
+              |  pciconf -l                |   |  devmatch         |
+              |  (display-class scan)      |   |  (linker.hints)   |
+              +-------------+--------------+   +----------+--------+
+                            |                             |
+                vendor map  |                kld names    |
+                            v                             v
+                    [i915kms]                  [if_em, umass, ...]
+                    [amdgpu/radeonkms]
+                    [nvidia-drm]
+                            |                             |
+                            +-------------+---------------+
+                                          |
+                                          v
+                                [GPU klds first]
+                                          |
+                                          v
+                          NSMutableOrderedSet (dedupe)
+                                          |
+                                          v
+                          /sbin/kldload -n &lt;name&gt;  (per kld)
+                                          |
+                                          v
+                          kernel newbus probe + driver attach</div>
 
 <h3>2.1 Why three paths instead of one</h3>
-<p>FreeBSD's drivers split cleanly into three categories by how match information is published:</p>
+<p>FreeBSD's hardware drivers split cleanly into two categories by how match information is published:</p>
 
 <table>
 <thead><tr><th>Category</th><th>Match data lives in...</th><th>Reachable via</th></tr></thead>
 <tbody>
 <tr><td>In-tree drivers with <code>PNP_INFO</code></td><td><code>linker.hints</code> (kldxref output)</td><td><code>devmatch(8)</code></td></tr>
 <tr><td>drm-kmod GPU drivers + nvidia binary blob</td><td>Compiled-in C structs; not in <code>linker.hints</code></td><td>PCI scan + 3-vendor map</td></tr>
-<tr><td>Hypervisor guest additions (VBox, VMware)</td><td>Implicit by hypervisor identity</td><td><code>kern.vm_guest</code> probe</td></tr>
 </tbody>
 </table>
 
-<p>Trying to unify all three under one mechanism &mdash; the original plan's "personality plists with IOPCIMatch" &mdash; required hand-curating the device-ID lists for category 2 and 3. That doesn't scale: amdgpu's supported list grows each AMD generation, and the personality plists were always going to lag real hardware. The three-path split lets each category use the data source that already has the answer.</p>
+<p>Trying to unify both under one mechanism &mdash; the original plan's "personality plists with IOPCIMatch" &mdash; required hand-curating the device-ID lists for category 2. That doesn't scale: amdgpu's supported list grows each AMD generation, and the personality plists were always going to lag real hardware. The two-path split lets each category use the data source that already has the answer.</p>
+
+<p><strong>Hypervisor guest additions (vboxguest, vboxvfs) are intentionally NOT in scope.</strong> They're service-related kmods, not hardware drivers; the right home is the matching launchd plist (<code>org.freebsd.vboxservice.plist</code>) loading them before launching its userspace daemon, the same way FreeBSD's <code>rc.d/vboxservice</code> works. Phase 1g briefly shipped a third "hypervisor scan" path; it was reaching outside kmodloader's lane and got removed.</p>
 
 <h2 id="paths">3. The three match paths in detail</h2>
 
@@ -244,24 +245,15 @@ acpi_wmi.ko</code></pre>
 <h4>3.2.3 Multi-GPU + non-GPU systems</h4>
 <p>Multi-GPU laptops (Intel iGPU + Nvidia dGPU is common) are handled naturally: the scan finds both vendors, both kld sets get loaded. Bare-metal-with-no-GPU systems (some VMs) return an empty device list &mdash; the GPU pass loads nothing.</p>
 
-<h3 id="path-vm">3.3 Path 3 &mdash; hypervisor scan</h3>
-<p>Read <code>kern.vm_guest</code>, route to a small fixed kld set:</p>
+<h3 id="path-vm">3.3 (Removed) hypervisor scan</h3>
+<p>Phase 1g briefly shipped a third match path that read <code>kern.vm_guest</code> and kldloaded VirtualBox / VMware guest additions kmods. Removed shortly after &mdash; for two reasons:</p>
 
-<pre class="objc"><code>- (NSArray&lt;NSString *&gt; *)hypervisorKlds
-{
-    NSString *vmGuest = [self sysctlString:@"kern.vm_guest"];
-    if ([vmGuest isEqualToString:@"vbox"]) {
-        return @[@"vboxguest", @"vboxvideo"];
-    }
-    if ([vmGuest isEqualToString:@"vmware"]) {
-        return @[@"vmci", @"vmmemctl", @"vmxnet3", @"vmware_drv"];
-    }
-    return @[];   // none, kvm, qemu, bhyve, hv, xen — covered by GENERIC
-}</code></pre>
+<ol>
+  <li><strong>Wrong scope.</strong> Guest additions are services, not hardware drivers. The Apple-shape pattern (and FreeBSD's existing <code>rc.d/vboxservice</code> pattern) is for the service's launchd job to kldload its supporting kmods before starting the userspace daemon. kmodloader's job is hardware autodetection.</li>
+  <li><strong>The kld names were also wrong.</strong> <code>vboxvideo</code> doesn't exist on FreeBSD &mdash; that's a Linux thing. <code>vmware_drv</code> is an Xorg driver, not a kld. <code>vmxnet3</code> is in GENERIC already. Open-vm-tools ships zero kmods at all (everything is userspace daemons).</li>
+</ol>
 
-<p>QEMU/KVM/bhyve guests get virtio_pci/_blk/_net/_scsi from GENERIC. Hyper-V guests get the <code>hv_*</code> family from GENERIC. Xen guests get xenpci/blkfront/netfront from GENERIC. Only VBox and VMware ship their additions as ports kmods, hence the targeted load.</p>
-
-<p>The packages <code>emulators/virtualbox-ose-additions-nox11</code> and <code>emulators/open-vm-tools-nox11</code> are in <code>pkglist.txt</code>; without them <code>kldload</code> fails harmlessly and the daemon moves on.</p>
+<p>What we still ship in <code>pkglist.txt</code>: <code>emulators/virtualbox-ose-additions-nox11</code> (provides <code>vboxguest.ko</code>, <code>vboxvfs.ko</code>, and userspace <code>VBoxService</code>) and <code>emulators/open-vm-tools-nox11</code> (provides userspace <code>vmtoolsd</code> + helpers). The kmods sit on disk; the userspace daemons sit on disk. Nothing auto-runs them in Phase 1. Phase 2+ will introduce <code>org.freebsd.vboxservice.plist</code> and <code>org.freebsd.vmtoolsd.plist</code> which handle their own kmod loading and start the userspace daemon under launchd supervision.</p>
 
 <h2 id="repo">4. Repository</h2>
 
@@ -297,11 +289,10 @@ acpi_wmi.ko</code></pre>
 <tbody>
 <tr><td>Implementation language</td><td>Objective-C with GNUstep Foundation. Same substrate as launchd + configd.</td></tr>
 <tr><td>Event loop (Phase 1)</td><td>None. One-shot run, exit. Phase 2 adds libdispatch.</td></tr>
-<tr><td>Match data sources</td><td>Three: <code>linker.hints</code> via devmatch, <code>pciconf -l</code> for GPU PCI scan, <code>kern.vm_guest</code> for hypervisor scan.</td></tr>
+<tr><td>Match data sources</td><td>Two: <code>linker.hints</code> via devmatch, <code>pciconf -l</code> for GPU PCI scan. (Removed: <code>kern.vm_guest</code> hypervisor scan &mdash; out of scope, see §3.3.)</td></tr>
 <tr><td>Kmod load mechanism</td><td><code>NSTask</code> wrapping <code>/sbin/kldload -n &lt;module&gt;</code>. The <code>-n</code> flag = "do not error if already loaded".</td></tr>
 <tr><td>devmatch invocation</td><td>Bare <code>/sbin/devmatch</code> (no flags). NOT <code>devmatch -a</code> &mdash; that flag's output format is wrong for our use.</td></tr>
 <tr><td>GPU vendor map</td><td>Three-vendor static map, no curated device-ID tables. The single per-device split (AMD radeonkms vs amdgpu) uses an upstream-frozen list vendored as <code>RadeonPCIIDs.h</code>.</td></tr>
-<tr><td>Hypervisor map</td><td>Static <code>kern.vm_guest</code> &rarr; kld-list. Two non-GENERIC hypervisors (vbox, vmware); everything else is no-op.</td></tr>
 <tr><td>nvidia-drm modeset</td><td>Required tunable in <code>/boot/loader.conf</code>: <code>hw.nvidiadrm.modeset="1"</code>. Set kenv-time, before kernel start. Harmless on non-NVIDIA systems since the kmod only loads when the PCI scan finds <code>0x10de</code>.</td></tr>
 <tr><td>NVIDIA license at build time</td><td>build.sh sets <code>LICENSES_ACCEPTED=NVIDIA</code> in the runtime-pkgs <code>pkg install</code> env. nvidia-drm-latest-kmod ships under restricted-distribution license.</td></tr>
 <tr><td>Coexistence with devd</td><td>devd is not currently installed. If added later: both daemons can read <code>/dev/devctl</code>; multiple readers are kernel-supported.</td></tr>
@@ -388,11 +379,16 @@ acpi_wmi.ko</code></pre>
 </div>
 
 <div class="phase done">
-<h3>Phase 1g &mdash; hypervisor scan <span class="pill ok">DONE</span></h3>
+<h3>Phase 1g &mdash; hypervisor scan (later removed) <span class="pill warn">SUPERSEDED</span></h3>
 <ul>
-  <li>Third match path: <code>sysctl kern.vm_guest</code> &rarr; vbox / vmware kld lists; everything else no-op.</li>
-  <li>pkglist gains <code>virtualbox-ose-additions-nox11</code> + <code>open-vm-tools-nox11</code>.</li>
-  <li>~70 MB ISO size cost; out-of-box VirtualBox / VMware guest support.</li>
+  <li>Briefly shipped a third match path that read <code>sysctl kern.vm_guest</code> and kldloaded VBox / VMware additions.</li>
+  <li>Removed in a follow-up commit on user pushback. Two reasons:
+    <ul>
+      <li>Wrong scope &mdash; guest additions are services, not hardware drivers. Their launchd plists (Phase 2+) own kmod loading.</li>
+      <li>kld names were wrong: <code>vboxvideo</code> doesn't exist on FreeBSD; <code>vmware_drv</code> is an Xorg driver; open-vm-tools ships zero kmods.</li>
+    </ul>
+  </li>
+  <li>The pkglist additions stayed (<code>virtualbox-ose-additions-nox11</code>, <code>open-vm-tools-nox11</code>) so the binaries are present for users and for the future Phase 2+ launchd plists.</li>
 </ul>
 </div>
 

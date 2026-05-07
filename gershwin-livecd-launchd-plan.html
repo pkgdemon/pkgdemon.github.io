@@ -120,7 +120,7 @@
       </ol>
       <strong>Result:</strong> CI run 25495932941 is green — build (12-13m) → boot-test (~3m, real multi-user reach) → release publish.
     </li>
-    <li><strong>Phase 2 (launchd) — cleared to start:</strong> Phase 1 leaves the boot one line away from launchd. Swap <code>init.sh</code>'s final <code>kenv init_chroot=/sysroot</code> for <code>exec chroot /sysroot /sbin/launchd</code>; switch <code>loader.conf</code> to Option&nbsp;D (drop <code>init_script</code>/<code>init_shell</code>); clone freebsd-launchd into <code>/Developer/Library/Sources/</code> and build it after gershwin-developer's stack; convert the rc.d service-enables in <code>configure_system</code> to LaunchDaemon plists one-by-one; add a <code>org.gershwin.loginwindow.plist</code> launchd job (separate concept from the existing <code>LoginWindow.plist</code> state file).</li>
+    <li><strong>Phase 2 (launchd) — cleared to start:</strong> Phase 1 leaves the boot one line away from launchd. Swap <code>init.sh</code>'s final <code>kenv init_chroot=/sysroot</code> for <code>exec chroot /sysroot /sbin/launchd</code>; switch <code>loader.conf</code> to Option&nbsp;D (drop <code>init_script</code>/<code>init_shell</code>); clone freebsd-launchd into <code>/Developer/Library/Sources/</code> and build it after gershwin-developer's stack; ship the bedrock plists from freebsd-launchd (varrun, syslogd, cron, getty, dhcpcd, kmodloader); author <strong>two</strong> gershwin-specific plists (<code>org.gershwin.dshelper</code>, <code>org.gershwin.loginwindow</code>). <strong>No other rc.d-to-plist conversions.</strong> dbus / cupsd / avahi / ntpd / smartd etc. don't start under launchd PID 1; they're Phase 3+ adds, one at a time on user signal (dbus is the likely first follow-up).</li>
     <li><strong>Phase 3 (polish):</strong> bring in kmodloader, configd stub, ASL when each lands and earns its keep.</li>
     <li><strong>Post-launchd cleanup (deferred):</strong> once Phase 2's launchd + loginwindow plist are stable, restore the polished boot UX (re-enable <code>boot_mute</code>, drop the verbose / dual-console diagnostics) and retire the CI boot-test gate (collapse the workflow back to a single build → publish job, delete <code>tests/boot-test.sh</code>). See <a href="#cleanup">§Cleanup</a>.</li>
     <li><strong>Packages constraint:</strong> <code>resources/packages/{base,vital-base,gershwin,drivers,vital-gershwin}</code> are the source of truth, and the existing entries are <strong>not re-audited</strong>. We don't re-derive what gershwin's pkg-base list should contain — that work is done. <strong>No new kernel modules / GPU drivers</strong> (no <code>nvidia-drm-kmod</code>, etc.). Phase 2 swaps the DHCP/WPA stacks: <code>dhcpcd</code> and <code>wpa_supplicant</code> from ports get added to <code>resources/packages/gershwin</code>; <code>FreeBSD-dhclient</code> and <code>FreeBSD-wpa</code> get removed from <code>resources/packages/base</code> (and <code>vital-base</code>) in the same commit. The ISO ships exactly one DHCP client and one supplicant.</li>
@@ -372,65 +372,64 @@ exit 0</code></pre>
 
 <p>Reference: freebsd-launchd's <a href="freebsd-launchd-plan.html">plan §boot</a> walks through the Option D mechanics. The diff against Phase 1's <code>init.sh</code> is small (delete the rcorder block, swap the last 4 lines for one).</p>
 
-<h3>2.3 LaunchDaemon plist conversion table</h3>
+<h3>2.3 LaunchDaemon plist set <span class="pill info">narrowed</span></h3>
 
-<p>Every <code>sysrc</code> line in <code>configure_system</code> (build.sh:224-257) becomes either a LaunchDaemon plist or stays as a kernel/devfs tunable.</p>
+<p>Phase 2's launchd plist set is small. Per user direction 2026-05-07: only port what's actually needed to boot gershwin to login. Most services don't earn their plist yet.</p>
 
 <table>
   <thead>
-    <tr><th>Today's <code>sysrc</code> line</th><th>Phase 2 disposition</th></tr>
+    <tr><th>Plist</th><th>Source</th><th>Notes</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>hostname="gershwin"</code></td><td>Stays — written to <code>/etc/rc.conf</code> as a tunable launchd reads at boot.</td></tr>
-    <tr><td><code>zfs_enable="YES"</code></td><td>Stays as kld autoload. ZFS is module-load + mount, not a daemon.</td></tr>
-    <tr><td><code>defaultroute_delay="0"</code></td><td>Drop. Was a workaround for rc.d serialization; launchd's KeepAlive handles network-dependent jobs.</td></tr>
-    <tr><td><code>ifconfig_DEFAULT="DHCP"</code><br><code>synchronous_dhclient="NO"</code><br><code>dhclient_flags="-n"</code><br><code>background_dhclient="YES"</code></td><td>→ <code>org.freebsd.dhcpcd.plist</code> (KeepAlive=true, RunAtLoad=true, Program=<code>/usr/local/sbin/dhcpcd</code>, ProgramArguments=<code>[-B]</code> for foreground/master mode). Lifted verbatim from freebsd-launchd. <code>FreeBSD-dhclient</code> drops out of the base pkg list in the same commit.</td></tr>
-    <tr><td><code>ipv6_activate_all_interfaces="YES"</code><br><code>ipv6_cpe_wanif="auto"</code><br><code>rtsold_enable="YES"</code></td><td>→ <code>org.freebsd.rtsold.plist</code>. The two ipv6 sysctls become <code>/etc/sysctl.conf</code> entries.</td></tr>
-    <tr><td><code>ntpd_enable="YES"</code><br><code>ntpd_sync_on_start="YES"</code><br><code>ntpd_flags="-g"</code></td><td>→ <code>org.freebsd.ntpd.plist</code> (ProgramArguments=<code>[-g]</code>; KeepAlive=true).</td></tr>
-    <tr><td><code>kld_list="linux linux64 cuse fusefs hgame"</code></td><td>Stays — kernel module preload. Not a launchd job.</td></tr>
-    <tr><td><code>linux_enable="YES"</code></td><td>→ <code>org.freebsd.linux.plist</code> (RunAtLoad=true, single-shot mountpoint setup; or fold into <code>/init.sh</code> as a one-shot before the chroot).</td></tr>
-    <tr><td><code>devfs_enable="YES"</code><br><code>devfs_system_ruleset="system"</code></td><td>Stays — early kernel/devfs config. The <code>/init.sh</code> already mounts devfs.</td></tr>
-    <tr><td><code>moused_enable="YES"</code></td><td>→ <code>org.freebsd.moused.plist</code>.</td></tr>
-    <tr><td><code>dbus_enable="YES"</code></td><td>→ <code>org.freedesktop.dbus.plist</code> (RunAtLoad=true; the dbus port already provides /usr/local/etc/rc.d/dbus we replace).</td></tr>
-    <tr><td><code>loginwindow_enable="YES"</code></td><td>→ <code>org.gershwin.loginwindow.plist</code> — see §6.</td></tr>
-    <tr><td><code>webcamd_enable="YES"</code></td><td>→ <code>org.freebsd.webcamd.plist</code>.</td></tr>
-    <tr><td><code>cupsd_enable="YES"</code></td><td>→ <code>org.cups.cupsd.plist</code>.</td></tr>
-    <tr><td><code>avahi_daemon_enable="YES"</code><br><code>avahi_dnsconfd_enable="YES"</code></td><td>→ <code>org.freedesktop.avahi-daemon.plist</code> + <code>org.freedesktop.avahi-dnsconfd.plist</code>.</td></tr>
-    <tr><td><code>clear_tmp_enable="YES"</code></td><td>Drop — <code>/init.sh</code>'s tmpfs mount of <code>/tmp</code> already gives us a clean tmp.</td></tr>
-    <tr><td><code>dsbdriverd_enable="YES"</code></td><td>Stays as rc.d for now (Phase 2 doesn't port DSBSD's driver loader). Phase 3 evaluates whether kmodloader replaces it.</td></tr>
-    <tr><td><code>initgfx_enable="YES"</code><br><code>initgfx_menu="NO"</code></td><td>Stays as rc.d for now. Phase 3 evaluates kmodloader's GPU PCI scan as replacement (see <a href="freebsd-gpu-detection-comparison.html">GPU autodetection comparison</a>).</td></tr>
-    <tr><td><code>smartd_enable="YES"</code></td><td>→ <code>org.freebsd.smartd.plist</code>.</td></tr>
-    <tr><td><code>dshelper_enable="YES"</code></td><td>→ <code>org.gershwin.dshelper.plist</code>.</td></tr>
+    <tr>
+      <td><code>org.freebsd.varrun</code><br><code>org.freebsd.syslogd</code><br><code>org.freebsd.cron</code><br><code>org.freebsd.getty</code><br><code>org.freebsd.dhcpcd</code><br><code>org.freebsd.kmodloader</code></td>
+      <td>freebsd-launchd</td>
+      <td>Bedrock plists; install via <code>gmake install</code> in Phase 2's <code>build_launchd</code> stage. Already authored.</td>
+    </tr>
+    <tr>
+      <td><code>org.gershwin.dshelper</code></td>
+      <td>NEW (gershwin-specific)</td>
+      <td>Replaces <code>dshelper_enable=YES</code>. Authored against the rc.d source for dshelper (user will share when we're authoring).</td>
+    </tr>
+    <tr>
+      <td><code>org.gershwin.loginwindow</code></td>
+      <td>NEW (gershwin-specific)</td>
+      <td>Replaces <code>loginwindow_enable=YES</code>. Authored against the rc.d source for loginwindow.</td>
+    </tr>
   </tbody>
 </table>
 
-<p>One LaunchDaemon plist file per row that gets a "→" — small, declarative, ~15 lines each. Lifted from freebsd-launchd's existing plists where the daemon overlaps; new ones authored for the gershwin-specific rows.</p>
+<p><strong>Everything else in <code>configure_system</code> stays as-is.</strong> dbus, cupsd, avahi-daemon, avahi-dnsconfd, ntpd, smartd, moused, webcamd, dsbdriverd, initgfx — none get launchd plists in Phase 2. With launchd as PID 1 there is no <code>/sbin/init</code>, no <code>/etc/rc</code>, and so the <code>_enable=YES</code> lines for those services don't fire — they sit harmlessly in <code>rc.conf</code>. Gershwin boots to login with just the bedrock + dshelper + loginwindow + getty + dhcpcd; the desktop reaches a usable login screen without dbus or the rest.</p>
 
-<p>The remaining rows (kld autoloads, devfs, sysctls, hostname) become a slim <code>configure_system</code> block that just writes <code>/etc/rc.conf</code> tunables and <code>/etc/sysctl.conf</code> — no <code>_enable</code> lines.</p>
+<p><strong>Phase 3 follow-ups</strong> (one at a time, each on user signal):</p>
+<ul>
+  <li><code>org.freedesktop.dbus.plist</code> — likely first, enables IPC for desktop components. User flagged this 2026-05-07.</li>
+  <li>cupsd, avahi, ntpd, smartd — added when each earns its keep.</li>
+  <li>moused, webcamd — need device-event triggering (Phase 3+'s kmodloader / configd surface).</li>
+  <li>dsbdriverd, initgfx — overlap with kmodloader; revisit after kmodloader is integrated.</li>
+</ul>
 
-<h3>2.4 Service-by-service rollout order</h3>
+<h3>2.4 configure_system rc.conf cleanup</h3>
 
-<p>Don't convert all 20 services in one commit. Order:</p>
-
-<ol>
-  <li><strong>syslogd, cron, getty</strong> — base infrastructure. Boot won't be useful without these.</li>
-  <li><strong>Network plists</strong> — dhclient + rtsold. Kicks off when carrier present.</li>
-  <li><strong>Hardware-touching</strong> — moused, smartd, webcamd. Independent.</li>
-  <li><strong>Desktop infrastructure</strong> — dbus, avahi, cupsd. dbus first (rest depend on it for IPC).</li>
-  <li><strong>Greeter</strong> — loginwindow plist. Last. See §6.</li>
-</ol>
-
-<p>Each commit converts one block, runs CI boot-test, lands. Two-week window of partial conversion is fine — launchd happily loads zero plists and lets rc.d run the rest, until <code>configure_system</code>'s last <code>sysrc … _enable=YES</code> for that row is removed.</p>
+<p>Two new lines added to <code>configure_system</code>'s sysrc block, two implicitly removed:</p>
+<ul>
+  <li><strong>Add</strong>: <code>root_rw_mount="NO"</code> if not already in init.sh's runtime overrides — but init.sh already covers this; leave configure_system alone unless the runtime override stops being applied.</li>
+  <li><strong>Remove</strong>: <code>dshelper_enable="YES"</code> and <code>loginwindow_enable="YES"</code> — replaced by their plists. Removing prevents rc.d (which isn't running) from being a phantom dependency in future audits.</li>
+  <li><strong>Leave alone</strong>: every other <code>_enable=YES</code> line. Dead weight under launchd PID 1, but harmless.</li>
+</ul>
 
 <h3>2.5 Phase 2 acceptance criteria</h3>
 
 <ul>
   <li>launchd is PID 1 (verified via <code>ps -o pid,command 1</code> at the login console).</li>
-  <li><code>configure_system</code> contains zero <code>_enable</code> lines for converted services.</li>
-  <li>Boot-test ISO reaches a working login prompt with the same observable services as Phase 1 (dhclient leases an IP, ntpd syncs, dbus is on, loginwindow draws).</li>
+  <li>Boot-test ISO reaches a getty <code>login:</code> prompt under the new launchd PID-1 path.</li>
+  <li>The two gershwin plists (<code>org.gershwin.dshelper</code>, <code>org.gershwin.loginwindow</code>) load and the daemons run.</li>
+  <li>dhcpcd leases an IP on the test interface (replaces dhclient under launchd).</li>
   <li>No regression on the Lenovo hardware test (firmware still loads, WiFi still associates).</li>
   <li>QEMU boot-test in CI gates releases.</li>
 </ul>
+
+<p><strong>Out of scope for Phase 2:</strong> dbus, cupsd, avahi, ntpd, smartd, moused, webcamd. Those start under rc.d today; with launchd as PID 1 they don't start at all. Their plists land in Phase 3+ on user signal.</p>
 
 <h2 id="phase3">Phase 3: polish (deferred) <span class="pill info">post-launchd</span></h2>
 

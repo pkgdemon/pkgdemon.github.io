@@ -404,15 +404,14 @@ acpi_wmi.ko</code></pre>
 </div>
 
 <div class="phase todo">
-<h3>Phase 3 &mdash; firmware loading from /boot/firmware/ <span class="pill info">PLANNED</span></h3>
+<h3>Phase 3 &mdash; firmware loading from /boot/firmware/ <span class="pill ok">RESOLVED</span></h3>
 <p>Bench testing surfaced a real problem: drm-kmod's GPU drivers and the iwlwifi LinuxKPI port load firmware via <code>firmware_get()</code> + <code>try_binary_file()</code> in <code>sys/kern/subr_firmware.c</code>. The function <code>vn_open</code>s <code>/boot/firmware/&lt;name&gt;</code>, but in our chroot setup the kernel context's namei resolves <code>/boot/firmware/</code> against the cd9660 root (loader-only files) instead of the unionfs upper layer (where pkg-installed firmware lives). Result: i915kms loads but DMC firmware fails with "could not load binary firmware"; iwlwifi reports "File size way too small!" on a 2.4 MB blob.</p>
-<p>Phase 3 work: fix the live-ISO path so <code>/boot/firmware/</code> in the kernel's vfs view sees the same files userspace sees. Likely candidates:</p>
-<ul>
-  <li>Copy firmware files into the cd9660 layer at build time so kernel namei finds them on the read-only path.</li>
-  <li>Or reshape the chroot/unionfs setup so kernel-context paths resolve through the union.</li>
-  <li>Or pre-load all firmware-as-kld wrapper modules at boot via loader.conf so <code>firmware_get()</code> hits the registered-kld path before the file-based fallback.</li>
-</ul>
-<p>Out of scope for kmodloader proper; tracked here because it's the next blocker for fully-automatic GPU + WiFi support on the live ISO.</p>
+
+<p><strong>Resolved by the symlink trick</strong> in <a href="https://github.com/pkgdemon/freebsd-launchd/commit/51e1b80">freebsd-launchd commit 51e1b80</a>: <code>build.sh</code> creates a symlink at <code>cdroot/boot/firmware → /sysroot/boot/firmware</code>. Kernel namei follows the symlink across the cd9660-to-unionfs mount-point boundary into the unionfs view, finds the file, firmware loads. Verified empirically on a Lenovo with iwlwifi-8260: <code>net.wlan.devices</code> populates, <code>wlan0</code> is created, DRM DMC firmware loads.</p>
+
+<p>The symlink fix is overlay-mechanism-agnostic — works equally on unionfs and gunion. Backported to <a href="https://github.com/pkgdemon/freebsd-livecd-unionfs">freebsd-livecd-unionfs</a> and <a href="https://github.com/pkgdemon/freebsd-livecd-gunion">freebsd-livecd-gunion</a>.</p>
+
+<p>For the architectural alternative (gunion + <code>reboot -r</code> reroot, which would eliminate the chroot/namei split entirely instead of working around it), see the <a href="freebsd-livecd-gunion-reroot-plan.html">freebsd-livecd-gunion-reroot experimental plan</a>. Lower priority now that the symlink trick works.</p>
 </div>
 
 <div class="phase todo">
@@ -450,7 +449,7 @@ acpi_wmi.ko</code></pre>
 </div>
 
 <div class="open-q">
-<strong>Q. Firmware loading in live-ISO setup.</strong> See Phase 3. The kernel firmware loader's <code>try_binary_file()</code> reads from <code>/boot/firmware/</code> in kernel-thread context, which doesn't follow the chroot. On a normal FreeBSD install this is fine; on our unionfs+chroot live-ISO it's a real bug. Workarounds known; clean fix pending.
+<strong>Q. Firmware loading in live-ISO setup. — RESOLVED.</strong> The kernel firmware loader's <code>try_binary_file()</code> reads from <code>/boot/firmware/</code> in kernel-thread context, which doesn't follow the chroot. Fixed by symlinking <code>/boot/firmware</code> on the cd9660 layer to <code>/sysroot/boot/firmware</code>: kernel namei follows the symlink across the unionfs mount-point boundary into the right view. See Phase 3 above.
 </div>
 
 <div class="open-q">

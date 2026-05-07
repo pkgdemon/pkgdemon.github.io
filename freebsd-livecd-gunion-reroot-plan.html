@@ -86,13 +86,15 @@
   <a href="#refs">References</a>
 </nav>
 
-<h1>freebsd-livecd-gunion-reroot — experimental architecture <span class="pill warn">EXPERIMENTAL</span></h1>
-<p class="subtitle">A research-grade attempt to fix the kernel-vs-userspace namespace split that today blocks kernel-context firmware loading on all our livecd variants. Combines <code>gunion</code> (block-level RAM overlay) with FreeBSD's <code>reboot -r</code> reroot mechanism, sidestepping the chroot pattern entirely. Intended as a separate sibling repo (<code>freebsd-livecd-gunion-reroot</code>) so we can iterate without disturbing the working <a href="freebsd-livecd-plan.html">freebsd-livecd</a> projects.</p>
+<h1>freebsd-livecd-gunion-reroot — experimental architecture <span class="pill info">DEFERRED</span></h1>
+<p class="subtitle">A research-grade attempt to fix the kernel-vs-userspace namespace split via <code>gunion</code> (block-level RAM overlay) + <code>reboot -r</code> reroot. <strong>The simpler symlink trick (cdroot <code>/boot/firmware</code> → <code>/sysroot/boot/firmware</code>) verified working on real hardware, which addresses the immediate firmware-loading problem without an architectural rewrite.</strong> This experiment is preserved as a reference for the alternative architecture; pursue if the symlink approach starts hitting limitations or if a future feature requires kernel and userspace to genuinely share a root.</p>
 
 <section id="tldr" class="tldr">
   <h3>TL;DR</h3>
   <ul>
-    <li><strong>Status:</strong> not yet built. This document plans the experiment. Sibling repos <a href="https://github.com/pkgdemon/freebsd-livecd-gunion">freebsd-livecd-gunion</a> and <a href="https://github.com/pkgdemon/freebsd-livecd-unionfs">freebsd-livecd-unionfs</a> are working today using a chroot-based pattern; this is a clean-sheet re-architecture attempt that does NOT touch them.</li>
+    <li><strong>Status:</strong> <span class="pill info">DEFERRED</span>. The simpler <strong>symlink trick</strong> (<code>cdroot/boot/firmware → /sysroot/boot/firmware</code>) was implemented and <strong>verified working on real hardware</strong> in <a href="https://github.com/pkgdemon/freebsd-launchd/commit/51e1b80">freebsd-launchd commit 51e1b80</a> (Lenovo iwlwifi-8260: <code>net.wlan.devices</code> populates, wlan0 created, DMC firmware loads). Backported to both <a href="https://github.com/pkgdemon/freebsd-livecd-unionfs">freebsd-livecd-unionfs</a> and <a href="https://github.com/pkgdemon/freebsd-livecd-gunion">freebsd-livecd-gunion</a>. This document is preserved as the alternative-architecture reference; build-out is no longer urgent.</li>
+    <li><strong>When this might still be worth doing:</strong> if a future feature genuinely requires kernel and userspace to share a single root namespace (not just for firmware, but for kld auto-search paths, kernel-context vfs operations the symlink can't redirect, etc.). Or if we hit a wall with the symlink approach in some path we haven't anticipated. Otherwise the symlink fix is sufficient and this experiment stays on the shelf.</li>
+    <li><strong>Original premise (still accurate as architecture analysis):</strong> sibling repos use chroot for the userspace handoff, so kernel root stays cd9660. <code>reboot -r</code> would actually move the kernel's root to the gunion-backed UFS, eliminating the namespace split. The symlink trick achieves the same end goal (kernel can resolve <code>/boot/firmware/foo</code>) without changing the boot architecture — just by exploiting that kernel namei follows symlinks across mount points.</li>
     <li><strong>The problem:</strong> our existing livecds boot from cd9660, mount rootfs.uzip via mdconfig, overlay it (unionfs or gunion), and chroot into the overlay. The kernel's root stays as cd9660 forever. Userspace and kernel see different views of <code>/boot/firmware/</code>. Result: when iwlwifi/i915kms etc. ask for firmware via kernel-context <code>vn_open</code>, the file is invisible. Wifi doesn't come up; GPU acceleration is degraded.</li>
     <li><strong>The proposed fix:</strong> use <code>reboot -r</code> after early init.sh setup, so the kernel actually re-mounts root from the gunion-backed UFS. Now the kernel and userspace see the same root. Kernel-context firmware loading works.</li>
     <li><strong>The catch:</strong> <code>kern_reroot()</code> calls <code>vfs_unmountall()</code> before re-mounting root. cd9660 has the rootfs.uzip vnode held busy by mdconfig — unmount fails. Either the system gets stuck half-rerooted or, worse, panics in <code>vfs_mountroot()</code> due to inconsistent root-vnode state.</li>
@@ -333,20 +335,20 @@ exec /sbin/reboot -r</code></pre>
 </div>
 
 <div class="phase todo">
-<h3>Phase 5 — comparison + decision <span class="pill info">PLANNED</span></h3>
-<ul>
-  <li>Compare against the symlink-trick approach in freebsd-launchd (commit 51e1b80). Three axes:
-    <ul>
-      <li>Does it work? (Both should — different mechanisms, same end goal.)</li>
-      <li>RAM cost?</li>
-      <li>Boot time?</li>
-      <li>Code complexity?</li>
-      <li>Future-proofness for similar issues?</li>
-    </ul>
-  </li>
-  <li>If reroot is meaningfully better: plan migration of freebsd-launchd to the same model.</li>
-  <li>If symlink trick is "good enough": keep this as a reference architecture but don't migrate.</li>
-</ul>
+<h3>Phase 5 — comparison + decision <span class="pill ok">RESOLVED — symlink wins</span></h3>
+<p>Comparison done before reroot was built. The symlink trick succeeded on real hardware:</p>
+<table class="compact">
+<thead><tr><th>Axis</th><th>Symlink (shipped)</th><th>gunion + reroot (this plan)</th></tr></thead>
+<tbody>
+<tr><td>Code complexity</td><td>1 line in build.sh</td><td>Phase 0-4 work (~3-5 days)</td></tr>
+<tr><td>RAM floor</td><td>~200MB (unchanged)</td><td>~600-800MB</td></tr>
+<tr><td>Boot time</td><td>unchanged</td><td>+10-30s loader preload</td></tr>
+<tr><td>Risk of breaking boot path</td><td>essentially zero</td><td>real (half-rerooted state, panic on busy cd9660)</td></tr>
+<tr><td>Solves firmware loading</td><td>yes (verified)</td><td>yes (would have, if built)</td></tr>
+<tr><td>Solves future kernel-context vfs ops</td><td>only paths under /boot/firmware</td><td>everything (kernel root = userspace root)</td></tr>
+</tbody>
+</table>
+<p>The symlink wins on every axis except "future-proofing for unrelated kernel-context vfs operations" — which we don't currently need, and which hasn't surfaced as a real problem after the firmware case was fixed. Keep this experiment on the shelf in case that future need materializes.</p>
 </div>
 
 <h2 id="risks">7. Risks</h2>
@@ -409,8 +411,8 @@ exec /sbin/reboot -r</code></pre>
 <strong>Q4. What happens to file descriptors/processes during reroot?</strong> All processes (init included) get killed and restarted. So our shell init script that calls <code>reboot -r</code> will be killed mid-execution. The kernel re-mounts root and execs <code>init_path</code> in the new root. The shell script's "after reboot -r" code never runs. Need to make sure <code>reboot -r</code> is the LAST thing in init.sh.
 </div>
 
-<div class="open-q">
-<strong>Q5. Symlink trick vs. reroot — which wins?</strong> The symlink trick (<a href="https://github.com/pkgdemon/freebsd-launchd/commit/51e1b80">freebsd-launchd commit 51e1b80</a>) is much smaller and might solve the same problem. Phase 5 of this plan compares the two head-to-head. If symlink wins, this experimental architecture stays as a reference but doesn't get adopted.
+<div class="resolved">
+<strong>RESOLVED — Q5. Symlink trick vs. reroot.</strong> Symlink wins. Verified working on Lenovo iwlwifi-8260 hardware in <a href="https://github.com/pkgdemon/freebsd-launchd/commit/51e1b80">freebsd-launchd commit 51e1b80</a>; backported to freebsd-livecd-unionfs and freebsd-livecd-gunion. Reroot remains the architectural answer if a future need surfaces, but for the firmware problem specifically the simpler fix is sufficient.
 </div>
 
 <div class="open-q">

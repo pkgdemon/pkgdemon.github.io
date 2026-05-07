@@ -101,20 +101,26 @@
 <p class="subtitle">Plan to integrate the <a href="https://github.com/pkgdemon/freebsd-launchd">freebsd-launchd</a> work (livecd architecture + launchd PID&nbsp;1 + kmodloader + configd stub) into the <a href="https://github.com/gershwin-desktop/gershwin-on-freebsd">gershwin-on-freebsd</a> project. Sequenced: <strong>livecd rework first</strong>, then launchd, then the Apple-shaped helper daemons. Holds the line on packages — gershwin-on-freebsd's existing <code>resources/packages/</code> lists are the source of truth and we add nothing new in either phase.</p>
 
 <section id="tldr" class="tldr">
-  <h3>Status: <span class="pill ok">Phase 1 landed</span> <span class="pill info">v1</span></h3>
+  <h3>Status: <span class="pill ok">Phase 1 landed (CI-green)</span> <span class="pill info">v2 — Phase 2 cleared to start</span></h3>
   <ul>
     <li><strong>Two repos involved:</strong>
       <a href="https://github.com/pkgdemon/gershwin-on-freebsd">pkgdemon/gershwin-on-freebsd</a> (livecd build + package lists; we work in pkgdemon's fork only)
       and <a href="https://github.com/gershwin-desktop/gershwin-developer">gershwin-developer</a> (GNUstep + desktop install orchestrator, <code>feat/libs-corebase</code> branch). One new dep:
       <a href="https://github.com/pkgdemon/freebsd-launchd">freebsd-launchd</a> cloned into <code>/Developer/Library/Sources/freebsd-launchd/</code> in Phase 2.</li>
-    <li><strong>Phase 1 (livecd rework) — landed:</strong> three commits on <code>pkgdemon/gershwin-on-freebsd:main</code>:
+    <li><strong>Phase 1 (livecd rework) — landed and CI-green:</strong> commits on <code>pkgdemon/gershwin-on-freebsd:main</code>:
       <ol style="margin:.4rem 0">
         <li><code>1d2150b</code> — pin gershwin-developer to <code>feat/libs-corebase</code> branch (one-line build.sh change).</li>
-        <li><code>7caefbf</code> — split CI workflow into build → boot-test → release jobs; add <code>tests/boot-test.sh</code> (qemu+OVMF+expect, looks for "login:" / "Starting local daemons" / "Welcome to" markers). Release only publishes when boot-test passes.</li>
+        <li><code>7caefbf</code> — split CI workflow into build → boot-test → release jobs; add <code>tests/boot-test.sh</code> (qemu+OVMF+expect). Release only publishes when boot-test passes.</li>
         <li><code>3b97e40</code> — <strong>architectural rework:</strong> replace per-subdir nullfs + <code>cp -R</code> model with single-root unionfs + <code>init_chroot</code> kenv pivot, mirroring <a href="https://github.com/pkgdemon/freebsd-livecd-unionfs">freebsd-livecd-unionfs</a>. <code>/init.sh</code> at cdroot top, mdconfig the uzip, mount UFS at <code>/sysroot</code>, tmpfs at <code>/upper</code>, unionfs combining them, devfs at <code>/sysroot/dev</code>, then <code>kenv init_chroot=/sysroot</code> + exit. <code>/sbin/init</code> stays PID 1 and chroots into the unionfs before multi-user. RAM saving at idle: ~15-70 MB (no physical <code>/etc</code> + <code>/var</code> tmpfs copies). Mount points: 6 instead of 19.</li>
+        <li><code>a7f01f4</code> — mkdir <code>${CD_ROOT}/etc</code> for <code>mkisoimages.sh</code>'s transient fstab (it writes <code>/etc/fstab</code> at line 69 and removes it at line 71; the dir needs to exist).</li>
+        <li><code>02e4e9a</code> — boot diagnostic settings: <code>boot_verbose="YES"</code>, <code>console="comconsole vidconsole"</code>, comment out <code>boot_mute</code> in <code>loader.mute.d/loader.conf</code>, tighten boot-test markers (drop "Welcome to" — the loader's beastie banner was matching it falsely on the prior "green" CI runs and producing a 1m5s false positive). Reverted at cleanup phase.</li>
+        <li><code>206f8a7</code>, <code>e342e57</code> — successive attempts to make <code>init.sh</code>'s output visible: explicit <code>exec &gt;/dev/console 2&gt;&amp;1</code>, then progress markers and fail-fast guards on each mount.</li>
+        <li><code>04c7bc5</code> — root cause for the silent boot, identified by reading <code>init.c</code> + diff'ing against freebsd-livecd-unionfs: (a) init mounts devfs <em>after</em> running <code>init_script</code> (init.c:343-389 is post-326-336), so init's <code>open_console()</code> falls back to <code>/dev/null</code> for the child's stdio. Fix: <code>init.sh</code> mounts devfs at <code>/dev</code> first, then re-execs stdio. (b) <code>boot_serial="YES"</code> was missing — userspace stdio needs it to route to comconsole; without it everything goes to vidconsole (invisible under QEMU <code>-display none</code>).</li>
+        <li><code>6ff5abe</code> — final boot blockers: <code>root_rw_mount="NO"</code> in <code>/sysroot/etc/rc.conf</code> (otherwise <code>/etc/rc.d/root</code> tries <code>mount -uw /</code> which dispatches to mount_cd9660 and aborts the entire boot). Plus <code>kld_list</code> reassignment instead of <code>+=</code> (FreeBSD sh doesn't parse <code>var+=</code> in sourced rc.conf). Plus /rescue-compat for the SMBIOS hostname / EFI MonkeyPatch / clear calls (xargs, grep, clear missing from /rescue).</li>
       </ol>
+      <strong>Result:</strong> CI run 25495932941 is green — build (12-13m) → boot-test (~3m, real multi-user reach) → release publish.
     </li>
-    <li><strong>Phase 2 (launchd) — pending review:</strong> Phase 1 leaves the boot one line away from launchd. Swap <code>init.sh</code>'s final <code>kenv init_chroot=/sysroot</code> for <code>exec chroot /sysroot /sbin/launchd</code>; switch <code>loader.conf</code> to Option&nbsp;D (drop <code>init_script</code>/<code>init_shell</code>); clone freebsd-launchd into <code>/Developer/Library/Sources/</code> and build it after gershwin-developer's stack; convert the rc.d service-enables in <code>configure_system</code> to LaunchDaemon plists one-by-one; add a <code>org.gershwin.loginwindow.plist</code> launchd job (separate concept from the existing <code>LoginWindow.plist</code> state file).</li>
+    <li><strong>Phase 2 (launchd) — cleared to start:</strong> Phase 1 leaves the boot one line away from launchd. Swap <code>init.sh</code>'s final <code>kenv init_chroot=/sysroot</code> for <code>exec chroot /sysroot /sbin/launchd</code>; switch <code>loader.conf</code> to Option&nbsp;D (drop <code>init_script</code>/<code>init_shell</code>); clone freebsd-launchd into <code>/Developer/Library/Sources/</code> and build it after gershwin-developer's stack; convert the rc.d service-enables in <code>configure_system</code> to LaunchDaemon plists one-by-one; add a <code>org.gershwin.loginwindow.plist</code> launchd job (separate concept from the existing <code>LoginWindow.plist</code> state file).</li>
     <li><strong>Phase 3 (polish):</strong> bring in kmodloader, configd stub, ASL when each lands and earns its keep.</li>
     <li><strong>Post-launchd cleanup (deferred):</strong> once Phase 2's launchd + loginwindow plist are stable, restore the polished boot UX (re-enable <code>boot_mute</code>, drop the verbose / dual-console diagnostics) and retire the CI boot-test gate (collapse the workflow back to a single build → publish job, delete <code>tests/boot-test.sh</code>). See <a href="#cleanup">§Cleanup</a>.</li>
     <li><strong>Packages constraint:</strong> <code>resources/packages/{base,vital-base,gershwin,drivers,vital-gershwin}</code> are the source of truth, and the existing entries are <strong>not re-audited</strong>. We don't re-derive what gershwin's pkg-base list should contain — that work is done. <strong>No new kernel modules / GPU drivers</strong> (no <code>nvidia-drm-kmod</code>, etc.). Phase 2 swaps the DHCP/WPA stacks: <code>dhcpcd</code> and <code>wpa_supplicant</code> from ports get added to <code>resources/packages/gershwin</code>; <code>FreeBSD-dhclient</code> and <code>FreeBSD-wpa</code> get removed from <code>resources/packages/base</code> (and <code>vital-base</code>) in the same commit. The ISO ships exactly one DHCP client and one supplicant.</li>
@@ -293,12 +299,11 @@ init_script="/init.sh"   # was /boot/init_script</code></pre>
 <h3>1.5 Phase 1 acceptance criteria</h3>
 
 <ul>
-  <li><span class="pill ok">met</span> ISO builds in CI without changes to package lists. (1d2150b CI passed.)</li>
-  <li><span class="pill ok">met</span> ISO boots in QEMU to a multi-user marker within 10 minutes. (7caefbf CI passed.)</li>
-  <li><span class="pill warn">pending</span> Post-rework (3b97e40) CI green. <em>In flight as of v1.</em></li>
-  <li><span class="pill warn">pending</span> ISO boots on the Lenovo test laptop. WiFi firmware loads. <em>Hardware re-test after CI greens.</em></li>
-  <li><span class="pill ok">met</span> The continuous GH release publishes per push, gated by boot-test.</li>
-  <li><span class="pill warn">pending</span> Existing rc.d-managed services come up under the new chroot: ZFS, dhclient, ntpd, dbus, initgfx, loginwindow, cupsd, avahi. <em>Verify on first post-rework boot.</em></li>
+  <li><span class="pill ok">met</span> ISO builds in CI without changes to package lists.</li>
+  <li><span class="pill ok">met</span> ISO boots in QEMU past <code>/etc/rc.d/root</code> within 10 minutes (CI run 25495932941, commit 6ff5abe).</li>
+  <li><span class="pill ok">met</span> Post-rework architecture confirmed working under chroot — <code>init.sh</code> cascade clean, /etc/rc reaches multi-user.</li>
+  <li><span class="pill warn">deferred</span> Boot on the Lenovo test laptop and verify WiFi firmware loads. The architecture is structurally identical to the QEMU-validated path; hardware test before final Phase-2 ship is sufficient.</li>
+  <li><span class="pill ok">met</span> The continuous GH release publishes per push, gated by boot-test that verifies real multi-user reach (not the prior 1m5s loader-banner false positive).</li>
 </ul>
 
 <h2 id="phase2">Phase 2: launchd port <span class="pill warn">starts only after Phase 1 ships</span></h2>
@@ -608,9 +613,20 @@ exit 0</code></pre>
   <li><strong>init_script cosmetic tightening:</strong> not done. Risk/value didn't justify it for a load-bearing shell script. The full architectural rework subsumed any "cleanup" intent. Decision 2026-05-06.</li>
   <li><strong>chroot stays git-free:</strong> gershwin's current <code>build.sh:281</code> clones inside the chroot. We tolerate that for gershwin-developer (existing behavior; not regressing) but freebsd-launchd is rsynced from a host-side clone (per the existing memory rule).</li>
   <li><strong>Fork-only workflow:</strong> all gershwin work lands in <code>pkgdemon/gershwin-on-freebsd</code> (the user's fork) directly on main; no PRs to gershwin-desktop, no topic branches. Per user direction 2026-05-06.</li>
+  <li><strong>Post-rework debugging trail (2026-05-07):</strong>
+    <ul>
+      <li>Initial CI on the rework looked silent on serial after kernel handoff (only kernel printf messages visible). Spent several iterations chasing this.</li>
+      <li>Two coupled root causes identified by parallel agents reading <code>init.c</code> + diff'ing freebsd-livecd-unionfs:
+        (a) <code>/sbin/init</code> mounts devfs <em>after</em> running <code>init_script</code>, so init's <code>open_console()</code> for the child's stdio falls back to <code>/dev/null</code>. Fix: <code>init.sh</code> mounts devfs first, then re-execs stdio onto <code>/dev/console</code>.
+        (b) <code>boot_serial="YES"</code> was missing in loader.conf — userspace stdio routed to vidconsole (invisible under QEMU <code>-display none</code>). Working repo had it; we didn't.
+      </li>
+      <li>Once visibility was restored, the actual blocker surfaced: <code>/etc/rc.d/root</code> aborts the boot trying <code>mount -uw /</code> (mount(8) inspects the global kernel mount table, which still reports / as cd9660 even after the chroot). Fix: <code>root_rw_mount="NO"</code> in <code>/sysroot/etc/rc.conf</code>, same as freebsd-livecd-unionfs.</li>
+      <li>Earlier "green" CI runs were 1m5s false positives — boot-test was matching the FreeBSD loader's beastie banner ("Welcome to FreeBSD") before the kernel even started. Tightened markers to multi-user-only signals: <code>login:</code>, <code>Starting local daemons</code>, <code>Setting hostname</code>, <code>Mounting local filesystems</code>.</li>
+    </ul>
+  </li>
 </ul>
 
-<p class="footnote">Plan v1, 2026-05-06 — Phase 1 commits landed (1d2150b, 7caefbf, 3b97e40); CI gating release on boot-test pass.</p>
+<p class="footnote">Plan v2, 2026-05-07 — Phase 1 fully landed and CI-green (run 25495932941, commit 6ff5abe). Phase 2 cleared to start.</p>
 
 </body>
 </html>

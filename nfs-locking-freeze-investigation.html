@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NFS NLM Missing: Chromium-Triggered System Freeze When User Home Is on NFS</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; color: #222; line-height: 1.5; }
+  h1 { border-bottom: 2px solid #888; padding-bottom: .3em; }
+  h2 { margin-top: 1.8em; border-bottom: 1px solid #ccc; padding-bottom: .2em; }
+  h3 { margin-top: 1.4em; }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  pre { background: #f4f4f4; padding: .8em 1em; border-left: 3px solid #888; overflow-x: auto; font-size: .9em; }
+  code { background: #f4f4f4; padding: 1px 4px; border-radius: 3px; }
+  table { border-collapse: collapse; margin: 1em 0; }
+  th, td { border: 1px solid #ccc; padding: .4em .8em; text-align: left; vertical-align: top; }
+  th { background: #eee; }
+  .callout { background: #fff8dc; border-left: 4px solid #d4a017; padding: .8em 1em; margin: 1em 0; }
+  .root-cause { background: #ffe5e5; border-left: 4px solid #c33; padding: .8em 1em; margin: 1em 0; }
+  .fix { background: #e7f5e7; border-left: 4px solid #5a5; padding: .8em 1em; margin: 1em 0; }
+  ul, ol { padding-left: 1.5em; }
+</style>
+</head>
+<body>
+
+<h1>System Freeze When Chromium Screen-Shares With User Home on NFS (Missing NLM on Server)</h1>
+
+<h2>Summary</h2>
+
+<p>When the user is logged into a session whose home directory is hosted on the NFS share <code>192.168.1.242:/Local</code> (mounted at <code>/Network</code>), starting a Jitsi screen-share from Chromium causes the entire X11 session (Workspace, WindowManager, Menu, and visually all other X clients) to become unresponsive for tens of seconds at a time. The freeze recovers on its own after a long delay and recurs.</p>
+
+<p>The same hardware, same software build, same Chromium screen-share scenario does <strong>not</strong> reproduce when the user is logged in as a local account whose home directory lives on local disk.</p>
+
+<div class="root-cause">
+<strong>Root cause:</strong> The NFS server (<code>192.168.1.242</code>) does not register the NFS Lock Manager (NLM, RPC program 100021, <code>nlockmgr</code>) with its portmapper. The NFS share is mounted with <code>local_lock=none, hard, timeo=600</code>, which means the kernel will send all POSIX file lock requests to the server via NLM and retry indefinitely on no-reply. Chromium stores its profile in SQLite databases under <code>~/.config/chromium/</code>, and SQLite uses POSIX byte-range locks for every transaction. When Chromium is actively writing profile state during screen-share, lock acquisition stalls behind RPC retries to a non-existent NLM service on the server. Chromium's main thread blocks in <code>fcntl()</code>, stops servicing X events, and the resulting damage / event backlog at the X server makes every other X client appear frozen until Chromium unblocks.
+</div>
+
+<h2>Reproduction</h2>
+
+<ol>
+  <li>Log in as a user whose home is on the NFS mount (<code>/Network/Users/&lt;user&gt;</code>).</li>
+  <li>Launch Chromium.</li>
+  <li>Join a Jitsi meeting and start a screen-share (any source &mdash; whole desktop or a single tab).</li>
+  <li>Interact with the desktop (open Workspace file viewers, click around, etc.).</li>
+  <li>Within a short time the entire X session locks up for tens of seconds at a time, recovering on its own and recurring.</li>
+</ol>
+
+<p>Negative control: same steps as a local user whose <code>$HOME</code> is on local disk &mdash; no freeze.</p>
+
+<h2>Evidence</h2>
+
+<h3>1. NLM is not registered on the NFS server</h3>
+
+<pre>$ rpcinfo -p 192.168.1.242
+   program vers proto   port  service
+    100000    4   tcp    111  portmapper
+    100000    3   tcp    111  portmapper
+    100000    2   tcp    111  portmapper
+    100000    4   udp    111  portmapper
+    100000    3   udp    111  portmapper
+    100000    2   udp    111  portmapper
+    100024    1   udp  56778  status
+    100024    1   tcp  41491  status
+    100003    3   tcp   2049  nfs</pre>
+
+<p>Expected (and missing) entries:</p>
+
+<pre>    100021    1   udp  ...  nlockmgr
+    100021    3   udp  ...  nlockmgr
+    100021    4   udp  ...  nlockmgr
+    100021    1   tcp  ...  nlockmgr
+    100021    3   tcp  ...  nlockmgr
+    100021    4   tcp  ...  nlockmgr</pre>
+
+<h3>2. Mount is configured to depend on server-side NLM</h3>
+
+<pre>$ cat /proc/self/mountstats | grep -A1 192.168.1.242
+device 192.168.1.242:/Local mounted on /Network with fstype nfs statvers=1.1
+        opts:   rw,vers=3,rsize=1048576,wsize=1048576,namlen=255,
+                acregmin=3,acregmax=60,acdirmin=30,acdirmax=60,
+                hard,proto=tcp,timeo=600,retrans=2,sec=sys,
+                mountaddr=192.168.1.242,mountvers=3,mountport=46312,
+                mountproto=udp,local_lock=none</pre>
+
+<p>The relevant options are:</p>
+<ul>
+  <li><code>local_lock=none</code> &mdash; send all POSIX and flock locks to the server via NLM (no client-side fallback).</li>
+  <li><code>hard</code> &mdash; never give up on a stalled NFS RPC; retry forever.</li>
+  <li><code>timeo=600</code> &mdash; wait 60 seconds (deciseconds) before retransmitting.</li>
+  <li><code>retrans=2</code> &mdash; before doubling the timeout.</li>
+</ul>
+
+<h3>3. Chromium holds many POSIX locks on NFS-hosted SQLite databases</h3>
+
+<pre>$ sudo cat /proc/locks | grep '00:24'   # device 00:24 = the NFS mount
+1: POSIX  ADVISORY  READ  13973 00:24:40127090 1073741826 1073742335
+2: POSIX  ADVISORY  READ  13973 00:24:40108440 1073741826 1073742335
+3: POSIX  ADVISORY  WRITE 13973 00:24:40126834 0 EOF
+4: POSIX  ADVISORY  WRITE 13973 00:24:40127071 1073741824 1073742335
+...
+(27 such entries, all PID 13973 = chromium main process)</pre>
+
+<p>The byte ranges <code>1073741824 - 1073742335</code> (<code>0x40000000 - 0x400001FF</code>) are SQLite's lock byte range (Pending byte + Reserved byte + Shared byte range, per <a href="https://sqlite.org/lockingv3.html">SQLite docs</a>). The locked inodes correspond to files like:</p>
+
+<pre>$ sudo lsof -p 13973 | grep '\.config/chromium'
+chromium  13973  jmaloney  ...  /Network/Users/jmaloney/.config/chromium/segmentation_platform/ukm_db
+chromium  13973  jmaloney  ...  /Network/Users/jmaloney/.config/chromium/Default/Web Data
+chromium  13973  jmaloney  ...  /Network/Users/jmaloney/.config/chromium/Default/WebStorage/QuotaManager
+chromium  13973  jmaloney  ...  /Network/Users/jmaloney/.config/chromium/Default/Account Web Data
+chromium  13973  jmaloney  ...  /Network/Users/jmaloney/.config/chromium/Default/DIPS
+chromium  13973  jmaloney  ...  /Network/Users/jmaloney/.config/chromium/Default/Network Action Predictor
+... (many more SQLite databases)</pre>
+
+<h3>4. NFS itself is healthy &mdash; this is not a network or RPC throughput problem</h3>
+
+<pre>RPC iostats (per-op, since mount):
+              calls   retrans  avg RTT  avg total
+   GETATTR:    2528         0   0.34ms     0.61ms
+   LOOKUP:      923         0   0.39ms     0.62ms
+   ACCESS:      999         0   0.31ms     0.47ms
+   READ:       2187         0   0.63ms     0.71ms
+   WRITE:       478         0   2.55ms     2.70ms
+   READDIRPLUS:  97         0   0.34ms     0.61ms
+
+TCP to NFS server:
+   ESTAB 0 0 192.168.1.173:896  192.168.1.242:2049
+   rtt: 0.86ms / 0.13ms variance, retransmits: 0, send-Q: 0, recv-Q: 0</pre>
+
+<p>Sub-millisecond NFS RPC RTTs, zero retransmits, no socket backlog. The data path is fine; only the lock path is broken.</p>
+
+<h3>5. The freeze is X-server-wide, not GNUstep-specific</h3>
+
+<p>While the UI is frozen, all GNUstep clients (Workspace, WindowManager, Menu) are sleeping idle in <code>do_sys_poll</code> at single-digit CPU. They have nothing to do because Xorg is not delivering events. The CPU pattern matches Chromium's GPU/renderer/audio processes consuming 80&ndash;120% combined, with Xorg blocked in <code>drm_syncobj_array_wait_timeout</code> servicing them. The freeze ends when Chromium unblocks from <code>fcntl()</code> and resumes producing/consuming X events.</p>
+
+<h3>6. False leads ruled out during investigation</h3>
+
+<table>
+<tr><th>Hypothesis</th><th>Outcome</th></tr>
+<tr><td>GWViewerSidebar code (new on <code>feat/sidebar</code>)</td><td>Innocent. Disabling the sidebar entirely (placeholder NSView) and reverting all sidebar-related changes did not stop the freeze.</td></tr>
+<tr><td>Sidebar's redundant <code>addWatcherForPath:</code> calls</td><td>Innocent. Removing them did not stop the freeze.</td></tr>
+<tr><td>NSOutlineView heaviness vs NSTableView</td><td>Innocent. Swap to NSTableView did not stop the freeze.</td></tr>
+<tr><td>Vertical NSSplitView layout</td><td>Innocent. Reverting to horizontal split did not stop the freeze.</td></tr>
+<tr><td>Compact path bar mode in GWViewerIconsPath</td><td>Innocent. Disabling did not stop the freeze.</td></tr>
+<tr><td>GWDesktopManager <code>volumeMountRoots</code> refactor</td><td>Innocent. Reverting did not stop the freeze.</td></tr>
+<tr><td>NFS data-path saturation by Chromium screen-share traffic</td><td>Ruled out by mountstats: zero retransmits, sub-ms RTTs.</td></tr>
+<tr><td>Sidebar's main-thread NFS lookups (<code>fileExistsAtPath:</code> on <code>~/Documents</code> etc.)</td><td>Real but secondary. Visible during sidebar build but not the trigger of the system-wide freeze.</td></tr>
+<tr><td>Stale GNUstep orphan processes from earlier sessions (spinning Menu/WindowManager at 75-87% CPU after session teardown)</td><td>Real and worth a separate ticket, but not the cause of the freeze under investigation here. Confirmed by reproducing the freeze in a clean session with no orphans.</td></tr>
+</table>
+
+<h2>Why the freeze is system-wide</h2>
+
+<ol>
+  <li>Chromium does an <code>fcntl(F_SETLK)</code> on a SQLite database file under <code>~/.config/chromium/</code> (NFS).</li>
+  <li>The kernel routes the lock request through <code>lockd</code>, which RPCs to the server's NLM service. NLM is not registered &mdash; <code>lockd</code> retries portmap lookup, retries the RPC, and with <code>hard</code> mount semantics will not give up.</li>
+  <li>Chromium's calling thread blocks in <code>fcntl()</code> until the lock is granted (which under contention can take seconds to tens of seconds).</li>
+  <li>Chromium stops processing its X11 event queue and stops producing new frames for the screen-share.</li>
+  <li>Xorg's compositor / damage queue backs up. Other X11 clients' protocol replies (which depend on the queue draining) stretch out into seconds.</li>
+  <li>Workspace, WindowManager, and Menu all appear unresponsive, even though their main threads are idle in <code>poll()</code> waiting for X events that are not arriving promptly.</li>
+  <li>When Chromium eventually unblocks, the X queue drains and the UI snaps back.</li>
+</ol>
+
+<p>The chromium screen-share is the trigger because (a) it dramatically increases per-frame state writes to chromium's profile DBs and (b) it adds heavy GPU/composite work to Xorg, so any stall is amplified.</p>
+
+<h2>Suggested fixes</h2>
+
+<div class="fix">
+<strong>Fix 1 (workaround, fast, reversible):</strong> Move Chromium's profile off NFS to local disk. This eliminates the NLM dependency for Chromium specifically and should fully resolve the freeze for screen-sharing scenarios.
+<pre># Option A: launch chromium with a local profile dir
+chromium --user-data-dir=/var/tmp/chromium-$USER
+
+# Option B: replace the on-NFS dir with a symlink to local disk
+mv ~/.config/chromium /var/local/chromium-$USER
+ln -s /var/local/chromium-$USER ~/.config/chromium</pre>
+
+Use this to <strong>confirm the diagnosis</strong> before doing server-side work. If the freeze stops with Chromium's profile on local disk, NLM is definitively the cause.
+</div>
+
+<div class="fix">
+<strong>Fix 2 (proper, server-side):</strong> Make the NFS server (<code>192.168.1.242</code>) register NLM correctly. The exact steps depend on the server distribution / NAS firmware. On a Linux NFS server:
+
+<pre># On 192.168.1.242:
+sudo systemctl enable --now rpc-statd.service
+sudo systemctl enable --now nfs-server.service
+
+# Confirm NLM is registered (must show nlockmgr entries):
+rpcinfo -p localhost | grep nlockmgr
+
+# Expected output:
+#   100021    1   udp  ...  nlockmgr
+#   100021    3   udp  ...  nlockmgr
+#   100021    4   udp  ...  nlockmgr
+#   100021    1   tcp  ...  nlockmgr
+#   100021    3   tcp  ...  nlockmgr
+#   100021    4   tcp  ...  nlockmgr</pre>
+
+If the server is a NAS appliance (Synology, QNAP, TrueNAS, etc.), check the appliance's NFS configuration UI for "NLM" / "lock manager" / "advisory locking" toggles, and check the appliance's running services for <code>nlockmgr</code> / <code>rpc.lockd</code>.
+
+After the server is fixed, verify from the client:
+<pre>$ rpcinfo -p 192.168.1.242 | grep nlockmgr</pre>
+should now return entries on program 100021.
+</div>
+
+<div class="fix">
+<strong>Fix 3 (mount-side workaround if server cannot be fixed):</strong> Add <code>nolock</code> (or equivalently <code>local_lock=all</code>) to the NFS mount options. This makes the client handle locks locally and never contact the server for NLM.
+
+<pre># /etc/fstab entry change:
+192.168.1.242:/Local /Network nfs rw,vers=3,hard,nolock,...  0 0</pre>
+
+<strong>Trade-off:</strong> Locks will not be coordinated across hosts mounting the same share. If only one host accesses the share at a time, this is safe. If multiple hosts share <code>/Local</code> and could acquire locks on the same files, this risks data corruption (e.g. SQLite DBs being written by two clients without coordination).
+</div>
+
+<h2>Verification approach</h2>
+
+<ol>
+  <li>Apply <strong>Fix 1</strong> (move chromium profile to local disk) for the affected user.</li>
+  <li>Log in as that user, start Chromium, start a Jitsi screen-share.</li>
+  <li>Reproduce the original interaction pattern (open Workspace viewers, click around, etc.) for several minutes.</li>
+  <li>Confirm no freezes occur. If confirmed, the diagnosis stands.</li>
+  <li>Schedule <strong>Fix 2</strong> (server-side NLM) for a maintenance window. After deployment, verify <code>rpcinfo -p 192.168.1.242 | grep nlockmgr</code> returns entries, then revert Fix 1 and confirm the user can run the same scenario with a profile on NFS without freezing.</li>
+</ol>
+
+<h2>Related observations not part of this ticket</h2>
+
+<ul>
+  <li><strong>Sidebar buildModel does main-thread NFS lookups.</strong> When a viewer opens, <code>GWViewerSidebar</code>'s <code>buildModel</code> performs synchronous <code>[fm fileExistsAtPath:]</code> on <code>~/Videos</code> (with <code>~/Movies</code> fallback) and lazy <code>[FSNode nodeWithPath:]</code> per favorite folder icon (~7-8 NFS getattr RPCs per viewer open). This is not the trigger of the screen-share freeze, but is a real source of latency for users on NFS homes and would benefit from caching or async resolution. Worth a separate small ticket.</li>
+  <li><strong>GNUstep apps (Workspace, WindowManager, Menu) sometimes fail to exit cleanly and remain as orphans (PPid=1) spinning in a tight userspace loop (epoll_wait + poll + recvmsg-EAGAIN at ~9000 iterations/sec, 75-87% CPU).</strong> Observed multiple times during this investigation. Orphans hold their <code>NSMessagePort</code> registrations under <code>/tmp/GNUstepSecure&lt;uid&gt;/NSMessagePort/ports/</code> and can interfere with subsequent sessions' Distributed Objects lookups. Worth a separate ticket and mitigation in the GNUstep teardown path.</li>
+</ul>
+
+<h2>Investigation timeline (abbreviated)</h2>
+
+<ol>
+  <li>Symptom reported: opening Workspace viewers + clicking sidebar during Chromium/Jitsi screen-share locks up the X session for long periods.</li>
+  <li>Initial bisect placed blame on <code>feat/sidebar</code> branch vs <code>main</code>. Multiple sidebar-related disables (debounce, redundant watcher removal, NSOutlineView swap, vertical split disable, compact path bar disable, GWDesktopManager refactor revert) all failed to stop the freeze.</li>
+  <li>Test as a local user (home on local disk) on the same branch &mdash; freeze did not reproduce. Strongly implicates NFS interaction.</li>
+  <li>Live process inspection during a freeze showed Workspace and other GNUstep apps idle in <code>do_sys_poll</code> with no NFS RPCs in flight, while NFS data-path stats were healthy. Pointed at locking rather than data path.</li>
+  <li><code>/proc/locks</code> revealed Chromium holding 27+ POSIX locks on NFS-hosted SQLite DBs in classic SQLite locking byte ranges.</li>
+  <li><code>rpcinfo -p 192.168.1.242</code> revealed NLM is not registered on the server.</li>
+  <li>Combined with mount option <code>local_lock=none, hard</code>, this explains how Chromium's lock operations under screen-share load can stall and cascade into a system-wide UI freeze.</li>
+</ol>
+
+</body>
+</html>

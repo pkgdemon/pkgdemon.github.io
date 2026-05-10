@@ -1,0 +1,1632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>freebsd-launchd: solving service ordering (and the netconfigd path)</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --bg: #fafaf7;
+    --accent: #b8472a;
+    --accent-soft: #f3e7df;
+    --border: #d8d4c8;
+    --code-bg: #f0ece2;
+    --table-stripe: #f4efe5;
+    --warn: #8a5a00;
+    --good: #2d6f3b;
+    --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    line-height: 1.55;
+    margin: 0;
+    padding: 0;
+  }
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+  h1 {
+    font-size: 2.1rem;
+    line-height: 1.2;
+    margin: 0 0 8px;
+    letter-spacing: -0.01em;
+  }
+  h2 {
+    font-size: 1.45rem;
+    margin: 56px 0 12px;
+    padding-top: 18px;
+    border-top: 2px solid var(--border);
+    letter-spacing: -0.005em;
+  }
+  h3 {
+    font-size: 1.15rem;
+    margin: 32px 0 10px;
+    color: var(--accent);
+  }
+  h4 {
+    font-size: 1rem;
+    margin: 24px 0 6px;
+    color: var(--fg);
+  }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin: 0 0 6px; }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  pre {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.86em;
+    line-height: 1.5;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 0 0 14px;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit;
+  }
+  .lede {
+    font-size: 1rem;
+    color: var(--fg-muted);
+    margin: 0 0 28px;
+  }
+  .meta {
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    margin: 0 0 24px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 12px 0 22px;
+    font-size: 0.94rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    background: var(--accent-soft);
+    font-weight: 600;
+  }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 14px 18px;
+    margin: 18px 0 22px;
+    border-radius: 0 4px 4px 0;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn {
+    border-left-color: var(--warn);
+    background: #fbf3df;
+  }
+  .callout-good {
+    border-left-color: var(--good);
+    background: #e8f1e3;
+  }
+  .pill {
+    display: inline-block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-right: 8px;
+  }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 18px 24px 14px 36px;
+    margin: 0 0 36px;
+    font-size: 0.95rem;
+  }
+  .toc h2 {
+    margin: 0 0 8px;
+    padding-top: 0;
+    border-top: none;
+    font-size: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--fg-muted);
+    margin-left: -14px;
+  }
+  .toc ol { margin: 0 0 0 6px; }
+  .toc li { margin-bottom: 4px; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote {
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    border-top: 1px solid var(--border);
+    margin-top: 48px;
+    padding-top: 16px;
+  }
+  .pros-cons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin: 14px 0 18px;
+  }
+  .pros, .cons {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 16px;
+    background: white;
+  }
+  .pros { border-left: 3px solid var(--good); }
+  .cons { border-left: 3px solid var(--bad); }
+  .pros h4, .cons h4 { margin-top: 0; }
+  @media (max-width: 600px) {
+    .pros-cons { grid-template-columns: 1fr; }
+    .wrap { padding: 24px 18px 64px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>freebsd-launchd: solving service ordering (and the netconfigd path)</h1>
+<p class="lede">Working notes on the cross-service ordering problem on freebsd-launchd &mdash; what makes <code>varrun &rarr; cron</code>, <code>syslogd</code>-first, <code>dhcpcd</code>-after-<code>kmodloader</code> work declaratively rather than by alphabetical-filename luck. netconfigd is one downstream consumer of the same primitives; the doc walks both layers.</p>
+<p class="meta">Companion document to the freebsd-launchd / configd discussion. Written 2026-05-10.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#background">Background — what we're trying to build, and why this is hard</a></li>
+  <li><a href="#primer">Primer — the IPC technologies, in plain language</a>
+    <ol>
+      <li><a href="#mach">Mach IPC</a></li>
+      <li><a href="#mig">MIG (Mach Interface Generator)</a></li>
+      <li><a href="#xpc">XPC</a></li>
+      <li><a href="#bootstrap">Bootstrap server &amp; <code>MachServices</code></a></li>
+      <li><a href="#afunix">AF_UNIX sockets</a></li>
+      <li><a href="#do">GNUstep Distributed Objects</a></li>
+    </ol>
+  </li>
+  <li><a href="#current-state">What's actually in the Gershwin tree today</a></li>
+  <li><a href="#ordering">Service ordering today, and how each option changes it</a>
+    <ol>
+      <li><a href="#services-today">Every launchd plist on the live ISO today</a></li>
+      <li><a href="#ordering-mech">How ordering actually works today</a></li>
+      <li><a href="#ordering-fragile">Where the current ordering is fragile</a></li>
+      <li><a href="#mach-mechanism">What Mach activation actually does, step by step</a></li>
+      <li><a href="#varrun-cron">The "varrun starts before cron" question, walked through</a></li>
+      <li><a href="#apple-other">Apple's other ordering primitives (not Mach)</a></li>
+      <li><a href="#ordering-options">What changes under each option</a></li>
+    </ol>
+  </li>
+  <li><a href="#option-1">Option 1 — Reverse Mach &rarr; AF_UNIX inside configd</a></li>
+  <li><a href="#option-2">Option 2 — Port Mach IPC to FreeBSD</a></li>
+  <li><a href="#option-3">Option 3 — New Gershwin-native daemon using GNUstep DO</a></li>
+  <li><a href="#comparison">Side-by-side comparison</a></li>
+  <li><a href="#decision">Decision framework</a></li>
+  <li><a href="#recommendation">Recommendation</a></li>
+  <li><a href="#key-roadmap">The plist-key roadmap: what we have, what we need</a></li>
+  <li><a href="#risks">Open questions &amp; risks</a></li>
+</ol>
+</div>
+
+<h2 id="background">1. Background — the service ordering problem (and netconfigd as one consumer)</h2>
+
+<p>The central topic of this document is <strong>cross-service ordering on freebsd-launchd</strong>. The launchd port today recognizes 6 plist keys (<code>Label</code>, <code>Program</code>, <code>ProgramArguments</code>, <code>Disabled</code>, <code>RunAtLoad</code>, <code>KeepAlive</code>) and orders services by alphabetical filename scan. That works coincidentally on the live ISO but breaks the moment any real cross-service dependency has to be expressed:</p>
+
+<ul>
+  <li><code>cron</code> wants <code>/var/run</code> to exist before writing its PID file. <code>varrun</code> sorts <em>after</em> <code>cron</code> alphabetically. Saved today only by base.txz pre-populating <code>/var/run</code>.</li>
+  <li><code>syslogd</code> sorts after <code>cron</code> / <code>dhcpcd</code> / <code>kmodloader</code>; their early log lines go to the kernel ring buffer instead of <code>/var/log/messages</code>.</li>
+  <li><code>dhcpcd</code> sorts before <code>kmodloader</code>, but kmodloader is what loads the NIC drivers. dhcpcd survives only because it watches <code>PF_ROUTE</code> for late-arriving interfaces.</li>
+  <li>Any future service that depends on another &mdash; including a hypothetical netconfigd &mdash; has no declarative way to express it.</li>
+</ul>
+
+<p>Solving this is the <strong>foundation work</strong> covered in the recommendation (Section 10) and the plist-key roadmap (Section 11). It's mechanical engineering inside <code>core.m</code>: grow the plist key vocabulary &mdash; <code>WatchPaths</code>, <code>Sockets</code>, <code>KeepAlive</code> subkeys, <code>LaunchEvents</code> &mdash; so dependencies can be declared instead of inferred from filename order.</p>
+
+<p><strong>netconfigd is one downstream consumer of those same primitives.</strong> It's the most-discussed consumer because the gershwin-on-freebsd variant has imported Apple's <code>configd</code> source (<code>configd/src/</code>, version 963.270.3) and a build script (<code>make-configd.sh</code>) intended to produce a daemon called <code>netconfigd</code>. Whether that import actually ships, and in what form, is a real architectural fork (Sections 5&ndash;7) &mdash; but it sits on top of the ordering work, not parallel to it.</p>
+
+<p>The hard problem inside the netconfigd-specific question: <strong>configd is built end-to-end on Mach IPC</strong>. Every plugin talks to the core via Mach messages; every client (<code>scutil</code>, <code>SCDynamicStore</code> consumers) reaches the daemon via the bootstrap server's Mach port lookup; the modern XPC layer sits on top of Mach. <strong>FreeBSD has no Mach.</strong> So you can compile configd, but you can't run it usefully without doing real work first.</p>
+
+<p>That framework manages, on macOS:</p>
+
+<ul>
+  <li>Network interface state (which interfaces exist, their IP, link, etc.)</li>
+  <li>DHCP, IPv6 RA/SLAAC, link-local addressing (the <code>IPConfiguration</code> plugin)</li>
+  <li>The "dynamic store" &mdash; a system-wide key/value database of the current machine state, watchable by any process</li>
+  <li>Higher-level abstractions like network locations, VPN, proxies, AirDrop discovery</li>
+</ul>
+
+<p>This document walks through both layers: the ordering work in the launchd port (Sections 4, 10, 11) and the three netconfigd paths that consume those primitives (Sections 5&ndash;7), with cross-references between them.</p>
+
+<h2 id="primer">2. Primer — the IPC technologies, in plain language</h2>
+
+<p>If you're confident on what Mach and DO are, skip ahead to <a href="#current-state">section 3</a>. The other terms — MIG, XPC, bootstrap, AF_UNIX framed messages — are easier to evaluate options against if they're not abstract.</p>
+
+<h3 id="mach">2.1 Mach IPC</h3>
+
+<p>Mach is the kernel's <strong>inter-process communication primitive</strong> on macOS (and on Hurd, NeXTSTEP, and a few research kernels). It's not a library; it's built into the kernel, like FreeBSD's pipes or sockets. Two programs talk by sending each other <strong>messages</strong> — typed, structured data — through <strong>Mach ports</strong>, which are kernel-managed mailboxes.</p>
+
+<p>Concretely, a Mach message exchange looks like:</p>
+
+<pre><code>// Sender
+mach_msg_header_t msg;
+msg.msgh_remote_port = some_port;   // who to send to
+msg.msgh_local_port  = reply_port;  // where reply comes back
+msg.msgh_id          = 1234;        // operation code
+mach_msg(&amp;msg, MACH_SEND_MSG, sizeof(msg), 0,
+         MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+
+// Receiver, on the other end of some_port:
+mach_msg(&amp;msg, MACH_RCV_MSG, 0, sizeof(msg),
+         my_recv_port, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);</code></pre>
+
+<p>Important properties that distinguish Mach from "just sockets":</p>
+
+<ul>
+  <li><strong>Ports are first-class kernel objects.</strong> You can transfer port rights — give another process the ability to send to your port — through the message itself, by reference. There's no portable equivalent on FreeBSD; passing file descriptors over Unix sockets is the closest approximation but lacks Mach's send/receive right semantics.</li>
+  <li><strong>The kernel mediates everything.</strong> Permissions, copy semantics for large messages (vm_copy), out-of-line memory transfer — all kernel features.</li>
+  <li><strong>It's the OS-wide convention.</strong> On Darwin, <em>everything</em> is built on Mach: IOKit user-client communication, the BSD signal layer, threading primitives, kqueue's <code>EVFILT_MACHPORT</code>, etc.</li>
+</ul>
+
+<p><em>Key takeaway: Mach is a kernel feature. "Porting Mach" means either implementing it as a userspace library (slow, semantics partial) or putting it in the FreeBSD kernel (large, invasive).</em></p>
+
+<h3 id="mig">2.2 MIG (Mach Interface Generator)</h3>
+
+<p>Writing raw <code>mach_msg</code> calls is tedious and error-prone, so Apple ships a code generator: <strong>MIG</strong>. You write an interface definition (a <code>.defs</code> file) that looks like an RPC schema:</p>
+
+<pre><code>// SystemConfiguration's actual MIG interface (excerpt from configd):
+subsystem config 20000;
+
+routine configopen(
+    server : mach_port_t;
+    name   : xmlData;
+    options: xmlData;
+    out    session : mach_port_t;
+    out    status  : int);
+
+routine configget(
+    server : mach_port_t;
+    key    : xmlData;
+    out    value  : xmlDataOut;
+    out    status : int);</code></pre>
+
+<p>MIG generates two C files: a client stub (<code>configopen()</code> as a function the caller can use) and a server dispatcher (a switch on <code>msgh_id</code> that calls into your handler). Configd's IPC contract is defined as MIG, and configd's source includes generated stubs for <code>config.defs</code>, <code>shared_dns_info.defs</code>, <code>helper.defs</code>, and several others.</p>
+
+<p><em>Key takeaway: MIG is just a code generator on top of Mach. If you replace Mach, you replace MIG too — every <code>config_user.c</code> / <code>configMIGServer.c</code> stub becomes hand-written transport code.</em></p>
+
+<h3 id="xpc">2.3 XPC</h3>
+
+<p>XPC is Apple's <strong>modern higher-level IPC API</strong>, introduced in Mac OS X 10.7 (2011). It hides Mach behind a friendlier interface:</p>
+
+<pre><code>// XPC client (in configd's nwi/network_information.c):
+xpc_connection_t conn = xpc_connection_create_mach_service(
+    "com.apple.SystemConfiguration.configd",
+    queue,
+    XPC_CONNECTION_MACH_SERVICE_PRIVILEGED);
+
+xpc_object_t request = xpc_dictionary_create(NULL, NULL, 0);
+xpc_dictionary_set_uint64(request, "cmd", NWI_GET_STATE);
+
+xpc_connection_send_message_with_reply(conn, request, queue,
+    ^(xpc_object_t reply) {
+        // process reply asynchronously
+    });</code></pre>
+
+<p>XPC adds:</p>
+<ul>
+  <li><strong>Dictionary-shaped messages</strong> — JSON-like, typed, versionable</li>
+  <li><strong>Asynchronous, block-based callbacks</strong> integrated with libdispatch</li>
+  <li><strong>Audit tokens</strong> so the server can identify the calling process</li>
+  <li><strong>Connection lifecycle</strong> — events for peer death, reconnect, etc.</li>
+</ul>
+
+<p>Crucially, XPC <strong>still uses Mach as transport</strong>. <code>xpc_connection_create_mach_service()</code> literally looks up a Mach port via the bootstrap server. Without Mach, XPC has no wire.</p>
+
+<p><em>Key takeaway: XPC and Mach are not separable in Apple's stack. Anything that uses XPC is using Mach underneath.</em></p>
+
+<h3 id="bootstrap">2.4 Bootstrap server &amp; <code>MachServices</code></h3>
+
+<p>How does a client know which Mach port to send to? It asks the <strong>bootstrap server</strong>, a registry that maps human-readable names like <code>com.apple.SystemConfiguration.configd</code> to the kernel port object.</p>
+
+<p>On Apple, the bootstrap server is part of <strong>launchd itself</strong>. When a daemon's plist contains:</p>
+
+<pre><code>&lt;key&gt;MachServices&lt;/key&gt;
+&lt;dict&gt;
+    &lt;key&gt;com.apple.SystemConfiguration.configd&lt;/key&gt;
+    &lt;true/&gt;
+&lt;/dict&gt;</code></pre>
+
+<p>...launchd does three things:</p>
+
+<ol>
+  <li>Registers the name <code>com.apple.SystemConfiguration.configd</code> in its bootstrap registry, attaching a Mach port.</li>
+  <li>When any client calls <code>bootstrap_look_up()</code> with that name, launchd hands them a send right to the port.</li>
+  <li>If the daemon hasn't started yet, launchd <em>starts it on demand</em> — this is "launch-on-demand activation" — and queues the message until the daemon checks in.</li>
+</ol>
+
+<p>This is the dependency-resolution mechanism we don't have. <strong>"Service A depends on service B" on Apple is expressed by service A calling <code>bootstrap_look_up("B")</code></strong>, blocking until launchd has B running.</p>
+
+<p><em>Key takeaway: <code>MachServices</code> in a plist is a request to launchd's bootstrap server. The freebsd-launchd port doesn't implement bootstrap, so the key is silently ignored.</em></p>
+
+<h3 id="afunix">2.5 AF_UNIX sockets</h3>
+
+<p>Unix-domain sockets are FreeBSD's native IPC. They look and act like network sockets (<code>socket()</code>, <code>bind()</code>, <code>connect()</code>, <code>read()</code>, <code>write()</code>), except the address is a filesystem path (<code>/var/run/foo.sock</code>) and the kernel keeps the bytes in memory rather than going over the wire.</p>
+
+<pre><code>// Server
+int s = socket(AF_UNIX, SOCK_STREAM, 0);
+struct sockaddr_un addr = { .sun_family = AF_UNIX };
+strcpy(addr.sun_path, "/var/run/configd.sock");
+bind(s, (struct sockaddr*)&amp;addr, sizeof(addr));
+listen(s, 5);
+int c = accept(s, NULL, NULL);
+read(c, buf, sizeof(buf));
+
+// Client
+int c = socket(AF_UNIX, SOCK_STREAM, 0);
+connect(c, (struct sockaddr*)&amp;addr, sizeof(addr));
+write(c, msg, len);</code></pre>
+
+<p>What you give up versus Mach:</p>
+<ul>
+  <li>No port-rights transfer (FD-passing via <code>SCM_RIGHTS</code> is the closest analog and is more limited)</li>
+  <li>No kernel-managed launch-on-demand</li>
+  <li>No structured message types — you define your own framing on top of the byte stream</li>
+</ul>
+
+<p>What you get in exchange: it works on every Unix, has well-understood semantics, doesn't need any kernel changes, and the file system gives you a natural namespace.</p>
+
+<p><strong>"Framed messages"</strong>, which appears in the freebsd-launchd ipc.c, just means you put a small header (length + opcode) on top of each message so the receiver knows where one ends and the next begins. The launchd port already does this:</p>
+
+<pre><code>// from freebsd-launchd src/src/ipc_proto.c (sketch)
+struct msg_hdr {
+    uint32_t length;
+    uint32_t cmd;
+} __packed;
+
+// Client sends: write(s, &amp;hdr, sizeof hdr); write(s, payload, hdr.length);
+// Server reads: read(s, &amp;hdr, sizeof hdr); read(s, payload, hdr.length);</code></pre>
+
+<p>That's the pattern Option 1 would extend to configd: replace MIG-generated <code>mach_msg</code> calls with framed AF_UNIX writes, replace XPC dictionary passing with serialized blobs over the same socket.</p>
+
+<h3 id="do">2.6 GNUstep Distributed Objects (DO)</h3>
+
+<p>DO is a <strong>Foundation-level remote-object system</strong>. Your daemon vends an Objective-C object; another process gets a transparent proxy and calls methods on it as if it were local.</p>
+
+<pre><code>// Server (the daemon)
+@interface NCNetworkStore : NSObject
+- (NSString *)valueForKey:(NSString *)key;
+- (void)setValue:(NSString *)v forKey:(NSString *)k;
+@end
+
+NCNetworkStore *store = [[NCNetworkStore alloc] init];
+NSConnection *conn = [NSConnection serviceConnectionWithName:@"NCNetworkStore"
+                                                  rootObject:store];
+// Process now serves DO requests on a runloop.
+
+// Client (some other process)
+id&lt;NCNetworkStoreProto&gt; proxy =
+    (id)[NSConnection rootProxyForConnectionWithRegisteredName:@"NCNetworkStore"
+                                                          host:nil];
+NSString *v = [proxy valueForKey:@"State:/Network/Interface/wlan0/IPv4"];</code></pre>
+
+<p>Underneath, DO uses:</p>
+<ul>
+  <li><strong>NSPort</strong> as the transport (<code>NSMessagePort</code> = AF_UNIX local sockets, <code>NSSocketPort</code> = TCP)</li>
+  <li><strong>NSPortCoder</strong> for serialization (an NSCoder that turns objects into bytes)</li>
+  <li><strong>gdomap</strong> as the name registry (the daemon already running on Gershwin via <code>org.gnustep.gdomap.plist</code>)</li>
+  <li><strong>NSRunLoop</strong> for callback dispatch</li>
+</ul>
+
+<p>What you get:</p>
+<ul>
+  <li>Transparent proxying — calls look like normal Objective-C method invocations</li>
+  <li>A well-known Foundation API, with thirty years of GNUstep experience behind it</li>
+  <li>Already partly in production on Gershwin (gdomap is up, dshelper uses it)</li>
+</ul>
+
+<p>What you don't get:</p>
+<ul>
+  <li>The async dictionary-passing semantics of XPC (DO is fundamentally synchronous proxies; you build async on top)</li>
+  <li>MIG-class performance (NSPortCoder is more general, slower than a generated <code>mach_msg</code> stub)</li>
+  <li>Source compatibility with Apple's frameworks — no Apple plugin will drop in unmodified onto DO</li>
+</ul>
+
+<p><em>Key takeaway: DO is the "Objective-C native" alternative. It pairs well with new code; pairing it with imported Apple C source is awkward.</em></p>
+
+<h2 id="current-state">3. What's actually in the Gershwin tree today</h2>
+
+<p>Three pieces of imported Apple source matter here:</p>
+
+<table>
+<thead><tr><th>What</th><th>Version</th><th>State</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>src/</code> &mdash; launchd</td>
+  <td>launchd-842.1.4</td>
+  <td>
+    Daemon rewritten: Mach RPC server replaced with AF_UNIX framed messages (per <code>ipc.c:11-13</code>).
+    Recognizes 5 plist keys: Label, Program, ProgramArguments, RunAtLoad, KeepAlive.
+    No MachServices, no Sockets, no WatchPaths.
+    <code>liblaunch/liblaunch.c</code> (Apple client lib with Mach hooks) is preserved as source but <strong>not built or linked</strong>.
+  </td>
+</tr>
+<tr>
+  <td><code>configd/src/</code> &mdash; configd</td>
+  <td>configd-963.270.3</td>
+  <td>
+    Imported as-is. Still depends on Mach + MIG + XPC throughout. Includes plugin tree (IPMonitor, IPConfiguration, KernelEventMonitor, etc.), SC framework headers, scutil, IPMonitorControl, nwi.
+    Build script <code>make-configd.sh</code> exists; daemon would be installed as <code>netconfigd</code>.
+    <strong>Not currently shipped on the live ISO.</strong>
+  </td>
+</tr>
+<tr>
+  <td>GNUstep base</td>
+  <td>upstream</td>
+  <td>
+    In the system domain at <code>/System/Library/</code>.
+    <code>gdomap</code> runs as <code>org.gnustep.gdomap.plist</code> on Gershwin (per gershwin-on-freebsd repo).
+    DO infrastructure is operational.
+  </td>
+</tr>
+</tbody>
+</table>
+
+<p>So: a launchd that doesn't speak Mach, a configd that only speaks Mach, and a parallel DO infrastructure that's already running for other reasons.</p>
+
+<h2 id="ordering">4. Service ordering today, and how each option changes it</h2>
+
+<p>This section is the foundation for evaluating the three options realistically. The question "how does service A wait for service B?" is exactly the question Mach was designed to answer for Apple, and it's the question this launchd port currently handles only by luck.</p>
+
+<h3 id="services-today">4.1 Every launchd plist on the live ISO today</h3>
+
+<p>The complete set, in alphabetical filename order (which is the order the launchd port scans them at boot):</p>
+
+<table>
+<thead>
+<tr><th>#</th><th>Plist label</th><th>What it does</th><th>Lifecycle</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>1</td>
+  <td><code>org.freebsd.cron</code></td>
+  <td>Run scheduled tasks from <code>/etc/crontab</code>, <code>/var/cron/tabs/</code>. Self-daemonizes (parent forks + exits, child detaches).</td>
+  <td>RunAtLoad, KeepAlive=false, <code>cron -s</code></td>
+</tr>
+<tr>
+  <td>2</td>
+  <td><code>org.freebsd.dhcpcd</code></td>
+  <td>DHCP v4 + v6, RA/SLAAC processing, RTM_NEWLINK hot-plug. Master mode covers all interfaces; recognizes bridge/lagg/vlan layering. Supervises wpa_supplicant for wifi interfaces via its hook.</td>
+  <td>RunAtLoad, KeepAlive=true, <code>dhcpcd -B</code> (foreground)</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td><code>org.freebsd.dmesg.boot</code></td>
+  <td>Save kernel ring buffer to <code>/var/log/dmesg.boot</code>. Self-mitigates by <code>mkdir -p /var/log</code> first.</td>
+  <td>RunAtLoad once, exits</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td><code>org.freebsd.getty.console</code></td>
+  <td>Spawn getty on <code>/dev/ttyu0</code> (serial console).</td>
+  <td>RunAtLoad, KeepAlive=true (respawn after each session)</td>
+</tr>
+<tr>
+  <td>5</td>
+  <td><code>org.freebsd.getty.vty0</code></td>
+  <td>Spawn getty on <code>/dev/ttyv0</code> (VGA console). Wrapper sleeps 24h if device is absent (serial-only hardware).</td>
+  <td>RunAtLoad, KeepAlive=true</td>
+</tr>
+<tr>
+  <td>6</td>
+  <td><code>org.freebsd.kmodloader</code></td>
+  <td>Run <code>devmatch(8)</code>, kldload missing drivers for unattached devices in the live device tree. Plus PCI-vendor scan for the radeonkms-vs-amdgpu split.</td>
+  <td>RunAtLoad once, exits</td>
+</tr>
+<tr>
+  <td>7</td>
+  <td><code>org.freebsd.sysctl</code></td>
+  <td>Apply <code>/etc/sysctl.conf</code>. No-op on a default live ISO (file is comment-only).</td>
+  <td>RunAtLoad once, exits</td>
+</tr>
+<tr>
+  <td>8</td>
+  <td><code>org.freebsd.syslogd</code></td>
+  <td>Drain kernel <code>/dev/klog</code> + Unix socket <code>/var/run/log</code> to <code>/var/log/messages</code>.</td>
+  <td>RunAtLoad, KeepAlive=true, <code>syslogd -F -ss</code></td>
+</tr>
+<tr>
+  <td>9</td>
+  <td><code>org.freebsd.varrun</code></td>
+  <td>Defensive one-shot: <code>mkdir /var/run /var/log /var/spool /var/empty</code>, sticky <code>/tmp</code>, touch the standard log files. Replaces conventional <code>rc.d/var</code> + <code>rc.d/cleanvar</code>.</td>
+  <td>RunAtLoad once, exits</td>
+</tr>
+</tbody>
+</table>
+
+<h3 id="ordering-mech">4.2 How ordering actually works today</h3>
+
+<p>Three mechanisms, in decreasing order of importance:</p>
+
+<ol>
+  <li>
+    <strong>Alphabetical filename order.</strong> The launchd port scans <code>/System/Library/LaunchDaemons/</code> in <code>readdir()</code> order, which on UFS is filename-sorted. That's the only ordering primitive the daemon recognizes. <code>org.freebsd.cron.plist</code> &lt; <code>org.freebsd.dhcpcd.plist</code> &lt; ... &lt; <code>org.freebsd.varrun.plist</code> in lexicographic order.
+  </li>
+  <li>
+    <strong>Self-defensive scripts.</strong> Some plists pre-mkdir what they need rather than relying on a previous job. <code>dmesg.boot</code>'s ProgramArguments includes <code>/bin/mkdir -p /var/log</code> exactly because <code>varrun</code> sorts after it. The plist comment notes this explicitly: <em>"Self-sufficient is safer than relying on ordering."</em>
+  </li>
+  <li>
+    <strong>Coincidence with base.txz.</strong> <code>/var/run</code>, <code>/var/log</code>, <code>/var/spool</code> all exist in the unionfs lower because base.txz populated them. <code>varrun</code> creating them again is a no-op on the live ISO. On a system where <code>/var</code> were a fresh tmpfs, the ordering would matter and it would be wrong.
+  </li>
+</ol>
+
+<p>That is the entire ordering toolkit. <code>MachServices</code>, <code>WatchPaths</code>, <code>KeepAlive</code>'s state-predicate subkeys (<code>OtherJobEnabled</code>, <code>PathState</code>, <code>SuccessfulExit</code>), <code>LaunchEvents</code> &mdash; none of those are parsed by the daemon. Plists may contain them; they're silently dropped (recall <code>core.m:258-266</code> recognizes only six keys: Label, Program, ProgramArguments, Disabled, RunAtLoad, KeepAlive &mdash; all booleans or simple strings/arrays, no nested structure).</p>
+
+<h3 id="ordering-fragile">4.3 Where the current ordering is fragile</h3>
+
+<table>
+<thead><tr><th>Hypothetical "want"</th><th>What actually happens today</th></tr></thead>
+<tbody>
+<tr>
+  <td>cron wants <code>/var/run/cron.pid</code>; varrun should create <code>/var/run</code> first.</td>
+  <td>cron sorts before varrun (c &lt; v). On the live ISO this works only because <code>/var/run</code> already exists in base.txz. On a cleaner rootfs, cron's PID-file write would fail.</td>
+</tr>
+<tr>
+  <td>syslogd wants to write <code>/var/log/messages</code>; varrun touches it.</td>
+  <td>varrun runs LAST. syslogd starts first and uses an existing file (saved by base.txz pre-population). On a fresh-/var system, syslogd would get a write error.</td>
+</tr>
+<tr>
+  <td>dhcpcd should run after kmodloader so NIC drivers are loaded first.</td>
+  <td>dhcpcd sorts before kmodloader (d &lt; k). dhcpcd survives because it's in master mode and watches PF_ROUTE for late-arriving interfaces. If it weren't, it would miss the NICs that kmodloader brings up moments later.</td>
+</tr>
+<tr>
+  <td>kmodloader's log lines should reach syslogd.</td>
+  <td>syslogd sorts after kmodloader (k &lt; s). kmodloader's early stderr/syslog calls go to the kernel ring buffer or are dropped. They eventually appear in <code>/var/log/messages</code> because syslogd drains <code>/dev/klog</code> at startup, but they aren't real-time.</td>
+</tr>
+<tr>
+  <td>Any service wants config from a hypothetical netconfigd.</td>
+  <td>No mechanism. Phase 2's netconfigd would have to either be RunAtLoad and assume clients sort after it alphabetically, or implement its own readiness signaling (sentinel file? socket-connect retry loop?). This is exactly what Mach activation solves on Apple.</td>
+</tr>
+</tbody>
+</table>
+
+<p>The current state is "works because the test environment is forgiving." It is not a robust ordering model.</p>
+
+<h3 id="mach-mechanism">4.4 What Mach activation actually does, step by step</h3>
+
+<p>Apple's launchd has one core ordering mechanism &mdash; <strong>launch-on-demand activation via the bootstrap server</strong> &mdash; plus a few satellite mechanisms (Section 4.6) that handle cases Mach can't.</p>
+
+<p>Here is the complete flow for "daemon B advertises a Mach service; daemon A consumes it":</p>
+
+<h4>Step 1: B's plist declares the service</h4>
+
+<pre><code>&lt;key&gt;Label&lt;/key&gt;
+&lt;string&gt;com.apple.configd&lt;/string&gt;
+&lt;key&gt;ProgramArguments&lt;/key&gt;
+&lt;array&gt;
+    &lt;string&gt;/usr/libexec/configd&lt;/string&gt;
+&lt;/array&gt;
+&lt;key&gt;MachServices&lt;/key&gt;
+&lt;dict&gt;
+    &lt;key&gt;com.apple.SystemConfiguration.configd&lt;/key&gt;
+    &lt;true/&gt;
+&lt;/dict&gt;
+&lt;!-- Note: NO RunAtLoad. Launch-on-demand is the default with MachServices. --&gt;</code></pre>
+
+<h4>Step 2: At launchd startup, launchd registers the name</h4>
+
+<p>Launchd reads B's plist, creates a Mach receive port, and stores the mapping <code>"com.apple.SystemConfiguration.configd" &rarr; port</code> in the bootstrap namespace. <strong>Daemon B itself is not running yet.</strong> Launchd holds the receive right; nobody is listening on it.</p>
+
+<h4>Step 3: Daemon A wants to talk to B</h4>
+
+<pre><code>// In A's source:
+mach_port_t configd_port;
+kern_return_t kr = bootstrap_look_up(bootstrap_port,
+                                     "com.apple.SystemConfiguration.configd",
+                                     &amp;configd_port);
+if (kr != BOOTSTRAP_SUCCESS) { /* error */ }
+// A now has a send right to B's port.</code></pre>
+
+<p>This single call has profound consequences:</p>
+
+<ul>
+  <li>The call goes via Mach to launchd. Launchd checks: is B running? If yes, hand back the existing port. <strong>If no, launchd executes B's <code>ProgramArguments</code> right now, then proceeds.</strong></li>
+  <li>Launchd returns the send right to A synchronously. From A's source, the dependency is invisible &mdash; A is just "looking up a name."</li>
+  <li>Messages A sends on <code>configd_port</code> queue in the kernel until B is ready. A doesn't have to know whether B is running yet.</li>
+</ul>
+
+<h4>Step 4: B claims the receive right</h4>
+
+<pre><code>// In B's startup, after exec'ing /usr/libexec/configd:
+mach_port_t my_recv_port;
+bootstrap_check_in(bootstrap_port,
+                   "com.apple.SystemConfiguration.configd",
+                   &amp;my_recv_port);
+// B can now mach_msg(MACH_RCV) on my_recv_port and process A's messages.</code></pre>
+
+<h4>Why this solves ordering</h4>
+
+<p>The ordering between A and B is now <em>implicit in the IPC contract</em>. There is no "A starts before B" or "B starts before A" configuration anywhere. The actual rule is:</p>
+
+<div class="callout">
+<p><strong>B is started exactly when somebody first wants to talk to it. Until then, B doesn't run. Once it's running, anyone who needs to talk to it can.</strong></p>
+</div>
+
+<p>This is dependency injection at the OS level. Compared to alphabetical filename ordering: the current scheme requires every plist filename to rank correctly against every other, and breaks silently when a new service is added. Mach activation does away with the ordering question entirely &mdash; you don't order, you express what you want, and the bootstrap server resolves it.</p>
+
+<h3 id="varrun-cron">4.5 The "varrun starts before cron" question, walked through</h3>
+
+<p>You asked specifically: <em>"How do we say varrun starts before cron with Mach? Do we modify cron?"</em> The honest answer is: <strong>Mach activation doesn't actually solve this case directly.</strong> Walking through each plausible approach:</p>
+
+<h4>Approach A: Express it as a Mach IPC dependency</h4>
+
+<p>For Mach activation to apply, varrun would need to expose a Mach service. Cron would call <code>bootstrap_look_up("com.gershwin.varrun")</code>. Launchd would start varrun on demand.</p>
+
+<p>This doesn't fit because <strong>varrun is a one-shot</strong>: it creates directories and exits. There is no daemon to register a Mach port, and no IPC for cron to do once it has a port. You'd have to redesign varrun as a long-running daemon that exposes some pointless query interface, just to give cron something to look up. <em>Wrong tool.</em></p>
+
+<p>Cron source modification: yes, you'd have to add the <code>bootstrap_look_up</code> call. But that's an ugly way to express "wait for the filesystem to be ready."</p>
+
+<h4>Approach B: Express it as exit-status dependency (Apple-style, not Mach)</h4>
+
+<p>Apple's launchd has a <code>KeepAlive</code> dictionary with conditional subkeys. The relevant one here:</p>
+
+<pre><code>&lt;!-- Cron's plist would add: --&gt;
+&lt;key&gt;KeepAlive&lt;/key&gt;
+&lt;dict&gt;
+    &lt;key&gt;OtherJobEnabled&lt;/key&gt;
+    &lt;dict&gt;
+        &lt;key&gt;org.freebsd.varrun&lt;/key&gt;
+        &lt;true/&gt;
+    &lt;/dict&gt;
+&lt;/dict&gt;</code></pre>
+
+<p>This says: "only keep cron loaded while varrun's job has been enabled and successfully run." It's an explicit ordering at the launchd level. <strong>cron source is not modified.</strong></p>
+
+<p>Caveat: this key is not parsed by the freebsd-launchd port today. Adding support for it is a launchd port enhancement, separate from any Mach work.</p>
+
+<h4>Approach C: Express it as filesystem-state dependency (also Apple-style, not Mach)</h4>
+
+<pre><code>&lt;!-- Cron's plist would add: --&gt;
+&lt;key&gt;WatchPaths&lt;/key&gt;
+&lt;array&gt;
+    &lt;string&gt;/var/run&lt;/string&gt;
+&lt;/array&gt;</code></pre>
+
+<p>Cron is launched when <code>/var/run</code> exists. <strong>cron source is not modified.</strong> Same caveat: not parsed by this launchd port.</p>
+
+<h4>Approach D: Pragmatic &mdash; self-mitigate in the plist</h4>
+
+<p>Change cron's <code>ProgramArguments</code> to <code>/bin/sh -c "/bin/mkdir -p /var/run; exec /usr/sbin/cron -s"</code>. No ordering needed; cron self-mitigates the way <code>dmesg.boot</code> already does (which has the comment: <em>"Self-sufficient is safer than relying on ordering"</em>). Ugly but works today.</p>
+
+<h4>So: do we modify cron?</h4>
+
+<table>
+<thead><tr><th>Scenario</th><th>Modify cron?</th><th>Why</th></tr></thead>
+<tbody>
+<tr>
+  <td>"varrun before cron" — filesystem-state dependency.</td>
+  <td><strong>No.</strong></td>
+  <td>Right tools are launchd-side: <code>KeepAlive { OtherJobEnabled }</code>, <code>WatchPaths</code>. Mach is wrong tool for this case. Pragmatic workaround: self-mitigate in the plist (Approach D).</td>
+</tr>
+<tr>
+  <td>"cron consults a config service" — IPC dependency.</td>
+  <td><strong>Yes.</strong></td>
+  <td>Cron source calls <code>bootstrap_look_up("com.gershwin.configservice")</code>. The lookup blocks until the service is up. This is where Mach activation shines.</td>
+</tr>
+</tbody>
+</table>
+
+<p>The takeaway: Mach activation is the <em>right</em> answer for IPC-shaped dependencies between long-running daemons. It is the <em>wrong</em> answer for filesystem-state, exit-status, or boot-phase dependencies. Apple's launchd has separate keys for those, all currently absent in the freebsd-launchd port.</p>
+
+<h3 id="apple-other">4.6 Apple's other ordering primitives (the ones that aren't Mach)</h3>
+
+<p>To complete the picture, the keys Apple's launchd recognizes for non-IPC dependencies. <strong>None of these is parsed by the freebsd-launchd port today.</strong></p>
+
+<table>
+<thead><tr><th>Key</th><th>What it does</th><th>Use case</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>WatchPaths</code></td>
+  <td>Start the daemon when any of these paths appear or change.</td>
+  <td>Wait for a directory to exist; pickup of dropped-in config files.</td>
+</tr>
+<tr>
+  <td><code>QueueDirectories</code></td>
+  <td>Like WatchPaths, but only fires when a directory becomes non-empty.</td>
+  <td>Spool processors, mail queues, log shippers.</td>
+</tr>
+<tr>
+  <td><code>KeepAlive { OtherJobEnabled = { ... } }</code></td>
+  <td>Run only while another job is loaded.</td>
+  <td>"cron only after varrun"; daemon dependency chains.</td>
+</tr>
+<tr>
+  <td><code>KeepAlive { SuccessfulExit = false }</code></td>
+  <td>Respawn unless the previous instance exited cleanly.</td>
+  <td>Crash-loop recovery without infinite respawn after intentional exit.</td>
+</tr>
+<tr>
+  <td><code>KeepAlive { PathState = { ... } }</code></td>
+  <td>Run only while a path exists / doesn't exist.</td>
+  <td>Conditional services tied to filesystem state.</td>
+</tr>
+<tr>
+  <td><code>KeepAlive { NetworkState = ... }</code></td>
+  <td>Run only when network is up.</td>
+  <td>Network-dependent services (less granular than IPC dep).</td>
+</tr>
+<tr>
+  <td><code>LaunchEvents</code></td>
+  <td>Activate on a notify(3) event.</td>
+  <td>Generic event-driven activation; configd publishes events for many things.</td>
+</tr>
+<tr>
+  <td><code>Sockets</code></td>
+  <td>Have launchd open the socket(s); fire daemon when a connection arrives. Daemon inherits the listening fd.</td>
+  <td>Socket-activation pattern; xinetd-style. syslogd's <code>/var/run/log</code> would be the natural example here.</td>
+</tr>
+<tr>
+  <td><code>LimitLoadToSessionType</code></td>
+  <td>Only load in matching sessions (Aqua, Background, LoginWindow).</td>
+  <td>Distinguishing GUI-session daemons from system daemons.</td>
+</tr>
+</tbody>
+</table>
+
+<p>Apple's launchd has a rich vocabulary for expressing dependencies. <strong>Mach activation is just one mechanism &mdash; the most powerful for IPC &mdash; and these others fill the gaps for non-IPC cases.</strong> Phase 2 of the launchd port should plan to grow at least <code>WatchPaths</code>, <code>OtherJobEnabled</code>, and <code>Sockets</code> support, alongside whatever IPC story is chosen.</p>
+
+<h3 id="ordering-options">4.7 What changes under each option</h3>
+
+<h4>Option 1 &mdash; Reverse Mach &rarr; AF_UNIX in configd</h4>
+
+<ul>
+  <li>The launchd port still doesn't speak Mach. <code>MachServices</code> in plists remains a no-op.</li>
+  <li>Clients that previously called <code>bootstrap_look_up()</code> instead call <code>connect()</code> on a known socket path (e.g. <code>/var/run/configd.sock</code>) with a retry loop. That retry loop is the AF_UNIX equivalent of waiting for the bootstrap port to be ready.</li>
+  <li>For ordering between netconfigd and its clients: the connect-with-retry pattern provides "client blocks until daemon ready" semantics. <strong>That is the dependency primitive for IPC.</strong></li>
+  <li>For ordering between unrelated services (cron, varrun, syslogd): unchanged. Still alphabetical. Fixing this requires implementing <code>WatchPaths</code> / <code>OtherJobEnabled</code> / etc. in <code>core.m</code> &mdash; a separate launchd-port enhancement, not part of the configd work.</li>
+</ul>
+
+<h4>Option 2 &mdash; Port Mach IPC to FreeBSD</h4>
+
+<ul>
+  <li>You also have to port the bootstrap server (which is part of launchd on Apple). The 6-key plist parser becomes a real launchd that handles <code>MachServices</code> with launch-on-demand activation.</li>
+  <li>Configd, scutil, IPMonitor, every SC framework consumer just works, because the original Mach activation path is operational.</li>
+  <li>For non-IPC ordering (varrun before cron): <strong>still need to implement WatchPaths / OtherJobEnabled / etc.</strong> Mach doesn't address this. Option 2 unlocks the IPC half of dependency resolution but leaves the filesystem-state half unsolved. (The good news: with Mach active, the rest of the macOS ecosystem of daemon-coordination tools follows.)</li>
+</ul>
+
+<h4>Option 3 &mdash; New Gershwin-native daemon using GNUstep DO</h4>
+
+<ul>
+  <li><code>[NSConnection rootProxyForConnectionWithRegisteredName:host:]</code> is the Foundation equivalent of <code>bootstrap_look_up()</code>. Calling it blocks until the name is registered in gdomap.</li>
+  <li>A DO daemon publishing the name (via <code>[NSConnection serviceConnectionWithName:rootObject:]</code>) is the equivalent of <code>bootstrap_check_in()</code>.</li>
+  <li>For IPC-shaped ordering (<code>NCDaemon</code>'s clients), DO gives you the same model Mach gives Apple, just with NSPort instead of mach_port and gdomap instead of the bootstrap server.</li>
+  <li>For non-IPC ordering: same story as Options 1 and 2. Filesystem-state, exit-status, and boot-phase dependencies are not Foundation things. Need launchd-side support, same as the other options.</li>
+</ul>
+
+<div class="callout callout-warn">
+<strong>Common thread across all three options:</strong> Mach (and DO, and AF_UNIX socket connect-with-retry) all solve <em>IPC-shaped dependencies</em>. None of them solves filesystem-state dependencies, exit-status dependencies, or boot-phase dependencies. For those, the freebsd-launchd port needs to grow new keys in <code>core.m</code> beyond the current 6 (see <a href="#key-roadmap">section 11</a> for the full inventory). That's a separate work item from the netconfigd question &mdash; but it's adjacent, and Phase 2 should plan to tackle both. The <code>varrun</code> &harr; <code>cron</code> ordering is the canonical example of the <em>non-Mach</em> half of the problem.
+</div>
+
+<h2 id="option-1">5. Option 1 — Reverse Mach &rarr; AF_UNIX inside configd</h2>
+
+<p><span class="pill pill-good">Recommended</span> <span class="pill pill-neutral">Effort: weeks &ndash; months</span></p>
+
+<h3>What it actually means</h3>
+
+<p>Apply the same surgery to <code>configd</code> that was already applied to <code>launchd</code>. Specifically:</p>
+
+<ol>
+  <li><strong>Replace MIG-generated stubs</strong> (<code>config_user.c</code>, <code>configMIGServer.c</code>, <code>shared_dns_infoUser.c</code>, etc.) with hand-written client/server pairs over AF_UNIX. Same shape: a function call on the client becomes a framed write; the server dispatches by opcode.</li>
+  <li><strong>Replace XPC sites</strong> (<code>nwi/network_information_server.c</code>, <code>libSystemConfiguration/*</code>) with a small wrapper library that imitates the XPC API surface but transports over the same AF_UNIX socket.</li>
+  <li><strong>Replace <code>bootstrap_look_up()</code></strong> with <code>connect()</code> to a well-known socket path (e.g. <code>/var/run/configd.sock</code>).</li>
+  <li><strong>Stub or remove Mach-specific features</strong> that have no Unix equivalent: <code>vm_copy</code> for large messages, <code>send_once</code> rights, port-right transfer. Most of configd doesn't use these — they're hot paths in IOKit and the BSD kernel layer, not the SC stack.</li>
+</ol>
+
+<h3>What you keep</h3>
+
+<ul>
+  <li>Configd's plugin model — <code>Plugins/IPMonitor</code>, <code>Plugins/IPConfiguration</code>, <code>Plugins/KernelEventMonitor</code>, etc. They're loaded into the daemon as bundles and talk to each other via the dynamic store, which is configd's own thing (not Mach-dependent).</li>
+  <li>The <code>SCDynamicStore</code> C client API. Code that uses <code>SCDynamicStoreCreate()</code>, <code>SCDynamicStoreSetValue()</code>, <code>SCDynamicStoreCopyKeyList()</code> keeps working — only the underlying transport changes.</li>
+  <li><code>scutil</code> as a command-line interface to the store.</li>
+  <li>The plist-based network configuration on disk (<code>NetworkConfiguration.plist</code>, etc.) — this is just XML.</li>
+  <li>Future Apple releases of configd: when configd-1000.x ships, you can import the new source and re-apply the same transport patches. There's a precedent — that's exactly the relationship the launchd port has with launchd-842.</li>
+</ul>
+
+<h3>What you change</h3>
+
+<ul>
+  <li>Every <code>mach_msg(...)</code> call site, every MIG stub, every <code>xpc_*</code> call.</li>
+  <li>Server-side message dispatch: instead of MIG's generated switch on <code>msgh_id</code>, you write your own dispatcher reading framed messages from <code>accept()</code>'d sockets.</li>
+  <li>Audit tokens and credential checks: replace XPC's audit-token API with <code>SO_PEERCRED</code> / <code>getpeereid()</code> on the Unix socket.</li>
+  <li>Port-rights transfer: rare in configd, but where it appears (e.g. SCHelper privilege escalation), use FD-passing via <code>SCM_RIGHTS</code> or redesign.</li>
+</ul>
+
+<div class="pros-cons">
+<div class="pros">
+<h4>Pros</h4>
+<ul>
+  <li>Reuses the configd source you already imported — the import wasn't wasted.</li>
+  <li>Keeps the SC framework's API surface, so Gershwin code that calls SC functions matches what macOS code does.</li>
+  <li>Mirrors the precedent set by the launchd port. Same pattern, same justification, future contributors find it consistent.</li>
+  <li>No new kernel work. Everything is userspace.</li>
+  <li>scutil, IPMonitorControl, nwi, SCMonitor — all the satellite tooling continues to work after the surgery.</li>
+  <li>Future configd updates can be re-merged with the same transport patches; you stay close to upstream.</li>
+</ul>
+</div>
+<div class="cons">
+<h4>Cons</h4>
+<ul>
+  <li>Real work. Configd is ~963 versions of accumulated complexity. The plugin tree alone is dense, and every IPC site has to be touched.</li>
+  <li>You're essentially writing an XPC-shaped library on top of AF_UNIX. That's not nothing — XPC has connection lifecycle, audit tokens, dictionary serialization, async reply queues. A "good-enough" subset is achievable; full fidelity is a project.</li>
+  <li>Some Mach features have no clean Unix analog. Where they're load-bearing in configd, you end up redesigning, not just transporting differently.</li>
+  <li>Debugging the transport layer means understanding both Mach semantics (what configd <em>expects</em>) and AF_UNIX semantics (what you've given it). Two mental models at once.</li>
+  <li>Apple's plugin source is C with Apple-isms (CoreFoundation idioms, dispatch_queue patterns, reference-counting conventions). Not hard, but you'll be reading it constantly during the rewrite.</li>
+</ul>
+</div>
+</div>
+
+<h3>Concrete time estimate</h3>
+
+<p>Hard to be precise without scoping each plugin individually, but the launchd port (a smaller project &mdash; one daemon, one IPC interface) was a multi-month effort. Configd has on the order of 8&ndash;12 MIG interfaces, plus XPC sites in the framework client library, plus the helper privilege-escalation bridge. Realistic estimate: <strong>2&ndash;4 months of focused work</strong> to a working <code>netconfigd</code> + IPMonitor + IPConfiguration that can DHCP a wired interface. Wireless and IPv6 add more. Polish to match dhcpcd's current behavior is more on top.</p>
+
+<h2 id="option-2">6. Option 2 &mdash; Port Mach IPC to FreeBSD</h2>
+
+<p><span class="pill pill-bad">Maximalist</span> <span class="pill pill-neutral">Effort: months &ndash; years</span></p>
+
+<h3>What it actually means</h3>
+
+<p>Make FreeBSD speak Mach. Three sub-paths exist, each with prior art:</p>
+
+<ol>
+  <li>
+    <strong>Userspace Mach library.</strong> Implement <code>mach_msg</code>, ports, port rights, message queues entirely as a userspace library on top of (probably) AF_UNIX. The library would have to manage port-name allocation, port-right reference counting, message buffering &mdash; all the things the kernel does on Darwin. This is what <strong>Darling</strong> does (the macOS compatibility layer for Linux), via a kernel module that emulates Mach syscalls.
+    <ul>
+      <li>Reasonable for app-level use; semantics partially diverge under stress (ports outliving processes, IPC across user/kernel boundary, etc.).</li>
+      <li>Performance is acceptable but not native.</li>
+    </ul>
+  </li>
+  <li>
+    <strong>Kernel module.</strong> Add Mach as a FreeBSD kernel feature, accessed via a new syscall surface. Closer to native semantics; closer to "actually FreeBSD now has Mach." Far more work; touches the kernel, which means review, security audit, and ongoing maintenance against FreeBSD's release cadence.
+  </li>
+  <li>
+    <strong>Pull GNU Mach.</strong> The Hurd's microkernel <em>is</em> Mach, and there's a userspace Mach implementation lineage (<code>libports</code>, <code>libpager</code>, etc.). In principle reusable. In practice, Hurd Mach has its own dialect and is not a drop-in for Apple's xnu Mach.
+  </li>
+</ol>
+
+<p>All three approaches assume you're willing to ship something that runs <em>unmodified</em> Apple source. That's the entire point of the option.</p>
+
+<h3>What you keep</h3>
+
+<ul>
+  <li>Apple source compiles and runs unmodified, at least for the parts that don't depend on xnu-specific kernel features beyond Mach.</li>
+  <li>Future imports become "just a recompile" &mdash; no transport patches to maintain.</li>
+  <li>XPC works, which means a much wider class of Apple components (not just configd) can be ported with reduced effort. CoreServices, NetworkExtension, NSXPCConnection, all become easier targets.</li>
+  <li>Strategic positioning: Gershwin becomes the FreeBSD-on-which-Apple-source-runs distribution. That's a real differentiator.</li>
+</ul>
+
+<h3>What you change</h3>
+
+<ul>
+  <li>You're now maintaining a Mach implementation. That's a project the size of, say, FreeBSD's CAPSICUM, with a smaller user base and harder testing surface.</li>
+  <li>Bootstrap server has to be implemented &mdash; either as part of the launchd port (rebuilding what was removed) or as a separate daemon.</li>
+  <li>Edge cases in port-rights semantics are subtle. Reference counting on ports across process exits, send-once rights, no-senders notifications &mdash; all behaviors that Apple software relies on without commenting.</li>
+  <li>Security review surface explodes. Mach historically has had its own class of CVEs (port-stuffing, exception-handler hijacking, etc.). Whatever you ship inherits that surface.</li>
+</ul>
+
+<div class="pros-cons">
+<div class="pros">
+<h4>Pros</h4>
+<ul>
+  <li>Strategic compounding: every future Apple-source port becomes cheaper.</li>
+  <li>Gershwin can host code that nobody else can host on a non-Apple kernel.</li>
+  <li>No per-component transport patches to maintain.</li>
+  <li>Honest engineering: you're not papering over the dependency, you're solving it.</li>
+</ul>
+</div>
+<div class="cons">
+<h4>Cons</h4>
+<ul>
+  <li>Massive effort for a payoff that's currently theoretical (no other Gershwin component imminently needs Mach).</li>
+  <li>Long time-to-first-result. configd doesn't ship until Mach works, and Mach's "works" bar is high.</li>
+  <li>Maintenance burden continues forever.</li>
+  <li>If only configd needs Mach, you've built a city to host a single building.</li>
+  <li>Fragile in subtle ways &mdash; port-rights semantics, exception delivery, signal/Mach interaction. Lots of places where Apple code "just works" because xnu does something specific that your reimplementation might or might not.</li>
+</ul>
+</div>
+</div>
+
+<h3>Concrete time estimate</h3>
+
+<p>Userspace Mach with enough fidelity to run configd: <strong>6&ndash;12 months minimum</strong>, with a person familiar with both Mach internals and FreeBSD kernel/userspace boundaries. Kernel-module path: <strong>1&ndash;2 years</strong>, plus ongoing FreeBSD-version maintenance. Either way, configd doesn't ship for the duration of the Mach project.</p>
+
+<h2 id="option-3">7. Option 3 &mdash; New Gershwin-native daemon using GNUstep DO</h2>
+
+<p><span class="pill pill-warn">Smallest scope</span> <span class="pill pill-neutral">Effort: weeks</span></p>
+
+<h3>What it actually means</h3>
+
+<p>Don't port configd. Treat the imported configd source as a reference, and write a fresh Objective-C daemon &mdash; call it <code>NCDaemon</code> &mdash; that fulfills the same role using GNUstep idioms.</p>
+
+<p>Sketch of the architecture:</p>
+
+<pre><code>// NCDaemon.h
+@protocol NCNetworkStoreProto
+- (NSDictionary *)copyValueForKey:(NSString *)key;
+- (void)setValue:(NSDictionary *)value forKey:(NSString *)key;
+- (NSArray *)copyKeyList;
+- (void)addObserver:(id&lt;NCNetworkObserverProto&gt;)observer
+            forKey:(NSString *)key;
+@end
+
+@interface NCNetworkStore : NSObject &lt;NCNetworkStoreProto&gt;
+@end
+
+// In NCDaemon's main:
+NCNetworkStore *store = [[NCNetworkStore alloc] init];
+NSConnection *conn = [NSConnection serviceConnectionWithName:@"NCNetworkStore"
+                                                  rootObject:store];
+[[NSRunLoop currentRunLoop] run];
+
+// Plugin equivalents are NSBundle-loaded classes, e.g.:
+// /System/Library/NCBundles/IPMonitor.bundle
+// /System/Library/NCBundles/IPConfiguration.bundle
+// Each registers with the NCNetworkStore on load and posts state changes.</code></pre>
+
+<p>Clients (including a thin <code>SCDynamicStore</code>-shaped C wrapper, if needed for Apple-source porting) call:</p>
+
+<pre><code>// Client side (in some other process)
+id&lt;NCNetworkStoreProto&gt; store =
+    (id)[NSConnection rootProxyForConnectionWithRegisteredName:@"NCNetworkStore"
+                                                          host:nil];
+NSDictionary *ifaceState =
+    [store copyValueForKey:@"State:/Network/Interface/wlan0/IPv4"];</code></pre>
+
+<h3>What you keep</h3>
+
+<ul>
+  <li>The imported configd source is still there, valuable as a reference for what semantics to implement (key naming conventions, plugin responsibilities, IPMonitor's RA/SLAAC behavior).</li>
+  <li>Gershwin's existing Foundation/DO conventions. NCDaemon looks like other GNUstep services. dshelper-style integration patterns apply.</li>
+  <li>gdomap is already running. No new infrastructure needed.</li>
+  <li>The wlan-clone gap, the dhcpcd retirement, the link-state monitor &mdash; all become DO clients of <code>NCNetworkStore</code>. Service ordering becomes "block on <code>NSConnection rootProxyForConnectionWithRegisteredName:</code> until gdomap publishes the name." That's the dependency-resolution primitive launchd is missing.</li>
+</ul>
+
+<h3>What you change / give up</h3>
+
+<ul>
+  <li><strong>No Apple plugin reuse.</strong> You can study <code>Plugins/IPMonitor</code> for what behavior to implement, but you write the implementation. Same for IPConfiguration (DHCP/RA/SLAAC), KernelEventMonitor (kernel notifications), etc.</li>
+  <li><strong>The SCDynamicStore C API isn't there for free.</strong> If you want it (for porting Apple code that uses it), you write a thin C wrapper around DO proxies. Doable; not zero work.</li>
+  <li><strong>Future Apple-source compatibility is gone.</strong> If Apple releases configd-1000 with new behavior, you can't import it &mdash; you implement the new behavior yourself, in Objective-C, against your own API. The configd source becomes purely documentary.</li>
+  <li><strong>Performance grain is different.</strong> DO is synchronous Objective-C method invocation through NSPortCoder. Faster than IPC over JSON, slower than MIG. Configd-class workloads are fine; nothing in this domain is latency-critical.</li>
+</ul>
+
+<div class="pros-cons">
+<div class="pros">
+<h4>Pros</h4>
+<ul>
+  <li>Smallest scope. A working <code>NCDaemon</code> + DHCP plugin is on the order of <strong>weeks</strong>, not months.</li>
+  <li>Idiomatic GNUstep code. New contributors who know Foundation can read it. No need to understand Mach or MIG.</li>
+  <li>Service ordering primitive falls out naturally: <code>rootProxyForConnectionWithRegisteredName:</code> blocks until the name is registered. That's exactly what was missing.</li>
+  <li>Plugins are NSBundle-loadable Objective-C classes. Easier to write, test, and reload than configd's C bundles.</li>
+  <li>No Mach at any level. No surprise dependencies.</li>
+  <li>Plays well with existing Gershwin services that already use DO.</li>
+</ul>
+</div>
+<div class="cons">
+<h4>Cons</h4>
+<ul>
+  <li>The imported configd source becomes a reference rather than a port. The work spent importing it isn't discarded, but it's not shipped either.</li>
+  <li>Gershwin is no longer "running Apple's SC framework"; it's running a Foundation-shaped service that does the same job. Strategically a fork from macOS's stack rather than a port of it.</li>
+  <li>If a future Gershwin goal requires running unmodified Apple SC code (some app expecting <code>SCDynamicStore</code>'s exact wire protocol or notification semantics), you'd be retrofitting.</li>
+  <li>Each plugin's behavior is rewritten by hand. RA/SLAAC corner cases, DHCP option handling, IPMonitor's prioritization rules &mdash; all need attention. Apple has invested decades in those edge cases.</li>
+  <li>You're committing to maintaining the API surface yourself going forward. There's no upstream to merge from.</li>
+</ul>
+</div>
+</div>
+
+<h3 id="gdomap-bootstrap">The gdomap bootstrap problem (and how to solve it)</h3>
+
+<p>If DO is the IPC, then <strong>gdomap is the equivalent of Mach's bootstrap server</strong>. Both are <em>name registries</em> that have to be running before any IPC name can be looked up or registered. This creates a chicken-and-egg problem at boot: <strong>gdomap must run before any DO-using service</strong>.</p>
+
+<p>Apple solved the structural twin of this problem by making the bootstrap server <em>part of launchd PID 1</em>. There is no "launchd starts before bootstrap" race because they are the same process. GNUstep separated them &mdash; gdomap is its own daemon &mdash; which means we have a real ordering question to answer.</p>
+
+<div class="callout callout-warn">
+<strong>This is the central architectural caveat for Option 3.</strong> Choosing DO doesn't just mean "use a different transport." It commits you to solving the gdomap bootstrap dependency for every future DO-using service on Gershwin. That's a one-time cost paid in launchd-port engineering, but it has to be paid before the architecture is sound.
+</div>
+
+<p>Four approaches, organized by what they actually decide:</p>
+
+<ul>
+  <li><strong>Approach A</strong> &mdash; a stopgap that doesn't change anything architectural. Useful for shipping while the real choice is made.</li>
+  <li><strong>Approaches B and D</strong> &mdash; the real architectural fork. <em>Who runs gdomap?</em> B keeps gdomap as a separate child process spawned by launchd; D merges gdomap into launchd PID 1 itself, mirroring Apple's "bootstrap is launchd" decision. Choosing between B and D is a Gershwin-identity question, addressed below.</li>
+  <li><strong>Approach C</strong> &mdash; orthogonal. Adds <em>launch-on-demand activation</em> for DO services (analog to Apple's <code>MachServices</code> key behavior). Layers on top of either B or D. Doesn't compete with them.</li>
+</ul>
+
+<div class="callout">
+<p><strong>The strategic question for B vs D:</strong> Is launchd PID 1 on Gershwin <em>structurally</em> Apple's launchd (which IS the bootstrap server), or is it FreeBSD's PID 1 augmented with a GNUstep-shaped bootstrap dependency expressed as a child process?</p>
+<p>Both work. They embody different commitments:</p>
+<ul>
+  <li><strong>B says:</strong> launchd manages gdomap, but gdomap is its own program with its own protocol, lifecycle, and upstream. Pragmatic, smaller code change, easier to track upstream gdomap fixes.</li>
+  <li><strong>D says:</strong> the name registry is part of init, full stop. There's no separate gdomap process to crash, no race to lose, no protocol boundary to cross. Apple-faithful structure; larger code change; requires committing to maintain gdomap's protocol code as part of launchd going forward.</li>
+</ul>
+<p>Neither is "correct" in the abstract &mdash; the choice depends on whether Gershwin commits to the Apple structural model at the PID 1 level or stays GNUstep-process-shaped.</p>
+</div>
+
+<h4>A. Plist filename ordering (stopgap)</h4>
+
+<p>The crude answer that works with the existing 6-key launchd parser. Rename gdomap's plist to sort before any DO-using service, or rename DO services to sort after gdomap. Currently <code>org.gnustep.gdomap.plist</code> sorts after <code>org.freebsd.*</code> (g &gt; f), so all freebsd services run first. Two ways to flip the order:</p>
+
+<ul>
+  <li>Rename gdomap's plist: <code>com.gnustep.gdomap.plist</code> (c &lt; f), or <code>aa.gnustep.gdomap.plist</code> (a &lt; everything). Breaks Apple's reverse-DNS convention for plist labels.</li>
+  <li>Rename every DO-consuming service to sort after <code>org.gnustep.gdomap</code>: e.g., put it under the <code>org.gnustep.</code> prefix as well, so alphabetical ordering puts gdomap first within its group. <code>org.gnustep.NCDaemon.plist</code> sorts after <code>org.gnustep.gdomap.plist</code> (d &lt; N? no &mdash; uppercase 'N' is &lt; lowercase 'g' in ASCII; need to be careful with case).</li>
+</ul>
+
+<p><span class="pill pill-good">Pros</span> Zero code changes; works today.<br>
+<span class="pill pill-bad">Cons</span> Brittle. Cross-vendor alphabetical dependencies fall over the moment a new service is added or labeled inconveniently. Acceptable as a Phase 2 stopgap, awkward as a long-term answer.</p>
+
+<h4>B. launchd hardcodes gdomap as its first child</h4>
+
+<p>The smallest code change that makes the dependency robust. Treat gdomap the way Apple treats the bootstrap server &mdash; not as "just another plist," but as a launchd-internal dependency. launchd's <code>main()</code>, right after setting up its own state and before scanning <code>/System/Library/LaunchDaemons/</code>, spawns gdomap directly:</p>
+
+<pre><code>// In launchd's main(), src/src/launchd.c
+int
+main(int argc, char *argv[])
+{
+    // ... existing init: signals, log, IPC socket, etc. ...
+
+    // Bootstrap dependency: gdomap must be running before any DO
+    // service can register its name or any client can resolve one.
+    // Apple integrates the bootstrap server directly into launchd
+    // PID 1. We approximate that by spawning gdomap as our first
+    // child before scanning any plist.
+    pid_t gdomap_pid;
+    char *gdomap_argv[] = { "/usr/bin/gdomap", "-f", NULL };
+    if (posix_spawn(&amp;gdomap_pid, gdomap_argv[0], NULL, NULL,
+                    gdomap_argv, environ) == 0) {
+        wait_for_gdomap_listening();   // brief connect-retry to its UDP port
+    }
+
+    // ... existing plist scan and event loop ...
+}</code></pre>
+
+<p>The principle: <strong>gdomap is a launchd-internal dependency, not a regular service.</strong> Apple does the same thing structurally &mdash; the bootstrap server is part of launchd itself, so it's "started" by virtue of launchd starting. We emulate that without merging the code: launchd's first action after self-init is to ensure gdomap is up. <code>org.gnustep.gdomap.plist</code> is no longer needed in <code>LaunchDaemons/</code>; gdomap's lifecycle becomes launchd's responsibility.</p>
+
+<p>Refinements:</p>
+
+<ul>
+  <li>Launchd should wait for gdomap to be reachable before scanning plists &mdash; a brief connect-retry to gdomap's UDP port, or a wait on its known PID file. Otherwise the first DO service to start could race gdomap's listen.</li>
+  <li>If gdomap dies, launchd has two reasonable choices: restart it (KeepAlive semantics, baked in) or treat it as a fatal condition and reboot. Apple's bootstrap server has the same property &mdash; if it dies, the system is irretrievably broken; the right answer is "don't let it go." A small respawn loop in launchd is the safer engineering choice.</li>
+  <li>If you ever want gdomap behavior changed (different flags, different listen interfaces), it's a code change in launchd rather than a plist edit. That's a tradeoff &mdash; less config flexibility, more invariant enforcement.</li>
+</ul>
+
+<p><span class="pill pill-good">Pros</span> Small launchd change (~30&ndash;50 lines). No new plist keys to parse. No upstream gdomap changes. Solves the bootstrap race robustly. Feasible inside Phase 2 without delaying netconfigd work.<br>
+<span class="pill pill-warn">Cons</span> Still doesn't give <em>launch-on-demand</em> for DO services &mdash; daemons that vend DO services have to <code>RunAtLoad</code>, or clients have to retry until the registration appears. For full Apple-style activation semantics you still need Approach C below. Also: gdomap's lifecycle becomes implicit/hardcoded rather than declared.</p>
+
+<p>This is the natural Phase 2 stepping stone: ship Approach B early to make the bootstrap dependency robust, then plan toward Approach C as a follow-on launchd-port enhancement. Approach C is unblocked by B (or builds on top of it).</p>
+
+<h4>C. Teach launchd a <code>DOServices</code> key (full launch-on-demand)</h4>
+
+<p>Add a new plist key analogous to Apple's <code>MachServices</code>. The semantics:</p>
+
+<pre><code>&lt;key&gt;Label&lt;/key&gt;
+&lt;string&gt;org.gershwin.NCDaemon&lt;/string&gt;
+&lt;key&gt;ProgramArguments&lt;/key&gt;
+&lt;array&gt;
+    &lt;string&gt;/usr/libexec/NCDaemon&lt;/string&gt;
+&lt;/array&gt;
+&lt;key&gt;DOServices&lt;/key&gt;
+&lt;array&gt;
+    &lt;string&gt;NCNetworkStore&lt;/string&gt;
+&lt;/array&gt;
+&lt;!-- No RunAtLoad: launch-on-demand, just like MachServices on Apple. --&gt;</code></pre>
+
+<p>What launchd does with this:</p>
+
+<ol>
+  <li>At launchd startup, <code>DOServices</code> entries are noted but the daemon isn't started.</li>
+  <li>Launchd ensures gdomap is up. (gdomap is treated as launchd's own dependency &mdash; either special-cased to start first, or merged in per Option C below.)</li>
+  <li>When any client calls <code>[NSConnection rootProxyForConnectionWithRegisteredName:@"NCNetworkStore" host:nil]</code>, the lookup hits gdomap. If gdomap doesn't have a registration for the name, it signals launchd (via a hook into gdomap's lookup-miss path, or via a launchd-side proxy that intercepts misses) and launchd execs the daemon. The daemon registers via standard <code>[NSConnection serviceConnectionWithName:rootObject:]</code> on startup; gdomap publishes the name; the client's lookup completes.</li>
+</ol>
+
+<p>This is the GNUstep-native equivalent of Mach launch-on-demand activation. The user-facing developer experience is identical to Apple's: declare the service in your plist, register the name in your daemon's <code>main()</code>, and the lookup-side magic is launchd's responsibility.</p>
+
+<p><span class="pill pill-good">Pros</span> Clean, matches Apple's idiom for the GNUstep stack, handles dependency resolution transparently for every future DO daemon. One-time engineering cost, ongoing zero per-daemon cost.<br>
+<span class="pill pill-warn">Cons</span> Requires <code>DOServices</code> parsing in <code>core.m</code> (small) plus a hook into gdomap's lookup-miss path (gdomap upstream change, or a launchd-side wrapper). Needs design work and possibly upstream coordination with the GNUstep project.</p>
+
+<h4>C. Merge gdomap into launchd PID 1</h4>
+
+<p>The architecturally cleanest option, mirroring Apple's "launchd IS the bootstrap server" decision. Embed gdomap's name-registration and lookup logic as part of the launchd PID 1 process. There is no separate gdomap daemon; clients still talk gdomap protocol, but the registry lives in launchd's address space.</p>
+
+<p><span class="pill pill-good">Pros</span></p>
+<ul>
+  <li>No bootstrap race possible, ever. Launchd is up &rArr; name registry is up.</li>
+  <li>Tightest integration: <code>DOServices</code>-style on-demand activation needs no IPC between gdomap and launchd; they're the same process. The lookup-miss hook from Option B becomes an in-process function call.</li>
+  <li>Gershwin's launchd PID 1 becomes a closer structural analog to Apple's launchd PID 1.</li>
+</ul>
+
+<p><span class="pill pill-bad">Cons</span></p>
+<ul>
+  <li>Significant code change in the launchd port. Have to embed (or rewrite) gdomap's UDP+TCP server loop, name table, lookup protocol, peer discovery.</li>
+  <li>Upstream divergence from gdomap proper &mdash; security fixes have to be tracked manually.</li>
+  <li>Increases attack surface of PID 1. Network-facing protocol parsing in PID 1 is a sensitive choice.</li>
+  <li>Future GNUstep gdomap changes (new protocol versions, security tightening) become a merge problem.</li>
+</ul>
+
+<h4>Bottom line for ordering with DO</h4>
+
+<p>The gdomap-before-X dependency is real but bounded. For Phase 2 you can ship Option A (filename ordering) immediately and plan toward Option B as a launchd port enhancement. Option C is the long-term ideal if Gershwin commits to GNUstep-native architecture across the board.</p>
+
+<p>Importantly, this dependency exists for <em>any</em> DO-based system on Gershwin, not just netconfigd. The moment a Gershwin daemon adopts DO for IPC, every future DO client of that daemon inherits the same gdomap-must-be-up requirement. That's an argument for solving it well early (Option B or C) rather than re-litigating it per daemon.</p>
+
+<h3>Concrete time estimate</h3>
+
+<p>An <code>NCDaemon</code> + a DHCP-equivalent plugin that handles a wired Ethernet end-to-end: <strong>3&ndash;6 weeks</strong>. Adding a wireless plugin (wlan-clone creation + wpa_supplicant coordination + association events) on top: another <strong>2&ndash;4 weeks</strong>. IPv6 RA/SLAAC: another 2&ndash;3 weeks. Polish to match dhcpcd's current behavior: 2&ndash;3 weeks. Total to feature-parity-with-current-ISO: <strong>~3 months</strong>, with the upside that each piece ships incrementally.</p>
+
+<p>Add for the gdomap bootstrap solution depending on choice:</p>
+
+<ul>
+  <li><strong>Option A (filename ordering):</strong> +0 days. Just rename plists.</li>
+  <li><strong>Option B (DOServices key in launchd):</strong> +2&ndash;4 weeks. New key parsing in core.m, gdomap lookup-miss hook design and implementation, integration testing.</li>
+  <li><strong>Option C (merge gdomap into launchd):</strong> +6&ndash;10 weeks. Embedding the whole gdomap protocol stack into PID 1, security audit, upstream tracking plan.</li>
+</ul>
+
+<h2 id="comparison">8. Side-by-side comparison</h2>
+
+<table>
+<thead>
+<tr>
+  <th>Dimension</th>
+  <th>Option 1: AF_UNIX rewrite</th>
+  <th>Option 2: Port Mach</th>
+  <th>Option 3: DO daemon</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Effort</td>
+  <td>2&ndash;4 months</td>
+  <td>6&ndash;24 months</td>
+  <td>~3 months</td>
+</tr>
+<tr>
+  <td>Reuses configd source</td>
+  <td>Yes, substantially</td>
+  <td>Yes, fully</td>
+  <td>No (reference only)</td>
+</tr>
+<tr>
+  <td>Apple source compat</td>
+  <td>Apple source with patches</td>
+  <td>Apple source unmodified</td>
+  <td>Reference only</td>
+</tr>
+<tr>
+  <td>SCDynamicStore C API</td>
+  <td>Yes, native</td>
+  <td>Yes, native</td>
+  <td>Wrapper layer (extra work)</td>
+</tr>
+<tr>
+  <td>Future Apple-source ports</td>
+  <td>Same patches, re-applied</td>
+  <td>Free</td>
+  <td>Per-component decision</td>
+</tr>
+<tr>
+  <td>Mach dependency</td>
+  <td>Removed</td>
+  <td>Solved</td>
+  <td>Not present</td>
+</tr>
+<tr>
+  <td>Plugin model</td>
+  <td>Apple's bundles, in C</td>
+  <td>Apple's bundles, in C</td>
+  <td>NSBundles, in Objective-C</td>
+</tr>
+<tr>
+  <td>Idiomatic to Gershwin</td>
+  <td>Mixed (C/Objc, Apple style)</td>
+  <td>Mixed (C/Objc, Apple style)</td>
+  <td>Yes (Foundation/GNUstep)</td>
+</tr>
+<tr>
+  <td>Service-ordering primitive</td>
+  <td>Build it (socket connect)</td>
+  <td>Free (bootstrap_look_up)</td>
+  <td>Free (DO name registration)</td>
+</tr>
+<tr>
+  <td>Maintenance burden</td>
+  <td>Per-version transport patches</td>
+  <td>Mach implementation, forever</td>
+  <td>Whole API surface, forever</td>
+</tr>
+<tr>
+  <td>Risk profile</td>
+  <td>Moderate &mdash; bounded scope</td>
+  <td>High &mdash; open-ended Mach edge cases</td>
+  <td>Low&ndash;moderate &mdash; familiar tools</td>
+</tr>
+<tr>
+  <td>Strategic message</td>
+  <td>"Apple's code, ported"</td>
+  <td>"FreeBSD speaks Mach"</td>
+  <td>"GNUstep-native config layer"</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="decision">9. Decision framework</h2>
+
+<p>The right choice depends on what Gershwin is trying to <em>be</em>. Three different strategic positions, three different right answers:</p>
+
+<table>
+<thead><tr><th>Strategic goal</th><th>Right option</th><th>Why</th></tr></thead>
+<tbody>
+<tr>
+  <td>"Gershwin runs Apple's frameworks, ported to FreeBSD where necessary"</td>
+  <td>Option 1</td>
+  <td>Maximizes reuse of the configd source you already imported, follows the launchd-port precedent, ships in a knowable timeframe.</td>
+</tr>
+<tr>
+  <td>"Gershwin is FreeBSD with Apple's runtime stack on top"</td>
+  <td>Option 2</td>
+  <td>Pays the Mach cost once. Every future Apple component runs unmodified. Multi-year project; needs explicit strategic commitment.</td>
+</tr>
+<tr>
+  <td>"Gershwin is a GNUstep-centric desktop on FreeBSD, drawing inspiration from macOS"</td>
+  <td>Option 3</td>
+  <td>Use GNUstep idioms top to bottom. Apple source is a reference for behavior, not an asset to ship. Ships fastest, fits the existing GNUstep infrastructure.</td>
+</tr>
+</tbody>
+</table>
+
+<div class="callout">
+<p>The clearest signal in the existing tree is that <strong>Option 1 has already been chosen for launchd</strong>. The launchd port took Apple's source, ripped out Mach, replaced it with AF_UNIX framed messages, and kept the rest. Choosing Option 1 for configd is consistent with that precedent.</p>
+<p>The second-clearest signal is that <strong>configd source was imported deliberately</strong> &mdash; that's a non-trivial commitment of bytes and license-tracking. Option 3 makes that import nearly worthless.</p>
+</div>
+
+<h2 id="recommendation">10. Recommendation</h2>
+
+<p>The configd-IPC question (Option 1 / 2 / 3) is <strong>not</strong> the central Phase 2 work item. It looks central because the doc has been organized around it, but the actual bottleneck is a level deeper.</p>
+
+<div class="callout">
+<p><strong>The central work item is growing launchd's plist-key vocabulary.</strong></p>
+<p>Until launchd can express dependencies declaratively &mdash; <code>WatchPaths</code> for filesystem state, <code>Sockets</code> for activation, <code>OtherJobEnabled</code> for job-state, <code>KeepAlive</code> subkeys for refined supervision &mdash; every cross-service ordering question gets answered with "alphabetical filename + lucky timing + self-defensive scripts." That's true for the configd choice today, and it is also true for <code>varrun &harr; cron</code>, <code>syslogd-first-or-lose-logs</code>, and <code>dhcpcd-after-kmodloader</code>. The same engineering work that unblocks netconfigd ALSO unblocks every other current and future ordering question. Doing it inside an option-specific path means redoing it for the next problem.</p>
+</div>
+
+<h3>Phase 2a &mdash; Foundation: launchd capability work</h3>
+
+<p>Add the plist keys that make dependency resolution declarative. Suggested priority order:</p>
+
+<ol>
+  <li>
+    <strong><code>WatchPaths</code></strong> &mdash; kqueue <code>EVFILT_VNODE</code> on each path; fires the daemon when a watched path appears or changes.
+    <em>Solves:</em> <code>varrun &rarr; cron</code> (cron's plist watches <code>/var/run</code>), the broad class of "wait for a file to exist before running." Wide utility, low complexity. Probably the first key to land.
+  </li>
+  <li>
+    <strong><code>Sockets</code> activation</strong> &mdash; launchd <code>bind()</code>s and <code>listen()</code>s the socket itself, holds the listen fd, exec's the daemon when a connection arrives, hands the listen fd to the daemon (Apple's pattern uses env var; systemd's <code>$LISTEN_FDS</code> protocol works the same way).
+    <em>Solves:</em> <code>syslogd-before-X</code> (clients connect to <code>/var/run/log</code>; launchd starts syslogd lazily, no log-loss window because writes block until syslogd inherits the fd). Also unblocks the netconfigd IPC story regardless of which option is chosen &mdash; socket activation gives the right ordering for any AF_UNIX-based service.
+  </li>
+  <li>
+    <strong><code>KeepAlive</code> subkeys</strong>: <code>OtherJobEnabled</code>, <code>SuccessfulExit</code>, <code>PathState</code>, <code>NetworkState</code>.
+    <em>Solves:</em> explicit job-to-job and job-to-state dependencies. "Don't run cron unless varrun has loaded successfully" becomes a one-line plist key. Less work than they sound &mdash; they're predicates the launchd run loop already needs to evaluate per-job.
+  </li>
+  <li>
+    <strong>A name-registry primitive for IPC services</strong> in whatever form fits the eventual netconfigd path. If Apple-faithful (Option 1), this is <code>Sockets</code>-style activation under a well-known path &mdash; already in scope from item 2. If GNUstep-native (Option 3), this is the <code>DOServices</code> key from section 7.5 plus the gdomap-bootstrap decision. The shape is downstream of 2b; the work is real either way.
+  </li>
+  <li>
+    <strong><code>LaunchEvents</code></strong> (notify(3) / devd-event activation) &mdash; lower priority but the right primitive for hardware-readiness ordering: <code>dhcpcd</code>'s plist subscribes to a "NIC attached" event rather than racing kmodloader. Pairs well with kmodloader's planned Phase 2 hot-plug shape.
+  </li>
+</ol>
+
+<p><strong>Effort:</strong> 4&ndash;8 weeks. Independent of every other Phase 2 decision. Pays for itself by fixing existing brittleness (varrun, syslogd, dhcpcd ordering) AND being the prerequisite for netconfigd.</p>
+
+<p><strong>This is also the "doesn't suck like systemd" work.</strong> The keys above are scoped, optional, and orthogonal &mdash; each one solves one ordering problem cleanly, none of them require launchd to ingest the responsibilities of other daemons. Process supervision + activation primitives + dependency predicates is the right job for an init system. DHCP, DNS, journaling, and everything else stays in their own daemons.</p>
+
+<h3>Phase 2b &mdash; netconfigd path (decision deferred)</h3>
+
+<p>Once Phase 2a is in place, the Option 1 / 2 / 3 choice has a different feel: ordering is no longer the decisive concern, because launchd has the primitives. The choice becomes about <strong>strategic identity</strong>:</p>
+
+<table>
+<thead><tr><th>Lean</th><th>Path</th><th>Why</th></tr></thead>
+<tbody>
+<tr>
+  <td>Apple-faithful</td>
+  <td>Option 1 (AF_UNIX rewrite of configd)</td>
+  <td>Reuses imported source, follows the launchd-port precedent, ships in 2&ndash;4 months from the start of 2b.</td>
+</tr>
+<tr>
+  <td>GNUstep-native</td>
+  <td>Option 3 (NCDaemon in Foundation/DO)</td>
+  <td>Idiomatic GNUstep code, smaller scope (~3 months from start of 2b), configd source becomes reference. The gdomap-bootstrap question (B vs D in 7.5) becomes the next architectural choice.</td>
+</tr>
+<tr>
+  <td>Maximalist</td>
+  <td>Option 2 (port Mach to FreeBSD)</td>
+  <td>Justified only if Gershwin's broader plan has multiple Apple-source consumers needing Mach. 6&ndash;24 months. Strategic for Apple-source compounding; over-built if the only client is configd.</td>
+</tr>
+</tbody>
+</table>
+
+<p>By the time 2a ships, you'll have months of additional thinking about which 2b path fits the project's identity. The decision doesn't have to be made now. None of 2a's work is wasted in any of the three branches.</p>
+
+<h3>Phase 2c+ &mdash; downstream consumers</h3>
+
+<p>With 2a in place, the rest fall out as small daemons that fire on the right events:</p>
+
+<ul>
+  <li><strong>wlan-clone</strong>: a small daemon (or a kmodloader extension) that uses <code>LaunchEvents</code> on devd / kqueue device events to run <code>ifconfig wlanN create wlandev &lt;dev&gt;</code> when raw 802.11 transports attach. No more "kmodloader → ??? → dhcpcd" gap.</li>
+  <li><strong>dhcpcd retirement (or netconfigd cutover)</strong>: lifts cleanly once 2b ships with feature parity.</li>
+  <li><strong>IPv6 RA/SLAAC, scutil-equivalent, nwi/IPMonitor parity</strong>: tracked under whichever 2b path was chosen.</li>
+</ul>
+
+<h3>Why this layering matters</h3>
+
+<p>The previous version of this section recommended Option 1 first &mdash; that was solving the configd-specific problem and leaving the rest of the cross-service ordering brittleness untouched. That's backwards. The same engineering work in launchd that unblocks netconfigd ALSO unblocks <code>varrun&harr;cron</code>, <code>syslogd-first</code>, <code>dhcpcd-after-kmodloader</code>, and every future ordering question. Doing 2a first is the leverage point. Doing it inside an option-specific path means redoing it for the next problem.</p>
+
+<p>The strategic lean (Apple-faithful vs GNUstep-native) is a real choice the project has to make, but it's a choice 2a doesn't force. That's the whole point: the launchd capability work is identity-neutral foundation, and the netconfigd path becomes a downstream decision once the foundation is solid.</p>
+
+<h2 id="key-roadmap">11. The plist-key roadmap: what we have, what we need</h2>
+
+<p>Cross-referencing Apple's complete <code>LAUNCH_JOBKEY_*</code> namespace (preserved upstream in <code>src/liblaunch/launch.h</code> &mdash; ~95 keys) against what the freebsd-launchd port's <code>core.m</code> actually parses today.</p>
+
+<h3>Currently recognized: 6 keys</h3>
+
+<table>
+<thead><tr><th>Key</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>Label</code></td><td>Identifier; must match plist filename's reverse-DNS prefix.</td></tr>
+<tr><td><code>Program</code></td><td>Path to executable (absolute).</td></tr>
+<tr><td><code>ProgramArguments</code></td><td>argv array.</td></tr>
+<tr><td><code>Disabled</code></td><td>Boolean; if true, plist is parsed but the job isn't loaded.</td></tr>
+<tr><td><code>RunAtLoad</code></td><td>Boolean; start the job at launchd startup (alphabetical scan order).</td></tr>
+<tr><td><code>KeepAlive</code></td><td>Boolean only &mdash; the dictionary form (<code>OtherJobEnabled</code>, <code>SuccessfulExit</code>, etc.) is not parsed.</td></tr>
+</tbody>
+</table>
+
+<p>Everything below is in the upstream namespace but ignored by the daemon. Grouped by tier of importance for a Gershwin / FreeBSD-init use case.</p>
+
+<h3>Tier 1 &mdash; foundational missing keys (Phase 2a candidates)</h3>
+
+<p>The set of keys that, once landed, make freebsd-launchd a credible "doesn't-suck-like-systemd" FreeBSD init. Most are small; together they fix every current ordering problem.</p>
+
+<table>
+<thead><tr><th>Key</th><th>What it does</th><th>Why we need it</th><th>Effort</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>EnvironmentVariables</code></td>
+  <td>Set env vars for the spawned process.</td>
+  <td>Already flagged in <code>org.freebsd.varrun.plist</code>'s comment: we use absolute paths because PATH isn't set.</td>
+  <td>Trivial. Parse dict, build envp for <code>posix_spawn</code>.</td>
+</tr>
+<tr>
+  <td><code>UserName</code> / <code>GroupName</code></td>
+  <td>Drop privileges before exec.</td>
+  <td>Required for any non-root daemon. Currently every plist runs as root.</td>
+  <td>Small. <code>getpwnam</code>/<code>getgrnam</code>, <code>setgid</code>/<code>setuid</code>.</td>
+</tr>
+<tr>
+  <td><code>InitGroups</code></td>
+  <td>Boolean: call <code>initgroups(3)</code> before drop?</td>
+  <td>Pairs with UserName for full group membership.</td>
+  <td>Trivial.</td>
+</tr>
+<tr>
+  <td><code>WorkingDirectory</code></td>
+  <td><code>chdir()</code> before exec.</td>
+  <td>Standard daemon need.</td>
+  <td>Trivial.</td>
+</tr>
+<tr>
+  <td><code>RootDirectory</code></td>
+  <td><code>chroot()</code> before exec.</td>
+  <td>Privilege isolation for sensitive daemons.</td>
+  <td>Trivial.</td>
+</tr>
+<tr>
+  <td><code>Umask</code></td>
+  <td>Set umask before exec.</td>
+  <td>File-creation security baseline.</td>
+  <td>Trivial.</td>
+</tr>
+<tr>
+  <td><code>StandardInPath</code> / <code>StandardOutPath</code> / <code>StandardErrorPath</code></td>
+  <td>Redirect stdio to files.</td>
+  <td>Per-daemon log routing without shell wrappers.</td>
+  <td>Small.</td>
+</tr>
+<tr>
+  <td><code>WatchPaths</code></td>
+  <td>kqueue <code>EVFILT_VNODE</code> on each path; fires the daemon when one changes.</td>
+  <td>Fixes filesystem-state ordering (varrun&rarr;cron). Broad utility for "wait for X file."</td>
+  <td>Medium. <code>dispatch_source</code> per path; integrate with run loop.</td>
+</tr>
+<tr>
+  <td><code>Sockets</code></td>
+  <td>launchd opens the listen socket itself, exec's daemon on first connection, hands the listen fd to the daemon via env (Apple's <code>$LAUNCH_DAEMON_SOCKET_NAME</code>; systemd's <code>$LISTEN_FDS</code> is the same idea).</td>
+  <td>Fixes syslogd-first / cold-start daemons. Foundation primitive for AF_UNIX-based service activation. Unblocks the netconfigd IPC path regardless of which option is chosen.</td>
+  <td>Medium-large. <code>bind</code>/<code>listen</code> logic, fd inheritance, multiple sockets per job, both AF_INET and AF_UNIX shapes.</td>
+</tr>
+<tr>
+  <td><code>KeepAlive { OtherJobEnabled }</code></td>
+  <td>Run only while another named job is loaded.</td>
+  <td>Explicit job-to-job dependencies (cron after varrun).</td>
+  <td>Small. Predicate evaluator addition.</td>
+</tr>
+<tr>
+  <td><code>KeepAlive { SuccessfulExit }</code></td>
+  <td>Respawn unless prior instance exited 0.</td>
+  <td>Crash-loop recovery without infinite respawn after intentional exit.</td>
+  <td>Small.</td>
+</tr>
+<tr>
+  <td><code>KeepAlive { PathState }</code></td>
+  <td>Run only while a path exists / doesn't exist.</td>
+  <td>Conditional services tied to filesystem state.</td>
+  <td>Small.</td>
+</tr>
+<tr>
+  <td><code>KeepAlive { NetworkState }</code></td>
+  <td>Run only when network is up.</td>
+  <td>Network-dependent services. Could supersede some of dhcpcd-after-X gymnastics if the launchd-side primitive exists.</td>
+  <td>Small-medium. Needs link-state monitor source.</td>
+</tr>
+<tr>
+  <td><code>KeepAlive { Crashed }</code></td>
+  <td>Respawn only on abnormal exit.</td>
+  <td>Symmetric of <code>SuccessfulExit</code>.</td>
+  <td>Trivial after <code>SuccessfulExit</code>.</td>
+</tr>
+<tr>
+  <td><code>KeepAlive { AfterInitialDemand }</code></td>
+  <td>Don't respawn until the service has been demanded once.</td>
+  <td>Cold-start activation guard for socket-activated services.</td>
+  <td>Small.</td>
+</tr>
+<tr>
+  <td><code>LaunchEvents</code></td>
+  <td>Activate on a generic event (Apple uses <code>notify(3)</code>; FreeBSD analog would be devd events or <code>EVFILT_USER</code>).</td>
+  <td>devd-event-driven activation: wlan-clone fires on "iwlwifi attached"; hot-plug story.</td>
+  <td>Medium. Hook into devd or notify-equivalent.</td>
+</tr>
+<tr>
+  <td><code>ExitTimeOut</code></td>
+  <td>Seconds between SIGTERM and SIGKILL on shutdown.</td>
+  <td>Graceful shutdown for daemons that need to flush.</td>
+  <td>Trivial.</td>
+</tr>
+<tr>
+  <td><code>ThrottleInterval</code></td>
+  <td>Minimum seconds between successive launches.</td>
+  <td>Anti-respawn-loop protection. Apple's default is 10s.</td>
+  <td>Trivial.</td>
+</tr>
+</tbody>
+</table>
+
+<h3>Tier 2 &mdash; useful but not blocking</h3>
+
+<table>
+<thead><tr><th>Key</th><th>What it does</th><th>Use case</th></tr></thead>
+<tbody>
+<tr><td><code>StartInterval</code></td><td>Run periodically every N seconds.</td><td>Per-daemon "every 5 minutes" without invoking cron.</td></tr>
+<tr><td><code>StartCalendarInterval</code></td><td>Run at calendar times (Minute / Hour / Day / Month / Weekday).</td><td>Per-daemon cron-like scheduling without cron. Could eventually retire <code>org.freebsd.cron</code> for system-managed jobs.</td></tr>
+<tr><td><code>QueueDirectories</code></td><td>Like WatchPaths, but fires only when dir is non-empty.</td><td>Spool processors, mail queues, log shippers.</td></tr>
+<tr><td><code>StartOnMount</code></td><td>Run when any filesystem is newly mounted.</td><td>Mount-event handlers (auto-fsck, indexing, etc.).</td></tr>
+<tr><td><code>HardResourceLimits</code> / <code>SoftResourceLimits</code></td><td>setrlimit wrapping. Subkeys: <code>CPU</code>, <code>Data</code>, <code>FileSize</code>, <code>NumberOfFiles</code>, <code>NumberOfProcesses</code>, <code>Stack</code>, <code>Core</code>, <code>ResidentSetSize</code>, <code>MemoryLock</code>.</td><td>Per-daemon resource caps.</td></tr>
+<tr><td><code>Nice</code></td><td><code>setpriority(2)</code> before exec.</td><td>Background daemons.</td></tr>
+<tr><td><code>inetdCompatibility</code></td><td>Run as inetd-style: exec per connection, stdio = socket.</td><td>Legacy compatibility; small services that don't want their own socket logic.</td></tr>
+<tr><td><code>LaunchOnlyOnce</code></td><td>Don't relaunch even if a KeepAlive predicate would fire.</td><td>First-boot-only services.</td></tr>
+<tr><td><code>MultipleInstances</code></td><td>Allow concurrent instances (one per <code>Sockets</code> connection).</td><td>Connection-per-instance daemons.</td></tr>
+<tr><td><code>AbandonProcessGroup</code></td><td>Don't track child process group.</td><td>Daemons that <code>fork</code> trees and don't want launchd reaping them.</td></tr>
+<tr><td><code>EnableGlobbing</code></td><td>Glob-expand argv before exec.</td><td>Rare; convenience for some plists.</td></tr>
+<tr><td><code>BeginTransactionAtShutdown</code></td><td>Mark daemon as in-transaction during shutdown.</td><td>Niche; relevant only if Apple's transaction tracking lands.</td></tr>
+</tbody>
+</table>
+
+<h3>Tier 3 &mdash; Apple-specific or redundant on FreeBSD</h3>
+
+<p>These would only land if the corresponding subsystem comes with them. Listing for completeness so the reader knows they're in Apple's namespace and being deliberately not-implemented.</p>
+
+<ul>
+  <li><strong>Mach-specific (require Option 2 to be useful):</strong> <code>MachServices</code>, <code>MachServiceLookupPolicies</code>, <code>PerJobMachServices</code>, <code>MachExceptionHandler</code>, <code>HopefullyExitsFirst</code>, <code>HopefullyExitsLast</code>, plus the <code>MACH_*</code> special-port keys (<code>HostSpecialPort</code>, <code>TaskSpecialPort</code>, <code>kUNCServer</code>, <code>ExceptionServer</code>, <code>HideUntilCheckIn</code>, <code>ResetAtClose</code>, <code>DrainMessagesOnCrash</code>, <code>EnterKernelDebuggerOnClose</code>, <code>PingEventUpdates</code>).</li>
+  <li><strong>XPC-specific:</strong> <code>XPCDomain</code>, <code>XPCDomainBootstrapper</code>, <code>ServiceIPC</code>.</li>
+  <li><strong>Apple sandbox:</strong> <code>SandboxProfile</code>, <code>SandboxFlags</code>, <code>SandboxNamed</code>. FreeBSD's CAPSICUM is the analog primitive but a different model &mdash; sandbox keys would be replaced by a CAPSICUM-shaped key, not ported verbatim.</li>
+  <li><strong>Apple session manager:</strong> <code>LimitLoadToSessionType</code>, <code>JoinGUISession</code>, <code>SessionCreate</code>. Only relevant if Gershwin grows session types analogous to Aqua/Background/LoginWindow.</li>
+  <li><strong>Apple ioprio:</strong> <code>LowPriorityIO</code>, <code>LowPriorityBackgroundIO</code>. Apple's IO priority API; FreeBSD has <code>rtprio</code> with a different shape.</li>
+  <li><strong>Apple jetsam (iOS-derived):</strong> <code>JetsamMemoryLimit</code>, <code>JetsamPriority</code>, <code>JetsamProperties</code>, <code>JetsamMemoryLimitBackground</code>. Memory-pressure killer; FreeBSD has different OOM mechanisms.</li>
+  <li><strong>Apple debug:</strong> <code>EnterKernelDebuggerBeforeKill</code>, <code>WaitForDebugger</code>, <code>DisableASLR</code>, <code>Debug</code>. Useful but Apple-shaped.</li>
+  <li><strong>Apple bundle / security:</strong> <code>CFBundleIdentifier</code>, <code>BinaryOrderPreference</code>, <code>BonjourFDs</code>, <code>QuarantineData</code>, <code>SecuritySessionUUID</code>, <code>POSIXSpawnType</code>, <code>Policies</code>, <code>EnableTransactions</code>, <code>TransactionCount</code>, <code>EventMonitor</code>, <code>ShutdownMonitor</code>.</li>
+  <li><strong>iOS-only:</strong> <code>EmbeddedHomeScreen</code>, <code>EmbeddedMainThreadPriority</code>, <code>EmbeddedPrivilegeDispensation</code>.</li>
+  <li><strong>Hardware/host filtering:</strong> <code>LimitLoadToHardware</code>, <code>LimitLoadFromHardware</code>, <code>LimitLoadToHosts</code>, <code>LimitLoadFromHosts</code>, <code>Disabled_MachineType</code>, <code>Disabled_ModelName</code>. Niche; could land if a specific use case appears.</li>
+  <li><strong>Deprecated / superseded:</strong> <code>OnDemand</code> (superseded by <code>KeepAlive</code> in 10.4), <code>IgnoreProcessGroupAtShutdown</code>.</li>
+</ul>
+
+<h3>Tier 4 &mdash; output keys (read by launchctl, not user-set)</h3>
+
+<ul>
+  <li><code>LastExitStatus</code>, <code>PID</code>, <code>TransactionCount</code>, <code>AuditSessionID</code>. Surfaced by <code>launchctl list</code> / <code>launchctl print</code> but never appear in plists as user input.</li>
+</ul>
+
+<h3 id="tier1-order">Suggested Tier 1 implementation order</h3>
+
+<p>Within Phase 2a (Section 10's foundation), the prerequisite chain suggests this order:</p>
+
+<ol>
+  <li><strong><code>EnvironmentVariables</code></strong> &mdash; already flagged as missing in shipping plists; small win first.</li>
+  <li><strong>Process-control batch:</strong> <code>UserName</code>, <code>GroupName</code>, <code>InitGroups</code>, <code>WorkingDirectory</code>, <code>RootDirectory</code>, <code>Umask</code>, <code>Standard*Path</code>. None depend on each other; lands in one push.</li>
+  <li><strong><code>WatchPaths</code></strong> &mdash; first event-driven activation. Fixes <code>varrun &rarr; cron</code> and similar. Establishes the dispatch_source-per-job pattern for everything that follows.</li>
+  <li><strong><code>KeepAlive</code> subkeys</strong> &mdash; predicate-based supervision. Builds on the existing boolean <code>KeepAlive</code>; reuses much of the existing keep-alive logic.</li>
+  <li><strong><code>Sockets</code> activation</strong> &mdash; bigger lift but unblocks the syslogd-first story and is a prerequisite for the Apple-faithful netconfigd path. Touches IPC fundamentals.</li>
+  <li><strong><code>LaunchEvents</code></strong> &mdash; devd integration. Enables wlan-clone, hot-plug, and similar event-driven daemons. Pairs naturally with kmodloader's planned Phase 2 long-running shape.</li>
+  <li><strong>Tier 2 keys</strong> as use cases demand them &mdash; <code>StartInterval</code> / <code>StartCalendarInterval</code> are the next logical group (could even retire <code>org.freebsd.cron</code> for system-managed periodic jobs once landed), then resource limits, then the rest.</li>
+  <li><strong><code>ExitTimeOut</code> / <code>ThrottleInterval</code></strong> &mdash; supervision polish; small additions whenever convenient.</li>
+</ol>
+
+<p>By the end of Tier 1 the freebsd-launchd port has roughly Apple's launchd-842 minus Mach &mdash; combined with the AF_UNIX surgery already done on <code>ipc.c</code>, that's a credible foundation for any of Section 10's Phase 2b paths AND a coherent answer to "what does a non-systemd FreeBSD init look like."</p>
+
+<h2 id="risks">12. Open questions &amp; risks</h2>
+
+<h4>Things to verify before committing to Option 1</h4>
+
+<ul>
+  <li>How much of configd's <code>libdispatch</code> usage tangles with Mach internally? On Apple, <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, ...)</code> is a common pattern for receiving Mach messages on a queue. Replacements exist (<code>DISPATCH_SOURCE_TYPE_READ</code> on a socket fd) but each call site needs translation.</li>
+  <li>Where in configd does <code>vm_copy</code> / out-of-line memory transfer get used? Probably rarely &mdash; configd messages are small &mdash; but worth grepping.</li>
+  <li>SCHelper privilege escalation: this is a separate root-privileged helper that configd talks to over a private Mach interface. Needs its own AF_UNIX surgery or could be merged into configd as a privileged thread.</li>
+  <li>EventFactory: appears to be log-message reconstruction, probably not on the IPC hot path. Verify.</li>
+</ul>
+
+<h4>Risks specific to Option 1</h4>
+
+<ul>
+  <li><strong>Subtle behavior drift.</strong> XPC has reliable message ordering and back-pressure semantics that AF_UNIX inherits-but-not-identically. Test rigorously around connection death and re-connect.</li>
+  <li><strong>Audit token replacement.</strong> XPC's audit token includes PID, EUID, EGID, audit session, and signing identity. <code>SO_PEERCRED</code> on FreeBSD gives you PID/UID/GID. The signing identity is gone &mdash; if any configd code-path depends on it, you're redesigning, not transporting.</li>
+  <li><strong>Future Apple imports.</strong> When Apple ships configd-970, your transport patches need to be re-applied. The same git-rebase pattern that works for the launchd port should work here, but it's effort that recurs.</li>
+</ul>
+
+<h4>Risks if you choose Option 2 instead</h4>
+
+<ul>
+  <li>Time-to-first-ISO with working netconfigd extends past a year. The live ISO continues using dhcpcd in the meantime, accumulating its own integration debt.</li>
+  <li>Mach-on-FreeBSD is a project that might not finish. There's prior art (Darling, Hurd Mach), but neither is a drop-in. The risk of a half-finished Mach port that can't run configd reliably is real.</li>
+</ul>
+
+<h4>Risks if you choose Option 3 instead</h4>
+
+<ul>
+  <li>The configd import in <code>configd/src/</code> becomes ambiguous baggage &mdash; not actively shipped, not deleted, license obligations still tracked. Either commit to it or remove it.</li>
+  <li>Plugin behaviors that Apple has gotten right over many releases (DHCP option ordering, IPv6 RA priority, link-local fallback) get re-derived. Each one is a place where Gershwin's behavior might subtly differ from macOS, and users will notice.</li>
+  <li>"Gershwin runs Apple's framework" is no longer true for the network stack. Marketing/positioning consequence.</li>
+</ul>
+
+<p class="footnote">
+This analysis was prepared 2026-05-10. Source citations: NOTICE (launchd-842.1.4, configd-963.270.3 imports); src/src/ipc.c:11-13 (Mach-rewrite comment); src/src/core.m:258-266 (recognized plist keys); src/Makefile:48-55 (built daemon sources, liblaunch.c excluded); src/liblaunch/liblaunch.c:1008-1037 (dead Mach client code preserved); configd/src/nwi/network_information_server.c (XPC server-side); configd/src/configd.tproj/com.apple.configd.plist (MachServices declaration).
+</p>
+
+</div>
+</body>
+</html>

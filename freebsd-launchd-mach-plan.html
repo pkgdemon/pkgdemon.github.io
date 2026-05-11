@@ -235,6 +235,7 @@
   <li><a href="#risks">Risks under the new plan</a></li>
   <li><a href="#decision">Decision criteria</a></li>
   <li><a href="#unlocks">What Mach unlocks downstream &mdash; dyld, libSystem, and the broader port horizon</a></li>
+  <li><a href="#mach-is-not">What Mach is, and is not, useful for &mdash; sshd, cron, and the rest of the BSD daemon fleet</a></li>
 </ol>
 </div>
 
@@ -827,6 +828,85 @@ CFLAGS+= -I${SYSDIR}/../include/apple -DCOMPAT_MACH</code></pre>
 </table>
 
 <p>The take-away for the v2 plan as written: <strong>Mach is the foundation for the system-services layer, not for the framework layer</strong>. The 10&ndash;12 weeks of work in Phases A&ndash;E pay for themselves the moment configd boots and the first reusable bootstrap-activated daemon ships, because every subsequent system-services port (notifyd, asl, future configd plugins) builds on the same module. The framework layer above &mdash; Foundation, AppKit, the apps that ship on a Gershwin desktop &mdash; remain GNUstep, on ELF, exactly as they do today.</p>
+
+<h2 id="mach-is-not">14. What Mach is, and is not, useful for &mdash; sshd, cron, and the rest of the BSD daemon fleet</h2>
+
+<div class="callout callout-good">
+<p><strong>Reader's question:</strong> "Would this allow us to use Mach for sshd, cron, and other services as well?"</p>
+<p><strong>Direct answer: no, and that's fine &mdash; because what those services actually need is orthogonal to Mach.</strong> Mach activation is for services that have been written to speak Mach. sshd, cron, syslogd, ntpd, and the rest of the BSD daemon fleet speak Unix sockets, TCP, signals, and <code>exec</code> &mdash; not Mach. Bolting a <code>MachServices</code> key onto their plists accomplishes nothing because the daemon never calls <code>bootstrap_check_in</code>; launchd would allocate a port no one ever receives on.</p>
+<p>What <em>does</em> help cron and sshd is a different, parallel set of launchd plist keys &mdash; <code>Sockets</code>, <code>WatchPaths</code>, <code>KeepAlive</code> dict subkeys, <code>LaunchEvents</code> &mdash; which the current freebsd-launchd port hasn't implemented yet. Those keys are <strong>independent of Mach</strong> and benefit both repos equally.</p>
+</div>
+
+<h3 id="mach-is-not-categories">14.1 Which services benefit from Mach, and which don't</h3>
+
+<table>
+<thead><tr><th>Category</th><th>Examples</th><th>Mach helps?</th><th>What actually helps</th></tr></thead>
+<tbody>
+<tr>
+  <td>Apple-source daemons written for Mach</td>
+  <td>configd, notifyd, asl, distnoted, mDNSResponder's Mach API mode</td>
+  <td><span class="pill pill-good">Yes</span></td>
+  <td>They already call <code>bootstrap_check_in</code> and serve clients via <code>mach_msg</code>. Launch-on-demand via <code>MachServices</code> works as designed.</td>
+</tr>
+<tr>
+  <td>Future Mach-native daemons we write</td>
+  <td>A hypothetical session-bus daemon; a config-cache broker; anything that wants port-rights handoff</td>
+  <td><span class="pill pill-good">Yes</span></td>
+  <td>Pick the right tool for the job; write it Mach-aware from day one.</td>
+</tr>
+<tr>
+  <td>BSD daemons that listen on a socket</td>
+  <td>sshd, inetd-style services, anything that <code>accept()</code>s</td>
+  <td><span class="pill pill-bad">No</span></td>
+  <td><strong>Socket activation</strong> via the <code>Sockets</code> plist key. launchd opens the listener, holds it, hands the accepted fd to the daemon via <code>SCM_RIGHTS</code> on demand. This is how Apple's sshd works. Native FreeBSD primitives only; no Mach.</td>
+</tr>
+<tr>
+  <td>BSD daemons that just need to run on schedule or at boot</td>
+  <td>cron, ntpd, ntp-wait, periodic, dhcpcd</td>
+  <td><span class="pill pill-bad">No</span></td>
+  <td><strong><code>RunAtLoad</code> + <code>KeepAlive</code></strong> as today. For ordering, the <code>KeepAlive</code> dict predicates (<code>OtherJobEnabled</code>, <code>PathState</code>, <code>SuccessfulExit</code>) and <code>WatchPaths</code> let you express "cron restarts only after varrun successfully exits" declaratively.</td>
+</tr>
+<tr>
+  <td>One-shot housekeeping</td>
+  <td>varrun (mkdir /var/run), dmesg.boot, sysctl.conf application</td>
+  <td><span class="pill pill-bad">No</span></td>
+  <td><code>RunAtLoad</code>, <code>KeepAlive=false</code>. Other jobs that depend on them use <code>KeepAlive.OtherJobEnabled</code> or <code>KeepAlive.SuccessfulExit</code>.</td>
+</tr>
+<tr>
+  <td>Daemons triggered by hardware/network events</td>
+  <td>USB-insert handlers, NIC-up handlers, removable-media mounters</td>
+  <td><span class="pill pill-bad">No</span></td>
+  <td><strong><code>LaunchEvents</code></strong> with a <code>com.apple.iokit.matching</code>-style dict (FreeBSD equivalent: <code>devd</code> matchers, or a thin shim over <code>devctl</code>). No Mach involved.</td>
+</tr>
+<tr>
+  <td>Daemons that want to start when a file appears</td>
+  <td>spool watchers, drop-box uploaders, config-reload handlers</td>
+  <td><span class="pill pill-bad">No</span></td>
+  <td><strong><code>WatchPaths</code></strong>, backed by <code>kqueue(EVFILT_VNODE)</code>. Pure FreeBSD KPI.</td>
+</tr>
+</tbody>
+</table>
+
+<p>Five out of seven categories don't touch Mach. <strong>That's not a limitation of the Mach approach; it's a clarification of what Mach is for.</strong> Mach is the right answer for kernel-mediated capability transfer between cooperating Mach-aware processes. It is not, and shouldn't be, the way every service on the box gets started.</p>
+
+<h3 id="mach-is-not-parallel-work">14.2 The parallel workstream &mdash; the non-Mach plist keys</h3>
+
+<p>The launchd plist keys that actually serve the BSD daemon fleet are: <code>Sockets</code>, <code>WatchPaths</code>, <code>KeepAlive</code> dict subkeys, <code>LaunchEvents</code>, <code>QueueDirectories</code>. None of them require Mach; all of them require <strong>parsing work in <code>core.m</code></strong> and <strong>event-source registration via libdispatch + kqueue</strong>. That work is identical whether you ship it under <code>freebsd-launchd</code> or <code>freebsd-launchd-mach</code>.</p>
+
+<p>The strategic implication: <strong>this parallel workstream is the higher-leverage near-term investment for cron / sshd / syslogd / ntpd / dhcpcd / varrun</strong>. The whole BSD daemon fleet's ordering and activation cleans up the moment those keys are recognized. Mach is for a different problem (the Apple-source daemons and any future Mach-aware services), and that problem is real and worth solving &mdash; but it doesn't displace this one.</p>
+
+<p>Suggested split going forward:</p>
+
+<ul>
+  <li><code>freebsd-launchd</code> &mdash; the AF_UNIX track &mdash; gets the non-Mach plist keys first. <code>Sockets</code> &rarr; sshd-style activation. <code>KeepAlive</code> predicates &rarr; cron-after-varrun. <code>WatchPaths</code> &rarr; file-triggered jobs. <code>LaunchEvents</code> &rarr; hardware-triggered jobs. The service-ordering doc's "fragile today" table all clears up.</li>
+  <li><code>freebsd-launchd-mach</code> &mdash; the pure-port track &mdash; inherits the same keys (they're in core.m, common code) and additionally gets <code>MachServices</code> + bootstrap activation for Apple-source daemons.</li>
+</ul>
+
+<p>Once both layers are in place, every service on the box has the right activation primitive: Mach where Mach fits, sockets where sockets fit, watchpaths where filesystem state is the trigger, OtherJobEnabled where ordering is the only relationship. <strong>Alphabetical filename luck retires entirely.</strong></p>
+
+<h3 id="mach-is-not-summary">14.3 One-line summary</h3>
+
+<p><strong>Mach is for the daemons that know they want Mach.</strong> The rest of the box &mdash; sshd, cron, syslogd, ntpd, dhcpcd, gettys, varrun &mdash; gets its declarative-ordering wins from the other launchd plist keys, which are a parallel workstream that benefits both repos equally and should arguably ship first because it serves more services per week of effort.</p>
 
 <h2 id="closing">Closing summary</h2>
 

@@ -241,7 +241,7 @@
 
 <h2 id="tldr">1. TL;DR &mdash; the short version</h2>
 
-<p class="verdict verdict-go">Verdict: GO. Estimated 8&ndash;12 weeks to "<code>kldload mach.ko</code> on stock FreeBSD-CURRENT, launchd as PID 1, configd registered as a Mach service, <code>scutil --get HostName</code> works." Down from the v1 plan's 24&ndash;32 weeks because we are no longer implementing Mach; we are extracting an already-implemented Mach kernel module from a project that has been quietly maintaining it since 2014.</p>
+<p class="verdict verdict-go">Verdict: GO, staged. <strong>Committed work right now is Phases A and B only:</strong> get a vanilla FreeBSD ISO booting with stock <code>init</code> as PID 1 from the new repo (1 week), then port ravynOS's <code>mach.ko</code> so it kldloads at boot and survives a userland round-trip test (3 weeks). <strong>Hard stop after Phase B.</strong> Everything else &mdash; Apple's launchd, configd, IPConfiguration as PID-1-replacing userland &mdash; is post-checkpoint scope, evaluated against what Phase B actually reveals. Down from the v1 plan's 24&ndash;32 weeks because we are no longer implementing Mach; we are extracting an already-implemented Mach kernel module from a project that has been quietly maintaining it since 2014.</p>
 
 <ul>
   <li><strong>ravynOS ships <code>mach.ko</code> today</strong>, on FreeBSD 15.0-CURRENT (<code>__FreeBSD_version</code> 1500066), as a loadable kernel module under <code>sys/modules/mach/Makefile</code> using <code>bsd.kmod.mk</code>. 48 KLoC across <code>sys/compat/mach/</code>. Origin: NextBSD's 2014&ndash;15 port of XNU's <code>osfmk/ipc/</code>, all OSF/CMU-licensed (no APSL).</li>
@@ -326,62 +326,119 @@
 
 <p>Critical: the two repos are not competing roadmaps; they are two different products with different audiences. The <code>freebsd-launchd</code> roadmap continues unchanged. The <code>freebsd-launchd-mach</code> repo is additive.</p>
 
-<h2 id="extract">4. What we extract from ravynOS</h2>
+<h2 id="extract">4. What we lift from where</h2>
 
-<p>The exact list, with paths in the cloned ravynOS tree:</p>
+<p>Three sources, each with a tight scope. ravynOS is consulted for the kernel module (and one userland library Apple never open-sourced); everything else userland comes from Apple's actual open-source releases on opensource.apple.com; the existing <code>freebsd-launchd</code> repo provides CI / build / scaffolding only.</p>
+
+<h3 id="extract-ravynos">4.1 From ravynOS (kernel module, plus libxpc which Apple never released)</h3>
 
 <table>
-<thead><tr><th>Source path in ravynOS</th><th>Destination in <code>freebsd-launchd-mach</code></th><th>Notes</th></tr></thead>
+<thead><tr><th>Source path in ravynOS</th><th>Destination in <code>freebsd-launchd-mach</code></th><th>Phase</th></tr></thead>
 <tbody>
 <tr>
   <td><code>sys/compat/mach/</code> (27 .c files + <code>defs/</code> + <code>ipc/</code> + <code>kern/</code>)</td>
   <td><code>mach-kmod/src/</code></td>
-  <td>The IPC implementation. Out-of-tree-ify by changing <code>SYSDIR</code> assumptions (see Section 5).</td>
+  <td><strong>B</strong> (committed)</td>
 </tr>
 <tr>
   <td><code>sys/sys/mach/</code> (78 kernel headers)</td>
   <td><code>mach-kmod/include/sys/mach/</code></td>
-  <td>Kernel-only Mach headers. Shipped in the kmod build.</td>
+  <td><strong>B</strong> (committed)</td>
 </tr>
 <tr>
   <td><code>sys/modules/mach/Makefile</code></td>
   <td><code>mach-kmod/Makefile</code></td>
-  <td>Already <code>bsd.kmod.mk</code>-based; just redirect <code>SYSDIR</code> and <code>.PATH</code>.</td>
+  <td><strong>B</strong> (committed)</td>
 </tr>
 <tr>
-  <td><code>include/mach/</code> (63 userspace headers)</td>
+  <td><code>include/mach/</code> (63 userspace headers, already FreeBSD-adapted)</td>
   <td><code>libmach/include/mach/</code></td>
-  <td>The <code>&lt;mach/mach.h&gt;</code> userspace header tree. Configd compiles against these.</td>
+  <td>C (post-checkpoint)</td>
 </tr>
 <tr>
-  <td><code>lib/liblaunch/</code> (16 files: <code>libbootstrap.c</code>, <code>liblaunch.c</code>, <code>libvproc.c</code>, headers, MIG defs)</td>
-  <td><code>liblaunch/</code></td>
-  <td>The bootstrap client + launch_data marshalling. The "bootstrap.h" / "vproc.h" the v1 plan worried about not having &mdash; these are exactly those headers, already written.</td>
-</tr>
-<tr>
-  <td><code>lib/libxpc/</code> (8 files including <code>xpc_connection.c</code>, <code>xpc_dictionary.c</code>, <code>subr_nvlist.c</code>)</td>
+  <td><code>lib/libxpc/</code> (iXsystems BSD-2 XPC; Mach-aware)</td>
   <td><code>libxpc/</code></td>
-  <td>BSD 2-clause iXsystems XPC. Uses Mach. Lets us bring up configd's XPC clients (IPMonitorControl, dnsinfo, network_information_server) without writing libxpc ourselves &mdash; the v1 plan deferred all of that.</td>
-</tr>
+  <td>C (post-checkpoint)</td>
+  </tr>
+</tbody>
+</table>
+
+<p><strong>Why libxpc has to come from ravynOS:</strong> Apple never open-sourced libxpc. It's part of the closed libSystem on macOS. The iXsystems implementation in ravynOS's <code>lib/libxpc/</code> is the only realistic source for a working Mach-aware XPC library on FreeBSD. We document this as a divergence-from-Apple even though we otherwise prefer Apple-direct sources.</p>
+
+<h3 id="extract-apple">4.2 From Apple directly (opensource.apple.com)</h3>
+
+<table>
+<thead><tr><th>Apple source</th><th>Destination</th><th>Phase</th></tr></thead>
+<tbody>
 <tr>
-  <td><code>lib/libdispatch/</code></td>
-  <td><code>libdispatch/</code></td>
-  <td>Mach-aware libdispatch with <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> wired up. We're already using libdispatch in <code>freebsd-launchd</code>; this is the version that works with Mach.</td>
-</tr>
-<tr>
-  <td><code>sbin/launchd/</code> (full Apple launchd with <code>core.c</code>, <code>ipc.c</code>, <code>job.defs</code>, <code>internal.defs</code>, <code>mach_exc.defs</code>)</td>
+  <td>launchd (latest open-source release, traditionally launchd-842 or the corresponding Apache 2.0 drop)</td>
   <td><code>launchd/</code></td>
-  <td>Real Apache-2.0 Apple launchd, the bootstrap server included. Replaces <code>freebsd-launchd/src/src/</code>'s reduced rewrite.</td>
+  <td>D (post-checkpoint)</td>
 </tr>
 <tr>
-  <td><code>Library/LaunchDaemons/*.json</code> (sample plist set)</td>
-  <td><code>plists/</code></td>
-  <td>For reference. ravynOS uses JSON instead of XML; we have to decide whether to follow.</td>
+  <td>liblaunch + libbootstrap + libvproc (from the launchd source release)</td>
+  <td><code>liblaunch/</code></td>
+  <td>D (post-checkpoint)</td>
+</tr>
+<tr>
+  <td>configd (currently 963.270.3, already imported by <code>freebsd-launchd/configd/</code>; lift that or refresh from Apple)</td>
+  <td><code>configd/</code></td>
+  <td>E (post-checkpoint)</td>
+</tr>
+<tr>
+  <td>IPConfiguration (DHCPv4 + DHCPv6 + IPv4LL + RA, configd plugin)</td>
+  <td><code>configd/Plugins/IPConfiguration/</code></td>
+  <td>F (post-checkpoint, scope expansion)</td>
+</tr>
+<tr>
+  <td>libdispatch (Apache 2.0; gershwin-on-freebsd already uses Apple's libdispatch &mdash; reuse gershwin's build or lift fresh)</td>
+  <td><code>libdispatch/</code> (or via gershwin install path)</td>
+  <td>C (post-checkpoint)</td>
 </tr>
 </tbody>
 </table>
 
-<p><strong>Total LOC roughly extracted: ~50 KLoC kernel + ~30 KLoC userland</strong>. None of this is greenfield; all of it has been built and run by ravynOS's CI within the last weeks.</p>
+<p><strong>Why Apple direct, not ravynOS, for these:</strong> ravynOS's launchd has diverged (JSON plists, ravynOS-specific patches). We want Apple's canonical implementation with Apple's plist format (XML) so the implementation behavior matches Apple's documented behavior, no fork drift to track.</p>
+
+<h3 id="extract-freebsd-launchd">4.3 From the existing <code>freebsd-launchd</code> repo (scaffolding only)</h3>
+
+<table>
+<thead><tr><th>Asset in <code>freebsd-launchd</code></th><th>Destination</th><th>Phase</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>build.sh</code> (chroot livecd staging)</td>
+  <td><code>build.sh</code></td>
+  <td><strong>A</strong> (committed)</td>
+</tr>
+<tr>
+  <td><code>.github/workflows/</code> (vmactions/freebsd-vm@v1)</td>
+  <td><code>.github/workflows/</code></td>
+  <td><strong>A</strong> (committed)</td>
+</tr>
+<tr>
+  <td><code>kmodloader/</code></td>
+  <td><code>kmodloader/</code></td>
+  <td><strong>A</strong> (committed)</td>
+</tr>
+<tr>
+  <td><code>boot/</code>, <code>ramdisk/</code>, <code>overlays/</code></td>
+  <td>same</td>
+  <td><strong>A</strong> (committed)</td>
+</tr>
+<tr>
+  <td><code>tests/</code>, <code>scripts/</code></td>
+  <td>same</td>
+  <td><strong>A</strong> (committed)</td>
+</tr>
+<tr>
+  <td><code>configd/src/</code> (existing 963.270.3 Apple import)</td>
+  <td><code>configd/</code> or refresh from Apple</td>
+  <td>E (post-checkpoint)</td>
+</tr>
+</tbody>
+</table>
+
+<p>The reduced launchd at <code>freebsd-launchd/src/src/</code> is <strong>not reused</strong> &mdash; reference only. Apple's full launchd replaces it at Phase D.</p>
 
 <h2 id="out-of-tree">5. Out-of-tree-ifying ravynOS's <code>mach.ko</code></h2>
 
@@ -541,55 +598,77 @@ CFLAGS+= -I${SYSDIR}/../include/apple -DCOMPAT_MACH</code></pre>
 
 <p>The repo's overall license is <strong>BSD-2-Clause</strong>, with per-file headers preserved exactly as in their source repos, exactly mirroring <code>freebsd-launchd</code>'s existing NOTICE policy. No new license complications relative to what <code>freebsd-launchd</code> already navigated.</p>
 
-<h2 id="milestones">9. Revised milestones</h2>
+<h2 id="milestones">9. Milestones</h2>
 
-<p>Compare to <a href="freebsd-mach-kmod-plan.html#milestones">v1's Phases A&ndash;E</a>: those were build-from-scratch milestones totalling 24 weeks elapsed. v2 milestones are integration-from-prior-art and total ~10 weeks elapsed.</p>
+<p><strong>Committed scope is Phases A and B only.</strong> Total: 4 weeks. After that, a hard stop &mdash; we look at what Phase B actually revealed and decide what's worth doing next. Everything beyond Phase B is post-checkpoint scope, sketched but not committed.</p>
 
-<h3>Phase A &mdash; bootstrap the new repo (1 week)</h3>
+<h3>Phase A &mdash; ISO boots with stock FreeBSD init (1 week) <span class="pill pill-good">Committed</span></h3>
 <ul>
   <li>Create <code>freebsd-launchd-mach</code> repo with the layout in Section 7.1.</li>
-  <li>Lift CI workflows + <code>build.sh</code> + boot scaffolding from <code>freebsd-launchd</code>. Build a minimal ISO with no Mach; verify it boots in <code>vmactions/freebsd-vm@v1</code>.</li>
-  <li>Document the provenance (ravynOS / NextBSD / Apple) in NOTICE.</li>
+  <li>Lift CI workflows + <code>build.sh</code> + boot scaffolding from <code>freebsd-launchd</code>. Build a vanilla FreeBSD ISO from the new repo's pipeline.</li>
+  <li>Boot the ISO in CI via <code>vmactions/freebsd-vm@v1</code>; assert stock FreeBSD <code>init</code> brings up multi-user mode normally.</li>
+  <li><strong>No Mach kernel module yet. No launchd. No configd.</strong> This phase only proves the new repo can build and boot a vanilla FreeBSD ISO in CI.</li>
   <li><strong>Exit:</strong> green CI on the bare scaffolding before any Mach work begins.</li>
 </ul>
 
-<h3>Phase B &mdash; out-of-tree mach.ko (3 weeks)</h3>
+<h3>Phase B &mdash; mach.ko ported, kldloaded at boot (3 weeks) <span class="pill pill-good">Committed</span></h3>
 <ul>
-  <li>Copy <code>sys/compat/mach/</code> + <code>sys/sys/mach/</code> + the module Makefile from ravynOS into <code>mach-kmod/</code>.</li>
+  <li>Copy <code>sys/compat/mach/</code> + <code>sys/sys/mach/</code> + <code>sys/modules/mach/Makefile</code> from ravynOS into <code>mach-kmod/</code>.</li>
   <li>Out-of-tree-ify per Section 5: redirect <code>SYSDIR</code>, bundle MIG-generated stubs, stub <code>opt_*.h</code>.</li>
-  <li>CI builds <code>mach.ko</code>, kldloads it on a fresh FreeBSD-CURRENT VM, runs a port-allocate + mach_msg round-trip test, kldunloads, asserts no leaks.</li>
-  <li>Per-major artifact tarball uploaded to GitHub releases (15.x, 16.x, etc.).</li>
-  <li><strong>Exit:</strong> mach.ko builds and loads on stock FreeBSD; basic round-trip test passes in CI.</li>
+  <li>Build <code>mach.ko</code> in CI; install to <code>/boot/kernel/mach.ko</code> on the cd9660 ISO; set <code>loader.conf: mach_load="YES"</code> so loader preloads it before <code>init</code> runs.</li>
+  <li>Boot test: ISO boots, <code>mach.ko</code> appears in <code>kldstat</code> (smoke-test asserts this from <code>rc.local</code>), stock <code>init</code> still PID 1, normal multi-user boot completes.</li>
+  <li>Userland smoke test: a small test program (statically linked, no userland Mach libraries needed yet &mdash; raw syscall) does <code>mach_port_allocate</code> + <code>mach_msg(SEND|RCV)</code> round-trip.</li>
+  <li>Per-major artifact tarball (<code>mach.ko-FreeBSD-15.x-amd64.tar.gz</code>, etc.) uploaded to GitHub releases alongside the ISO.</li>
+  <li><strong>Exit:</strong> ISO boots with stock <code>init</code> AND <code>mach.ko</code> kldloaded AND userland round-trip works. Mach exists on FreeBSD; nothing in normal userland uses it yet.</li>
 </ul>
 
-<h3>Phase C &mdash; userland stack (2 weeks)</h3>
+<div class="callout callout-warn" style="border-left-width: 6px;">
+<p>&#x1f6d1; <strong>Checkpoint &mdash; stop here and talk.</strong></p>
+<p>Phases C onward bring in real userland (libxpc, libmach headers, Apple's launchd, configd, IPConfiguration). Each is a real commitment. Decide based on what Phase B actually revealed:</p>
 <ul>
-  <li>Lift libmach + liblaunch + libxpc + libdispatch from ravynOS.</li>
-  <li>Build them against the freshly-loaded mach.ko in CI.</li>
-  <li>Smoke-test a libdispatch-using program with <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code>.</li>
-  <li><strong>Exit:</strong> a 100-line client + server program does Mach round-trip via libdispatch on the live ISO.</li>
+  <li>Is <code>mach.ko</code> stable, leak-free, fast enough?</li>
+  <li>Did it kldload cleanly against stock FreeBSD-CURRENT, or did we have to patch the kernel?</li>
+  <li>What does the round-trip latency look like? (Configd's load profile is modest, but this number sets the budget for everything above it.)</li>
+  <li><strong>libxpc:</strong> Apple never open-sourced it. The iXsystems implementation in ravynOS's <code>lib/libxpc/</code> is the only realistic source. Do we adopt it, write our own, or skip XPC entirely? This decision blocks Phase C and needs an explicit discussion.</li>
+  <li>Plist format (Apple XML vs. ravynOS's JSON) decision before launchd lands.</li>
+  <li>libdispatch choice (gershwin's existing libdispatch + Mach patches vs. ravynOS's Mach-aware libdispatch). Also blocks Phase C.</li>
+  <li>Is the timeline for D+E+F realistic given what we've learned? Should the scope shrink, or is everything tracking?</li>
+</ul>
+<p>The phases below are <strong>sketches of what would come next if we proceed</strong>, not commitments. Each is subject to revision at the checkpoint.</p>
+</div>
+
+<h3>Phase C &mdash; userland Mach stack (post-checkpoint, ~2 weeks if committed)</h3>
+<ul>
+  <li>Lift <code>include/mach/</code> userspace headers from ravynOS.</li>
+  <li>libxpc (per checkpoint decision &mdash; ravynOS's iXsystems version, or skip).</li>
+  <li>libdispatch decision (per checkpoint).</li>
+  <li>Smoke-test a libdispatch-using program with <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> if libdispatch is Mach-aware.</li>
 </ul>
 
-<h3>Phase D &mdash; launchd (1 week)</h3>
+<h3>Phase D &mdash; Apple's launchd, fresh from opensource.apple.com (post-checkpoint, ~2 weeks if committed)</h3>
 <ul>
-  <li>Lift Apple launchd from ravynOS (<code>sbin/launchd/</code>). Build against extracted libs.</li>
-  <li>Boot the live ISO with this launchd as PID 1, parsing JSON or XML plists from <code>/Library/LaunchDaemons/</code>.</li>
-  <li>Decide plist format: stick with Apple XML (compat with Apple ecosystem), or follow ravynOS's JSON (easier, but a fork). Document the call.</li>
-  <li><strong>Exit:</strong> launchd as PID 1 brings up the same set of services that <code>freebsd-launchd</code> brings up today (cron, syslogd, dhcpcd, gettys, varrun, dmesg.boot, kmodloader), now with bootstrap activation available for any service that wants it.</li>
+  <li>Drop Apple's actual launchd source into <code>launchd/</code>. Apache 2.0. Includes <code>liblaunch</code>, <code>libbootstrap</code>, <code>libvproc</code>.</li>
+  <li>Build against the userland Mach stack from Phase C.</li>
+  <li>Switch the ISO's <code>init=</code> to <code>/sbin/launchd</code>. launchd is now PID 1; bootstrap server is live; <code>MachServices</code> activation works; entire plist key vocabulary available (<code>Sockets</code>, <code>WatchPaths</code>, <code>KeepAlive</code> predicates, <code>LaunchEvents</code>) for free because that's Apple's actual implementation.</li>
+  <li>Translate the existing <code>freebsd-launchd</code> bedrock plists to Apple XML format.</li>
 </ul>
 
-<h3>Phase E &mdash; configd (3 weeks)</h3>
+<h3>Phase E &mdash; Apple's configd, fresh (post-checkpoint, ~3 weeks if committed)</h3>
 <ul>
-  <li>Build configd from <code>freebsd-launchd</code>'s existing 963.270.3 import, against the new libmach + liblaunch + libxpc.</li>
-  <li>Write a <code>org.freebsd.netconfigd</code> plist with a <code>MachServices</code> entry for <code>com.apple.SystemConfiguration.configd</code>.</li>
-  <li>Get <code>scutil --get HostName</code> working end-to-end.</li>
+  <li>Either lift the existing <code>freebsd-launchd/configd/src/</code> import (configd-963.270.3) or refresh from opensource.apple.com.</li>
+  <li>Build against libmach + liblaunch + libxpc.</li>
+  <li>Register via Mach activation with a <code>MachServices</code> plist.</li>
   <li>Port KernelEventMonitor's PF_SYSTEM bits to PF_ROUTE on FreeBSD.</li>
-  <li><strong>Exit:</strong> configd boots, registers via Mach activation, scutil round-trips. The whole end-to-end picture from the v1 plan, working.</li>
+  <li><strong>Exit:</strong> configd boots, <code>scutil --get HostName</code> round-trips end-to-end.</li>
 </ul>
 
-<h3>Total: ~10 weeks elapsed at ~70% allocation</h3>
+<h3>Phase F &mdash; Apple's IPConfiguration (post-checkpoint, ~6&ndash;9 person-months if committed)</h3>
+<ul>
+  <li>The DHCPv4 + DHCPv6 + IPv4LL + RA daemon. ~57k LOC of Apple source. Significant scope; current <a href="freebsd-ipconfiguration-plan.html">deferred plan</a> revisits.</li>
+  <li>Replaces dhcpcd. Optional &mdash; dhcpcd is fine as the interim solution.</li>
+</ul>
 
-<p>Leaves a generous buffer (vs the 7&ndash;9 month estimate from the v1 plan) for: scope expansion into IPMonitor port, plist-format decision iteration, the inevitable upstream-divergence drama with ravynOS, KBI surprises when stock FreeBSD-CURRENT advances past ravynOS's snapshot.</p>
+<h3>Committed-now total: 4 weeks. Post-checkpoint scope: 7+ months if everything proceeds.</h3>
 
 <h2 id="upstream">10. Project ownership and long-term home</h2>
 
@@ -889,20 +968,13 @@ CFLAGS+= -I${SYSDIR}/../include/apple -DCOMPAT_MACH</code></pre>
 
 <p>Five out of seven categories don't touch Mach. <strong>That's not a limitation of the Mach approach; it's a clarification of what Mach is for.</strong> Mach is the right answer for kernel-mediated capability transfer between cooperating Mach-aware processes. It is not, and shouldn't be, the way every service on the box gets started.</p>
 
-<h3 id="mach-is-not-parallel-work">14.2 The parallel workstream &mdash; the non-Mach plist keys</h3>
+<h3 id="mach-is-not-parallel-work">14.2 Why we don't need a separate plist-key implementation effort</h3>
 
-<p>The launchd plist keys that actually serve the BSD daemon fleet are: <code>Sockets</code>, <code>WatchPaths</code>, <code>KeepAlive</code> dict subkeys, <code>LaunchEvents</code>, <code>QueueDirectories</code>. None of them require Mach; all of them require <strong>parsing work in <code>core.m</code></strong> and <strong>event-source registration via libdispatch + kqueue</strong>. That work is identical whether you ship it under <code>freebsd-launchd</code> or <code>freebsd-launchd-mach</code>.</p>
+<p>The launchd plist keys that actually serve the BSD daemon fleet are: <code>Sockets</code>, <code>WatchPaths</code>, <code>KeepAlive</code> dict subkeys, <code>LaunchEvents</code>, <code>QueueDirectories</code>. None of them require Mach.</p>
 
-<p>The strategic implication: <strong>this parallel workstream is the higher-leverage near-term investment for cron / sshd / syslogd / ntpd / dhcpcd / varrun</strong>. The whole BSD daemon fleet's ordering and activation cleans up the moment those keys are recognized. Mach is for a different problem (the Apple-source daemons and any future Mach-aware services), and that problem is real and worth solving &mdash; but it doesn't displace this one.</p>
+<p>An earlier draft of this section proposed implementing these keys as a parallel workstream against the reduced launchd in the existing <code>freebsd-launchd</code> repo. <strong>That recommendation is dropped.</strong> The <code>freebsd-launchd-mach</code> repo brings in Apple's actual launchd at Phase D (post-checkpoint), which already implements every plist key in the vocabulary &mdash; that's the canonical implementation, and Apple's launchd is what we're lifting. There's no need to re-implement the keys; they come for free with the launchd source.</p>
 
-<p>Suggested split going forward:</p>
-
-<ul>
-  <li><code>freebsd-launchd</code> &mdash; the AF_UNIX track &mdash; gets the non-Mach plist keys first. <code>Sockets</code> &rarr; sshd-style activation. <code>KeepAlive</code> predicates &rarr; cron-after-varrun. <code>WatchPaths</code> &rarr; file-triggered jobs. <code>LaunchEvents</code> &rarr; hardware-triggered jobs. The service-ordering doc's "fragile today" table all clears up.</li>
-  <li><code>freebsd-launchd-mach</code> &mdash; the pure-port track &mdash; inherits the same keys (they're in core.m, common code) and additionally gets <code>MachServices</code> + bootstrap activation for Apple-source daemons.</li>
-</ul>
-
-<p>Once both layers are in place, every service on the box has the right activation primitive: Mach where Mach fits, sockets where sockets fit, watchpaths where filesystem state is the trigger, OtherJobEnabled where ordering is the only relationship. <strong>Alphabetical filename luck retires entirely.</strong></p>
+<p>The implication: <strong>once Phase D ships, the entire BSD daemon fleet has every activation primitive available the moment we write the plists</strong>. Mach where Mach fits (configd, notifyd, asl). Sockets where sockets fit (sshd, inetd-style services). WatchPaths where filesystem state is the trigger. <code>OtherJobEnabled</code> where ordering is the only relationship. Alphabetical filename luck retires entirely &mdash; not because we wrote the parsing, but because Apple already did.</p>
 
 <h3 id="mach-is-not-summary">14.3 One-line summary</h3>
 
@@ -914,7 +986,7 @@ CFLAGS+= -I${SYSDIR}/../include/apple -DCOMPAT_MACH</code></pre>
 
 <p>The technical mechanism: a new <code>freebsd-launchd-mach</code> repo for the pure-port track, leaving the existing <code>freebsd-launchd</code> AF_UNIX track in place and unaffected. The new repo extracts ravynOS's <code>sys/compat/mach/</code> as an out-of-tree kmod, lifts their launchd / liblaunch / libxpc / libdispatch userland, integrates the Apple configd source that <code>freebsd-launchd</code> already imported, and ships <code>mach.ko</code> as a per-major-FreeBSD release artifact alongside a new live ISO. The earlier plans asked the right questions but either underestimated what already existed (v1) or overscoped what should be ported (the dyld / libSystem digression). Direct inspection of NextBSD and ravynOS &mdash; the latter pivoted away from FreeBSD to port XNU directly, leaving the FreeBSD-flavored work to inheritors &mdash; settled both questions.</p>
 
-<p>Estimated 10&ndash;12 weeks elapsed work for Phases A&ndash;E (mach.ko out-of-tree, userland stack, launchd, configd). Long-term home: either a unique FreeBSD distro or absorption into <a href="https://github.com/pkgdemon/gershwin-on-freebsd">gershwin-on-freebsd</a>, owned and maintained by Joe.</p>
+<p>Committed scope right now is <strong>Phase A and Phase B only &mdash; 4 weeks</strong>: get a vanilla FreeBSD ISO booting with stock <code>init</code> from the new repo, then port ravynOS's <code>mach.ko</code> so it kldloads at boot and a userland round-trip works. Hard stop after Phase B. The rest of the v2 plan (libxpc choice, libdispatch choice, Apple's launchd as PID 1, configd, IPConfiguration) is post-checkpoint scope &mdash; sketched in Section 9 but explicitly contingent on what Phase B reveals and on a separate discussion before each commitment. Long-term home: either a unique FreeBSD distro or absorption into <a href="https://github.com/pkgdemon/gershwin-on-freebsd">gershwin-on-freebsd</a>, owned and maintained by Joe.</p>
 
 <p class="footnote">Research basis: direct inspection of <code>/Users/jmaloney/Documents/launchd/{nextbsd,ravynos,freebsd-launchd,freebsd-src}</code> on 2026-05-10. Companion to <a href="freebsd-launchd-service-ordering.html">freebsd-launchd-service-ordering.html</a>, <a href="freebsd-mach-kmod-plan.html">freebsd-mach-kmod-plan.html</a> (the earlier "build minimal" framing), and <a href="freebsd-launchd-plan.html">freebsd-launchd-plan.html</a> (the AF_UNIX track).</p>
 

@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>libdispatch Mach backend spike for freebsd-libxpc</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --bg: #fafaf7;
+    --accent: #b8472a;
+    --accent-soft: #f3e7df;
+    --border: #d8d4c8;
+    --code-bg: #f0ece2;
+    --table-stripe: #f4efe5;
+    --warn: #8a5a00;
+    --good: #2d6f3b;
+    --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif; color: var(--fg); background: var(--bg); line-height: 1.55; margin: 0; padding: 0; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 32px 96px; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--border); letter-spacing: -0.005em; }
+  h3 { font-size: 1.15rem; margin: 32px 0 10px; color: var(--accent); }
+  h4 { font-size: 1rem; margin: 24px 0 6px; color: var(--fg); }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg); }
+  code { padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  pre { padding: 14px 18px; border-radius: 4px; overflow-x: auto; font-size: 0.86rem; line-height: 1.45; margin: 0 0 18px; }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+  .lede { font-size: 1.05rem; color: var(--fg-muted); margin-bottom: 32px; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 8px 10px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 18px 0 22px; border-radius: 0 4px 4px 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn { border-left-color: var(--warn); background: #fbf3df; }
+  .callout-good { border-left-color: var(--good); background: #e8f1e3; }
+  .callout-bad { border-left-color: var(--bad); background: #f7e0e0; }
+  .pill { display: inline-block; font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 10px; margin-right: 8px; }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 18px 24px 14px 36px; margin: 0 0 36px; font-size: 0.95rem; }
+  .toc h2 { margin: 0 0 8px; padding-top: 0; border-top: none; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-left: -14px; }
+  .toc ol { margin: 0 0 0 6px; }
+  .toc li { margin-bottom: 4px; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  .verdict { font-size: 1.1rem; font-weight: 600; margin: 8px 0 14px; }
+  .verdict-go { color: var(--good); }
+  .verdict-warn { color: var(--warn); }
+  .verdict-no { color: var(--bad); }
+  @media (max-width: 600px) { .wrap { padding: 24px 18px 64px; } table { font-size: 0.82rem; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>libdispatch Mach backend spike for <code>freebsd-libxpc</code></h1>
+<p class="lede">Spike answering: do we really need to patch libdispatch to support <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> on FreeBSD? Who actually uses it? What happens if we don't? And could simpler per-consumer modifications work instead? Empirical grep over the local NextBSD, ravynOS, freebsd-launchd, and gershwin-developer trees plus a trade-off matrix for three implementation paths.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#why">Why libdispatch needs Mach support</a></li>
+  <li><a href="#who">Who actually uses <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code></a></li>
+  <li><a href="#nothing">What happens if we don't add Mach support</a></li>
+  <li><a href="#options">Three options for adding it</a></li>
+  <li><a href="#recommendation">Recommendation</a></li>
+  <li><a href="#refs">References</a></li>
+</ol>
+</div>
+
+<h2 id="why">1. Why libdispatch needs Mach support</h2>
+
+<p>libdispatch provides <strong>asynchronous event delivery</strong> through a uniform "source" abstraction: a consumer creates a <code>dispatch_source_t</code> for some event type (timer, fd-readable, signal, kqueue note, Mach message arrival), registers an event handler block, and the source delivers events on a target queue with no polling code in the consumer.</p>
+
+<p><code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> is the source type for "a message arrived on this Mach port." Consumer code looks like:</p>
+
+<pre><code>port = mach_reply_port();
+src = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, port, 0, queue);
+dispatch_source_set_event_handler(src, ^{
+    /* called when a message arrives — drain it with mach_msg(MACH_RCV_MSG) */
+});
+dispatch_resume(src);</code></pre>
+
+<p>On Apple platforms libdispatch hooks this up via <code>EVFILT_MACHPORT</code> (a Darwin-only kevent filter) so the kernel signals the dispatch worker when a message hits the port. On FreeBSD, with <code>HAVE_MACH</code> off, the source type symbol doesn't exist at all &mdash; <code>_dispatch_source_type_mach_recv</code> is gated by <code>#if HAVE_MACH</code> in <code>src/event/event_kevent.c:3249</code> with no fallback.</p>
+
+<h2 id="who">2. Who actually uses <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code></h2>
+
+<p>Earlier loose reading of the codebase suggested "only libxpc cares about this." Empirical grep across all local trees shows that's wrong:</p>
+
+<table>
+<thead><tr><th>Component</th><th>File / line</th><th>Type</th><th>What for</th></tr></thead>
+<tbody>
+  <tr>
+    <td><strong>libxpc</strong></td>
+    <td><code>lib/libxpc/xpc_connection.c:214</code></td>
+    <td>MACH_RECV</td>
+    <td>Async event delivery on a connection's local receive port</td>
+  </tr>
+  <tr>
+    <td><strong>libnotify</strong></td>
+    <td><code>lib/libnotify/notify_client.c:355</code></td>
+    <td>MACH_RECV</td>
+    <td>Notification reception via the global Mach notify port</td>
+  </tr>
+  <tr>
+    <td><strong>notifyd</strong></td>
+    <td><code>usr.sbin/notifyd/notifyd.c:1230</code></td>
+    <td>MACH_RECV</td>
+    <td>Daemon's server-port receive loop</td>
+  </tr>
+  <tr>
+    <td>notifyd</td>
+    <td><code>usr.sbin/notifyd/notify_proc.c:352</code></td>
+    <td>MACH_SEND</td>
+    <td>Dead-name and send-possible notifications on client ports</td>
+  </tr>
+  <tr>
+    <td>notifyutil</td>
+    <td><code>usr.bin/notifyutil/notifyutil.c:374</code></td>
+    <td>MACH_RECV</td>
+    <td>CLI tool's notification reception</td>
+  </tr>
+  <tr>
+    <td><strong>SystemConfiguration framework</strong></td>
+    <td><code>configd/SystemConfiguration.fproj/SCNetworkConnection.c:2396</code></td>
+    <td>MACH_RECV</td>
+    <td>Client subscribing to SC connection-state notifications</td>
+  </tr>
+  <tr>
+    <td>SystemConfiguration framework</td>
+    <td><code>configd/SystemConfiguration.fproj/SCDNotifierInformViaCallback.c:610</code></td>
+    <td>MACH_RECV</td>
+    <td>SCDynamicStore change callbacks via Mach</td>
+  </tr>
+</tbody>
+</table>
+
+<div class="callout callout-warn">
+<p><strong>At least 5 distinct components in our porting scope use <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code>:</strong> libxpc, libnotify, notifyd, notifyutil, SystemConfiguration framework. Each consumer that arrives later (mDNSResponder bridges, IPConfiguration helpers, future libxpc consumers) adds to this count. The expectation "Mach-receive sources Just Work" is baked into modern Apple-style C IPC code.</p>
+</div>
+
+<h2 id="nothing">3. What happens if we don't add Mach support</h2>
+
+<p>With <code>HAVE_MACH=0</code> on FreeBSD (the current default for swift-corelibs-libdispatch on non-Darwin), the symbol <code>_dispatch_source_type_mach_recv</code> simply does not exist in <code>libdispatch.so</code>. Consequences for each consumer:</p>
+
+<table>
+<thead><tr><th>Consumer</th><th>Effect at build time</th><th>Effect at runtime</th></tr></thead>
+<tbody>
+  <tr>
+    <td>libxpc</td>
+    <td><span class="pill pill-bad">FAILS</span> to link &mdash; undefined reference to <code>_dispatch_source_type_mach_recv</code></td>
+    <td>library never produced</td>
+  </tr>
+  <tr>
+    <td>libnotify</td>
+    <td><span class="pill pill-bad">FAILS</span> same way</td>
+    <td>library never produced</td>
+  </tr>
+  <tr>
+    <td>notifyd / notifyutil</td>
+    <td><span class="pill pill-bad">FAILS</span></td>
+    <td>daemon / CLI tool never produced</td>
+  </tr>
+  <tr>
+    <td>SystemConfiguration framework</td>
+    <td><span class="pill pill-bad">FAILS</span> &mdash; <code>SCNetworkConnection</code> and <code>SCDNotifierInformViaCallback</code> both reference the symbol</td>
+    <td>framework can't be built &mdash; clients can't link <code>-lSystemConfiguration</code></td>
+  </tr>
+  <tr>
+    <td>Apple launchd (clean <code>launchd-842.92.1</code> import)</td>
+    <td><span class="pill pill-good">unaffected</span> &mdash; the 2014 source predates dispatch Mach sources; uses its own <code>mach_msg</code> loop in <code>runtime.c</code></td>
+    <td>fine</td>
+  </tr>
+  <tr>
+    <td>asl / syslogd / aslmanager / libasl</td>
+    <td><span class="pill pill-good">unaffected</span> &mdash; pure C, no libdispatch, no Mach</td>
+    <td>fine</td>
+  </tr>
+</tbody>
+</table>
+
+<p><strong>Net effect of doing nothing:</strong> libxpc, libnotify, notifyd, notifyutil, and the SystemConfiguration framework cannot be built at all. The Apple-source daemon ecosystem (other than the 2014 launchd and the legacy ASL daemons) stops being available.</p>
+
+<p>That makes the libdispatch Mach work effectively <strong>load-bearing for the whole post-Phase-B roadmap</strong>, not just a libxpc concern.</p>
+
+<h2 id="options">4. Three options for adding it</h2>
+
+<h3>Option 1 &mdash; Patch libdispatch with a new FreeBSD-Mach backend</h3>
+
+<p>Add a new <code>src/event/event_mach_freebsd.c</code> to swift-corelibs-libdispatch, gated on <code>__FreeBSD__ &amp;&amp; HAVE_LIBMACH</code>. Defines <code>_dispatch_source_type_mach_recv</code> (and <code>_send</code>). Implementation: per-source polling thread that calls <code>mach_msg_trap(MACH_RCV_MSG | MACH_RCV_TIMEOUT, timeout=small)</code> and dispatches received messages to the source's target queue. Ship as a new patch in <code>gershwin-developer/Library/Patches/</code> alongside the existing <code>swift-corelibs-libdispatch.patch</code>.</p>
+
+<table>
+<tbody>
+  <tr><td><strong>Code added</strong></td><td>~500-1000 lines in one new file</td></tr>
+  <tr><td><strong>Code modified</strong></td><td>1 line in CMakeLists.txt</td></tr>
+  <tr><td><strong>Consumers affected</strong></td><td>0 &mdash; consumers write vanilla <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, ...)</code> code</td></tr>
+  <tr><td><strong>Upstream coordination</strong></td><td>One patch to gershwin-developer; PR-able to swift-corelibs-libdispatch long-term</td></tr>
+  <tr><td><strong>Cost when adding consumer N+1</strong></td><td>zero &mdash; new consumer just uses the existing source type</td></tr>
+</tbody>
+</table>
+
+<p>Pros: aligned with Apple's design (libxpc, libnotify, notifyd, SystemConfiguration framework code stays as-is); one place to fix bugs, optimize, profile. Cons: more total code than a single per-consumer patch; touches a shared library that other gershwin components also link.</p>
+
+<h3>Option 2 &mdash; Patch each consumer to use its own polling thread</h3>
+
+<p>Modify libxpc, libnotify, notifyd, notifyutil, and SystemConfiguration framework to skip <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, ...)</code> and instead spawn a polling thread that calls <code>mach_msg_trap</code> and re-enqueues messages onto the consumer's target queue via <code>dispatch_async</code>. libdispatch stays vanilla.</p>
+
+<table>
+<tbody>
+  <tr><td><strong>Code added per consumer</strong></td><td>~100-200 lines for the polling thread + dispatch_async glue</td></tr>
+  <tr><td><strong>Total across 5 consumers</strong></td><td>~500-1000 lines</td></tr>
+  <tr><td><strong>Consumers affected</strong></td><td>5 &mdash; each gets its own polling thread implementation</td></tr>
+  <tr><td><strong>Upstream coordination</strong></td><td>5 patches in 5 different projects; some sit in Apple-source-imports we re-pull on each version bump &mdash; rebase burden</td></tr>
+  <tr><td><strong>Cost when adding consumer N+1</strong></td><td>+100-200 lines per new consumer &mdash; scales linearly with daemon count</td></tr>
+</tbody>
+</table>
+
+<p>Pros: libdispatch stays vanilla (no gershwin patch); each consumer is self-contained; works incrementally (port one daemon at a time). Cons: diverges from Apple's design in 5+ places; per-consumer thread overhead (each connection or each daemon has its own polling thread); patches to verbatim Apple imports complicate re-imports; scales linearly with new ports.</p>
+
+<h3>Option 3 &mdash; Build a small Mach-to-dispatch bridge library</h3>
+
+<p>Ship a new tiny library (e.g. <code>libmach_dispatch.so</code>) that exposes a clean API like:</p>
+
+<pre><code>typedef struct mach_dispatch_source *mach_dispatch_source_t;
+
+mach_dispatch_source_t
+mach_dispatch_source_create_recv(mach_port_t port, dispatch_queue_t queue,
+    void (^handler)(mach_dispatch_source_t));
+
+void mach_dispatch_source_resume(mach_dispatch_source_t src);
+void mach_dispatch_source_cancel(mach_dispatch_source_t src);
+void mach_dispatch_source_release(mach_dispatch_source_t src);</code></pre>
+
+<p>Implementation: polling thread that calls <code>mach_msg_trap</code>, dispatches via <code>dispatch_async</code>. libdispatch stays vanilla. Consumers (libxpc, libnotify, notifyd, etc.) substitute <code>mach_dispatch_source_create_recv</code> for <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, ...)</code>.</p>
+
+<table>
+<tbody>
+  <tr><td><strong>Code added in the bridge</strong></td><td>~300-500 lines (smaller than libdispatch backend since we own a simpler API)</td></tr>
+  <tr><td><strong>Code modified per consumer</strong></td><td>~10-20 lines to switch API calls</td></tr>
+  <tr><td><strong>Total across 5 consumers</strong></td><td>~50-100 lines of consumer changes + 300-500 lines of bridge</td></tr>
+  <tr><td><strong>Consumers affected</strong></td><td>5 &mdash; small API substitution each</td></tr>
+  <tr><td><strong>Upstream coordination</strong></td><td>Self-contained library in our repo + small patches to each consumer (still patches Apple-source imports)</td></tr>
+  <tr><td><strong>Cost when adding consumer N+1</strong></td><td>~10-20 lines per new consumer</td></tr>
+</tbody>
+</table>
+
+<p>Pros: smaller bridge code than libdispatch patch (we own a simpler API); libdispatch stays vanilla; consumers don't have to know polling-thread details. Cons: still patches Apple-source imports (rebase burden); diverges from Apple's API names (<code>mach_dispatch_source_create_recv</code> vs <code>dispatch_source_create</code>); new consumers have to learn our bridge API.</p>
+
+<h3>Trade-off matrix</h3>
+
+<table>
+<thead><tr><th>Dimension</th><th>Opt 1 patch libdispatch</th><th>Opt 2 per-consumer poll</th><th>Opt 3 bridge library</th></tr></thead>
+<tbody>
+  <tr><td>Total new code (1st cut)</td><td>~500-1000 lines, 1 file</td><td>~500-1000 lines across 5 consumers</td><td>~350-600 lines (bridge + consumer changes)</td></tr>
+  <tr><td>Apple-source-imports left untouched</td><td><span class="pill pill-good">yes</span></td><td><span class="pill pill-bad">no</span> &mdash; patches verbatim Apple imports</td><td><span class="pill pill-bad">no</span> &mdash; patches verbatim Apple imports</td></tr>
+  <tr><td>Rebase burden on Apple re-imports</td><td>low</td><td>high &mdash; 5+ patches to rebase</td><td>medium &mdash; 5+ small patches</td></tr>
+  <tr><td>Diverges from Apple's API</td><td><span class="pill pill-good">no</span></td><td><span class="pill pill-good">no (uses different internal mechanism, same Apple call site shape)</span></td><td><span class="pill pill-bad">yes</span> &mdash; consumer uses our API names</td></tr>
+  <tr><td>Cost per future consumer</td><td><span class="pill pill-good">~0</span></td><td><span class="pill pill-bad">+100-200 lines</span></td><td><span class="pill pill-warn">+10-20 lines</span></td></tr>
+  <tr><td>Polling thread count</td><td>1 per dispatch source</td><td>1 per consumer per source</td><td>1 per bridge source</td></tr>
+  <tr><td>libdispatch stays vanilla</td><td><span class="pill pill-bad">no</span> &mdash; gershwin patch</td><td><span class="pill pill-good">yes</span></td><td><span class="pill pill-good">yes</span></td></tr>
+  <tr><td>Smoke-testable in isolation</td><td><span class="pill pill-good">yes</span></td><td>each consumer separately</td><td><span class="pill pill-good">yes</span></td></tr>
+</tbody>
+</table>
+
+<h2 id="recommendation">5. Recommendation</h2>
+
+<div class="callout callout-good">
+<p><strong>Option 1 &mdash; patch libdispatch.</strong> The dominant factor is "every Apple-source consumer expects <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> to exist." Option 1 honors that expectation; Options 2 and 3 force every Apple-source import to be modified, which complicates re-imports forever.</p>
+</div>
+
+<p>The earlier mental model "only libxpc cares" understated the scope. With 5+ consumers in scope already (libxpc, libnotify, notifyd, notifyutil, SystemConfiguration framework) and more arriving as we port additional daemons, the per-consumer linear cost of Options 2 and 3 is real. Option 1's higher upfront cost (~500-1000 lines of one new file in a patch) amortizes across every present and future consumer.</p>
+
+<p>Secondary factor: <strong>Apple-import rebase burden.</strong> Our project's overall pattern is "import Apple source verbatim, patch for FreeBSD adaptation as a separate layer." Options 2 and 3 force patches into the verbatim Apple files themselves; every time we re-pull from <code>apple-oss-distributions/&lt;daemon&gt;</code>, the patches need rebasing. Option 1 isolates the FreeBSD-specific work in <code>gershwin-developer/Library/Patches/</code> &mdash; the same place gershwin already maintains a libdispatch patch.</p>
+
+<p>Tertiary factor: <strong>consistency with the broader project pattern.</strong> The libxpc plan's <a href="freebsd-libxpc-plan.html#phases">Phase 0</a> already specifies a libdispatch Mach backend patch in gershwin-developer; this spike confirms that choice was right and tightens its scope.</p>
+
+<h3>What stays unchanged from the libxpc plan</h3>
+
+<ul>
+  <li>Phase 0 in <a href="freebsd-libxpc-plan.html">freebsd-libxpc-plan</a> still: write <code>event_mach_freebsd.c</code>, ship as a second patch in <code>gershwin-developer/Library/Patches/</code>, iterate via the reclone-every-time workflow.</li>
+  <li>The 5-test smoke harness still measures source creation, single-message receive, N-message receive, cancellation cleanup, and no port-table leak.</li>
+  <li>The <code>mach_port_allocate</code> + <code>mach_port_insert_right</code> mach.ko expansions are still prerequisites for the self-send smoke tests.</li>
+</ul>
+
+<h3>What this spike adds to the libxpc plan</h3>
+
+<ul>
+  <li><strong>Justification.</strong> The 5+ consumer count makes the libdispatch patch the cheap option in aggregate. Previously framed as "libxpc needs this"; now framed as "the Apple-source ecosystem needs this."</li>
+  <li><strong>Fallback rejected.</strong> Per-consumer polling-thread workarounds (Option 2) and bridge-library (Option 3) explicitly considered and rejected for the reasons in the trade-off table.</li>
+  <li><strong>Doing-nothing isn't viable.</strong> Section 3 makes the "what if we don't" path concrete: libxpc, libnotify, notifyd, notifyutil, and SystemConfiguration framework all fail to link. The whole post-Phase-B daemon roadmap stops.</li>
+</ul>
+
+<h2 id="refs">6. References</h2>
+
+<h3>Local trees grep'd</h3>
+<pre><code>grep -rn "DISPATCH_SOURCE_TYPE_MACH_RECV\|DISPATCH_SOURCE_TYPE_MACH_SEND" \
+    nextbsd/ ravynos/ freebsd-launchd/ gershwin-developer/</code></pre>
+
+<h3>Related plans</h3>
+<ul>
+  <li><a href="freebsd-libxpc-plan.html"><code>freebsd-libxpc-plan</code></a> &mdash; parent plan; Phase 0 = the libdispatch Mach backend work this spike justifies</li>
+  <li><a href="freebsd-libxpc-foundation-spike.html"><code>freebsd-libxpc-foundation-spike</code></a> &mdash; companion spike on Foundation / CoreFoundation choices</li>
+  <li><a href="freebsd-launchd-mach-plan.html"><code>freebsd-launchd-mach-plan</code></a> &mdash; mach.ko (kernel side)</li>
+</ul>
+
+<p class="footnote">Last updated 2026-05-12. Spike compiled from empirical grep over the local NextBSD, ravynOS, freebsd-launchd, and gershwin-developer trees plus prior research at <a href="freebsd-libxpc-plan.html#deps">freebsd-libxpc-plan &sect;6</a>. The 5-consumer count for <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> is reproducible: grep the trees, count distinct source files, get the same 7 unique sites. Be aware that more consumers will be added as we port mDNSResponder, IPConfiguration, and additional Apple-source daemons; the cost arguments for Option 1 strengthen with each.</p>
+
+</div>
+</body>
+</html>

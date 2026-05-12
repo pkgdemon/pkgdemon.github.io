@@ -611,24 +611,38 @@ CFLAGS+= -I${SYSDIR}/../include/apple -DCOMPAT_MACH</code></pre>
   <li><strong>Exit:</strong> green CI on the bare scaffolding before any Mach work begins.</li>
 </ul>
 
-<h3>Phase B &mdash; mach.ko ported, kldloaded at boot (3 weeks) <span class="pill pill-warn">Build gate met &mdash; runtime gate hit the pivot signal</span></h3>
+<h3>Phase B &mdash; mach.ko ported, kldloaded at boot (3 weeks) <span class="pill pill-good">Build + runtime gates met</span></h3>
 
-<div class="callout callout-warn">
-<p><strong>Empirical result, captured 2026-05-11.</strong> Build gate fully met
-&mdash; mach.ko compiles, links, packages, installs against unmodified
-FreeBSD-15.0 source (CI green at <code>freebsd-launchd-mach</code> commit
+<div class="callout callout-good">
+<p><strong>Empirical result, captured 2026-05-11.</strong> Build gate fully
+met (CI green at <code>freebsd-launchd-mach</code> commit
 <code>daebc30</code>) via ~400 lines of out-of-tree compat shim across
-8&ndash;9 kernel-side delta categories. <strong>Runtime gate hits the
-documented pivot signal:</strong> <code>kldload mach</code> panics the
-kernel inside <code>exit1()</code> when the kldload process itself
-exits. ravynOS's Mach kmod assumes kernel-side patches that initialize
-<code>p_machdata</code>/<code>td_machdata</code> for every process; on
-stock FreeBSD, pre-existing processes (including kldload) hit NULL
-derefs in the eventhandler chain even with the obvious entry-point
-guards added.</p>
-<p>Full empirical writeup with the 9 shim categories, the kernel panic
-trace, and the three forward-path options (apply patches / extend
-shim further / pivot to v1) lives in the repo at
+8&ndash;9 kernel-side delta categories. <strong>Runtime gate also met</strong>
+after two additional one-line fixes discovered by incremental bisect
+on a stock FreeBSD-15.0-RELEASE-p8 VM:</p>
+<ol>
+<li><code>kern/ipc_host.c</code>'s SYSINIT moved from
+<code>SI_SUB_CPU</code> to <code>SI_SUB_INTRINSIC</code> so it runs
+after <code>ipc_bootstrap_sysinit</code> sets up the IPC zones
+(otherwise <code>uma_zalloc</code> panics on uninitialized zones).</li>
+<li><code>mach_module.c</code>'s "cold-only" load check removed.
+That check rejected post-boot <code>kldload</code> by returning
+<code>EINVAL</code>, which left the SYSINIT-registered eventhandlers
+dangling after the linker rolled back the failed load &mdash; the
+next process exit then page-faulted in those handlers. Letting the
+modevent succeed pairs the handlers with a properly-loaded module and
+removes the dangling-handler scenario.</li>
+</ol>
+<p>Both fixes are kmod-side (no kernel patches), one line each.
+mach.ko now <code>kldload</code>s cleanly and the system survives
+fork/exec/exit stress traffic with all 6 eventhandlers active. Apple
+Mach syscalls are not yet wired into the sysent table &mdash; that's
+a Phase C concern (the compat shim sets all <code>SYS_&lt;name&gt;</code>
+to <code>NO_SYSCALL</code> for compile-time stub generation, which
+doubles as the helper-register loop sentinel and prevents actual
+registration).</p>
+<p>Full empirical writeup &mdash; the 9 shim categories, the bisect
+matrix, and what remains for Phase C &mdash; lives in the repo at
 <code>src/mach_kmod/PHASE_B_FINDINGS.md</code>.</p>
 </div>
 <ul>

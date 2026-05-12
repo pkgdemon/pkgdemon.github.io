@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Foundation / CoreFoundation spike for freebsd-libxpc</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --bg: #fafaf7;
+    --accent: #b8472a;
+    --accent-soft: #f3e7df;
+    --border: #d8d4c8;
+    --code-bg: #f0ece2;
+    --table-stripe: #f4efe5;
+    --warn: #8a5a00;
+    --good: #2d6f3b;
+    --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    line-height: 1.55;
+    margin: 0;
+    padding: 0;
+  }
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--border); letter-spacing: -0.005em; }
+  h3 { font-size: 1.15rem; margin: 32px 0 10px; color: var(--accent); }
+  h4 { font-size: 1rem; margin: 24px 0 6px; color: var(--fg); }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg); }
+  code { padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  pre { padding: 14px 18px; border-radius: 4px; overflow-x: auto; font-size: 0.86rem; line-height: 1.45; margin: 0 0 18px; }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+  .lede { font-size: 1.05rem; color: var(--fg-muted); margin-bottom: 32px; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 8px 10px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 18px 0 22px; border-radius: 0 4px 4px 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn { border-left-color: var(--warn); background: #fbf3df; }
+  .callout-good { border-left-color: var(--good); background: #e8f1e3; }
+  .callout-bad { border-left-color: var(--bad); background: #f7e0e0; }
+  .pill { display: inline-block; font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 10px; margin-right: 8px; }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 18px 24px 14px 36px; margin: 0 0 36px; font-size: 0.95rem; }
+  .toc h2 { margin: 0 0 8px; padding-top: 0; border-top: none; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-left: -14px; }
+  .toc ol { margin: 0 0 0 6px; }
+  .toc li { margin-bottom: 4px; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  .verdict { font-size: 1.1rem; font-weight: 600; margin: 8px 0 14px; }
+  .verdict-go { color: var(--good); }
+  .verdict-warn { color: var(--warn); }
+  .verdict-no { color: var(--bad); }
+  @media (max-width: 600px) { .wrap { padding: 24px 18px 64px; } table { font-size: 0.82rem; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Foundation &amp; CoreFoundation spike for <code>freebsd-libxpc</code></h1>
+<p class="lede">Companion spike to the <a href="freebsd-libxpc-plan.html"><code>freebsd-libxpc-plan</code></a>: which Foundation and CoreFoundation implementation(s) do we use for the downstream daemon ports (configd, mDNSResponder, IPConfiguration, asl, notifyd, modern launchd)? Three CoreFoundation implementations exist in the open-source world plus two Foundation implementations; this doc audits each, measures what each daemon actually consumes from them, analyzes symbol-level coexistence, and recommends a layered approach that requires no modifications to GNUstep's <code>libs-corebase</code> upstream.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#vocab">Vocabulary: Foundation vs CoreFoundation</a></li>
+  <li><a href="#cf-impls">CoreFoundation implementations compared</a></li>
+  <li><a href="#fnd-impls">Foundation implementations compared</a></li>
+  <li><a href="#port-audit">Per-port CF/NS symbol usage audit</a></li>
+  <li><a href="#coexistence">Coexistence: what can be intermixed, what cannot</a></li>
+  <li><a href="#mach">Mach-specific gotchas</a></li>
+  <li><a href="#install">Install layout &mdash; no modifications to libs-corebase upstream</a></li>
+  <li><a href="#recommendations">Recommendations</a></li>
+  <li><a href="#refs">References</a></li>
+</ol>
+</div>
+
+<h2 id="vocab">1. Vocabulary: Foundation vs CoreFoundation</h2>
+
+<p>These two libraries get conflated regularly, so let's pin them down:</p>
+
+<table>
+<thead><tr><th>Library</th><th>Language</th><th>What's in it</th><th>Apple ships</th></tr></thead>
+<tbody>
+  <tr>
+    <td><strong>CoreFoundation</strong> (<code>CF*</code>)</td>
+    <td>Pure C</td>
+    <td>Value types (CFString, CFArray, CFDictionary, CFNumber, CFData, CFDate), CFRunLoop, CFMachPort, CFPreferences, CFBundle, CFPlugIn, CFPropertyList, CFNotificationCenter, etc.</td>
+    <td>Yes &mdash; in <code>/System/Library/Frameworks/CoreFoundation.framework</code></td>
+  </tr>
+  <tr>
+    <td><strong>Foundation</strong> (<code>NS*</code>)</td>
+    <td>Objective-C (newer Apple parts: Swift)</td>
+    <td>NSString, NSArray, NSDictionary, NSObject, NSXPCConnection, NSURL, NSURLSession, NSPropertyListSerialization, NSDistributedNotificationCenter, etc.</td>
+    <td>Yes &mdash; in <code>/System/Library/Frameworks/Foundation.framework</code></td>
+  </tr>
+</tbody>
+</table>
+
+<p>CoreFoundation sits <strong>below</strong> Foundation in the stack. Foundation classes are toll-free-bridged wrappers around the corresponding CoreFoundation types on macOS &mdash; <code>NSString</code> and <code>CFStringRef</code> are the same object. Apple's daemon code is overwhelmingly written in plain C against CoreFoundation; the Objective-C Foundation API is for application/framework callers.</p>
+
+<div class="callout callout-warn">
+<p><strong>Practical implication:</strong> when looking at any port, ask whether it uses <code>CF*</code> calls, <code>NS*</code> classes, or both. The answer dictates whether we need a CoreFoundation port, a Foundation port, or both. For the daemons in scope here, the answer is <strong>CoreFoundation only</strong> for the bulk of them &mdash; Foundation is essentially absent.</p>
+</div>
+
+<h2 id="cf-impls">2. CoreFoundation implementations compared</h2>
+
+<p>Three open-source CoreFoundation implementations exist. None is a clean drop-in for our daemon ports as-is; each has gaps.</p>
+
+<h3>Project basics</h3>
+
+<table>
+<thead><tr><th>Implementation</th><th>Repo</th><th>License</th><th>Latest update</th><th>Maintenance</th></tr></thead>
+<tbody>
+  <tr>
+    <td><strong>GNUstep libs-corebase</strong></td>
+    <td><a href="https://github.com/gnustep/libs-corebase">gnustep/libs-corebase</a></td>
+    <td>LGPL 2.1</td>
+    <td>2021-09-30 (per ChangeLog)</td>
+    <td><span class="pill pill-warn">dormant</span></td>
+  </tr>
+  <tr>
+    <td><strong>Apple CF-Lite</strong></td>
+    <td><a href="https://github.com/apple-oss-distributions/CF">apple-oss-distributions/CF</a> tag <code>CF-1153.18</code></td>
+    <td>APSL 2.0</td>
+    <td>2015-06-23</td>
+    <td><span class="pill pill-bad">abandoned</span> &mdash; post-2015 commits are metadata-only re-imports</td>
+  </tr>
+  <tr>
+    <td><strong>swift-corelibs-foundation CoreFoundation</strong></td>
+    <td><a href="https://github.com/swiftlang/swift-corelibs-foundation">swiftlang/swift-corelibs-foundation</a> at <code>Sources/CoreFoundation/</code></td>
+    <td>Apache 2.0 (Runtime Library Exception)</td>
+    <td>2026-04-16, active</td>
+    <td><span class="pill pill-good">active</span> &mdash; Apple-maintained, weekly-to-biweekly commits</td>
+  </tr>
+</tbody>
+</table>
+
+<h3>Per-subsystem coverage</h3>
+
+<p>P = present and functional, p = partial / stub / API-only, A = absent.</p>
+
+<table>
+<thead><tr><th>CF subsystem</th><th>GNUstep corebase</th><th>Apple CF-Lite 1153.18</th><th>swift-corelibs CF</th></tr></thead>
+<tbody>
+  <tr><td>CFString / CFArray / CFDictionary / CFNumber / CFData / CFDate</td><td>P (ICU-backed)</td><td>P</td><td>P</td></tr>
+  <tr><td>CFTimeZone / CFLocale / CFCalendar</td><td>P</td><td>P</td><td>P</td></tr>
+  <tr><td>CFCharacterSet / CFUUID</td><td>P</td><td>P</td><td>P</td></tr>
+  <tr><td>CFPropertyList (XML)</td><td>P</td><td>P</td><td>P</td></tr>
+  <tr><td>CFPropertyList (binary plist)</td><td>p &mdash; XML-only; <code>CFBinaryPList</code> absent</td><td>P</td><td>P</td></tr>
+  <tr><td>CFURL</td><td>P</td><td>P</td><td>P + <code>CFURLComponents</code></td></tr>
+  <tr><td>CFRunLoop sources0 / timers / observers</td><td>P (poll-based)</td><td>P (Mach-native)</td><td>P (kqueue on BSD, epoll on Linux, Mach on Darwin)</td></tr>
+  <tr><td><strong>CFRunLoop version1 Mach sources</strong></td><td>p &mdash; struct exists; <code>getPort</code> treated as pollable fd at <code>CFRunLoop.c:705</code>. TODO at <code>:580</code> and <code>:882</code></td><td>P</td><td>p &mdash; on non-Darwin, <code>__CFPort</code> typedefs to <code>int</code> (kqueue/epoll fd), not <code>mach_port_t</code></td></tr>
+  <tr><td><strong>CFMachPort</strong></td><td>A</td><td>P (<code>CFMachPort.c</code>)</td><td>A on non-Darwin &mdash; header exists, body is <code>#if TARGET_OS_MAC</code>-gated</td></tr>
+  <tr><td><strong>CFMessagePort</strong></td><td>A</td><td>P</td><td>A on non-Darwin (same gating as CFMachPort)</td></tr>
+  <tr><td><strong>CFPreferences</strong></td><td>A</td><td>P (<code>CFPreferences.c</code> + <code>CFApplicationPreferences.c</code> + <code>CFXMLPreferencesDomain.c</code>)</td><td>P &mdash; with <code>TARGET_OS_BSD</code> paths; stores plists under <code>$HOME</code></td></tr>
+  <tr><td>CFBundle (basic)</td><td>p &mdash; 268-line <code>.m</code> NSBundle-backed shim, drags in libgnustep-base</td><td>P (12 <code>CFBundle_*.c</code> files)</td><td>P (12 files including extras like <code>CFBundle_Main.c</code>, <code>_Executable.c</code>)</td></tr>
+  <tr><td><strong>CFBundle plugin/localized-string fns</strong></td><td>A</td><td>P</td><td>P</td></tr>
+  <tr><td>CFPlugIn</td><td>A</td><td>P (4 files: <code>CFPlugIn.c</code> + <code>_Factory</code> + <code>_Instance</code> + <code>_PlugIn</code>)</td><td>p (only <code>CFPlugIn.c</code>)</td></tr>
+  <tr><td>CFStream</td><td>P</td><td>P (+<code>CFConcreteStreams</code>, <code>CFSocketStream</code>)</td><td>P</td></tr>
+  <tr><td>CFNotificationCenter</td><td>A</td><td>A (header in <code>CFPriv.h</code>; no impl)</td><td>A (same)</td></tr>
+  <tr><td>CFHost / CFHTTPMessage</td><td>A</td><td>A (lives in CFNetwork, not CF-Lite)</td><td>A</td></tr>
+  <tr><td>CFUserNotification</td><td>A</td><td>P</td><td>A on non-Darwin (header only)</td></tr>
+  <tr><td>CFFileDescriptor</td><td>A</td><td>A in open CF-Lite tree</td><td>A</td></tr>
+  <tr><td>Apple-private extensions (<code>CFStringIsValidDNSName</code>, <code>CFDataCopyVMData</code>, etc.)</td><td>A</td><td>partial in <code>CFPriv.h</code> / <code>CFBundlePriv.h</code></td><td>partial in matching <code>*Priv.h</code></td></tr>
+</tbody>
+</table>
+
+<h3>Build system &amp; FreeBSD portability</h3>
+
+<table>
+<thead><tr><th>Implementation</th><th>Build system</th><th>FreeBSD-ready?</th><th>Patching scope</th></tr></thead>
+<tbody>
+  <tr>
+    <td>GNUstep corebase</td>
+    <td>autoconf + gnustep-make</td>
+    <td><span class="pill pill-good">yes</span> &mdash; ships in FreeBSD ports tree</td>
+    <td>none for value-type subset; <strong>greenfield</strong> for Mach (no Mach paths exist anywhere)</td>
+  </tr>
+  <tr>
+    <td>Apple CF-Lite 1153.18</td>
+    <td>Apple's internal Xcode/B&amp;I; <code>MakefileLinux</code> for Linux</td>
+    <td><span class="pill pill-bad">no</span> &mdash; <code>MakefileLinux</code> deliberately excludes Mach files, no FreeBSD path</td>
+    <td>significant &mdash; would need to rewrite the build, fix endianness for FreeBSD-aarch64, audit <code>mach_port_t</code> ABI compatibility with our libmach. Also assumes XNU's modern Mach (vouchers, <code>mach_port_construct</code>, mk_timer) that our libmach doesn't expose.</td>
+  </tr>
+  <tr>
+    <td>swift-corelibs-foundation CF</td>
+    <td>CMake (and SwiftPM via Foundation umbrella)</td>
+    <td><span class="pill pill-warn">code is BSD-aware but CMake doesn't special-case FreeBSD</span></td>
+    <td>moderate &mdash; CMakeLists detection needs FreeBSD case; Mach paths to be opened up via <code>defined(__FreeBSD__) &amp;&amp; defined(HAVE_LIBMACH)</code>; CFMachPort.c / CFMessagePort.c / CFUserNotification.c need .c bodies (borrow from CF-Lite). The Mach voucher / construct / mk_timer gaps still apply.</td>
+  </tr>
+</tbody>
+</table>
+
+<h3>Per-implementation verdict</h3>
+
+<table>
+<thead><tr><th>Impl</th><th>Verdict</th><th>Role in our stack</th></tr></thead>
+<tbody>
+  <tr>
+    <td>GNUstep corebase</td>
+    <td><span class="pill pill-warn">not viable as primary base</span> &mdash; has value-types but none of the IPC/IO subsystems daemons depend on; version1 RunLoop sources are a fake-Mach stub</td>
+    <td>Keep installed for GNUstep apps that already link it; do <strong>NOT</strong> rely on it for daemons. Possibly useful as reference for value-types implementations.</td>
+  </tr>
+  <tr>
+    <td>Apple CF-Lite 1153.18</td>
+    <td><span class="pill pill-warn">parts donor only</span> &mdash; 10+ years frozen, never had working non-Darwin build, but has the only open-source <code>CFMachPort.c</code> / <code>CFMessagePort.c</code> / <code>CFPreferences.c</code> / full <code>CFBundle_*</code> + <code>CFPlugIn_*</code> against real Mach</td>
+    <td>Source-of-truth for Mach-side API contracts. Pluck specific .c files (CFMachPort, CFMessagePort, CFUserNotification) and graft onto the primary base. Don't try to build CF-Lite as a standalone library.</td>
+  </tr>
+  <tr>
+    <td><strong>swift-corelibs-foundation CF</strong></td>
+    <td><span class="pill pill-good">primary base &mdash; recommended</span></td>
+    <td>Actively maintained, Apache 2.0, already has <code>TARGET_OS_BSD</code> / <code>__FreeBSD__</code> branches in CFRunLoop and CFPlatform with kqueue, ships CFPreferences and full CFBundle_* with BSD paths. Gap exactly maps to what's special about our project: CFMachPort, CFMessagePort, CFUserNotification have headers but no .c on non-Darwin. Bridge by porting CF-1153.18's Mach .c files onto libmach.</td>
+  </tr>
+</tbody>
+</table>
+
+<h2 id="fnd-impls">3. Foundation implementations compared</h2>
+
+<p>Two open-source Foundation implementations. The two cannot coexist in one process &mdash; both export <code>NSString</code>, <code>NSArray</code>, etc. as competing class definitions. Consumers must pick one.</p>
+
+<h3>Project basics</h3>
+
+<table>
+<thead><tr><th>Implementation</th><th>Repo</th><th>License</th><th>Runtime</th><th>FreeBSD support</th></tr></thead>
+<tbody>
+  <tr>
+    <td><strong>GNUstep libs-base</strong> (libgnustep-base)</td>
+    <td><a href="https://github.com/gnustep/libs-base">gnustep/libs-base</a></td>
+    <td>LGPL (library), GPL (tools)</td>
+    <td>libobjc2 (or older libobjc/GCC)</td>
+    <td><span class="pill pill-good">tier-1</span> &mdash; FreshPorts <code>lang/gnustep-base</code>, long-standing</td>
+  </tr>
+  <tr>
+    <td><strong>swift-corelibs-foundation</strong></td>
+    <td><a href="https://github.com/swiftlang/swift-corelibs-foundation">swiftlang/swift-corelibs-foundation</a></td>
+    <td>Apache 2.0</td>
+    <td>Swift runtime (no ObjC)</td>
+    <td><span class="pill pill-warn">unofficial</span> &mdash; Swift 6.2 added FreeBSD as a platform; corelibs-foundation not regularly CI'd on it</td>
+  </tr>
+</tbody>
+</table>
+
+<h3>API coverage</h3>
+
+<p>P = present and functional, p = partial / has gaps, S = stub / API-only, A = absent.</p>
+
+<table>
+<thead><tr><th>Class family</th><th>GNUstep libs-base</th><th>swift-corelibs-foundation</th></tr></thead>
+<tbody>
+  <tr><td>NSString / NSData / NSArray / NSDictionary / NSSet / NSNumber / NSValue</td><td>P</td><td>P</td></tr>
+  <tr><td>NSDate / NSCalendar / NSTimeZone / NSLocale</td><td>P</td><td>P</td></tr>
+  <tr><td>NSCoder / NSKeyedArchiver/Unarchiver / NSSecureCoding</td><td>P</td><td>P</td></tr>
+  <tr><td>NSPropertyListSerialization</td><td>P (<code>NSPropertyList.m</code>)</td><td>P (<code>PropertyListSerialization.swift</code>)</td></tr>
+  <tr><td>NSURL / NSURLRequest</td><td>P</td><td>P</td></tr>
+  <tr><td>NSURLSession</td><td>p &mdash; experimental, added in 1.31.0</td><td>P (in <code>FoundationNetworking</code>, libcurl-backed)</td></tr>
+  <tr><td>NSStream / NSInputStream / NSOutputStream</td><td>P</td><td>P</td></tr>
+  <tr><td>NSFileManager / NSFileHandle</td><td>P</td><td>P</td></tr>
+  <tr><td>NSNotificationCenter</td><td>P</td><td>P</td></tr>
+  <tr><td><strong>NSDistributedNotificationCenter</strong></td><td>P (<code>NSDistributedNotificationCenter.m</code>)</td><td>A</td></tr>
+  <tr><td>NSThread / NSLock / NSOperation / NSOperationQueue</td><td>P</td><td>P</td></tr>
+  <tr><td>NSRunLoop / NSPort / NSPortMessage</td><td>P (deep, with NSConnection integration)</td><td>p (primitives only)</td></tr>
+  <tr><td><strong>NSConnection / NSDistantObject (Distributed Objects)</strong></td><td>P (full historical impl)</td><td>A</td></tr>
+  <tr><td><strong>NSXPCConnection / NSXPCInterface / NSXPCListener / NSXPCListenerEndpoint</strong></td><td><span class="pill pill-warn">S</span> &mdash; class skeletons exist (<code>Source/NSXPCConnection.m</code>), every method body returns <code>[self notImplemented: _cmd]</code>. Added Nov 2019, shipped in 1.27.0.</td><td>A &mdash; not declared at all</td></tr>
+  <tr><td>NSBundle</td><td>P</td><td>P</td></tr>
+  <tr><td>NSProcessInfo / NSTask / NSPipe</td><td>P</td><td>P</td></tr>
+  <tr><td>NSUserDefaults</td><td>P</td><td>P</td></tr>
+  <tr><td>NSHost / NSNetService</td><td>P (Avahi-backed mDNS)</td><td>p (Host only; NetService partial)</td></tr>
+  <tr><td>NSError / NSException / NSAutoreleasePool / NSDecimalNumber</td><td>P</td><td>P (NSAutoreleasePool is a no-op for Swift)</td></tr>
+</tbody>
+</table>
+
+<h3>NSXPCConnection availability</h3>
+
+<p><strong>GNUstep:</strong> <code>NSXPCConnection</code>, <code>NSXPCListener</code>, <code>NSXPCInterface</code>, <code>NSXPCListenerEndpoint</code> are declared with Apple-compatible method signatures (added Nov 2019 by Gregory Casamento, shipped in libs-base 1.27.0). Bodies uniformly call <code>[self notImplemented: _cmd]</code>. <strong>A real implementation against our libxpc would be a tractable downstream contribution &mdash; the headers and class shapes are already there.</strong></p>
+
+<p><strong>swift-corelibs-foundation:</strong> NSXPCConnection is completely absent. The class is not declared in any header. Release notes call out these facilities as "not available outside of Darwin."</p>
+
+<h3>Verdict</h3>
+
+<table>
+<thead><tr><th>Impl</th><th>Verdict for our use case</th></tr></thead>
+<tbody>
+  <tr>
+    <td><strong>GNUstep libs-base</strong></td>
+    <td><span class="pill pill-good">recommended</span> &mdash; builds on FreeBSD today, ships NSPropertyListSerialization (what freebsd-launchd's <code>core.m</code> already uses), has Distributed Objects infrastructure as a stepping-stone toward NSXPCConnection, and an existing NSXPCConnection stub that's filled-in-able against libxpc. Aligns with the project's <code>scope_split</code> rule ("GNUstep owns the framework / application layer").</td>
+  </tr>
+  <tr>
+    <td>swift-corelibs-foundation</td>
+    <td><span class="pill pill-bad">not appropriate</span> for our daemon-driven stack &mdash; Swift not ObjC (incompatible with freebsd-launchd's <code>core.m</code>), no NSXPCConnection, no Distributed Objects, not regularly CI'd on FreeBSD, drags in its own bundled CoreFoundation that would clash with anything else providing CF. May be relevant later if a Swift-on-FreeBSD subproject emerges.</td>
+  </tr>
+</tbody>
+</table>
+
+<h2 id="port-audit">4. Per-port CF/NS symbol usage audit</h2>
+
+<p>Empirical measurement of how much each Apple-source port actually consumes from CoreFoundation and Foundation. Numbers from <code>grep</code>/<code>find</code>/<code>wc</code> over the local clones of NextBSD, ravynOS, freebsd-launchd, and freebsd-launchd-mach. Filtered for false positives (<code>NSEC</code>, <code>NSIG</code>, <code>NSOLE</code> from <code>tv_nsec</code>, <code>CONSOLE</code>, etc.).</p>
+
+<h3>Summary</h3>
+
+<table>
+<thead><tr><th>Port</th><th>CF call sites</th><th>NS references (real)</th><th>Mach-coupled CF</th><th>ObjC runtime needed</th></tr></thead>
+<tbody>
+  <tr><td>launchd (Apple verbatim, ravynOS / nextbsd copies)</td><td><strong>0</strong></td><td><strong>0</strong></td><td>no</td><td>no</td></tr>
+  <tr><td>freebsd-launchd rewrite</td><td>0</td><td>33 (8 unique NS classes, plist-only, all in one <code>.m</code>)</td><td>no</td><td>yes (1 <code>.m</code> file)</td></tr>
+  <tr><td><strong>configd (whole tree)</strong></td><td><strong>12,968</strong> (264 unique CF symbols)</td><td>720 (26 unique classes, 5 user subclasses)</td><td><strong>yes (42 CFMachPort sites)</strong></td><td>yes (20 <code>.m</code> files)</td></tr>
+  <tr><td>configd.tproj (daemon proper)</td><td>841 (99 unique)</td><td>5</td><td>yes</td><td>yes</td></tr>
+  <tr><td><strong>SystemConfiguration.fproj</strong></td><td><strong>6,925</strong> (211 unique)</td><td><strong>0</strong></td><td><strong>yes (30 CFMachPort sites)</strong></td><td>no</td></tr>
+  <tr><td>asl / syslogd / aslmanager / libasl</td><td><strong>0</strong></td><td>0</td><td>no</td><td>no</td></tr>
+  <tr><td>notifyd / libnotify</td><td><strong>0</strong></td><td>0</td><td>no</td><td>no</td></tr>
+</tbody>
+</table>
+
+<p><strong>Notes:</strong></p>
+<ul>
+  <li><strong>Apple's launchd</strong> at <code>launchd-842.92.1</code> is plain C with no CoreFoundation and no Foundation. Confirmed via grep. Uses launchd's own <code>launch_data_t</code> bplist parser.</li>
+  <li><strong>freebsd-launchd's NS use</strong> is fully contained in <code>src/src/core.m</code> (544 LoC). Used for plist parsing via <code>NSPropertyListSerialization</code>. Replacing that one file with libplist or CFLite plist parsing eliminates the ObjC runtime requirement entirely from the freebsd-launchd port.</li>
+  <li><strong>configd is CF-heavy, Foundation-light.</strong> The 720 NS references are mostly NS-as-value (parameters, return types) in <code>Plugins/</code>, <code>sctest/</code>, <code>EventFactory/</code>. Only 5 user-defined ObjC classes total (3 NSObject subclasses, 1 EFEventFactory subclass, 1 NWNetworkAgentRegistration subclass &mdash; the last implies a private <code>Network.framework</code> dependency in IPMonitor that's a separate porting blocker).</li>
+  <li><strong>SystemConfiguration.fproj is pure C against CF.</strong> 69k LoC, 6,925 CF call sites, 0 NS references. Clean CFLite-like target. Mach-coupled via 30 CFMachPort sites.</li>
+  <li><strong>asl, syslogd, aslmanager, libasl, notifyd, libnotify: pure C, no CF, no NS.</strong> Talk Mach + sockets + launchd directly. No Foundation surface at all. These are free wins &mdash; port them without any CF/NS infrastructure dependency.</li>
+  <li><strong>mDNSResponder, IPConfiguration:</strong> not locally cloned, audit deferred. Reputation per Apple's open source: mDNSResponder daemon core (<code>mDNSCore/</code>, <code>mDNSPosix/</code>) is pure C with no CF; CF surface concentrated in macOS-specific helpers we don't need. IPConfiguration is heavy CF, no NS (per the existing <a href="freebsd-ipconfiguration-plan.html"><code>freebsd-ipconfiguration-plan</code></a>).</li>
+</ul>
+
+<h3>Top CF functions across configd</h3>
+
+<p>The 264 unique CF symbols configd consumes are dominated by a small core (~30 functions) plus a long tail. Top 30 calls by count:</p>
+
+<pre><code>2626 CFSTR              2496 CFRelease            641 CFDictionaryGetValue
+ 488 CFArrayGetCount     469 CFEqual              408 CFDictionarySetValue
+ 390 CFArrayGetValueAtIndex                       282 CFRetain
+ 226 CFArrayAppendValue  209 CFDictionaryRemoveValue
+ 198 CFStringAppendFormat 195 CFRangeMake
+ 184 CFDictionaryCreateMutable                    176 CFArrayCreateMutable
+ 157 CFStringCreateWithFormat                     151 CFStringCreateWithCString
+ 151 CFDictionaryCreateMutableCopy                110 CFAllocatorDeallocate
+ 109 CFStringGetLength   100 CFDictionaryGetCount  98 CFDictionaryContainsKey
+  94 CFNumberGetValue     77 CFAllocatorAllocate   73 CFNumberCreate
+  65 CFArrayContainsValue 64 CFDictionaryAddValue  60 CFBooleanGetValue
+  59 CFDataGetBytePtr     54 CFArrayCreateMutableCopy</code></pre>
+
+<p><strong>Mach-coupled CF in configd</strong> (the corebase-incompatible surface):</p>
+
+<pre><code>15 CFMachPortGetPort      9 CFMachPortCreateWithPort
+ 9 CFMachPortCreateRunLoopSource  7 CFMachPortInvalidate
+ 2 CFMachPortCreate                Total: 42 sites, 0 CFMessagePort</code></pre>
+
+<p>42 sites across configd plus 30 in SystemConfiguration.fproj = ~72 total Mach-coupled call sites. This is the surface that requires real CFMachPort over our libmach.</p>
+
+<h2 id="coexistence">5. Coexistence: what can be intermixed, what cannot</h2>
+
+<h3>5.1. Two CoreFoundation implementations in one process</h3>
+
+<div class="callout callout-bad">
+<p><strong>Cannot coexist in one process.</strong> All CF implementations export the same C-linkage names (<code>CFStringCreateWithCString</code>, <code>CFRelease</code>, <code>kCFAllocatorDefault</code>, <code>kCFBooleanTrue</code>, etc.). The ELF dynamic linker resolves each symbol from whichever <code>.so</code> appears first in <code>DT_NEEDED</code> order &mdash; silently. Internal type tables (<code>__kCFArrayTypeID</code>, <code>_kCFRuntimeNotATypeID</code>) and runtime registration would race on init. Behavior unpredictable.</p>
+</div>
+
+<p>Hard rule: <strong>one CoreFoundation impl per process</strong>. The choice is at link time, not runtime.</p>
+
+<h3>5.2. Two Foundation implementations in one process</h3>
+
+<div class="callout callout-bad">
+<p><strong>Cannot coexist in one process.</strong> Both libgnustep-base and swift-corelibs-foundation define <code>OBJC_CLASS_$_NSString</code> (or the Swift mangled equivalent), <code>NSArray</code>, <code>NSDictionary</code>, etc. The ObjC runtime would refuse the second class registration or silently keep the first. Additionally:</p>
+<ul>
+  <li>GNUstep uses libobjc2; swift-corelibs uses the Swift runtime. They are distinct object models.</li>
+  <li>No shared CoreFoundation between them; toll-free bridging impossible across the boundary.</li>
+  <li>Headers from the two are not interchangeable; whichever Foundation the loader sees first wins.</li>
+</ul>
+</div>
+
+<p>Hard rule: <strong>one Foundation impl per process</strong>. Pick one based on what consumers need.</p>
+
+<h3>5.3. Library coexistence on disk</h3>
+
+<p>Different libraries CAN live on disk simultaneously &mdash; it's the in-process linking that's constrained. Practical pattern: ship multiple Foundations / CF impls; have downstream daemons explicitly pick which one to link.</p>
+
+<table>
+<thead><tr><th>Pair</th><th>On disk?</th><th>In one process?</th><th>Notes</th></tr></thead>
+<tbody>
+  <tr><td>libgnustep-corebase + Apple CF-Lite</td><td>✅</td><td>❌</td><td>Symbol clash on every CF function</td></tr>
+  <tr><td>libgnustep-corebase + swift-corelibs CF</td><td>✅</td><td>❌</td><td>Same problem; swift-corelibs CF is a CF-Lite descendant</td></tr>
+  <tr><td>libgnustep-base + swift-corelibs Foundation</td><td>✅</td><td>❌</td><td>ObjC class registration conflict</td></tr>
+  <tr><td>libgnustep-base + libgnustep-corebase</td><td>✅</td><td>✅</td><td>Designed to coexist; current GNUstep pattern</td></tr>
+  <tr><td>swift-corelibs Foundation + bundled swift-corelibs CF</td><td>✅</td><td>✅</td><td>Designed as a single ecosystem; bundled CF is intentional</td></tr>
+  <tr><td>libgnustep-corebase + supplementary <code>libCFRuntime.so</code> (Option B below)</td><td>✅</td><td>✅</td><td>If supplementary library exports ONLY missing symbols (CFMachPort*, CFPreferences*, etc.) and links AGAINST corebase &mdash; no overlap</td></tr>
+</tbody>
+</table>
+
+<h3>5.4. Intermixing options for filling corebase's gaps</h3>
+
+<table>
+<thead><tr><th>Option</th><th>Approach</th><th>Pros</th><th>Cons</th></tr></thead>
+<tbody>
+  <tr>
+    <td><strong>A. Hybrid library</strong></td>
+    <td>Merge corebase value types + Mach .c files from CF-Lite + swift-corelibs RunLoop into a single <code>libCoreFoundation.so</code>.</td>
+    <td>Single symbol set, single library, single <code>-lCoreFoundation</code> for consumers.</td>
+    <td>Internal struct layouts differ between corebase and CF-Lite (<code>CFRuntimeBase</code> packing, isa/swizzling layouts). Would need adapter glue per CFType. Equivalent in cost to forking CF-Lite slowly.</td>
+  </tr>
+  <tr>
+    <td><strong>B. Supplementary library (recommended)</strong></td>
+    <td>Ship a separate <code>libCFRuntime.so</code> that exports ONLY corebase's missing symbols (CFMachPort, CFMessagePort, CFPreferences, CFBundle plugin loader, CFFileDescriptor, CFPlugIn). Link against libgnustep-corebase via <code>DT_NEEDED</code>. New types registered via corebase's <code>_CFRuntimeRegisterClass</code>.</td>
+    <td>Clean separation. Consumers link <code>-lgnustep-corebase -lCFRuntime</code>. corebase upstream stays untouched.</td>
+    <td>Needs ABI alignment between corebase's <code>CFRuntimeBase</code> and CF-Lite's (different packing). Requires writing the missing CF code from scratch, or porting CF-Lite's implementations onto corebase's CFRuntime base type.</td>
+  </tr>
+  <tr>
+    <td><strong>C. Upstream contributions to libs-corebase</strong></td>
+    <td>Add CFMachPort, CFMessagePort, CFPreferences, CFFileDescriptor, full CFPlugIn, CFNotificationCenter to corebase upstream.</td>
+    <td>Single library, no fragmentation, benefits all GNUstep deployments.</td>
+    <td>GNUstep upstream conservative on Mach-specific FreeBSD-only code. Long timeline (months-to-years) for review and merge.</td>
+  </tr>
+  <tr>
+    <td><strong>D. Replace corebase entirely with swift-corelibs-foundation CF</strong></td>
+    <td>Drop libgnustep-corebase from the stack; use swift-corelibs CF as the sole CF impl.</td>
+    <td>Single library, full Apple CF surface, actively maintained.</td>
+    <td>Breaks existing GNUstep apps that already link <code>libgnustep-corebase</code>; needs libgnustep-base rebuild against new CF; swift-corelibs-foundation assumes its own Foundation owns NSCF bridging &mdash; conflicts with libgnustep-base.</td>
+  </tr>
+</tbody>
+</table>
+
+<div class="callout callout-good">
+<p><strong>Recommended: Option B + bridge from swift-corelibs-foundation CF.</strong> Build <code>libCFRuntime.so</code> with implementations of the missing CF subsystems (CFMachPort, CFMessagePort, CFRunLoop v1 Mach sources, CFPreferences, CFBundle plugin loader, CFFileDescriptor, CFPlugIn). Source those implementations from swift-corelibs-foundation's CF tree (the most-current open code) with Mach paths enabled via <code>__FreeBSD__</code>. Where swift-corelibs has only header (no .c) for Mach-specific files, port CF-Lite-1153.18's matching .c file. Result: corebase upstream untouched, FreeBSD's CoreFoundation surface complete enough for daemon ports.</p>
+</div>
+
+<h2 id="mach">6. Mach-specific gotchas</h2>
+
+<p>Mach support is the single dimension that separates "drop-in build" from "real porting work":</p>
+
+<table>
+<thead><tr><th>Impl</th><th>Mach state</th><th>Patching gap</th></tr></thead>
+<tbody>
+  <tr>
+    <td>GNUstep corebase</td>
+    <td>No Mach paths at all. <code>CFRunLoop.c:705</code> uses <code>mach_port_t port</code> but it's a typedef'd <code>int</code> referring to a poll fd. Pure POSIX poll loop.</td>
+    <td>Greenfield &mdash; would need to write CFMachPort, CFMessagePort, CFRunLoop v1 Mach sources from scratch.</td>
+  </tr>
+  <tr>
+    <td>Apple CF-Lite 1153.18</td>
+    <td>Pure Mach. <code>CFMachPort.c</code> and <code>CFMessagePort.c</code> have zero non-Apple <code>#ifdef</code>s &mdash; written against <code>mach/port.h</code>, <code>mach_msg</code>, dispatch sources. <code>CFRunLoop.c</code> has only macOS/iOS/Windows arms.</td>
+    <td>Assumes the full XNU Mach ABI: <code>mach_msg</code>, <code>mach_port_construct</code>, <code>mach_port_allocate</code>, <code>mach_port_request_notification</code> (dead-name + send-once), <code>mach_voucher_t</code>, <code>mk_timer_create/arm/destroy</code> (XNU kernel-side Mach timer ports, not standard IPC). Our libmach has the basics. <strong>Vouchers, mach_port_construct/destruct, mk_timer are all gaps.</strong> Estimated 500-1500 LOC of <code>#ifdef</code>'d fallbacks per file.</td>
+  </tr>
+  <tr>
+    <td>swift-corelibs-foundation CF</td>
+    <td><code>#if TARGET_OS_MAC</code> / <code>__APPLE__</code> gates around almost all CFMachPort and CFRunLoop-v1 code paths. Non-Apple builds replace with <code>dispatch_source_t</code>-based event delivery. <code>__CFPort</code> typedefs to <code>int</code> on BSD.</td>
+    <td>Opt-in: enable via <code>defined(__FreeBSD__) &amp;&amp; defined(HAVE_LIBMACH)</code>. Voucher paths already conditional on <code>__has_include(&lt;mach/mach_voucher.h&gt;)</code> &mdash; clean if our libmach doesn't ship that header. mk_timer emulation via dispatch sources may be feasible. Estimated 2-4 weeks of focused work to enable CFMachPort path.</td>
+  </tr>
+</tbody>
+</table>
+
+<p><strong>Key architectural decision for libCFRuntime.so:</strong> on FreeBSD with our libmach, does <code>CFRunLoopSourceContext1.getPort</code> return a real <code>mach_port_t</code>, or do we route Mach receive through a kqueue user-filter wrapper? The former is closer to Apple semantics; the latter integrates more naturally with libdispatch's BSD backend. This decision affects both libCFRuntime.so AND the libdispatch Mach backend (Phase 0 of the <a href="freebsd-libxpc-plan.html">libxpc plan</a>) &mdash; they should agree.</p>
+
+<h2 id="install">7. Install layout &mdash; no modifications to libs-corebase upstream</h2>
+
+<p>The constraint is explicit: <strong>libs-corebase upstream stays untouched.</strong> No modifications to its GNUmakefile, header tree, or SONAME. Supplementary code lives next door.</p>
+
+<h3>Concrete proposal</h3>
+
+<p>This proposal places extras alongside corebase without colliding with it. Specific paths use Gershwin's current layout pattern (<code>/System/Library/...</code>) where Gershwin already installs libdispatch/libgnustep-base/libgnustep-corebase, but the same shape works at any prefix &mdash; FreeBSD-base-system style (<code>/usr/lib</code>) or ports-style (<code>/usr/local/lib</code>) works equivalently.</p>
+
+<table>
+<thead><tr><th>Artifact</th><th>Install path</th><th>Rationale</th></tr></thead>
+<tbody>
+  <tr>
+    <td><code>libCFRuntime.so</code> &mdash; supplementary CF subsystems (CFMachPort, CFMessagePort, CFPreferences, CFBundle plugin loader, CFFileDescriptor, CFPlugIn)</td>
+    <td>same directory as <code>libgnustep-corebase.so</code></td>
+    <td>Existing GNUstep <code>ld.so.conf</code> drop-in already covers this dir. After install, <code>service ldconfig restart</code> picks up the new <code>.so</code>.</td>
+  </tr>
+  <tr>
+    <td>Supplementary headers (<code>CFMachPort.h</code>, <code>CFMessagePort.h</code>, <code>CFPreferences.h</code>, <code>CFFileDescriptor.h</code>, <code>CFNotificationCenter.h</code>, <code>CFPlugIn.h</code>)</td>
+    <td><code>$HEADERS/CoreFoundationExtras/</code> (separate from corebase's <code>$HEADERS/CoreFoundation/</code>)</td>
+    <td>Mixing into corebase's header dir would risk being clobbered on corebase upgrade. Separate directory keeps the upgrade-safe boundary clean. Downstream daemons add <code>-I$HEADERS/CoreFoundationExtras -I$HEADERS</code> to their CFLAGS.</td>
+  </tr>
+  <tr>
+    <td>pkg-config metadata</td>
+    <td><code>$LIBS/pkgconfig/CoreFoundationExtras.pc</code></td>
+    <td><code>Requires: gnustep-corebase</code> + <code>Libs: -lCFRuntime</code> &mdash; consumers can <code>pkg-config --cflags --libs CoreFoundationExtras</code></td>
+  </tr>
+  <tr>
+    <td><code>DT_NEEDED</code></td>
+    <td><code>libCFRuntime.so</code> declares <code>NEEDED libgnustep-corebase.so.X</code></td>
+    <td>Forces <code>CFRetain</code>/<code>CFRelease</code>/<code>CFRuntimeCreateInstance</code> to resolve to corebase. Verify with <code>objdump -p libCFRuntime.so | grep NEEDED</code>.</td>
+  </tr>
+  <tr>
+    <td>SONAME</td>
+    <td>independent: <code>libCFRuntime.so.1</code></td>
+    <td>Bumping corebase's minor doesn't force a CFRuntime rebuild as long as corebase's <code>CFRuntimeBase</code> ABI is stable.</td>
+  </tr>
+</tbody>
+</table>
+
+<h3>What this layout enables</h3>
+
+<ul>
+  <li><strong>configd, mDNSResponder, IPConfiguration, SystemConfiguration.framework</strong> link <code>-lgnustep-corebase -lCFRuntime</code>. They get the full CF surface they need without anyone modifying corebase.</li>
+  <li><strong>GNUstep apps</strong> that only need value-type CF link <code>-lgnustep-corebase</code> as today. No change.</li>
+  <li><strong>upgrades to corebase</strong> from upstream just <code>make install</code> over their files; libCFRuntime sits next door, untouched.</li>
+  <li><strong>upgrades to libCFRuntime</strong> ship its own SONAME bumps; corebase consumers unaffected.</li>
+</ul>
+
+<h3>Foundation layer</h3>
+
+<p>For NS, the recommendation is straightforward: <strong>libgnustep-base only</strong>. swift-corelibs-foundation stays out of the system Foundation slot. Future Swift-on-FreeBSD work can pull in swift-corelibs-foundation as a separate package (different SONAME, different headers dir, only loaded into Swift-aware processes).</p>
+
+<h2 id="recommendations">8. Recommendations</h2>
+
+<h3>For freebsd-launchd-mach</h3>
+
+<ol>
+  <li><strong>Build <code>libCFRuntime.so</code></strong> as a sibling of <code>libxpc</code> &mdash; the supplementary CF library following the Option B layout. Source the CFMachPort / CFMessagePort / CFRunLoop v1 implementations from swift-corelibs-foundation CF with Mach paths enabled via <code>__FreeBSD__ &amp;&amp; HAVE_LIBMACH</code>. Fall back to CF-Lite-1153.18 for any .c files swift-corelibs only ships as headers (CFMachPort.c, CFMessagePort.c, CFUserNotification.c).</li>
+  <li><strong>Keep libgnustep-corebase as the CF value-type backbone.</strong> Its CFString / CFArray / CFDictionary / CFNumber / CFData / CFPropertyList are battle-tested. Don't reinvent.</li>
+  <li><strong>Keep libgnustep-base as the only Foundation impl.</strong> Per <code>scope_split</code> &mdash; GNUstep owns Foundation. Don't ship swift-corelibs-foundation.</li>
+  <li><strong>Reconsider freebsd-launchd's <code>core.m</code></strong> &mdash; once libCFRuntime ships <code>CFPropertyList</code> via swift-corelibs CF (which already supports binary plist), the only reason freebsd-launchd's launchd is in Objective-C goes away. Could convert <code>core.m</code> to <code>core.c</code> against CFLite-style plist API. Removes the ObjC runtime dependency from launchd entirely. <em>Optional cleanup, not required.</em></li>
+</ol>
+
+<h3>For downstream daemons</h3>
+
+<ol>
+  <li><strong>launchd</strong> (clean Apple <code>launchd-842.92.1</code> import per the <a href="freebsd-libxpc-plan.html">libxpc plan</a> Phase 5): plain C, no CF, no NS. No new infrastructure required.</li>
+  <li><strong>asl / syslogd / aslmanager / libasl</strong>: plain C, no CF, no NS. Direct ports from <code>apple-oss-distributions</code> &mdash; no Foundation work.</li>
+  <li><strong>notifyd / libnotify</strong>: same &mdash; plain C, no CF, no NS.</li>
+  <li><strong>configd / SystemConfiguration.framework</strong>: link <code>-lgnustep-corebase -lCFRuntime</code>. The 20 <code>.m</code> files in configd add an ObjC runtime requirement (libgnustep-base for the 5 user-defined ObjC classes; flag <code>NWNetworkAgentRegistration</code> as a private-Network.framework blocker to address separately).</li>
+  <li><strong>mDNSResponder</strong>: daemon core is plain C. The macOS-specific helper code that uses CF can be skipped (FreeBSD doesn't need it).</li>
+  <li><strong>IPConfiguration</strong>: heavy CF, no NS &mdash; same as configd minus the ObjC subclasses. <code>-lgnustep-corebase -lCFRuntime</code>.</li>
+</ol>
+
+<h3>For NSXPCConnection (downstream GNUstep contribution)</h3>
+
+<p>The GNUstep <code>NSXPCConnection</code> stub at <code>libs-base/Source/NSXPCConnection.m</code> is a real opportunity. Class signatures already declared; bodies all return <code>[self notImplemented:]</code>. Filling them in against our libxpc would be a tractable ~3-5k LoC contribution back to gnustep/libs-base upstream. <strong>Not in scope for libxpc itself</strong> &mdash; tracked as a downstream enhancement.</p>
+
+<h2 id="refs">9. References</h2>
+
+<h3>Repos audited</h3>
+<ul>
+  <li><a href="https://github.com/gnustep/libs-corebase">gnustep/libs-corebase</a> &mdash; GNUstep CoreFoundation reimplementation</li>
+  <li><a href="https://github.com/gnustep/libs-base">gnustep/libs-base</a> &mdash; GNUstep Foundation reimplementation</li>
+  <li><a href="https://github.com/apple-oss-distributions/CF">apple-oss-distributions/CF</a> &mdash; Apple CF-Lite (tag <code>CF-1153.18</code>, 2015-06-23)</li>
+  <li><a href="https://github.com/swiftlang/swift-corelibs-foundation">swiftlang/swift-corelibs-foundation</a> &mdash; Swift Foundation + bundled CoreFoundation, active</li>
+  <li><a href="https://github.com/apple-oss-distributions/configd">apple-oss-distributions/configd</a> &mdash; the configd source landed verbatim in <code>freebsd-launchd/configd/</code></li>
+  <li><a href="https://github.com/apple-oss-distributions/launchd">apple-oss-distributions/launchd</a> &mdash; last tag <code>launchd-842.92.1</code> (2014)</li>
+</ul>
+
+<h3>Related plans</h3>
+<ul>
+  <li><a href="freebsd-libxpc-plan.html"><code>freebsd-libxpc-plan</code></a> &mdash; the parent porting plan this spike informs</li>
+  <li><a href="freebsd-launchd-mach-plan.html"><code>freebsd-launchd-mach-plan</code></a> &mdash; mach.ko (kernel side)</li>
+  <li><a href="freebsd-launchd-plan.html"><code>freebsd-launchd-plan</code></a> &mdash; the minimal launchd port</li>
+  <li><a href="freebsd-configd-plan.html"><code>freebsd-configd-plan</code></a> &mdash; configd phasing</li>
+  <li><a href="freebsd-ipconfiguration-plan.html"><code>freebsd-ipconfiguration-plan</code></a> &mdash; deferred network config port</li>
+</ul>
+
+<p class="footnote">Last updated 2026-05-11. Spike compiled from four parallel agent investigations: CoreFoundation implementation comparison, Foundation implementation comparison, per-port symbol audit (grep over local clones of NextBSD, ravynOS, freebsd-launchd), and coexistence/install-layout analysis. Every URL has been verified. Numbers from <code>wc -l</code>, <code>grep -c</code>, and <code>git log</code> over the cited paths. Where research couldn't determine an answer (mDNSResponder and IPConfiguration audit deferred &mdash; no local clones), the document says so explicitly.</p>
+
+</div>
+</body>
+</html>

@@ -77,6 +77,7 @@
   <li><a href="#who">Who actually uses <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code></a></li>
   <li><a href="#nothing">What happens if we don't add Mach support</a></li>
   <li><a href="#options">Three options for adding it</a></li>
+  <li><a href="#all-apps">All in-scope apps &mdash; dispatch + Mach-dispatch requirements</a></li>
   <li><a href="#recommendation">Recommendation</a></li>
   <li><a href="#refs">References</a></li>
 </ol>
@@ -276,7 +277,226 @@ void mach_dispatch_source_release(mach_dispatch_source_t src);</code></pre>
 </tbody>
 </table>
 
-<h2 id="recommendation">5. Recommendation</h2>
+<h2 id="all-apps">5. All in-scope apps &mdash; dispatch + Mach-dispatch requirements</h2>
+
+<p>Comprehensive matrix covering every component we plan to port (or have already ported) to FreeBSD as part of the broader Apple-source-services roadmap. Counts are from <code>grep -rE "dispatch_[a-z_]*\("</code> over the local NextBSD, ravynOS, freebsd-launchd, and freebsd-launchd-mach trees; DiskArbitration counts are from spot-reads of <code>apple-oss-distributions/DiskArbitration</code> source on GitHub (no local clone yet).</p>
+
+<table>
+<thead><tr><th>Component</th><th>Plain libdispatch use</th><th>Mach dispatch (<code>SOURCE_TYPE_MACH_RECV</code>/<code>_SEND</code>)</th><th>Porting status</th></tr></thead>
+<tbody>
+
+  <tr><td colspan="4"><strong>Libraries we build/ship</strong></td></tr>
+
+  <tr>
+    <td><code>mach.ko</code> (kernel)</td>
+    <td><span class="pill pill-good">none</span> &mdash; kernel can't link userland libdispatch</td>
+    <td><span class="pill pill-good">n/a</span></td>
+    <td><span class="pill pill-good">done</span> &mdash; Phase B + Tier 1</td>
+  </tr>
+  <tr>
+    <td><code>libmach</code></td>
+    <td><span class="pill pill-good">none</span> &mdash; pure syscall wrappers</td>
+    <td><span class="pill pill-good">n/a</span></td>
+    <td><span class="pill pill-good">done</span> &mdash; Phase C1</td>
+  </tr>
+  <tr>
+    <td><strong><code>libdispatch</code> itself</strong> (swift-corelibs-libdispatch + Mach backend patch)</td>
+    <td>3956 internal refs &mdash; <em>this is the library</em></td>
+    <td><strong>required to provide</strong> the symbol &mdash; this spike's whole point</td>
+    <td><span class="pill pill-warn">Phase 0</span> &mdash; ship Mach backend as gershwin patch</td>
+  </tr>
+  <tr>
+    <td><strong><code>libxpc</code></strong></td>
+    <td>moderate &mdash; 33 calls, 14 block literals, semaphores + queues + async</td>
+    <td><strong>1 RECV</strong> in <code>xpc_connection.c:214</code></td>
+    <td><span class="pill pill-warn">Phase 2-4</span></td>
+  </tr>
+  <tr>
+    <td><code>liblaunch</code></td>
+    <td>10 calls &mdash; light (queue create + retain/release only)</td>
+    <td><span class="pill pill-good">none</span></td>
+    <td>existing legacy <code>launch_data_t</code> client; minimal forward port</td>
+  </tr>
+  <tr>
+    <td><code>libnotify</code></td>
+    <td>35 calls &mdash; moderate (2 sources, 13 blocks)</td>
+    <td><strong>1 RECV</strong> in <code>notify_client.c:355</code></td>
+    <td>Phase 7+ (after libxpc)</td>
+  </tr>
+  <tr>
+    <td><code>libasl</code></td>
+    <td>50 calls &mdash; moderate (1 source, 23 blocks)</td>
+    <td><span class="pill pill-good">none</span> &mdash; uses READ source type, not Mach</td>
+    <td>Phase 7+</td>
+  </tr>
+  <tr>
+    <td><code>libSystemConfiguration</code> (configd's client lib)</td>
+    <td>5 calls &mdash; light</td>
+    <td><span class="pill pill-good">none directly</span> &mdash; transitively via <code>SystemConfiguration.framework</code></td>
+    <td>Phase 6</td>
+  </tr>
+  <tr>
+    <td><strong><code>SystemConfiguration.framework</code></strong> (configd's API surface)</td>
+    <td><strong>heavy</strong> &mdash; 124 calls, 60 blocks, 17 semaphores, 4 sources</td>
+    <td><strong>2 RECV</strong> (<code>SCNetworkConnection.c:2396</code>, <code>SCDNotifierInformViaCallback.c:610</code>)</td>
+    <td>Phase 6</td>
+  </tr>
+  <tr>
+    <td><strong><code>DiskArbitration.framework</code></strong></td>
+    <td>moderate &mdash; <code>DASessionSetDispatchQueue</code> is core API; dual-mode CFRunLoop / dispatch-queue</td>
+    <td><strong>at least 1 RECV</strong> in <code>DASession.c</code> (from <code>DASessionSetDispatchQueue</code> impl on GitHub)</td>
+    <td>Phase 8+ &mdash; deferred; may keep a sockets-based alternative implementation that sidesteps Mach IPC entirely</td>
+  </tr>
+
+  <tr><td colspan="4"><strong>Daemons</strong></td></tr>
+
+  <tr>
+    <td>Apple <code>launchd-842.92.1</code> (clean import for Phase 5)</td>
+    <td>~10 real calls after filtering (dispatch_main, dispatch_once, 1 PROC source)</td>
+    <td><span class="pill pill-good">none</span> &mdash; 2014 source predates dispatch Mach migration; uses its own <code>mach_msg</code> loop</td>
+    <td><span class="pill pill-warn">Phase 5</span></td>
+  </tr>
+  <tr>
+    <td><code>freebsd-launchd</code> minimal rewrite (current shipping)</td>
+    <td>27 calls &mdash; SIGNAL + READ + TIMER sources, dispatch_main</td>
+    <td><span class="pill pill-good">none</span> &mdash; AF_UNIX IPC, not Mach</td>
+    <td><span class="pill pill-good">shipping today</span></td>
+  </tr>
+  <tr>
+    <td><code>launchctl</code></td>
+    <td><span class="pill pill-good">none</span></td>
+    <td><span class="pill pill-good">none</span></td>
+    <td>Phase 5 (with launchd)</td>
+  </tr>
+  <tr>
+    <td><code>asl</code> (Apple syslogd-replacement daemon)</td>
+    <td><strong>heavy</strong> &mdash; 145 calls, 16 sources (TIMER/READ/SIGNAL/VNODE), 66 blocks</td>
+    <td><span class="pill pill-good">none</span> &mdash; uses TIMER/READ/SIGNAL/VNODE source types only</td>
+    <td>Phase 7+</td>
+  </tr>
+  <tr>
+    <td><code>syslogd</code> (FreeBSD native)</td>
+    <td><span class="pill pill-good">none</span> &mdash; pure FreeBSD, no dispatch</td>
+    <td><span class="pill pill-good">none</span></td>
+    <td>n/a &mdash; we're replacing this with Apple's <code>asl</code>-aware version</td>
+  </tr>
+  <tr>
+    <td><code>aslmanager</code></td>
+    <td>4 calls &mdash; light (queue + dispatch_main)</td>
+    <td><span class="pill pill-good">none</span></td>
+    <td>Phase 7+ (with asl)</td>
+  </tr>
+  <tr>
+    <td><code>notifyd</code></td>
+    <td><strong>heavy</strong> &mdash; 114 calls, 14 sources (TIMER/SIGNAL/DATA/VNODE/PROC), 31 blocks</td>
+    <td><strong>1 RECV</strong> (<code>notifyd.c:1230</code>) + <strong>1 SEND</strong> (<code>notify_proc.c:352</code>)</td>
+    <td>Phase 7+</td>
+  </tr>
+  <tr>
+    <td><code>notifyutil</code> (CLI tool)</td>
+    <td>light</td>
+    <td><strong>1 RECV</strong> (<code>notifyutil.c:374</code>)</td>
+    <td>Phase 7+ (with notifyd)</td>
+  </tr>
+  <tr>
+    <td><code>configd</code> daemon (<code>configd.tproj</code>)</td>
+    <td>4 calls &mdash; light direct use (SIGNAL + dispatch_main); heavy through the framework</td>
+    <td><span class="pill pill-good">none directly</span> &mdash; works through <code>SystemConfiguration.framework</code></td>
+    <td>Phase 6</td>
+  </tr>
+  <tr>
+    <td><code>configd</code> Plugins (IPMonitor, KernelEventMonitor, etc.)</td>
+    <td>54 calls &mdash; moderate (TIMER + READ sources, blocks)</td>
+    <td><span class="pill pill-good">none</span> directly</td>
+    <td>Phase 6 (partial &mdash; IPMonitor's <code>NWNetworkAgentRegistration</code> blocker per the Foundation spike)</td>
+  </tr>
+  <tr>
+    <td><code>scutil</code> CLI</td>
+    <td>7 calls &mdash; light</td>
+    <td><span class="pill pill-good">none</span></td>
+    <td>Phase 6</td>
+  </tr>
+  <tr>
+    <td><strong><code>diskarbitrationd</code></strong></td>
+    <td>heavy &mdash; uses <code>dispatch_mach_create_f</code>, <code>dispatch_mach_connect</code>, <code>IONotificationPortSetDispatchQueue</code>, <code>xpc_set_event_stream_handler</code></td>
+    <td><strong>uses <code>dispatch_mach_t</code></strong> channels &mdash; even higher-level than MACH_RECV sources; requires the <code>DISPATCH_MACH_SPI</code> private API</td>
+    <td>Phase 8+ &mdash; deferred; possibly replaced with a sockets-based daemon that sidesteps Mach entirely</td>
+  </tr>
+  <tr>
+    <td><code>DiskArbitrationAgent</code> (per-user GUI)</td>
+    <td>likely heavy (Apple Cocoa app)</td>
+    <td>likely yes (uses <code>DASessionSetDispatchQueue</code> from the framework)</td>
+    <td>Phase 8+; needs GNUstep Foundation/AppKit, separate concern</td>
+  </tr>
+  <tr>
+    <td><strong><code>mDNSResponder</code></strong> daemon core (<code>mDNSCore/</code>, <code>mDNSPosix/</code>)</td>
+    <td>moderate-to-heavy in <code>mDNSMacOSX/</code> (Apple-only); pure POSIX in <code>mDNSPosix/</code></td>
+    <td>likely some in <code>mDNSMacOSX/</code>; <strong>none in <code>mDNSPosix/</code></strong></td>
+    <td>Phase 7+ &mdash; we'd port the <code>mDNSPosix/</code> path, not <code>mDNSMacOSX/</code></td>
+  </tr>
+  <tr>
+    <td><strong><code>IPConfiguration</code></strong> daemon (Apple's bootp client)</td>
+    <td>heavy &mdash; <code>timer.c</code> + <code>FDSet.c</code> ~494 LoC of dispatch usage per the IPConfiguration porting plan</td>
+    <td>uncertain &mdash; per the plan, MIG/Mach IPC heavy; on modern Apple the server.c uses XPC which sits on dispatch+Mach</td>
+    <td>Phase 8+ &mdash; deferred; current ISO uses <code>dhcpcd</code> from FreeBSD ports</td>
+  </tr>
+
+  <tr><td colspan="4"><strong>Future / optional</strong></td></tr>
+
+  <tr>
+    <td><code>libxpc</code> bootstrap server (Phase 3)</td>
+    <td>moderate &mdash; would use dispatch sources for the bootstrap port</td>
+    <td><strong>required</strong> &mdash; bootstrap port is exactly the kind of long-lived Mach receive that needs dispatch</td>
+    <td>Phase 3</td>
+  </tr>
+  <tr>
+    <td>libCFRuntime supplementary CF library</td>
+    <td>some &mdash; for CFRunLoop version1 sources if we route through dispatch</td>
+    <td>yes &mdash; CFMachPort and CFRunLoop v1 sources are Mach-backed</td>
+    <td>Phase 5.5 (per libxpc plan)</td>
+  </tr>
+  <tr>
+    <td>NSXPCConnection (downstream GNUstep contribution)</td>
+    <td>moderate &mdash; wraps libxpc, inherits its dispatch use</td>
+    <td>transitively via libxpc</td>
+    <td>Optional / downstream / not on critical path</td>
+  </tr>
+</tbody>
+</table>
+
+<h3>Summary by impact</h3>
+
+<table>
+<thead><tr><th>Category</th><th>Components</th><th>Implication for Phase 0</th></tr></thead>
+<tbody>
+  <tr>
+    <td><strong>Need Mach dispatch (MACH_RECV or higher)</strong></td>
+    <td>libxpc, libnotify, notifyd, notifyutil, SystemConfiguration framework, DiskArbitration framework (if we use Apple-shape impl), diskarbitrationd (if Apple-shape), libxpc bootstrap server</td>
+    <td>Phase 0 blocks all of these. ~8 components.</td>
+  </tr>
+  <tr>
+    <td><strong>Use libdispatch but NOT Mach dispatch</strong></td>
+    <td>Apple launchd-842 (light), freebsd-launchd rewrite, asl (heavy with TIMER/READ/SIGNAL/VNODE), aslmanager, configd daemon, configd plugins, scutil, mDNSResponder mDNSPosix, IPConfiguration (timer/FD), libasl, libSystemConfiguration, liblaunch</td>
+    <td>Phase 0 unblocks the Mach RECV symbol but these components don't need it. They use plain libdispatch which builds fine on FreeBSD today (subject to the gershwin kqueue patch).</td>
+  </tr>
+  <tr>
+    <td><strong>No libdispatch at all</strong></td>
+    <td>mach.ko, libmach, launchctl, syslogd (FreeBSD native)</td>
+    <td>Unaffected by the Phase 0 / libdispatch path entirely.</td>
+  </tr>
+</tbody>
+</table>
+
+<h3>Caveats and alternatives</h3>
+
+<ul>
+  <li><strong>DiskArbitration sockets alternative:</strong> if we choose a sockets-based <code>diskarbitrationd</code> (replacing Apple's MIG + XPC transport with AF_UNIX), DiskArbitration drops out of the Mach-dispatch dependency list. The <code>DASessionSetDispatchQueue</code> public API still exists for clients but the implementation routes through sockets rather than Mach. Open question; the existing <a href="freebsd-disk-arbitration-plan.html">DiskArbitration plan</a> stays the authority on that decision.</li>
+  <li><strong>mDNSResponder <code>mDNSPosix/</code> path:</strong> the POSIX implementation Apple ships in their open-source tree doesn't use libdispatch at all (uses <code>select()</code>/<code>poll()</code>). We'd port that one, not <code>mDNSMacOSX/</code>. So mDNSResponder may end up with zero dispatch dependency depending on which path we take.</li>
+  <li><strong>IPConfiguration:</strong> the existing porting plan flags libdispatch as a real dependency for the timer / FDSet subsystems. If we ever do the port. Currently <code>dhcpcd</code> covers the use case.</li>
+  <li><strong>aslmanager:</strong> can probably be replaced by FreeBSD's standard newsyslog if we don't want the full Apple log-rotation policy machinery. Trade-off: lose feature parity, drop the libdispatch dependency. Probably not worth it.</li>
+</ul>
+
+<h2 id="recommendation">6. Recommendation</h2>
 
 <div class="callout callout-good">
 <p><strong>Option 1 &mdash; patch libdispatch.</strong> The dominant factor is "every Apple-source consumer expects <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> to exist." Option 1 honors that expectation; Options 2 and 3 force every Apple-source import to be modified, which complicates re-imports forever.</p>

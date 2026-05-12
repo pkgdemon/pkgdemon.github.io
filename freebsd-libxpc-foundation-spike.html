@@ -84,7 +84,13 @@
 <div class="toc">
 <h2>Contents</h2>
 <ol>
-  <li><a href="#vocab">Vocabulary: Foundation vs CoreFoundation</a></li>
+  <li><a href="#vocab">Vocabulary: Foundation vs CoreFoundation</a>
+    <ul>
+      <li><a href="#vocab">1.1 Component-by-component answer (does it need Foundation?)</a></li>
+      <li><a href="#vocab">1.3 Which implementation serves each component?</a></li>
+      <li><a href="#vocab">1.4 Headline answers</a></li>
+    </ul>
+  </li>
   <li><a href="#cf-impls">CoreFoundation implementations compared</a></li>
   <li><a href="#fnd-impls">Foundation implementations compared</a></li>
   <li><a href="#port-audit">Per-port CF/NS symbol usage audit</a></li>
@@ -122,6 +128,217 @@
 
 <div class="callout callout-warn">
 <p><strong>Practical implication:</strong> when looking at any port, ask whether it uses <code>CF*</code> calls, <code>NS*</code> classes, or both. The answer dictates whether we need a CoreFoundation port, a Foundation port, or both. For the daemons in scope here, the answer is <strong>CoreFoundation only</strong> for the bulk of them &mdash; Foundation is essentially absent.</p>
+</div>
+
+<h3>1.1. Component-by-component answer</h3>
+
+<p>Direct yes/no for every component we're porting or have already ported. Foundation = needs <code>NS*</code> classes (libgnustep-base). CoreFoundation = needs <code>CF*</code> functions (libgnustep-corebase + libCFRuntime).</p>
+
+<table>
+<thead><tr><th>Component</th><th>Foundation?</th><th>CoreFoundation?</th><th>Why</th></tr></thead>
+<tbody>
+  <tr>
+    <td><strong>mach.ko</strong> (kernel)</td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td>Pure kernel C; no userland framework deps possible</td>
+  </tr>
+  <tr>
+    <td><strong>libmach</strong></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td>Userland syscall-trap wrappers; pure C, libc only</td>
+  </tr>
+  <tr>
+    <td><strong>libdispatch</strong> (swift-corelibs-libdispatch + Mach backend)</td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td>Pure C concurrency primitives; uses blocks runtime but not Foundation/CF</td>
+  </tr>
+  <tr>
+    <td><strong>libxpc</strong></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td>Pure C IPC; uses bundled libnv for serialization. The ravynOS/NextBSD libxpc tree is 100% C.</td>
+  </tr>
+  <tr>
+    <td><strong>Apple launchd</strong> (clean <code>launchd-842.92.1</code> import per the libxpc plan's Phase 5)</td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td>0 CF call sites, 0 NS references verified by grep across all 17 source files. Uses Apple's own <code>launch_data_t</code> bplist parser.</td>
+  </tr>
+  <tr>
+    <td><strong>freebsd-launchd's current minimal rewrite</strong></td>
+    <td><span class="pill pill-warn">yes &mdash; minimally</span></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td>1 <code>.m</code> file (<code>src/src/core.m</code>, 544 LoC) uses <code>NSPropertyListSerialization</code> for plist parsing. 33 NS references, 8 unique classes (NSString, NSDictionary, NSArray, NSData, NSNumber, NSError, NSPropertyListImmutable, NSPropertyListFormat) &mdash; all used as values, no NSObject subclasses. <strong>Removable:</strong> switch to libplist or CFLite plist parsing and the ObjC runtime requirement disappears.</td>
+  </tr>
+  <tr>
+    <td><strong>launchctl</strong> (Apple verbatim)</td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td>Pure C. The freebsd-launchd minimal launchctl is also pure C.</td>
+  </tr>
+  <tr>
+    <td><strong>liblaunch</strong> (Apple / NextBSD / ravynOS / freebsd-launchd versions)</td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td>Pure C <code>launch_data_t</code> client over AF_UNIX. 0 NS, 0 CF.</td>
+  </tr>
+  <tr>
+    <td><strong>asl / syslogd / aslmanager / libasl</strong></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td>All four pure C. 0 CF call sites, 0 NS references in the NextBSD tree (total ~34k LoC audited). Talk Mach + sockets + launchd directly.</td>
+  </tr>
+  <tr>
+    <td><strong>notifyd</strong></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td>Pure C (7,501 LoC). Modern Apple notifyd uses libxpc for client API but no CF/NS.</td>
+  </tr>
+  <tr>
+    <td><strong>libnotify</strong></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-good">no</span></td>
+    <td>Pure C (5,736 LoC). 0 CF, 0 NS.</td>
+  </tr>
+  <tr>
+    <td><strong>SystemConfiguration framework</strong> (<code>SystemConfiguration.fproj</code>, the client-facing lib)</td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-bad">yes &mdash; heavy</span></td>
+    <td>Pure C against CF (69,656 LoC, 6,925 CF calls, 211 unique CF symbols, 0 NS). 30 CFMachPort sites = needs <code>libCFRuntime</code> for Mach-coupled CF.</td>
+  </tr>
+  <tr>
+    <td><strong>configd daemon</strong> (<code>configd.tproj</code> only)</td>
+    <td><span class="pill pill-warn">light</span></td>
+    <td><span class="pill pill-bad">yes &mdash; heavy</span></td>
+    <td>841 CF calls, 99 unique CF symbols. 5 NS references concentrated in 1-2 <code>.m</code> files (NCDaemon shim). 1 user ObjC class (<code>NCDaemon : NSObject</code>) plus the small daemon-entry shim.</td>
+  </tr>
+  <tr>
+    <td><strong>configd plugins</strong> (IPMonitor, EventFactory, PreferencesMonitor, KernelEventMonitor, LinkConfiguration, etc.)</td>
+    <td><span class="pill pill-warn">yes</span></td>
+    <td><span class="pill pill-bad">yes &mdash; heavy</span></td>
+    <td>Most of the 720 NS references in configd come from here. 20 <code>.m</code> files across the tree. 4 user ObjC classes (ConfigAgent, DNSAgent, ProxyAgent, AgentController). <strong>Caveat:</strong> AgentController subclasses <code>NWNetworkAgentRegistration</code> from a private Apple <code>Network.framework</code> &mdash; flag as a separate porting blocker for IPMonitor's NWI agent path.</td>
+  </tr>
+  <tr>
+    <td><strong>scutil</strong></td>
+    <td><span class="pill pill-good">no (small)</span></td>
+    <td><span class="pill pill-bad">yes</span></td>
+    <td>Mostly C, CF-heavy. A few .m files but no ObjC subclasses essential to the CLI.</td>
+  </tr>
+  <tr>
+    <td><strong>mDNSResponder daemon core</strong> (<code>mDNSCore/</code>, <code>mDNSPosix/</code>)</td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-warn">light</span></td>
+    <td>Pure C in the daemon core. CF usage is in the macOS-specific helpers (<code>mDNSMacOSX/</code>) that BSD ports replace.</td>
+  </tr>
+  <tr>
+    <td><strong>IPConfiguration</strong> (Apple's bootp client)</td>
+    <td><span class="pill pill-good">no</span></td>
+    <td><span class="pill pill-bad">yes &mdash; heavy</span></td>
+    <td>Per the <a href="freebsd-ipconfiguration-plan.html">ipconfiguration plan</a> &mdash; pure C, no NS, heavy CF (CFArray/CFDict throughout, plus CFRunLoop).</td>
+  </tr>
+</tbody>
+</table>
+
+<h3>1.2. Headline answers</h3>
+
+<ul>
+  <li><strong>The libraries we're building (mach.ko, libmach, libdispatch, libxpc) need NEITHER Foundation nor CoreFoundation.</strong> All pure C.</li>
+  <li><strong>The Apple-source daemons we're importing (launchd, asl, syslogd, notifyd, libnotify) need NEITHER</strong> &mdash; they're plain C against Mach + sockets + launchd. Free wins from a Foundation-deps standpoint.</li>
+  <li><strong>configd and SystemConfiguration are CF-heavy but Foundation-light to Foundation-free.</strong> The framework (consumed by clients) is 0 NS. The daemon itself is 5 NS. The plugins (especially IPMonitor) are where the 20 <code>.m</code> files live.</li>
+  <li><strong>IPConfiguration is CF-heavy, Foundation-free.</strong></li>
+  <li><strong>Only freebsd-launchd's current rewrite uses Foundation</strong> &mdash; one <code>.m</code> file for plist parsing. Removable.</li>
+</ul>
+
+<p><strong>Translated to dependencies:</strong></p>
+
+<ul>
+  <li><strong>Foundation (libgnustep-base) is required by:</strong> freebsd-launchd's current rewrite (removable); configd plugins (IPMonitor + EventFactory + sctest); arguably the small configd daemon shim.</li>
+  <li><strong>CoreFoundation (libgnustep-corebase + libCFRuntime) is required by:</strong> configd, SystemConfiguration framework, scutil, IPConfiguration, configd plugins.</li>
+  <li><strong>Neither is required by:</strong> mach.ko, libmach, libdispatch, libxpc, Apple launchd (clean import), launchctl, liblaunch, asl, syslogd, aslmanager, libasl, notifyd, libnotify, mDNSResponder daemon core.</li>
+</ul>
+
+<h3>1.3. Which implementation serves each component?</h3>
+
+<p>For every component that needs Foundation or CoreFoundation, what specifically supplies the symbols? The choice is between:</p>
+
+<ul>
+  <li><strong>libgnustep-base</strong> &mdash; GNUstep's Foundation (provides <code>NS*</code> classes)</li>
+  <li><strong>libgnustep-corebase</strong> &mdash; GNUstep's CoreFoundation reimpl (provides value-type <code>CF*</code> &mdash; CFString/Array/Dict/Number/Data/Date/PropertyList plus a poll-based CFRunLoop)</li>
+  <li><strong>libCFRuntime</strong> &mdash; supplementary library we'd build (covers corebase's gaps: CFMachPort, CFMessagePort, CFRunLoop v1 Mach sources, CFPreferences, CFBundle plugin loader, CFFileDescriptor, CFPlugIn). Links against corebase and sourced from a hybrid of swift-corelibs-foundation CF (primary) and CF-Lite-1153.18 (parts donor for Mach-specific .c files).</li>
+</ul>
+
+<table>
+<thead><tr><th>Component</th><th>Serves Foundation need with</th><th>Serves CoreFoundation need with</th><th>Notes / blockers</th></tr></thead>
+<tbody>
+  <tr><td>mach.ko</td><td>n/a</td><td>n/a</td><td>No Foundation/CF deps</td></tr>
+  <tr><td>libmach</td><td>n/a</td><td>n/a</td><td>No Foundation/CF deps</td></tr>
+  <tr><td>libdispatch</td><td>n/a</td><td>n/a</td><td>No Foundation/CF deps</td></tr>
+  <tr><td>libxpc</td><td>n/a</td><td>n/a</td><td>No Foundation/CF deps</td></tr>
+  <tr><td>Apple launchd (clean import)</td><td>n/a</td><td>n/a</td><td>No Foundation/CF deps</td></tr>
+  <tr><td>launchctl</td><td>n/a</td><td>n/a</td><td>No Foundation/CF deps</td></tr>
+  <tr><td>liblaunch</td><td>n/a</td><td>n/a</td><td>No Foundation/CF deps</td></tr>
+  <tr><td>asl / syslogd / aslmanager / libasl</td><td>n/a</td><td>n/a</td><td>No Foundation/CF deps</td></tr>
+  <tr><td>notifyd / libnotify</td><td>n/a</td><td>n/a</td><td>No Foundation/CF deps</td></tr>
+  <tr>
+    <td><strong>freebsd-launchd rewrite</strong></td>
+    <td><span class="pill pill-good">libgnustep-base alone</span></td>
+    <td>n/a</td>
+    <td>Uses only basic NS classes (NSString, NSDictionary, NSArray, NSData, NSNumber, NSError, NSPropertyListSerialization, NSPropertyListImmutable, NSPropertyListFormat). All have been in libgnustep-base for decades. No private Apple frameworks. <strong>Or removable</strong> &mdash; swap NSPropertyListSerialization for libplist / CFLite plist parsing, drop ObjC entirely.</td>
+  </tr>
+  <tr>
+    <td><strong>SystemConfiguration framework</strong> (<code>SystemConfiguration.fproj</code>)</td>
+    <td>n/a (0 NS)</td>
+    <td><span class="pill pill-warn">libgnustep-corebase + libCFRuntime</span></td>
+    <td>211 unique CF symbols. Most served by corebase; the 30 CFMachPort sites and any CFRunLoop v1 Mach-port wait require libCFRuntime supplementation. <strong>No Foundation needed.</strong></td>
+  </tr>
+  <tr>
+    <td><strong>configd daemon</strong> (<code>configd.tproj</code>)</td>
+    <td><span class="pill pill-good">libgnustep-base alone</span></td>
+    <td><span class="pill pill-warn">libgnustep-corebase + libCFRuntime</span></td>
+    <td>99 unique CF symbols (heavy &mdash; needs libCFRuntime for Mach paths). 5 NS references and 1 user ObjC class (<code>NCDaemon : NSObject</code>) &mdash; trivially served by libgnustep-base.</td>
+  </tr>
+  <tr>
+    <td><strong>configd plugins</strong> (IPMonitor, EventFactory, PreferencesMonitor, KernelEventMonitor)</td>
+    <td><span class="pill pill-bad">libgnustep-base + private-Apple-framework blockers</span></td>
+    <td><span class="pill pill-warn">libgnustep-corebase + libCFRuntime</span></td>
+    <td><strong>Real blocker:</strong> AgentController subclasses <code>NWNetworkAgentRegistration</code> from Apple's private <code>Network.framework</code> &mdash; not in libgnustep-base, not in any open Foundation. Similarly <code>EFEventFactory</code> is from <code>EventFactory.framework</code>. These plugins need either a private-framework shim or partial omission. The bulk of NS use (NSString/NSArray/NSDictionary as values) is fine with libgnustep-base. Concentrated in IPMonitor; other plugins lighter.</td>
+  </tr>
+  <tr>
+    <td><strong>scutil</strong></td>
+    <td><span class="pill pill-good">libgnustep-base (minimal)</span></td>
+    <td><span class="pill pill-warn">libgnustep-corebase + libCFRuntime</span></td>
+    <td>Mostly C. The few <code>.m</code> files don't subclass anything Apple-private.</td>
+  </tr>
+  <tr>
+    <td><strong>mDNSResponder daemon core</strong></td>
+    <td>n/a</td>
+    <td><span class="pill pill-good">libgnustep-corebase alone</span> (value types only)</td>
+    <td>Daemon core (mDNSCore/mDNSPosix) is pure C with light CF (value types). No libCFRuntime needed in the core; only the macOS-specific helpers (which BSD ports skip) use heavier CF.</td>
+  </tr>
+  <tr>
+    <td><strong>IPConfiguration</strong></td>
+    <td>n/a</td>
+    <td><span class="pill pill-warn">libgnustep-corebase + libCFRuntime</span></td>
+    <td>Heavy CF including CFMachPort, CFRunLoop v1, CFPropertyList. No NS. Same shape as SystemConfiguration framework from a Foundation/CF standpoint.</td>
+  </tr>
+</tbody>
+</table>
+
+<h3>1.4. Headline answers (restated more directly)</h3>
+
+<div class="callout callout-good">
+<p><strong>For Foundation: libgnustep-base alone serves every component that needs Foundation.</strong> No component requires Apple's closed Foundation or swift-corelibs-foundation. The freebsd-launchd rewrite uses NSPropertyListSerialization (long-standing libgnustep-base API). configd's daemon shim and plugins use basic NS-as-value patterns plus a small number of <code>: NSObject</code> subclasses &mdash; all fine for libgnustep-base. <strong>Only one real blocker exists at the Foundation level:</strong> configd's IPMonitor plugin subclasses <code>NWNetworkAgentRegistration</code> from Apple's private <code>Network.framework</code>, which has no open-source equivalent. That's a separate IPMonitor-specific porting problem, not a Foundation impl choice.</p>
+</div>
+
+<div class="callout callout-warn">
+<p><strong>For CoreFoundation: libgnustep-corebase alone is NOT enough for the heavy-CF components.</strong> SystemConfiguration framework, configd, scutil, and IPConfiguration all use CFMachPort / CFRunLoop v1 Mach sources / CFPreferences / CFBundle plugin loader &mdash; all absent or stubbed in corebase. They need the supplementary <code>libCFRuntime.so</code> sourced from swift-corelibs-foundation CF (primary) + CF-Lite-1153.18 (Mach .c parts donor). The lighter components (mDNSResponder core) can get by with corebase alone.</p>
+</div>
+
+<div class="callout callout-bad">
+<p><strong>swift-corelibs-foundation Foundation is NOT used.</strong> Not as a Foundation impl, not for Foundation needs of any component. It's only mined as a SOURCE for the CoreFoundation parts inside <code>libCFRuntime.so</code> (its <code>Sources/CoreFoundation/</code> subdir). Its <code>NS*</code> Swift classes never ship.</p>
 </div>
 
 <h2 id="cf-impls">2. CoreFoundation implementations compared</h2>

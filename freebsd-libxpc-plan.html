@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>freebsd-libxpc: porting Apple XPC to FreeBSD on top of mach.ko</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --bg: #fafaf7;
+    --accent: #b8472a;
+    --accent-soft: #f3e7df;
+    --border: #d8d4c8;
+    --code-bg: #f0ece2;
+    --table-stripe: #f4efe5;
+    --warn: #8a5a00;
+    --good: #2d6f3b;
+    --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    line-height: 1.55;
+    margin: 0;
+    padding: 0;
+  }
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+  h1 {
+    font-size: 2.1rem;
+    line-height: 1.2;
+    margin: 0 0 8px;
+    letter-spacing: -0.01em;
+  }
+  h2 {
+    font-size: 1.45rem;
+    margin: 56px 0 12px;
+    padding-top: 18px;
+    border-top: 2px solid var(--border);
+    letter-spacing: -0.005em;
+  }
+  h3 {
+    font-size: 1.15rem;
+    margin: 32px 0 10px;
+    color: var(--accent);
+  }
+  h4 {
+    font-size: 1rem;
+    margin: 24px 0 6px;
+    color: var(--fg);
+  }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code, pre {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    background: var(--code-bg);
+    color: var(--fg);
+  }
+  code { padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  pre {
+    padding: 14px 18px;
+    border-radius: 4px;
+    overflow-x: auto;
+    font-size: 0.86rem;
+    line-height: 1.45;
+    margin: 0 0 18px;
+  }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+  .lede {
+    font-size: 1.05rem;
+    color: var(--fg-muted);
+    margin-bottom: 32px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0 22px;
+    font-size: 0.94rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    background: var(--accent-soft);
+    font-weight: 600;
+  }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 14px 18px;
+    margin: 18px 0 22px;
+    border-radius: 0 4px 4px 0;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn {
+    border-left-color: var(--warn);
+    background: #fbf3df;
+  }
+  .callout-good {
+    border-left-color: var(--good);
+    background: #e8f1e3;
+  }
+  .pill {
+    display: inline-block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-right: 8px;
+  }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 18px 24px 14px 36px;
+    margin: 0 0 36px;
+    font-size: 0.95rem;
+  }
+  .toc h2 {
+    margin: 0 0 8px;
+    padding-top: 0;
+    border-top: none;
+    font-size: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--fg-muted);
+    margin-left: -14px;
+  }
+  .toc ol { margin: 0 0 0 6px; }
+  .toc li { margin-bottom: 4px; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote {
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    border-top: 1px solid var(--border);
+    margin-top: 48px;
+    padding-top: 16px;
+  }
+  .verdict {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 8px 0 14px;
+  }
+  .verdict-go { color: var(--good); }
+  .verdict-warn { color: var(--warn); }
+  .verdict-no { color: var(--bad); }
+  @media (max-width: 600px) {
+    .wrap { padding: 24px 18px 64px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1><code>freebsd-libxpc</code> &mdash; porting Apple XPC onto our <code>mach.ko</code></h1>
+<p class="lede">A porting plan for libxpc on FreeBSD, dependent on the now-working <a href="freebsd-launchd-mach-plan.html"><code>freebsd-launchd-mach</code></a> Mach kmod. XPC is the userland abstraction that every Apple system daemon expects: connection-based IPC with typed dictionaries, dispatch-queue event delivery, and named launchd-bootstrap lookups. Without it, the daemons we want to port (launchd's modern paths, configd, asl, mDNSResponder) have no client surface. This plan surveys the source landscape, maps the dependencies, scopes a launchd-only MVP, and assesses how complete the related daemon ports already are.</p>
+<p class="lede"><strong>Primary goal: drag FreeBSD into the 21st century</strong> &mdash; modern service IPC, modern daemon model, modern network config. macOS app compatibility is a downstream bonus. GNUstep stays for the application / framework layer; Apple source covers only the lower system-services layer.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#what">What libxpc is and what it does</a></li>
+  <li><a href="#why">Why we need it</a></li>
+  <li><a href="#genealogy">Genealogy: Apple &rarr; iX/NextBSD &rarr; ravynOS &rarr; other forks</a></li>
+  <li><a href="#sources">Where the source actually comes from</a></li>
+  <li><a href="#api">Public API surface</a></li>
+  <li><a href="#deps">Dependencies: dispatch, Mach, libnv, bootstrap</a></li>
+  <li><a href="#mvp">MVP subset for launchd</a></li>
+  <li><a href="#related">Related-daemon completeness audit</a></li>
+  <li><a href="#gnustep">GNUstep compatibility &mdash; libobjc2, corebase, Foundation</a></li>
+  <li><a href="#libsystem">Libsystem strategy &mdash; port sub-libraries, never the umbrella</a></li>
+  <li><a href="#risks">Risks and decisions</a></li>
+  <li><a href="#phases">Phased porting plan</a></li>
+  <li><a href="#refs">References &amp; key paths</a></li>
+</ol>
+</div>
+
+<h2 id="what">1. What libxpc is and what it does</h2>
+
+<p>XPC is Apple's high-level inter-process communication framework, layered on top of Mach IPC and libdispatch. It has two faces:</p>
+
+<ul>
+  <li><strong>libxpc</strong> &mdash; a C library exposing connection-based bidirectional messaging, typed serialization primitives (<code>xpc_dictionary_t</code>, <code>xpc_array_t</code>, <code>xpc_string_t</code>, <code>xpc_int64_t</code>, <code>xpc_object_t</code> base type), file-descriptor passing, asynchronous event delivery via dispatch queues, and a connection-cancellation lifecycle.</li>
+  <li><strong>Foundation/NSXPCConnection</strong> &mdash; an Objective-C wrapper that adds proxy objects and <code>NSSecureCoding</code> for arbitrary classes. Out of scope here &mdash; GNUstep keeps the framework layer.</li>
+</ul>
+
+<p>On macOS, libxpc is invoked by basically anything that talks to a system service: apps talking to <code>configd</code>, <code>mDNSResponder</code>, <code>opendirectoryd</code>, <code>tccd</code>; app extensions; helper tools; launchd activating services on-demand because client connections come in via XPC bootstrap lookups. The whole on-demand-activation story for modern daemons routes through libxpc.</p>
+
+<p>Under the hood it uses Mach IPC for transport, libdispatch for event delivery, and bplist for serialization. The NextBSD / ravynOS reimplementation we inherit substitutes FreeBSD's <code>libnv</code> for bplist &mdash; a fundamental wire-format departure that affects nothing on the API surface but means we will never bit-exchange messages with Apple binaries.</p>
+
+<h2 id="why">2. Why we need it</h2>
+
+<p>libxpc is the glue between mach.ko (now done, Phase B Tier 1 complete) and the daemon layer we actually want to ship. Without libxpc:</p>
+
+<ul>
+  <li><strong>configd is dead weight.</strong> Our existing <code>freebsd-launchd/configd</code> tree carries 452 <code>xpc_*</code> call sites &mdash; the whole client API depends on <code>xpc_connection_create_mach_service</code>.</li>
+  <li><strong>Modern launchd paths can't run.</strong> Apple's launchd from 2014 onward routes job management through XPC; the Apple-source <code>core.c</code> we inherit calls <code>xpc_pipe_try_receive</code> in its main dispatch loop.</li>
+  <li><strong>asl, mDNSResponder, future daemon ports have no client surface.</strong> Every <code>SCDynamicStore</code>-style notification, every entitlement check, every privilege-separated helper expects XPC.</li>
+</ul>
+
+<p>Skipping libxpc means rewriting every daemon's IPC layer in something else &mdash; D-Bus, hand-rolled Mach, or AF_UNIX. Ugly either way, and it cuts us off from drop-in source ports of Apple system services.</p>
+
+<h2 id="genealogy">3. Genealogy</h2>
+
+<p>The lineage of the libxpc implementation we'd actually fork from:</p>
+
+<pre><code>Apple public headers (xpc.h, connection.h: copyright 2009-2011 Apple Inc.)
+        |
+        v
+iXsystems / Jakub Klama 2014-2015 skeleton C reimplementation
+   (copyright "2014-2015 iXsystems, Inc." on every .c)
+        |
+        v
+NextBSD (iXsystems-sponsored, Jordan Hubbard + Kip Macy, 2014-2016)
+   * lib/libxpc/ + lib/libdispatch/ + lib/liblaunch/ + sbin/launchd/
+   * github.com/NextBSD/NextBSD &mdash; dormant since early 2016
+        |
+        v
+airyxOS (~2021-2022)
+        |
+        v
+ravynOS (2022-present, history squashed 2025-09-28)
+   * Same skeleton, with substantive object-model cleanup
+   * github.com/ravynsoft/ravynos</code></pre>
+
+<p><strong>Apple has never released libxpc as source.</strong> The last published launchd was <code>launchd-842.92.1</code> in 2014; from OS X 10.10 onward, launchd's job-management logic was absorbed into the closed-source libxpc. Apple's <code>Libsystem</code> repo (<a href="https://github.com/apple-oss-distributions/Libsystem">apple-oss-distributions/Libsystem</a>, latest tag <code>Libsystem-1356</code> 2025-10-04) lists <code>xpc</code> as a binary dependency on line 28 of <code>requiredlibs</code> &mdash; that is the most public mention you get. The headers <code>/usr/include/xpc/*.h</code> ship in the macOS SDK as declarations only; no implementation.</p>
+
+<p>So when we say "port libxpc" we mean port the <strong>iXsystems / NextBSD skeleton</strong> &mdash; built against Apple's public headers but with the implementation written from scratch by a different team. We are not forking an Apple codebase. There is no opensource Apple libxpc to fork.</p>
+
+<h3>NextBSD vs ravynOS &mdash; how divergent are they?</h3>
+
+<p>Small in raw LoC, substantial in semantics. Both trees are at <code>lib/libxpc/</code> with identical 7-header layout and a shared bundled <code>libnv</code>. <code>diff -rq</code> shows 9 differing files; the XPC-specific changes ravynOS made on top of NextBSD (mostly around 2022, since squashed):</p>
+
+<ul>
+  <li><strong>Object-model refactor</strong> &mdash; ravynOS makes <code>xpc_connection</code> an embedded member of <code>struct xpc_object</code> with proper retain/release. NextBSD <code>malloc</code>s a bare struct. ravynOS routes everything through <code>_xpc_prim_create(_XPC_TYPE_CONNECTION, ...)</code>. Pre-requisite for real lifecycle management.</li>
+  <li><strong>Wire serialization fixes</strong> &mdash; NextBSD has commented-out <code>xpc_pack</code> calls and obviously wrong message sizes; ravynOS actually calls <code>xpc_pack(xo, NULL, &amp;size)</code> to measure, then <code>xpc_pack</code> to fill, frees properly. Real bug fix.</li>
+  <li><strong>New primitives</strong> &mdash; <code>xpc_fd_create</code> / <code>xpc_fd_dup</code> via FreeBSD <code>&lt;sys/fileport.h&gt;</code> (<code>fileport_makeport</code>/<code>fileport_makefd</code>). NextBSD had these commented out.</li>
+  <li><strong>vproc transaction tracking</strong>, <code>#ifdef AUDIT_BSM</code> guards, <code>xpc_dictionary_create_reply</code> type checking.</li>
+</ul>
+
+<p>NextBSD's own commit messages call its tree a "first pass" &mdash; one says verbatim "paper over disastrous state of libxpc by disabling Werror". ravynOS is closer to working code. <strong>Decision: fork from ravynOS, not NextBSD.</strong></p>
+
+<h3>Third-party forks worth knowing about</h3>
+
+<ul>
+  <li><strong>darling-libxpc</strong> (<a href="https://github.com/darlinghq/darling-libxpc">darlinghq/darling-libxpc</a>) &mdash; the most actively maintained third-party libxpc. 124 commits, post-2015 work, last meaningful commit 2023-09-21 (additional XPC_ACTIVITY keys). Forked from NextBSD's tree; 75% Objective-C / 23.5% C &mdash; heavily extended beyond the C-only base. Useful as a reference for newer XPC_ACTIVITY declarations and as a cross-check on API surface, but ObjC content won't apply unless we also port Darling's runtime, which we explicitly don't want.</li>
+  <li><strong>jceel/libxpc</strong> (<a href="https://github.com/jceel/libxpc">jceel/libxpc</a>) &mdash; same family. Last commit 2015-10-04 ("Add support for mach transport back ... runtime selection via XPC_TRANSPORT"). Useful only as historical reference.</li>
+  <li><strong>PureDarwin/XPC</strong> (<a href="https://github.com/PureDarwin/XPC">PureDarwin/XPC</a>) &mdash; explicit README: "compiles and runs but is currently untested ... implementation of xpc is incomplete, with several functions being no-ops". Skip.</li>
+</ul>
+
+<h2 id="sources">4. Where the source actually comes from</h2>
+
+<p>Concrete answers to "what sources can we get it from?":</p>
+
+<table>
+<thead><tr><th>Source</th><th>What's there</th><th>Verdict</th></tr></thead>
+<tbody>
+  <tr>
+    <td>Apple <code>opensource.apple.com</code></td>
+    <td>Public headers only (<code>xpc.h</code>, <code>connection.h</code>, etc. via macOS SDK). No implementation, ever. <code>Libsystem</code> repo links <code>xpc</code> as binary.</td>
+    <td><span class="pill pill-bad">unusable</span> for implementation</td>
+  </tr>
+  <tr>
+    <td><code>github.com/apple-oss-distributions/launchd</code></td>
+    <td>Last tag <code>launchd-842.92.1</code>, 2014-08-13 (OS X 10.9.x). Pre-libxpc-split. No XPC source.</td>
+    <td><span class="pill pill-warn">historical</span> reference only</td>
+  </tr>
+  <tr>
+    <td><strong>ravynOS <code>lib/libxpc/</code></strong></td>
+    <td>iXsystems skeleton + 2022-era cleanup. ~2,348 LoC of XPC logic + ~4,077 LoC bundled libnv. ~78 functions implemented across 5 .c files. FreeBSD <code>bsd.lib.mk</code> compatible.</td>
+    <td><span class="pill pill-good">fork from this</span></td>
+  </tr>
+  <tr>
+    <td>NextBSD <code>lib/libxpc/</code></td>
+    <td>Same skeleton, dormant since 2015. ~90 LoC behind ravynOS but semantically much less polished.</td>
+    <td><span class="pill pill-neutral">historical</span></td>
+  </tr>
+  <tr>
+    <td>darling-libxpc</td>
+    <td>NextBSD fork extended for Darling. Useful for newer activity-key declarations and as API cross-check.</td>
+    <td><span class="pill pill-neutral">reference</span></td>
+  </tr>
+</tbody>
+</table>
+
+<p><strong>Did Apple ever open-source libxpc? No.</strong> Public headers, yes; implementation, never. Every "libxpc" you can find on GitHub is descended from the iXsystems/Klama 2014-2015 reimplementation.</p>
+
+<p><strong>Did iXsystems contribute the source? Yes</strong> &mdash; via NextBSD, sponsored by iX (Jordan Hubbard was CTO at the time). Every <code>.c</code> file in both NextBSD and ravynOS trees carries <code>Copyright 2014-2015 iXsystems, Inc.</code> The implementation was written from scratch against Apple's public headers. ravynOS inherited from NextBSD (via airyxOS).</p>
+
+<h2 id="api">5. Public API surface</h2>
+
+<p>Public headers under <code>ravynos/lib/libxpc/xpc/</code> &mdash; 7 files, 169 <code>XPC_EXPORT</code> decorations total. Categorized:</p>
+
+<table>
+<thead><tr><th>Header</th><th>Lines</th><th>Surface</th></tr></thead>
+<tbody>
+  <tr>
+    <td><code>base.h</code></td>
+    <td>165</td>
+    <td>Attribute macros only (<code>XPC_EXPORT</code>, <code>XPC_NONNULL*</code>, <code>XPC_MALLOC</code>, <code>XPC_INLINE</code>). No functions. The bootstrap header.</td>
+  </tr>
+  <tr>
+    <td><code>xpc.h</code></td>
+    <td>2531</td>
+    <td>The umbrella header: refcount + type system (<code>xpc_retain/release/copy/equal/hash/get_type/copy_description</code>), <code>XPC_TYPE_*</code> globals, primitive constructors (null, bool, int64, uint64, double, date, data, string, uuid, fd, shmem), 24 array APIs, ~30 dictionary APIs, service-runtime (<code>xpc_main</code>, <code>xpc_transaction_begin/_end</code>). 113 exports.</td>
+  </tr>
+  <tr>
+    <td><code>connection.h</code></td>
+    <td>718</td>
+    <td>Connection lifecycle: <code>xpc_connection_create</code>, <code>xpc_connection_create_mach_service</code>, <code>xpc_connection_create_from_endpoint</code>, <code>set_target_queue/set_event_handler/suspend/resume/send_message/send_barrier/send_message_with_reply[_sync]/cancel</code>, peer-info (<code>get_euid/get_egid/get_pid/get_asid</code>), context/finalizer, error dictionaries. 24 exports.</td>
+  </tr>
+  <tr>
+    <td><code>activity.h</code></td>
+    <td>427</td>
+    <td>Background scheduling (<code>xpc_activity_register</code>, criteria dictionaries, defer/state). 29 exports, <strong>stubbed/unimplemented</strong> in this tree (no <code>xpc_activity.c</code>).</td>
+  </tr>
+  <tr>
+    <td><code>endpoint.h</code></td>
+    <td>22</td>
+    <td>One function: <code>xpc_endpoint_create</code>.</td>
+  </tr>
+  <tr>
+    <td><code>debug.h</code></td>
+    <td>23</td>
+    <td><code>xpc_debugger_api_misuse_info</code>.</td>
+  </tr>
+  <tr>
+    <td><code>launchd.h</code></td>
+    <td>24</td>
+    <td>Project-specific surface that substitutes Apple's private <code>xpc/private.h</code>: <code>xpc_strerror</code>, <code>xpc_copy_entitlement_for_token</code>, <code>xpc_pipe_routine_reply</code>, <code>xpc_pipe_try_receive</code>, <code>xpc_call_wakeup</code>, <code>xpc_dictionary_{set_mach_recv,set_mach_send,copy_mach_send}</code>, <code>xpc_dictionary_get_audit_token</code>, <code>xpc_copy_entitlements_for_pid</code>, <code>ld2xpc(launch_data_t)</code>.</td>
+  </tr>
+</tbody>
+</table>
+
+<p><strong>Net real entry-point count: ~70.</strong> The 169 raw export count is misleading &mdash; ~100 of those are constants, error-dictionary globals, and type-token symbols. The 78 functions implemented in the .c files map to roughly the right surface for an MVP.</p>
+
+<h2 id="deps">6. Dependencies</h2>
+
+<h3>libdispatch &mdash; hard dependency</h3>
+
+<p>libxpc cannot exist without libdispatch underneath. Connection event handlers run on dispatch queues; message delivery uses <code>dispatch_source_create</code> with <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code>. From the ravynOS tree, libxpc calls:</p>
+
+<ul>
+  <li><strong>Queues:</strong> <code>dispatch_queue_create</code>, <code>dispatch_get_main_queue</code>, <code>dispatch_get_global_queue</code>, <code>dispatch_async</code>, <code>dispatch_sync</code>, <code>dispatch_main</code>, <code>dispatch_release</code>, <code>dispatch_suspend</code>, <code>dispatch_resume</code>, <code>dispatch_set_context</code>.</li>
+  <li><strong>Sources:</strong> <code>dispatch_source_create</code> with <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code>, <code>dispatch_source_set_event_handler_f</code>.</li>
+  <li><strong>Semaphores:</strong> <code>dispatch_semaphore_create/_signal/_wait</code>, <code>DISPATCH_TIME_FOREVER</code>.</li>
+  <li><strong>Blocks:</strong> <code>Block_copy</code>, <code>Block_release</code>, <code>dispatch_block_t</code>.</li>
+</ul>
+
+<p>Per the <code>gershwin-on-freebsd</code> integration, libdispatch is already shipping via gershwin-developer at <code>/System/Library/Libraries</code>. <strong>Critical verification needed:</strong> the libdispatch we have must actually wire <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> to Mach ports, not just expose the symbol. If gershwin's libdispatch was built for a pre-Mach FreeBSD, we may need to rebuild it against our mach.ko-exposed primitives.</p>
+
+<h3>Mach IPC &mdash; partial dependency on our existing mach.ko</h3>
+
+<p>libxpc calls into Mach from <code>xpc_connection.c</code> and <code>xpc_misc.c</code>. Status against what <code>freebsd-launchd-mach</code> currently wires:</p>
+
+<table>
+<thead><tr><th>Mach call</th><th>Status in mach.ko</th><th>Action needed</th></tr></thead>
+<tbody>
+  <tr><td><code>mach_task_self()</code></td><td><span class="pill pill-good">wired</span> as <code>task_self_trap</code> via libmach</td><td>none</td></tr>
+  <tr><td><code>mach_msg_send / mach_msg</code></td><td><span class="pill pill-good">wired</span> as <code>mach_msg_trap</code> via libmach (6-arg)</td><td>verify <code>MACH_RCV_TRAILER_AUDIT</code> trailer population</td></tr>
+  <tr><td><code>mach_port_allocate(task, MACH_PORT_RIGHT_RECEIVE, &amp;p)</code></td><td><span class="pill pill-bad">not wired</span></td><td>add <code>_kernelrpc_mach_port_allocate_trap</code></td></tr>
+  <tr><td><code>mach_port_insert_right(task, name, port, type)</code></td><td><span class="pill pill-bad">not wired</span></td><td>add <code>_kernelrpc_mach_port_insert_right_trap</code></td></tr>
+  <tr><td><code>mach_port_deallocate(task, port)</code></td><td><span class="pill pill-bad">not wired</span></td><td>add <code>_kernelrpc_mach_port_deallocate_trap</code></td></tr>
+  <tr><td><code>task_get_special_port / task_set_special_port</code></td><td><span class="pill pill-bad">not wired</span></td><td>typically MIG RPC over task port, not direct trap; needs liblaunch-side stub</td></tr>
+  <tr><td><code>bootstrap_check_in / bootstrap_look_up</code></td><td><span class="pill pill-bad">not wired</span></td><td><strong>biggest gap:</strong> needs a userspace bootstrap server (launchd's bootstrap subsystem) plus MIG-generated <code>_bootstrap_*</code> stubs plus a <code>bootstrap_port</code> task-special-port slot</td></tr>
+</tbody>
+</table>
+
+<p>Bottom line: we have <em>messaging</em> working from userland. We do not yet have <em>port management</em> from userland, and we do not have a <em>name service</em> at all. The bootstrap-server gap is the single biggest piece &mdash; it implies a launchd-Mach-helper running as PID 1 (or thereabouts) that owns the bootstrap port and answers <code>bootstrap_look_up</code> calls. The good news: NextBSD/ravynOS have a working bootstrap server we can inherit.</p>
+
+<h3>libnv &mdash; FreeBSD-native serialization</h3>
+
+<p>The NextBSD/ravynOS libxpc uses FreeBSD's <code>libnv</code> (nv-list) for wire serialization, not Apple's bplist. The two libnv files (<code>subr_nvlist.c</code> 2,572 lines, <code>subr_nvpair.c</code> 1,505 lines) are <strong>bundled inside libxpc</strong> in both trees &mdash; they dominate the line count (~62% of total). This is a design departure: XPC objects get converted to nvlist, packed via <code>nvlist_pack_buffer</code>, sent over Mach.</p>
+
+<p>Implication: we can never bit-exchange messages with a real macOS app. That's fine for our use case &mdash; everything in the stack will be FreeBSD-native binaries. The compatibility we keep is at the source level (Apple-shape API) not the wire level.</p>
+
+<h3>Other</h3>
+
+<ul>
+  <li><strong>libbsm</strong> (audit) &mdash; <code>audit_token_to_au32</code>, <code>audit_token_t</code>, <code>au_asid_t</code>. Gated behind <code>#ifdef AUDIT_BSM</code>. FreeBSD has libbsm; should work.</li>
+  <li><strong>fileport</strong> &mdash; <code>fileport_makeport</code> / <code>fileport_makefd</code> for sending fds via Mach. Apple-private syscalls. Need a FreeBSD shim &mdash; either extend mach.ko to expose equivalent traps, or use Unix-domain <code>SCM_RIGHTS</code> as a fallback transport.</li>
+  <li><strong>vproc / liblaunch</strong> &mdash; <code>vproc_transaction_begin/_end</code>, <code>launch_data_t</code> (for <code>ld2xpc</code>). The legacy liblaunch API is what <code>freebsd-launchd</code> already has working; integration is straightforward.</li>
+  <li><strong>FreeBSD-isms</strong> &mdash; <code>sbuf</code>, <code>TAILQ_*</code>, FreeBSD-native <code>uuid_to_string</code>, <code>atomic_*</code> from <code>&lt;machine/atomic.h&gt;</code>. Already what NextBSD/ravynOS use; no change needed.</li>
+  <li><strong>No CoreFoundation, no Foundation.</strong> The C-only build path skips Apple's plist wire format entirely. Good for our scope.</li>
+</ul>
+
+<h2 id="mvp">7. MVP subset for launchd</h2>
+
+<p>The realistic libxpc-for-launchd surface, by tier:</p>
+
+<h3>Tier 1 &mdash; launchd alone (~35 functions, 7 wrapped types)</h3>
+
+<p><strong>Types:</strong> <code>xpc_object_t</code>, <code>xpc_type_t</code>, <code>xpc_dictionary</code>, <code>xpc_array</code>, <code>xpc_string</code>, <code>xpc_int64</code>, <code>xpc_uint64</code>, <code>xpc_bool</code>, plus the <code>_xpc_type_*</code> global symbols.</p>
+
+<p><strong>Lifecycle / introspection:</strong> <code>xpc_retain</code>, <code>xpc_release</code>, <code>xpc_get_type</code>, <code>xpc_copy</code>, <code>xpc_copy_description</code>, <code>xpc_strerror</code>.</p>
+
+<p><strong>Dictionary:</strong> <code>xpc_dictionary_create</code>, <code>xpc_dictionary_create_reply</code>, <code>xpc_dictionary_get_value/set_value</code>, <code>get_string/set_string</code>, <code>get_int64/set_int64</code>, <code>get_uint64/set_uint64</code>, <code>get_bool</code>.</p>
+
+<p><strong>Array:</strong> <code>xpc_array_create</code>, <code>xpc_array_append_value</code>, <code>xpc_array_set_string</code>, <code>xpc_array_set_uint64</code>.</p>
+
+<p><strong>Scalars:</strong> <code>xpc_bool_get_value</code>, <code>xpc_uint64_get_value</code>, <code>xpc_int64_get_value</code>.</p>
+
+<p><strong>Mach-tied (depends on mach.ko expansion):</strong> <code>xpc_dictionary_set_mach_send</code>, <code>set_mach_recv</code>, <code>copy_mach_send</code>, <code>xpc_dictionary_get_audit_token</code>, <code>xpc_pipe_try_receive</code>, <code>xpc_pipe_routine_reply</code>. These are the chokepoint &mdash; the entire NextBSD launchd dispatch loop in <code>runtime.c</code> runs on <code>xpc_pipe_try_receive</code> against a Mach port set.</p>
+
+<h3>Tier 2 &mdash; adds configd and aslmanager (~25 more functions)</h3>
+
+<p>The major addition is the <strong>xpc_connection client API</strong>: <code>xpc_connection_create_mach_service</code>, <code>set_event_handler</code>, <code>resume</code>, <code>send_message</code>, <code>send_message_with_reply_sync</code>, <code>cancel</code>, <code>get_pid/euid/egid</code>, <code>set_target_queue</code>, <code>set_context/get_context</code>, <code>set_finalizer_f</code>, <code>xpc_dictionary_get_remote_connection</code>. Plus <code>xpc_create_from_plist</code>, <code>xpc_data_create/get_bytes_ptr/get_length</code>, <code>xpc_dictionary_set_data/get_data</code>, <code>set_uuid/get_uuid</code>, <code>set_bool</code>, <code>xpc_dictionary_apply</code>, <code>get_count</code>, <code>xpc_connection_copy_entitlement_value</code>.</p>
+
+<p>NextBSD's <code>lib/libxpc/xpc_connection.c</code> (501 lines) is the natural starting point and already speaks nvlist-over-Mach.</p>
+
+<h3>Tier 3 &mdash; defer or stub</h3>
+
+<ul>
+  <li><strong>Jetsam / process attach</strong> (<code>xpc_process_attach/detach</code>, <code>xpc_process_set_jetsam_band/memory_limit</code>) &mdash; Apple kernel-level memory pressure hooks. No FreeBSD analog. Stub to ENOTSUP.</li>
+  <li><strong>Activities / transactions</strong> (<code>xpc_transaction_begin/_end</code>, <code>xpc_track_activity</code>, <code>xpc_set_event_stream_handler</code>) &mdash; power-management state machine. Safe to stub as no-ops.</li>
+  <li><strong>Domains</strong> (<code>xpc_domain_check_in</code>, <code>xpc_domain_load_services</code>, <code>xpc_singleton_domain</code>, etc.) &mdash; implemented <em>inside</em> launchd, not in libxpc proper. Not blockers.</li>
+  <li><strong>Event channels</strong> (<code>xpc_event_channel_check_in/look_up</code>) &mdash; same, launchd-internal.</li>
+  <li><strong>NSXPCConnection / Obj-C bridge</strong> &mdash; not used by launchd. Entirely deferrable.</li>
+  <li><strong>xpc_shmem_*, xpc_endpoint_*, xpc_string_create_with_format*</strong> &mdash; zero hits in launchd. Defer.</li>
+</ul>
+
+<p><strong>Honest summary:</strong> ~35 functions for launchd-only, ~60 for launchd+configd, ~70 for everything our daemon stack actually needs. NextBSD's tree at ~7k LoC (including bundled libnv) is roughly the right size. The cost is dominated not by libxpc proper but by the <em>prerequisites</em>: (a) bootstrap server + bootstrap_port; (b) Mach port-right management traps in mach.ko; (c) audit-trailer support; (d) fileport shim; (e) verified libdispatch Mach-receive source.</p>
+
+<h2 id="related">8. Related-daemon completeness audit</h2>
+
+<p>To right-size the libxpc effort it helps to know how complete the daemons we'd build on top are. Three audited here.</p>
+
+<h3>launchd</h3>
+
+<p><span class="pill pill-good">Reference</span> Apple <code>launchd-842.92.1</code> at <a href="https://github.com/apple-oss-distributions/launchd">apple-oss-distributions/launchd</a> &mdash; the last open source, 2014. <code>src/core.c</code> alone is ~12k lines. Pre-libxpc-split: even Apple-2014 is behind modern macOS launchd, where job management migrated into closed libxpc.</p>
+
+<table>
+<thead><tr><th>Tree</th><th>LoC (launchd proper)</th><th>Mach / MIG</th><th>Stub markers</th><th>State</th></tr></thead>
+<tbody>
+  <tr>
+    <td><code>freebsd-launchd</code> (this project's port)</td>
+    <td>1,496 + 1,467 liblaunch</td>
+    <td>none (intentional)</td>
+    <td>2 (documenting <code>#if 0</code> for the corebase plist parser)</td>
+    <td><span class="pill pill-warn">partial</span> &mdash; clean rewrite on libdispatch + AF_UNIX, boots, ~7% of Apple's body, supports daemon subset for FreeBSD as PID 1. Uses GNUstep's <code>NSPropertyListSerialization</code> for plist parsing.</td>
+  </tr>
+  <tr>
+    <td>NextBSD</td>
+    <td>16,391 + 4,661 liblaunch</td>
+    <td>full (8 MIG .defs)</td>
+    <td>34</td>
+    <td><span class="pill pill-good">near-Apple-2014-parity</span> on NextBSD's xnu-derived kernel. Won't build on stock FreeBSD. Dormant since 2016.</td>
+  </tr>
+  <tr>
+    <td>ravynOS</td>
+    <td>16,469 + 4,661 liblaunch</td>
+    <td>full</td>
+    <td>36</td>
+    <td><span class="pill pill-good">NextBSD + ~150 lines of FreeBSD-15 fixes</span>: <code>&lt;Availability.h&gt;</code> include, build flags, audit-session workaround, per-user env file. Squashed history (2025-09-28), so per-change provenance gone.</td>
+  </tr>
+</tbody>
+</table>
+
+<p><strong>Critical missing pieces from <code>freebsd-launchd</code>:</strong> EnvironmentVariables, StartCalendarInterval, WorkingDirectory, UserName/GroupName, StandardOut/ErrorPath, Umask, ThrottleInterval, <code>launchctl load -w</code>, enable/disable, override-file mechanism. Per <a href="freebsd-launchd-plan.html"><code>freebsd-launchd-plan</code></a>'s matrix &mdash; Phase 5 batch is the remaining work.</p>
+
+<p><strong>Decision-critical:</strong> The NextBSD/ravynOS launchd is closer to Apple parity but only runs on a Mach-coupled kernel. Now that our <code>mach.ko</code> exists, we could theoretically <em>swap forward</em> &mdash; replace <code>freebsd-launchd</code>'s daemon with NextBSD/ravynOS's launchd source built against our libmach + libxpc. The cost is wiring all the missing Mach port traps (see <a href="#deps">&sect;6</a>) and getting the bootstrap server alive. The benefit is jumping from 1,500 LoC of hand-coded subset to 16k LoC of battle-tested Apple-shape code. <strong>This swap is enabled by libxpc.</strong></p>
+
+<h3>configd / SystemConfiguration</h3>
+
+<p><span class="pill pill-good">Reference</span> Apple <a href="https://github.com/apple-oss-distributions/configd">apple-oss-distributions/configd</a> &mdash; latest tag <code>configd-1405.100.8</code> (2026-04-13). The framework (SystemConfiguration) lives <em>inside</em> the configd repo, not a separate one.</p>
+
+<table>
+<thead><tr><th>Tree</th><th>Source present?</th><th>State</th></tr></thead>
+<tbody>
+  <tr>
+    <td><code>freebsd-launchd/configd/</code></td>
+    <td>Yes &mdash; verbatim Apple <code>configd-963.270.3</code> (133K LoC, 280 source files)</td>
+    <td><span class="pill pill-warn">demo / proof-of-concept</span> &mdash; sources imported but only a 95-line GNUstep Obj-C banner stub (<code>NCDaemon.m</code>) compiles. The 133K-LoC Apple tree sits beside it, uncompiled.</td>
+  </tr>
+  <tr>
+    <td>ravynOS</td>
+    <td>No</td>
+    <td><span class="pill pill-bad">absent</span> &mdash; ravynOS has a rich frameworks/ tree (CF, AppKit, Foundation, CFNetwork) but no SystemConfiguration.</td>
+  </tr>
+  <tr>
+    <td>NextBSD</td>
+    <td>No</td>
+    <td><span class="pill pill-bad">absent</span> &mdash; never imported configd.</td>
+  </tr>
+</tbody>
+</table>
+
+<p><strong>Subsystems present in the imported tree:</strong> SCDynamicStore (the key-value store), SCPreferences (plist-backed config), SCNetworkConfiguration/Service/Interface/Protocol/Set/Reachability, IPMonitor (19,181 LoC), KernelEventMonitor (FreeBSD <code>ev_ipv4/ipv6/dlil</code> bridge), LinkConfiguration, PreferencesMonitor, scutil CLI, dnsinfo, nwi, libSystemConfiguration (XPC client helper).</p>
+
+<p><strong>Gap to functional:</strong></p>
+<ol>
+  <li>MIG <code>.defs</code> missing from the import &mdash; <code>configd_server.c</code>, <code>notify_server.c</code>, <code>_SCD.c</code> all expect generated stubs.</li>
+  <li><strong>libxpc must be running first</strong> (452 <code>xpc_*</code> call sites). This is why libxpc is the unblocker for configd.</li>
+  <li>21 <code>bootstrap_*</code> / <code>mach_port_*</code> sites need real Mach support.</li>
+  <li>FreeBSD <code>bmake</code> / <code>cmake</code> build for <code>libSystemConfiguration.so</code>, <code>SystemConfiguration.framework</code>, <code>configd</code> daemon, <code>scutil</code>. Currently zero of 280 source files are wired into the build.</li>
+  <li>Plist schema files (<code>PrivateStrings.plist</code>, <code>NetworkConfiguration.plist</code>) need install rules.</li>
+  <li>KernelEventMonitor BSD bridge (<code>ev_ipv4.c</code>/<code>ev_ipv6.c</code>) already uses PF_ROUTE/sysctl &mdash; FreeBSD-friendly, minor adapting only.</li>
+  <li>Upgrade decision: staying on <code>963.270.3</code> (~2020) misses 6+ years of bugfixes / new subsystems (CategoryManager, netconfig, QoSMarking). Jumping to <code>1405.100.8</code> adds those but expands surface.</li>
+</ol>
+
+<p>The good news: <strong>Apple's code in this tree is implemented, not stubbed</strong> (0 <code>UNIMPLEMENTED</code>, 1 <code>TODO</code>, 12 <code>XXX</code>). It's a verbatim Apple import. What's missing is everything <em>around</em> it: build glue, libxpc backend, MIG .defs, kernel-event-monitor adapters, launchd plist, the netconfigd driver that wires it together. Per <a href="freebsd-configd-plan.html"><code>freebsd-configd-plan</code></a>'s phasing.</p>
+
+<h3>IPConfiguration</h3>
+
+<p><span class="pill pill-good">Reference</span> Apple <a href="https://github.com/apple-oss-distributions/bootp">apple-oss-distributions/bootp</a> &mdash; latest tag <code>bootp-534.100.6</code> (2026-04-17). The tarball ships multiple binaries: IPConfiguration (DHCPv4/v6/IPv4LL/RA/SLAAC client), IPConfiguration_framework, IPConfigurationHelper (XPC), ipconfig CLI, bootplib, bootpd (server, replaces CMU's), dhcp6d, rtadvd, NetBoot/BSDP. Total ~74k LoC for the in-scope client-side surface.</p>
+
+<table>
+<thead><tr><th>Tree</th><th>Source present?</th><th>State</th></tr></thead>
+<tbody>
+  <tr>
+    <td><code>freebsd-launchd</code></td>
+    <td>No (Apple-side)</td>
+    <td><span class="pill pill-warn">paper plan only</span> &mdash; <a href="freebsd-ipconfiguration-plan.html"><code>freebsd-ipconfiguration-plan</code></a> exists with DEFERRED pill. Today's livecd uses <code>dhcpcd</code> (Roy Marples) via <code>org.freebsd.dhcpcd.plist</code>. <code>configd/src/SystemConfiguration.fproj/DHCP.c</code> exists but it's the <em>client-side</em> SC API that reads DHCP info from the dynamic store &mdash; not a client.</td>
+  </tr>
+  <tr>
+    <td>ravynOS</td>
+    <td>No</td>
+    <td><span class="pill pill-bad">absent</span> &mdash; uses CMU <code>bootpd</code> + standard FreeBSD <code>dhclient</code>.</td>
+  </tr>
+  <tr>
+    <td>NextBSD</td>
+    <td>No</td>
+    <td><span class="pill pill-bad">absent</span> &mdash; same as ravynOS.</td>
+  </tr>
+</tbody>
+</table>
+
+<p><strong>Apple deps that don't exist on FreeBSD</strong> (per <code>freebsd-ipconfiguration-plan</code> §7):</p>
+<ul>
+  <li><strong>SystemConfiguration framework / SCDynamicStore</strong> &mdash; partially present (in configd import), needs Phase 2 of configd work.</li>
+  <li><strong>IOKit</strong> &mdash; <code>IORegisterForSystemPower</code>, <code>IOPMConnectionCreate</code>, etc. Sleep-coordinated lease renewal is dropped in v1.</li>
+  <li><strong>Apple80211 / IO80211</strong> &mdash; ~789 LoC to rewrite as a <code>wpa_supplicant</code> control-socket reader.</li>
+  <li><strong>EAPOL / 802.1X</strong> &mdash; routed through wpa_supplicant if needed.</li>
+  <li><strong>MobileGestalt</strong> &mdash; one call; one-line stub returning <code>"FreeBSD"</code>.</li>
+  <li><strong>SymptomReporter / AWD telemetry</strong> &mdash; delete entirely.</li>
+  <li><strong>CLAT46 / L4S ioctls</strong> &mdash; <code>#ifdef __APPLE__</code> out.</li>
+  <li><strong>Mach IPC / MIG</strong> &mdash; the 196-line <code>bootplib/ipconfig.defs</code> (21 routines) plus <code>server.c</code> (654 LoC) plus three client TUs. Plan: GNUstep Distributed Objects over AF_UNIX, or routed via libxpc once we have it.</li>
+  <li><strong>libdispatch</strong> &mdash; IPConfiguration uses dispatch heavily (<code>timer.c</code> + <code>FDSet.c</code> ~494 LoC). Already available.</li>
+</ul>
+
+<p><strong>Recommendation:</strong> follow the existing plan &mdash; defer IPConfiguration porting until configd Phases 2/3 are real and libxpc is in place. For the livecd today, <code>dhcpcd</code> covers DHCPv4 + DHCPv6 + IPv4LL adequately and is mature/cross-platform. The estimated ~6-9 person-month cost of a full IPConfiguration port is best spent <em>after</em> configd's SCDynamicStore is functional, because IPConfiguration consumes SC keys for half its decisions.</p>
+
+<h2 id="gnustep">9. GNUstep compatibility &mdash; libobjc2, corebase, Foundation</h2>
+
+<p>Project rule from <code>scope_split</code>: GNUstep owns the framework / application layer (libobjc2, Foundation, Base, GUI, Back). Apple source covers only the system-services layer (Mach, launchd, configd, notifyd, asl, libdispatch, libxpc, liblaunch). The userland stays ELF, not Mach-O. Question: does libxpc's port fit cleanly inside that rule, or does it force adopting Apple's ObjC runtime / Foundation?</p>
+
+<div class="callout callout-good">
+<p><strong>libxpc itself fits cleanly. The fork we're using is pure C with zero Objective-C runtime dependency.</strong> GNUstep stays on the application side. You will not have to use Apple's libobjc.</p>
+</div>
+
+<div class="callout callout-warn">
+<p><strong>But the surrounding stack has real gaps that need work.</strong> Audited 2026-05-11 against the <code>gershwin-developer/Library/Sources/</code> tree:</p>
+<ul>
+<li><strong>swift-corelibs-libdispatch</strong> is pristine upstream &mdash; <code>HAVE_MACH</code> is autodetected from <code>&lt;mach/mach.h&gt;</code> presence, off on FreeBSD, so <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> is unresolved at link. Needs a new backend (see &sect;9.4 below).</li>
+<li><strong>libs-corebase</strong> covers value-type CF (String/Dict/Array/Number/Data/Date/PropertyList) but is missing <strong>CFMachPort entirely</strong>, has a TODO stub for <strong>CFRunLoop version1 (Mach) sources</strong>, and is missing <strong>CFPreferences entirely</strong> &mdash; the three pieces configd's IPC main loop depends on. See &sect;9.5.</li>
+</ul>
+</div>
+
+<h3>libxpc itself</h3>
+
+<p>The ravynOS / NextBSD libxpc implementation (<code>lib/libxpc/</code>) compiles as plain C. From the API-surface audit:</p>
+
+<ul>
+  <li><strong><code>xpc_object_t</code> is just <code>void *</code></strong> when <code>OS_OBJECT_USE_OBJC</code> is undefined. The <code>&lt;os/object.h&gt;</code> header is pulled in only for ObjC ARC builds. Our build sets <code>OS_OBJECT_USE_OBJC=0</code> and gets pure C.</li>
+  <li><strong>No CoreFoundation</strong> in any libxpc <code>.c</code> file. No <code>CFStringRef</code>, no <code>CFDictionaryRef</code>, no <code>CFRunLoop</code>.</li>
+  <li><strong>No Foundation.</strong> Serialization is libnv-over-Mach, not bplist-over-Mach. <code>NSPropertyListSerialization</code> is not in the picture.</li>
+  <li><strong>No <code>NSXPCConnection</code>.</strong> The Objective-C connection wrapper from Apple's Foundation is out of scope; <code>scope_split</code> excludes adopting Apple's Foundation.</li>
+</ul>
+
+<p>So a libxpc consumer written in pure C (launchd, configd, asl, mDNSResponder) links <code>-lxpc</code> and never touches an Obj-C runtime through libxpc.</p>
+
+<h3>GNUstep apps consuming libxpc</h3>
+
+<p>A GNUstep / libobjc2 application that wants to talk to a launchd-managed service has two options:</p>
+<ol>
+  <li><strong>Call libxpc C API directly</strong> &mdash; <code>xpc_connection_create_mach_service</code>, set an event handler, send dictionaries. This is what launchd-managed daemons already use internally. No Foundation bridge needed.</li>
+  <li><strong>Write a GNUstep-Foundation wrapper</strong> if Cocoa-shape <code>NSXPCConnection</code> ergonomics are wanted. This would be a new project &mdash; GNUstep doesn't ship one today. <strong>Not in scope</strong> for this plan; revisit only if a downstream consumer demands it.</li>
+</ol>
+
+<h3>9.4. swift-corelibs-libdispatch &mdash; Mach RECV is unresolved on FreeBSD</h3>
+
+<p>Audit of <code>gershwin-developer/Library/Sources/swift-corelibs-libdispatch/</code>:</p>
+
+<ul>
+  <li><strong>Pristine upstream</strong> from <code>apple/swift-corelibs-libdispatch</code>. No Gershwin patches. Branch <code>main</code>, clean working tree.</li>
+  <li><strong><code>HAVE_MACH</code> is the single switch</strong>, set at <code>CMakeLists.txt:211</code> by <code>check_include_files("mach/mach.h" HAVE_MACH)</code>. Autodetected from header presence only; no user-facing flag. On FreeBSD default: HAVE_MACH is <strong>off</strong>.</li>
+  <li><strong><code>DISPATCH_SOURCE_TYPE_MACH_RECV</code></strong> is declared in <code>dispatch/source.h:128</code> (decorated only with <code>DISPATCH_LINUX_UNAVAILABLE()</code>, not FreeBSD-unavailable). The underlying object <code>_dispatch_source_type_mach_recv</code> is defined exactly once, in <code>src/event/event_kevent.c:3249</code>, inside an <code>#if HAVE_MACH</code> block. <strong>No <code>#else</code> fallback, no kqueue emulation, no ENOTSUP path.</strong></li>
+  <li><strong>If HAVE_MACH is off, the symbol simply does not exist</strong> — referencing it from libxpc would produce an unresolved-symbol link error.</li>
+  <li><strong>Force-enabling HAVE_MACH is not viable.</strong> <code>src/event/event_kevent.c</code> uses <code>EVFILT_MACHPORT</code> (a Darwin-only kevent filter, not in FreeBSD's <code>sys/event.h</code>). <code>src/mach.c</code> (3,250 lines, entirely <code>#if HAVE_MACH</code>) assumes the full XNU Mach ABI: <code>MACH_NOTIFY_DEAD_NAME</code>, <code>MACH_NOTIFY_SEND_POSSIBLE</code>, vouchers, MIG, <code>mach_port_construct</code>. None of which we have in mach.ko.</li>
+</ul>
+
+<p><strong>Path forward, ranked:</strong></p>
+<ol>
+  <li><strong>Minimal viable backend (recommended).</strong> Add a new file, e.g. <code>src/event/event_mach_freebsd.c</code>, gated on <code>__FreeBSD__</code>. Define <code>_dispatch_source_type_mach_recv</code> using either: (a) a polling thread per source that calls <code>mach_msg_trap(MACH_RCV_MSG | MACH_RCV_TIMEOUT)</code> with timeout=0 and a wakeup mechanism, or (b) a kqueue user filter that the kernel signals when a Mach message arrives (would need an EVFILT_MACHPORT shim in mach.ko). Skip <code>src/mach.c</code> entirely &mdash; libxpc only uses <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code>, not the <code>dispatch_mach_t</code> channel SPI.</li>
+  <li><strong>Full Mach backend.</strong> Add <code>EVFILT_MACHPORT</code> to FreeBSD kqueue in mach.ko, then flip <code>HAVE_MACH=1</code>. Still need stubs for <code>mach_port_construct</code>, dead-name notifications, vouchers &mdash; most of <code>src/mach.c</code> won't link without them. Multi-week scope.</li>
+</ol>
+
+<div class="callout callout-warn">
+<p><strong>Phase 0 verification (the simple "does it work?" test) won't pass as-is.</strong> Gershwin's libdispatch needs at minimum a new backend file (Path 1 above), which is ~500-1000 lines of code. This is real work, not a build-flag flip. Plan accordingly.</p>
+</div>
+
+<h3>9.5. libs-corebase &mdash; covers value types, gaps locallyh IPC</h3>
+
+<p>Audit of <code>gershwin-developer/Library/Sources/libs-corebase/</code> vs <code>freebsd-launchd/configd/</code> (the 126,707-LoC verbatim Apple configd import):</p>
+
+<p><strong>libs-corebase scope:</strong> GNUstep CoreBase, version 0.2, LGPL. Standard GNUstep build (configure.ac, Headers/CoreFoundation/, Source/). Last meaningful activity 2021-09 / 2022-09 &mdash; primarily Windows build fixes and ICU API updates. Stable, partial-by-design, not actively developed.</p>
+
+<table>
+<thead><tr><th>CF area</th><th>corebase</th><th>configd impact</th></tr></thead>
+<tbody>
+  <tr><td>CFString / CFDictionary / CFArray / CFNumber / CFData / CFDate / CFTimeZone / CFCalendar</td><td><span class="pill pill-good">PRESENT</span> ICU-backed, ~5,500 String calls / 1,900 Dict / 1,800 Array in configd should all link</td><td>Compiles</td></tr>
+  <tr><td>CFPropertyList (XML + binary plist)</td><td><span class="pill pill-good">PRESENT</span> 1561 lines, both directions</td><td>SCPreferences plist parsing works</td></tr>
+  <tr><td>CFURL / CFCharacterSet / CFUUID / CFXMLParser / CFLocale / CFNumberFormatter</td><td><span class="pill pill-good">PRESENT</span></td><td>Fine</td></tr>
+  <tr><td>CFRunLoop</td><td><span class="pill pill-warn">PARTIAL</span> sources0 + timers + observers work; <strong>CFRunLoopProcessSourcesVersion1 is a literal TODO stub</strong> at <code>CFRunLoop.c:567-585</code></td><td><strong>BREAKS configd IPC</strong> &mdash; <code>server_loop()</code> in <code>configd_server.c</code> won't dispatch Mach messages</td></tr>
+  <tr><td><strong>CFMachPort</strong></td><td><span class="pill pill-bad">ABSENT</span> no header, no source</td><td><strong>BREAKS configd IPC</strong> &mdash; 80 calls across configd_server.c, session.c, _configopen.c, dns-configuration.c, SCDPlugin.c, SCDPrivate.c, SCHelper_server.c. ~9 functions need implementing (Create, CreateWithPort, CreateRunLoopSource, GetPort, Invalidate, ...).</td></tr>
+  <tr><td><strong>CFPreferences</strong></td><td><span class="pill pill-bad">ABSENT</span></td><td><strong>BREAKS SCPreferences / PreferencesMonitor plugin</strong> &mdash; ~22 calls</td></tr>
+  <tr><td>CFBundle</td><td><span class="pill pill-warn">PARTIAL</span> 268-line NSBundle-backed shim; ~22 functions but missing <code>CFBundleCreateBundlesFromDirectory</code>, <code>CFBundleCopyLocalizedString</code>, <code>CFBundleCopyNonLocalizedString</code>, <code>_CFBundleCachedInfo*</code></td><td><strong>BREAKS configd plugin loader</strong> in <code>plugin_support.c</code>. Also drags in GNUstep ObjC base as transitive dep &mdash; contradicts "configd is plain C against CF".</td></tr>
+  <tr><td>CFPlugIn / CFUserNotification / CFHost / CFHTTPMessage / CFXPC</td><td><span class="pill pill-bad">ABSENT</span></td><td>Peripheral subsystems &mdash; can <code>#ifdef</code> out for headless configd</td></tr>
+  <tr><td>CFNotificationCenter</td><td><span class="pill pill-bad">ABSENT</span></td><td>configd does not use it &mdash; N/A</td></tr>
+</tbody>
+</table>
+
+<p><strong>Plus Apple-private CF extensions</strong> used by configd that exist <em>nowhere</em> open-source except Apple's CF-Lite drop: <code>CFStringIsValidNetBIOSName</code>, <code>CFStringIsValidDNSName</code>, <code>CFStringCreateWithInAddr</code>, <code>CFStringCreateWithIn6Addr</code>, <code>CFDataCopyVMData</code>, <code>CFDataCreateVMData</code>, <code>CFStringGetInstallationEncodingAndRegion</code>, <code>CFXPCCreateCFObjectFromXPCObject</code>, <code>_CFBundleCachedInfo*</code>.</p>
+
+<h4>Recommended path: hybrid corebase + CF-Lite</h4>
+
+<div class="callout callout-good">
+<p>Use <strong>libs-corebase</strong> for the value-type half (String/Dict/Array/Number/Data/Date/PropertyList/URL/Calendar/Locale). Pull <strong>CFMachPort.c</strong>, <strong>CFRunLoop.c</strong> (or just version1 dispatch), <strong>CFBundle.c</strong>, <strong>CFPreferences.c</strong> from Apple's last open-source <strong>CF-Lite</strong> (CF-1153.18, ~2017, opensource.apple.com). Write a thin shim for the half-dozen private <code>_CF</code> helpers configd uses.</p>
+<p><strong>CF-Lite is plain C &mdash; not Foundation, not Objective-C.</strong> Importing it does NOT violate the <code>scope_split</code> rule against adopting Apple's ObjC/Foundation. It's the same shape of import as the configd source you already have at <code>freebsd-launchd/configd/</code>.</p>
+</div>
+
+<p>This hybrid:</p>
+<ul>
+  <li>Keeps GNUstep's libobjc2 / Foundation / Base / GUI / Back firmly on the application side &mdash; nothing changes there.</li>
+  <li>Adds CF-Lite alongside corebase. They compile into the same <code>libCoreFoundation.so</code> (with CF-Lite parts winning over corebase's stubs for the overlap); or ship two distinct libraries with explicit linking choices.</li>
+  <li>Sidesteps GNUstep CFBundle's ObjC dependency by using CF-Lite's <code>CFBundle.c</code> (plain C) instead.</li>
+  <li>Scopes upstream contributions to corebase to the "obvious value-type holes" rather than asking corebase maintainers to absorb 5,000+ lines of new runtime code.</li>
+</ul>
+
+<p><strong>New work estimate to make configd link:</strong> ~3,000-5,000 lines of new/imported code &mdash; CF-Lite's CFMachPort + CFRunLoop version1 + CFBundle + CFPreferences + the private CF extension shims. This becomes a separate sub-project (call it <code>libCoreFoundation-freebsd</code>) inside or alongside <code>freebsd-launchd</code>, similar to how the configd source already lives there.</p>
+
+<h3>Decision summary</h3>
+
+<table>
+<thead><tr><th>Layer</th><th>Runtime</th><th>Source</th></tr></thead>
+<tbody>
+  <tr><td>libxpc</td><td><span class="pill pill-good">pure C</span></td><td>iXsystems/Klama reimpl &mdash; no ObjC, no CF</td></tr>
+  <tr><td>libdispatch</td><td><span class="pill pill-good">pure C + blocks</span></td><td>gershwin-developer install</td></tr>
+  <tr><td>libnv (bundled with libxpc)</td><td><span class="pill pill-good">pure C</span></td><td>BSD libnv, bundled in libxpc tree</td></tr>
+  <tr><td>liblaunch</td><td><span class="pill pill-good">pure C</span></td><td>freebsd-launchd's existing version</td></tr>
+  <tr><td>launchd daemon</td><td><span class="pill pill-good">pure C</span></td><td>freebsd-launchd or ravynOS launchd swap (both C)</td></tr>
+  <tr><td>configd daemon</td><td><span class="pill pill-warn">C + CoreFoundation</span></td><td>Apple verbatim &mdash; CF supplied by hybrid <strong>libs-corebase</strong> (value types) + <strong>CF-Lite</strong> (CFMachPort, CFRunLoop v1, CFBundle, CFPreferences); see &sect;9.5</td></tr>
+  <tr><td>configd's small ObjC shim</td><td><span class="pill pill-good">GNUstep libobjc2</span></td><td><code>NCDaemon.m</code> already uses GNUstep runtime</td></tr>
+  <tr><td>SystemConfiguration framework</td><td><span class="pill pill-warn">C + CoreFoundation</span></td><td>Apple verbatim &mdash; same CF dependency as configd</td></tr>
+  <tr><td>asl / mDNSResponder / notifyd</td><td><span class="pill pill-good">pure C</span></td><td>Apple sources (no CF dependency in these)</td></tr>
+  <tr><td>GUI / app layer / Foundation</td><td><span class="pill pill-good">GNUstep</span></td><td>Apple source explicitly NOT adopted here</td></tr>
+</tbody>
+</table>
+
+<p><strong>Where you'd be forced into Apple's ObjC:</strong> only if a future downstream wants <code>NSXPCConnection</code>'s Cocoa-shape API. None of the daemons in this porting scope (launchd, configd, asl, notifyd, mDNSResponder, IPConfiguration) need it. GNUstep apps that want XPC can call libxpc's C API directly. No conflict with the rule.</p>
+
+<h2 id="libsystem">10. Libsystem strategy &mdash; port sub-libraries, never the umbrella</h2>
+
+<p>Strategic question that comes up once you've ported libxpc and start eyeing the next daemons: should we port <strong>Libsystem</strong> from macOS? Apple's <a href="https://github.com/apple-oss-distributions/Libsystem">apple-oss-distributions/Libsystem</a> exists on opensource.apple.com (latest tag <code>Libsystem-1356</code>, 2025-10-04). It sits very low in the macOS stack &mdash; below CoreFoundation, below Foundation, below libxpc itself. Tempting to think "if we're porting Apple's userland, we might as well port the base of it."</p>
+
+<div class="callout callout-good">
+<p><strong>Verdict: don't port Libsystem as a whole. It's an umbrella, not a library.</strong> Port the individual sub-libraries we actually need (libxpc, libnotify, libasl); keep FreeBSD's libc, rtld, malloc, and pthread underneath. No Apple ObjC or Foundation involved at this layer.</p>
+</div>
+
+<h3>10.1. What Libsystem actually is</h3>
+
+<p>On macOS, <code>/usr/lib/libSystem.dylib</code> doesn't have its own code &mdash; it's an umbrella that <strong>reexports symbols</strong> from a dozen sub-libraries:</p>
+
+<table>
+<thead><tr><th>Apple sub-library</th><th>What it provides</th><th>Our equivalent / plan</th></tr></thead>
+<tbody>
+  <tr><td><code>libsystem_c</code></td><td>Apple's libc fork</td><td><strong>FreeBSD libc</strong> &mdash; never replace</td></tr>
+  <tr><td><code>libsystem_pthread</code></td><td>POSIX threads</td><td>FreeBSD pthread &mdash; never replace</td></tr>
+  <tr><td><code>libsystem_dyld</code></td><td>Apple's dynamic loader runtime support</td><td>FreeBSD rtld &mdash; never replace (replacing dyld means switching to Mach-O, breaking ELF userland; <code>scope_split</code> forbids this)</td></tr>
+  <tr><td><code>libsystem_malloc</code></td><td>Apple's nano/scalable malloc</td><td>FreeBSD jemalloc &mdash; never replace</td></tr>
+  <tr><td><code>libsystem_kernel</code></td><td>Syscall wrappers + Mach trap stubs</td><td><strong>This is what our <code>libmach</code> is becoming</strong> (Phase C1 done)</td></tr>
+  <tr><td><code>libsystem_dispatch</code></td><td>libdispatch / GCD</td><td>swift-corelibs-libdispatch + our Mach backend (Phase 0 of this plan)</td></tr>
+  <tr><td><code>libsystem_xpc</code></td><td>libxpc</td><td><strong>This plan (Phases 2-4)</strong></td></tr>
+  <tr><td><code>libsystem_notify</code></td><td>libnotify (notifyd client)</td><td>Future port from <a href="https://github.com/apple-oss-distributions/Libnotify">apple-oss-distributions/Libnotify</a>, after notifyd</td></tr>
+  <tr><td><code>libsystem_asl</code></td><td>libasl (Apple system logger client)</td><td>Future port from <a href="https://github.com/apple-oss-distributions/libasl">apple-oss-distributions/libasl</a></td></tr>
+  <tr><td><code>libsystem_platform</code></td><td>Low-level Apple-specific (atomics, OSSpinLock, pthread_mutex_lock_with_options)</td><td>Don't port &mdash; FreeBSD equivalents in libc / pthread</td></tr>
+  <tr><td><code>libsystem_blocks</code></td><td>Blocks runtime</td><td>libBlocksRuntime (already in ports / gershwin)</td></tr>
+  <tr><td><code>libcommonCrypto</code></td><td>Apple's CommonCrypto API</td><td>Don't port &mdash; use OpenSSL or FreeBSD's libmd</td></tr>
+</tbody>
+</table>
+
+<p>The <code>Libsystem</code> repo itself is mostly a <strong>linker stub specification</strong> &mdash; a <code>.dylib</code> stub that says "I reexport these symbols at these versions from these sub-libraries." It's metadata, not code. There's no implementation to port; there's just a list of what to glue together.</p>
+
+<h3>10.2. Can Apple's libsystem_c and FreeBSD libc coexist?</h3>
+
+<p><strong>No.</strong> A process has exactly one libc. The libc your binary loads provides the standard C runtime (malloc, stdio, errno, fork, exec), and you can't have two of those active simultaneously &mdash; they'd fight over malloc arenas, signal dispositions, errno location, syscall ABIs (Apple's libc speaks Mach traps + BSD syscalls with Apple's numbering; FreeBSD libc speaks FreeBSD's syscall ABI).</p>
+
+<p>Replacing FreeBSD libc with Apple's libsystem_c would mean:</p>
+<ul>
+  <li>Complete userland rebuild &mdash; every binary on the system needs to relink</li>
+  <li>Breaks every existing FreeBSD binary (different syscall ABI)</li>
+  <li>Massive ongoing maintenance burden tracking Apple's libc evolution</li>
+  <li>Zero functional payoff &mdash; FreeBSD libc already does what consumers need</li>
+</ul>
+
+<p><strong>However</strong>, you absolutely <em>can</em> have FreeBSD libc as your libc AND link in Apple's individual API-only sub-libraries (libdispatch, libxpc, libnotify, libasl) alongside. Those sub-libraries call libc through standard C APIs &mdash; they work against any libc, whether Apple's or FreeBSD's. <strong>That's exactly the model we're already using.</strong> Our libmach links FreeBSD libc; libxpc will too; configd will too. All of them happily call <code>malloc()</code>, <code>printf()</code>, <code>open()</code>, etc. through FreeBSD's libc.</p>
+
+<h3>10.3. Does Libsystem require Apple's ObjC or Foundation?</h3>
+
+<p><strong>No.</strong> Libsystem is pure C and sits <em>below</em> Foundation/CF/ObjC in the macOS stack. The dependency direction is:</p>
+
+<pre><code>NSXPCConnection / Cocoa apps         (ObjC)
+        |
+        v
+Foundation.framework                  (ObjC)
+        |
+        v
+CoreFoundation.framework              (C)
+        |
+        v
+Libsystem (libxpc, libdispatch, ...)  (C)  &lt;-- libxpc lives here, below CF/Foundation
+        |
+        v
+FreeBSD libc / kernel                 (C)</code></pre>
+
+<p>Foundation builds <strong>on top of</strong> Libsystem. Libsystem doesn't know Foundation exists. Same for CoreFoundation &mdash; CF uses Libsystem's libdispatch and libxpc internally, but Libsystem doesn't depend on CF.</p>
+
+<p>So adopting Libsystem (or rather, individual Libsystem sub-libraries) does NOT pull in Apple's ObjC runtime or Foundation. The <code>scope_split</code> rule (GNUstep for framework layer, Apple source only for system services) is preserved exactly.</p>
+
+<h3>10.4. Would future ports need Libsystem?</h3>
+
+<p>No, only the sub-libraries we already plan to port. The daemons we want (configd, mDNSResponder, notifyd, asl, IPConfiguration) link against the individual API libraries on macOS &mdash; <code>-lxpc -ldispatch -lc</code>. On FreeBSD we'd patch each daemon's Makefile to do the same with our libraries: <code>-lxpc -ldispatch -lmach -lc</code> (FreeBSD libc instead of Apple's). One-line Makefile change per daemon. We're already touching every daemon's Makefile anyway.</p>
+
+<p>On macOS, daemons sometimes link <code>-lSystem</code> (the umbrella) as shorthand for "I want everything." On FreeBSD that shorthand isn't available, but it's easy to recreate with a tiny stub library if it ever becomes ergonomically painful (~10 lines of a linker script that pulls in our actual libraries). <strong>Deferrable indefinitely.</strong></p>
+
+<h3>10.5. What does this mean for the porting plan?</h3>
+
+<ul>
+  <li><strong>This plan (libxpc)</strong> is part of the implicit Libsystem-sub-libraries roadmap; we're porting <code>libsystem_xpc</code> by name.</li>
+  <li><strong>libmach</strong> (already done) is our equivalent of <code>libsystem_kernel</code>.</li>
+  <li><strong>libdispatch backend</strong> (Phase 0) is the libsystem_dispatch piece &mdash; gershwin gives us the upstream code; we add the Mach backend.</li>
+  <li><strong>libnotify and libasl</strong> are future ports once configd and notifyd land. Both are open at <a href="https://github.com/apple-oss-distributions/Libnotify">apple-oss-distributions/Libnotify</a> and <a href="https://github.com/apple-oss-distributions/libasl">apple-oss-distributions/libasl</a>; both are plain C; both will install to <code>/usr/local/lib/</code> matching libmach / libxpc.</li>
+  <li><strong>libc, pthread, dyld, malloc, platform, commonCrypto:</strong> never touch. FreeBSD's versions are the right answer for our project.</li>
+  <li><strong>Optional cosmetic <code>libSystem.so</code> wrapper:</strong> deferred. Add a 10-line linker-script reexport library if and only if downstream daemons' Makefiles become annoying to maintain.</li>
+</ul>
+
+<div class="callout">
+<p><strong>Bottom-line rule:</strong> when looking at any new Apple-source porting decision, ask "is this a Libsystem sub-library that's an API-only consumer of libc, or is it something deeper that wants to replace libc / dyld / malloc?" The former is portable; the latter is off-limits.</p>
+</div>
+
+<h2 id="risks">11. Risks and decisions</h2>
+
+<h3>Fork point</h3>
+<p><span class="verdict verdict-go">Decision: fork libxpc from <code>ravynos/lib/libxpc/</code>.</span> NextBSD's tree is older and explicitly self-described as a first pass; ravynOS has substantive object-model + serialization fixes. Diff is small enough (~150 lines) that we won't regret missing NextBSD's path.</p>
+
+<h3>Apple parity</h3>
+<p><span class="verdict verdict-warn">Cannot reach modern Apple parity. Ever.</span> Even with this port, we are upper-bounded by Apple-2014's public API surface plus whatever third-party reverse-engineering (e.g. Darling's activity-key additions) we adopt. Modern macOS XPC features &mdash; xpc_activity beyond keys, post-Yosemite domain model, NSXPCConnection ObjC bridge, codesign-derived entitlement enforcement &mdash; are out of reach without either Darling-level Obj-C runtime work or rewriting from scratch.</p>
+
+<h3>Wire format incompatibility</h3>
+<p><span class="verdict verdict-go">Acceptable.</span> libnv-over-Mach instead of bplist-over-Mach means we can never bit-exchange messages with real macOS apps. Fine &mdash; our stack is FreeBSD-native binaries top-to-bottom. Compatibility is at the source level, not the wire level.</p>
+
+<h3>libdispatch's Mach receive source</h3>
+<p><span class="verdict verdict-no">Confirmed broken &mdash; needs a new backend.</span> Per the audit in &sect;9.4: gershwin's libdispatch is pristine swift-corelibs-libdispatch with <code>HAVE_MACH</code> off; <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> is unresolved at link. Force-enabling fails because <code>EVFILT_MACHPORT</code> doesn't exist in FreeBSD kqueue and <code>src/mach.c</code> (3,250 lines) assumes XNU's full Mach ABI. A new backend file (~500-1000 lines, polling thread or kqueue-user-filter wrapping <code>mach_msg_trap(MACH_RCV_TIMEOUT=0)</code>) is required. This is Phase 1 of the plan, not a "verify and proceed" check.</p>
+
+<h3>libs-corebase coverage of configd's CF needs</h3>
+<p><span class="verdict verdict-warn">Significant gaps &mdash; hybrid with Apple CF-Lite required.</span> Per the audit in &sect;9.5: corebase has CFMachPort absent, CFRunLoop version1 sources unimplemented (TODO stub), CFPreferences absent. Roughly 3,000-5,000 lines of new/imported code needed &mdash; pulled from Apple's open-source CF-Lite (plain C, not ObjC). This is its own sub-project, sequenced before Phase 6 (configd functional).</p>
+
+<h3>Bootstrap server complexity</h3>
+<p><span class="verdict verdict-warn">Real work.</span> <code>bootstrap_check_in</code> / <code>bootstrap_look_up</code> need a userspace name service. NextBSD/ravynOS have a working bootstrap server inside their launchd, but they're disabled in our cut-down <code>freebsd-launchd</code>. Bringing the bootstrap server up means partially or fully swapping <code>freebsd-launchd</code> for the NextBSD/ravynOS launchd source built against our libmach. This is the most significant scope change implied by libxpc.</p>
+
+<h3>"Should we just use D-Bus or AF_UNIX everywhere?"</h3>
+<p><span class="verdict verdict-no">Already decided: no.</span> The whole project's premise is that Apple's system-service plumbing &mdash; including XPC's connection-based-async-with-typed-dictionaries shape &mdash; is what we want to modernize FreeBSD <em>toward</em>. Substituting another IPC mechanism breaks source compatibility with every daemon we want to inherit. The cost of libxpc is the price of admission.</p>
+
+<h2 id="phases">11. Phased porting plan</h2>
+
+<h3>Phase 0 &mdash; libdispatch Mach backend (1-2 weeks)</h3>
+
+<p><strong>This is the first task.</strong> The 2026-05-11 audit (&sect;9.4) confirmed gershwin's swift-corelibs-libdispatch has no Mach RECV support on FreeBSD. Without it, libxpc connections can't deliver incoming messages &mdash; every <code>xpc_connection_set_event_handler</code> registration would dangle. Everything downstream of libxpc (configd, swapped launchd, ...) depends on this working first.</p>
+
+<h4>Delivery mechanism: new patch in gershwin-developer's Patches/ directory</h4>
+
+<p>gershwin-developer already follows a clean patches/clone pattern: <code>Library/Sources/swift-corelibs-libdispatch/</code> holds a pristine upstream clone, and <code>Library/Patches/swift-corelibs-libdispatch.patch</code> (4 hunks of FreeBSD kqueue/timer/workqueue fixes) gets applied at build time. We add a second patch file alongside the existing one:</p>
+
+<pre><code>gershwin-developer/Library/Patches/
+├── swift-corelibs-libdispatch.patch         (existing, kqueue fixes)
+└── swift-corelibs-libdispatch-mach.patch    (NEW, our Mach backend)</code></pre>
+
+<p>The new patch is exactly two hunks:</p>
+<ol>
+  <li>A new file <code>src/event/event_mach_freebsd.c</code> (~500-1000 lines)</li>
+  <li>One line added to <code>CMakeLists.txt</code>'s <code>target_sources(...)</code> list, gated on <code>__FreeBSD__</code></li>
+</ol>
+
+<p><strong>Why a separate patch (not folded into the existing one):</strong> different bug surface, different reviewers, different upstream pathway. Gershwin's existing patch fixes pre-existing FreeBSD kqueue bugs they already maintain; ours adds a brand-new source-type backend. Keep them apart.</p>
+
+<p><strong>Why patches not in-place edits:</strong> gershwin-developer's build re-clones <code>Sources/swift-corelibs-libdispatch/</code> from upstream each build. Hand-edits to the clone get clobbered. Patches survive.</p>
+
+<h4>Implementation contents</h4>
+
+<ol>
+  <li><strong>Define <code>_dispatch_source_type_mach_recv</code></strong> in <code>event_mach_freebsd.c</code>, gated on <code>__FreeBSD__</code>. Implementation choice:
+    <ul>
+      <li><strong>Option A (simpler, recommended):</strong> per-source polling thread that loops on <code>mach_msg_trap(MACH_RCV_MSG | MACH_RCV_TIMEOUT, timeout=small)</code> and invokes the registered event handler via the source's target queue. Pros: no kernel changes. Cons: per-source thread overhead.</li>
+      <li><strong>Option B (cleaner):</strong> a single dispatch worker thread reading a kqueue user-filter that mach.ko signals on message arrival. Requires extending mach.ko with an EVFILT_MACHPORG-equivalent shim. Pros: efficient, single thread. Cons: kernel work.</li>
+    </ul>
+    Start with Option A; revisit B once profiling shows the per-source thread cost matters.
+  </li>
+  <li><strong>Do NOT enable <code>HAVE_MACH=1</code>.</strong> The 3,250-line <code>src/mach.c</code> assumes XNU Mach ABI we don't have. Keep that codepath excluded; our backend lives entirely in the new <code>event_mach_freebsd.c</code>.</li>
+  <li><strong>Link against <code>libmach</code></strong> (the Phase C1 library) for the syscall wrappers.</li>
+</ol>
+
+<h4>Dev iteration workflow on the development host</h4>
+
+<p>The patch isn't idempotent &mdash; applying twice fails. Each iteration starts from a pristine upstream clone:</p>
+
+<pre><code>WORK=/root/libdispatch-dev
+rm -rf "$WORK"                                  # always start clean
+mkdir -p "$WORK" &amp;&amp; cd "$WORK"
+git clone --depth 1 https://github.com/apple/swift-corelibs-libdispatch.git
+cd swift-corelibs-libdispatch
+
+# Apply both patches in order:
+patch -p1 &lt; /root/Patches/swift-corelibs-libdispatch.patch
+patch -p1 &lt; /root/Patches/swift-corelibs-libdispatch-mach.patch
+
+# Build:
+mkdir build &amp;&amp; cd build
+cmake .. -DCMAKE_BUILD_TYPE=Debug \
+         -DCMAKE_INSTALL_PREFIX=/usr/local
+make -j$(sysctl -n hw.ncpu)
+make install   # to /usr/local/lib, NOT /System/Library/Libraries
+               # (avoids collision with gershwin's libdispatch during dev)
+
+# Test: a small C program that:
+#   1. mach_reply_port() to get a port
+#   2. dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, port, 0, queue)
+#   3. dispatch_source_set_event_handler(...)
+#   4. another thread sends mach_msg to the port
+#   5. verify handler fires within timeout
+# Link against -lmach -ldispatch</code></pre>
+
+<p>Patches live locally at <code>gershwin-developer/Library/Patches/</code>; sync to the development host via <code>scp</code> before each iteration (rsync may not be available; scp is universally fine).</p>
+
+<h4>Promotion path</h4>
+
+<ol>
+  <li>Dev on the development host &rarr; test program runs green</li>
+  <li>Commit patch to pkgdemon's <code>gershwin-developer</code> fork</li>
+  <li>PR to upstream <code>gershwin-developer</code></li>
+  <li>Until upstream merges, gershwin-on-freebsd's <code>build.sh</code> clones from pkgdemon's fork</li>
+</ol>
+
+<h4>Smoke tests &mdash; proof of life before any libxpc work begins</h4>
+
+<p>Phase 0 isn't done until these all PASS. They're the contract libxpc will build on; ship none of Phase 2 until every test below is green.</p>
+
+<p><strong>Prerequisite (small Phase 1 spillback):</strong> the smoke tests need a SEND right on our own port, which means <code>mach_port_allocate</code> and <code>mach_port_insert_right</code> have to be wired in mach.ko first. Those are early Phase 1 items in the original plan; pull them forward into Phase 0 so the smoke is real:</p>
+
+<ul>
+  <li>Wire <code>_kernelrpc_mach_port_allocate_trap</code> (sysctl <code>mach.syscall.mach_port_allocate</code>)</li>
+  <li>Wire <code>_kernelrpc_mach_port_insert_right_trap</code> (sysctl <code>mach.syscall.mach_port_insert_right</code>)</li>
+  <li>Add libmach C wrappers: <code>mach_port_allocate</code>, <code>mach_port_insert_right</code></li>
+  <li>Two raw-syscall smokes (matching the existing trap-family pattern, bumps harness from 19 to 21)</li>
+</ul>
+
+<p><strong>Then the libdispatch-Mach-recv test program</strong> <code>tests/test_dispatch_mach_recv.c</code>, linked against the patched libdispatch + libmach. The program runs five subtests, each printed as a PASS/FAIL line:</p>
+
+<table>
+<thead><tr><th>#</th><th>Smoke check</th><th>What it proves</th></tr></thead>
+<tbody>
+  <tr>
+    <td>1</td>
+    <td><strong>dispatch_source_create returns non-NULL</strong> &mdash; create a port via <code>mach_port_allocate(MACH_PORT_RIGHT_RECEIVE)</code>, call <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, port, 0, queue)</code>. Check non-NULL.</td>
+    <td>Backend's source-type constructor is wired and returns a real source object.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><strong>Handler fires on single message</strong> &mdash; allocate port, insert MAKE_SEND right on same port, attach source with handler that increments a counter, <code>dispatch_resume</code> the source, <code>mach_msg(SEND)</code> a header-only message to the port. Wait up to 1s. Assert counter == 1.</td>
+    <td>Backend correctly polls/waits on the port, decodes the message, and invokes the handler on the target queue. <strong>The actual "Mach dispatch works" proof.</strong></td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><strong>Handler fires N times for N messages</strong> &mdash; same setup, send 100 messages in a tight loop, wait up to 5s for counter to reach 100.</td>
+    <td>Backend doesn't drop messages under load; queue and serialization are correct.</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td><strong>Cancellation is clean</strong> &mdash; attach source, register a cancellation handler that sets a flag, <code>dispatch_source_cancel</code>, wait for cancellation handler to fire. Send a message after cancel and confirm the event handler does NOT run.</td>
+    <td>Backend supports clean teardown. libxpc relies on this for connection invalidation.</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td><strong>No port-table leak</strong> &mdash; capture <code>sysctl mach.stats.ports_in_use</code> before, run the previous tests 10 times in a loop, capture after. Difference should be near zero (some baseline noise OK).</td>
+    <td>Backend properly deallocates Mach ports on source destruction. Catches the most common refcount-leak class of bug.</td>
+  </tr>
+</tbody>
+</table>
+
+<p><strong>Plus regression:</strong> all 21 existing smokes (after the two new port-management syscalls are added) still PASS. The patched libdispatch must not break the existing kqueue path used by the libxpc-less rest of the system.</p>
+
+<p><strong>Total Phase 0 smoke target: 26 checks (21 existing + 5 dispatch-mach-recv).</strong> Once green, the libxpc fork (Phase 2) starts.</p>
+
+<h4>Phase 0 sequence summary</h4>
+
+<ol>
+  <li>Wire 2 new mach.ko syscalls (port_allocate, port_insert_right) + libmach wrappers + 2 smoke checks. ~2 days.</li>
+  <li>Write <code>swift-corelibs-libdispatch-mach.patch</code> with <code>event_mach_freebsd.c</code> + CMakeLists.txt entry. ~1 week.</li>
+  <li>Iterate on the development host using the reclone-every-time loop above until <code>test_dispatch_mach_recv</code> goes 5/5 green. ~2-5 days.</li>
+  <li>Wire <code>test_dispatch_mach_recv</code> into <code>smoke-sysctls.sh</code>. Confirm 26/26.</li>
+  <li>Commit patch to pkgdemon's gershwin-developer fork; PR upstream to gershwin-developer.</li>
+  <li>Document Phase 0 completion in <code>PHASE_C_FINDINGS.md</code> in freebsd-launchd-mach.</li>
+</ol>
+
+<h3>Phase 1 &mdash; mach.ko expansion for libxpc (1-2 weeks)</h3>
+<p>Add the missing Mach port-management syscalls to <code>freebsd-launchd-mach/src/mach_kmod/</code>, following the wired-trap pattern established for the trap family + mach_msg:</p>
+<ul>
+  <li><code>_kernelrpc_mach_port_allocate_trap</code> (sysent <code>mach.syscall.mach_port_allocate</code>)</li>
+  <li><code>_kernelrpc_mach_port_insert_right_trap</code></li>
+  <li><code>_kernelrpc_mach_port_deallocate_trap</code></li>
+  <li><code>task_get_special_port</code> / <code>task_set_special_port</code> via MIG RPC over the task port (these are RPCs, not raw traps &mdash; need a different wiring strategy)</li>
+  <li>Verify <code>MACH_RCV_TRAILER_AUDIT</code> populates <code>mach_msg_audit_trailer_t</code> on receive</li>
+  <li>Add corresponding libmach C wrappers (<code>mach_port_allocate</code>, <code>mach_port_insert_right</code>, <code>mach_port_deallocate</code>)</li>
+  <li>Smoke checks for each new sysctl + invocation</li>
+</ul>
+<p>Deliverable: smoke harness grows from 19/19 to ~26/26.</p>
+
+<h3>Phase 2 &mdash; libxpc fork + minimal build (1 week)</h3>
+<ol>
+  <li>Snapshot <code>ravynos/lib/libxpc/</code> into <code>freebsd-launchd-mach/src/libxpc/</code>. Take the bundled <code>subr_nvlist.c</code> + <code>subr_nvpair.c</code> too (don't try to use FreeBSD's stock libnv until later &mdash; the bundled version has XPC-specific tweaks).</li>
+  <li>FreeBSD <code>bsd.lib.mk</code> Makefile. <strong>Install path: <code>/usr/local/lib/libxpc.so</code></strong>, headers to <code>/usr/local/include/xpc/</code> (PREFIX defaults to <code>/usr/local</code>, matching the libmach Makefile from Phase C1). Standard FreeBSD ports convention. Not gershwin-coupled; this ships alongside <code>libmach</code> as an out-of-tree port that works on any FreeBSD with our mach.ko loaded.</li>
+  <li>Build clean. Expect this to surface missing libmach symbols (bootstrap_port, mach_port_allocate) &mdash; that's fine, link with weak undefined symbols or stub for now.</li>
+  <li>Write a minimal smoke test: <code>xpc_dictionary_create</code>, <code>xpc_dictionary_set_int64</code>, <code>xpc_dictionary_get_int64</code>, <code>xpc_release</code>. No Mach yet, just in-process object plumbing. Verify it builds and runs.</li>
+</ol>
+
+<h4>Install-path decision</h4>
+
+<p>Three precedents in our ecosystem:</p>
+
+<table>
+<thead><tr><th>Path</th><th>Where it's used</th><th>Notes</th></tr></thead>
+<tbody>
+  <tr><td><code>/usr/lib/system/libxpc.dylib</code></td><td>Apple macOS</td><td>Inside <code>Libsystem</code> composite. Reexported via <code>/usr/lib/libSystem.dylib</code>. <strong>Not under <code>/System/Library/</code>.</strong> macOS reserves <code>/System</code> for <code>.framework</code> bundles, not loose <code>.dylib</code>s.</td></tr>
+  <tr><td><code>/usr/lib/libxpc.so</code></td><td>ravynOS</td><td>Standard FreeBSD base-system. <code>bsd.lib.mk</code> defaults applied (no <code>LIBDIR</code> override).</td></tr>
+  <tr><td><strong><code>/usr/local/lib/libxpc.so</code></strong></td><td><strong>This project (recommended)</strong></td><td>Standard FreeBSD ports convention. Matches the libmach Makefile placement chosen in Phase C1. Ships as an out-of-tree port that works on any FreeBSD with our mach.ko loaded.</td></tr>
+  <tr><td><code>/System/Library/Libraries/libxpc.so</code></td><td>(gershwin pattern, not used)</td><td>Where gershwin-developer puts libdispatch / libobjc / libgnustep-base / libgnustep-corebase. Rejected: couples this project to gershwin's layout choices; <code>/System</code> on macOS is reserved for <code>.framework</code> bundles, so this path is gershwin-specific rather than Apple-compatible.</td></tr>
+</tbody>
+</table>
+
+<p><strong>Decision: <code>/usr/local/lib/libxpc.so</code></strong> with headers at <code>/usr/local/include/xpc/</code>. Consistent with libmach (Phase C1) and with standard FreeBSD third-party port placement. Gershwin's ISO build picks this up via its normal package-install pipeline; no special path coupling.</p>
+
+<h3>Phase 3 &mdash; bootstrap server (2-3 weeks)</h3>
+<p>The hard part. Options, in order of effort:</p>
+<ol>
+  <li><strong>Option A: minimal standalone bootstrap server.</strong> Write a tiny daemon that owns the bootstrap port, accepts <code>bootstrap_register</code> / <code>bootstrap_look_up</code> over Mach, stores port-name mappings in memory. ~500-1000 lines. Reuses NextBSD's MIG <code>.defs</code> for the bootstrap protocol.</li>
+  <li><strong>Option B: port NextBSD/ravynOS launchd's bootstrap subsystem</strong> piecemeal &mdash; just <code>job_mig_dispatch</code> + the bootstrap port handling, not the rest of launchd. Maybe 2000-3000 lines. Closer to Apple-shape but heavier.</li>
+  <li><strong>Option C: full launchd swap.</strong> Replace <code>freebsd-launchd</code>'s daemon entirely with NextBSD/ravynOS launchd source built against our libmach + libxpc. Highest payoff (16k LoC of working Apple-shape code), highest risk (most surface to debug). Defer to Phase 5.</li>
+</ol>
+<p>Recommended Phase 3 scope: <strong>Option A</strong>. Smallest critical path to "libxpc connections actually work end-to-end." Defer the larger launchd swap to Phase 5 once libxpc is proven.</p>
+
+<h3>Phase 4 &mdash; xpc_connection end-to-end test (1 week)</h3>
+<ol>
+  <li>Write a test program that registers a service name with the bootstrap server, accepts a connection, receives a dictionary, sends a reply.</li>
+  <li>Write a client that connects via <code>xpc_connection_create_mach_service</code>, sends a dictionary, receives the reply.</li>
+  <li>Verify ports are cleaned up on disconnect, no leaks in <code>mach.stats.ports_in_use</code>.</li>
+  <li>This is the libxpc equivalent of C3's "userland mach_msg works end-to-end" milestone.</li>
+</ol>
+
+<h3>Phase 5 &mdash; launchd swap (3-6 weeks)</h3>
+<ol>
+  <li>Build ravynOS's launchd source against our libmach + libxpc + bootstrap server.</li>
+  <li>Migrate the FreeBSD-15 fixes (per-user env file, audit-session workaround, build flags) from ravynOS's tree.</li>
+  <li>Audit-mark the 36 <code>#if 0</code> / FIXME sites for which need re-enabling on FreeBSD.</li>
+  <li>CI gate: ravynOS-launchd boots a livecd to multiuser, can start/stop a daemon, processes the existing FreeBSD launch.plists.</li>
+  <li>Cut over the ISO build from <code>freebsd-launchd</code> to <code>freebsd-launchd-mach</code> launchd. Keep <code>freebsd-launchd</code>'s minimal daemon around as a fallback for non-Mach-aware deployments.</li>
+</ol>
+
+<h3>Phase 5.5 &mdash; CoreFoundation hybrid (libCoreFoundation-freebsd) (3-6 weeks)</h3>
+
+<p>Prerequisite for Phase 6. Per the audit in &sect;9.5, GNUstep libs-corebase has critical gaps that block configd. Build a hybrid CF library that ships with <code>freebsd-launchd</code>:</p>
+
+<ol>
+  <li>Inventory the libs-corebase symbol set; mark coverage of each CF function configd uses.</li>
+  <li>Import <strong>Apple CF-Lite (CF-1153.18, ~2017)</strong> from opensource.apple.com into <code>freebsd-launchd/CoreFoundation/</code>. Plain-C-only; CF-Lite has no Foundation / ObjC content. Drop any sources that overlap cleanly with corebase (CFString, CFDictionary, CFArray, CFNumber, CFData, CFPropertyList) and keep what fills gaps: CFMachPort, CFRunLoop (or just the version1 dispatch path), CFBundle, CFPreferences, plus private CF extensions.</li>
+  <li>Write a thin shim for the ~6 Apple-private CF extensions configd uses (<code>CFStringIsValidDNSName</code>, <code>CFDataCopyVMData</code>, etc.). Pull from CF-Lite where present; stub the rest.</li>
+  <li>Build artifact: <code>libCoreFoundation.so</code> linking corebase value-types + CF-Lite runtime parts + shim. Install to <code>/usr/local/lib</code> with headers to <code>/usr/local/include/CoreFoundation/</code>.</li>
+  <li><strong>Test:</strong> link a minimal program that calls <code>CFMachPortCreateWithPort</code>, attaches it to <code>CFRunLoopRunInMode</code>, sends a Mach message from another thread, verifies the version1 source callback fires. This is the equivalent of Phase 0 but at the CF layer.</li>
+  <li>Decide on upstreaming: contribute the new CFMachPort / CFRunLoop version1 implementations to libs-corebase upstream once stable. The CF-Lite-imported parts can't be upstreamed (license / lineage) and stay in our tree.</li>
+</ol>
+
+<h3>Phase 6 &mdash; configd functional (4-8 weeks)</h3>
+
+<p>Depends on libxpc (Phase 4) and CoreFoundation hybrid (Phase 5.5).</p>
+
+<ol>
+  <li>Generate the missing MIG <code>.defs</code> for <code>configd_server</code>, <code>notify_server</code>, <code>_SCD</code>.</li>
+  <li>Build <code>libSystemConfiguration.so</code> + <code>SystemConfiguration.framework</code> + <code>configd</code> + <code>scutil</code> via <code>bmake</code>. Link against the Phase 5.5 <code>libCoreFoundation.so</code> and our libxpc.</li>
+  <li>Wire KernelEventMonitor's <code>ev_ipv4.c</code>/<code>ev_ipv6.c</code> against PF_ROUTE.</li>
+  <li>Stand up a minimal SCDynamicStore service; cut over the launchd plist for it.</li>
+  <li>Decide: stay on <code>configd-963.270.3</code> or rebase to <code>configd-1405.100.8</code>. Recommend staying on 963 for now; rebase becomes a separate plan once SCDynamicStore + SCPreferences are running.</li>
+</ol>
+
+<h3>Phase 7+ &mdash; IPConfiguration, mDNSResponder, notifyd, asl</h3>
+<p>Out of scope for this libxpc plan but unblocked by it. Each daemon's existing pkgdemon.github.io plan (<a href="freebsd-ipconfiguration-plan.html">ipconfiguration</a>, <a href="freebsd-mdnsresponder-plan.html">mdnsresponder</a>, <a href="freebsd-notifyd-plan.html">notifyd</a>, <a href="freebsd-asl-plan.html">asl</a>) takes over once libxpc + configd are real.</p>
+
+<h2 id="refs">12. References &amp; key paths</h2>
+
+<h3>Local trees</h3>
+<ul>
+  <li><code>freebsd-launchd-mach/</code> &mdash; this project's repo (mach.ko + libmach so far)</li>
+  <li><code>freebsd-launchd/</code> &mdash; minimal launchd port (1,496 LoC core), configd source import (133K LoC, mostly uncompiled), no IPConfiguration</li>
+  <li><code>ravynos/lib/libxpc/</code> &mdash; <strong>fork target</strong> for libxpc</li>
+  <li><code>ravynos/sbin/launchd/</code> &mdash; 16,469-LoC near-Apple-2014 launchd, fork target for Phase 5 swap</li>
+  <li><code>nextbsd/lib/libxpc/</code> &mdash; older version of the same code; reference only</li>
+  <li><code>gershwin-on-freebsd/</code> &mdash; ISO build pipeline; consumes <code>gershwin-developer</code> for libdispatch</li>
+</ul>
+
+<h3>Upstream</h3>
+<ul>
+  <li><a href="https://github.com/apple-oss-distributions/launchd">apple-oss-distributions/launchd</a> &mdash; last tag <code>launchd-842.92.1</code> (2014). Reference only.</li>
+  <li><a href="https://github.com/apple-oss-distributions/configd">apple-oss-distributions/configd</a> &mdash; latest <code>configd-1405.100.8</code> (2026-04-13). Active.</li>
+  <li><a href="https://github.com/apple-oss-distributions/bootp">apple-oss-distributions/bootp</a> &mdash; latest <code>bootp-534.100.6</code> (2026-04-17). Active. Contains IPConfiguration.</li>
+  <li><a href="https://github.com/apple-oss-distributions/Libsystem">apple-oss-distributions/Libsystem</a> &mdash; latest <code>Libsystem-1356</code>. Mentions xpc as binary dep; no source.</li>
+  <li><a href="https://github.com/ravynsoft/ravynos">ravynsoft/ravynos</a> &mdash; active fork, libxpc lineage</li>
+  <li><a href="https://github.com/NextBSD/NextBSD">NextBSD/NextBSD</a> &mdash; dormant since 2016, historical reference</li>
+  <li><a href="https://github.com/darlinghq/darling-libxpc">darlinghq/darling-libxpc</a> &mdash; active third-party fork, useful for newer XPC_ACTIVITY keys</li>
+</ul>
+
+<h3>Related plans</h3>
+<ul>
+  <li><a href="freebsd-launchd-mach-plan.html"><code>freebsd-launchd-mach</code></a> &mdash; mach.ko (kernel side), now Phase B Tier 1 complete</li>
+  <li><a href="freebsd-launchd-plan.html"><code>freebsd-launchd</code></a> &mdash; the minimal launchd port</li>
+  <li><a href="freebsd-configd-plan.html"><code>freebsd-configd</code></a> &mdash; configd phasing</li>
+  <li><a href="freebsd-ipconfiguration-plan.html"><code>freebsd-ipconfiguration</code></a> &mdash; the deferred network config port</li>
+  <li><a href="freebsd-notifyd-plan.html"><code>freebsd-notifyd</code></a> &mdash; notification daemon plan</li>
+  <li><a href="freebsd-asl-plan.html"><code>freebsd-asl</code></a> &mdash; Apple system logging plan</li>
+  <li><a href="freebsd-mdnsresponder-plan.html"><code>freebsd-mdnsresponder</code></a> &mdash; mDNS plan</li>
+</ul>
+
+<p class="footnote">Last updated 2026-05-11. Research compiled from six parallel agent surveys against the local NextBSD, ravynOS, and freebsd-launchd trees plus web research against the apple-oss-distributions and ravynsoft GitHub orgs. Every URL has been verified; every LoC number is from a <code>wc -l</code> over the cited path. Where research couldn't determine an answer (e.g. "which exact macOS SDK version were the captured headers from"), the document says so explicitly rather than guessing.</p>
+
+</div>
+</body>
+</html>

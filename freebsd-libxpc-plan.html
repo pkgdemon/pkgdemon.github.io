@@ -573,7 +573,7 @@ ravynOS (2022-present, history squashed 2025-09-28)
 <p><strong>But the surrounding stack has real gaps that need work.</strong> Audited 2026-05-11 against the <code>gershwin-developer/Library/Sources/</code> tree:</p>
 <ul>
 <li><strong>swift-corelibs-libdispatch</strong> is pristine upstream &mdash; <code>HAVE_MACH</code> is autodetected from <code>&lt;mach/mach.h&gt;</code> presence, off on FreeBSD, so <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> is unresolved at link. Needs a new backend (see &sect;9.4 below).</li>
-<li><strong>libs-corebase</strong> covers value-type CF (String/Dict/Array/Number/Data/Date/PropertyList) but is missing <strong>CFMachPort entirely</strong>, has a TODO stub for <strong>CFRunLoop version1 (Mach) sources</strong>, and is missing <strong>CFPreferences entirely</strong> &mdash; the three pieces configd's IPC main loop depends on. See &sect;9.5.</li>
+<li><strong>libs-corebase</strong> covers value-type CF (String/Dict/Array/Number/Data/Date/PropertyList) but is missing <strong>CFMachPort entirely</strong>, has a TODO stub for <strong>CFRunLoop version1 (Mach) sources</strong>, and is missing <strong>CFPreferences entirely</strong> &mdash; the three pieces configd's IPC main loop depends on. See &sect;9.6.</li>
 </ul>
 </div>
 
@@ -595,10 +595,36 @@ ravynOS (2022-present, history squashed 2025-09-28)
 <p>A GNUstep / libobjc2 application that wants to talk to a launchd-managed service has two options:</p>
 <ol>
   <li><strong>Call libxpc C API directly</strong> &mdash; <code>xpc_connection_create_mach_service</code>, set an event handler, send dictionaries. This is what launchd-managed daemons already use internally. No Foundation bridge needed.</li>
-  <li><strong>Write a GNUstep-Foundation wrapper</strong> if Cocoa-shape <code>NSXPCConnection</code> ergonomics are wanted. This would be a new project &mdash; GNUstep doesn't ship one today. <strong>Not in scope</strong> for this plan; revisit only if a downstream consumer demands it.</li>
+  <li><strong>Write a GNUstep-Foundation NSXPCConnection</strong> for Cocoa-shape ergonomics. <strong>Not in scope for this plan</strong> but worth describing as an explicit downstream enhancement &mdash; see &sect;9.4 below.</li>
 </ol>
 
-<h3>9.4. swift-corelibs-libdispatch &mdash; Mach RECV is unresolved on FreeBSD</h3>
+<h3>9.4. NSXPCConnection &mdash; downstream GNUstep enhancement, clean-room only</h3>
+
+<p>NSXPCConnection is Apple's Objective-C wrapper around libxpc. It provides protocol-based proxy objects, NSSecureCoding for arbitrary classes, automatic reply blocks, static type-checking at compile time, and invalidation / interruption handlers. Strictly an ergonomic layer over libxpc &mdash; doesn't add new system capability, but makes Cocoa code 10x more readable than raw libxpc message-construction.</p>
+
+<div class="callout callout-warn">
+<p><strong>Apple has never open-sourced NSXPCConnection.</strong> <code>swift-corelibs-foundation</code> deliberately skips it (no libxpc on Linux/Windows). It exists only inside macOS's closed-source <code>Foundation.framework</code>. "Importing" the class is not an option.</p>
+</div>
+
+<p>A clean-room reimplementation against the public Apple API documentation IS possible &mdash; same approach GNUstep has used for the rest of Foundation for ~30 years. Estimated scope: 3,000-5,000 lines of new Objective-C across <code>NSXPCConnection</code>, <code>NSXPCInterface</code>, <code>NSXPCListener</code>, the <code>forwardInvocation:</code>-based proxy machinery, the reply-block trampolines, and the NSSecureCoding &harr; <code>xpc_object_t</code> bridge.</p>
+
+<p><strong>Why not in this plan:</strong></p>
+<ul>
+  <li><strong>Not on the critical path.</strong> The daemons we're porting (launchd, configd, asl, notifyd, mDNSResponder, IPConfiguration) are all plain C and use libxpc's C API directly. None of them needs NSXPCConnection.</li>
+  <li><strong>Scope mismatch.</strong> Per <code>scope_split</code>, GNUstep owns the Foundation layer. Adding new Foundation classes belongs upstream in <code>gnustep-base</code>, not in <code>freebsd-launchd-mach</code>.</li>
+  <li><strong>Benefits cross-platform.</strong> A GNUstep NSXPCConnection wouldn't be FreeBSD-specific &mdash; it'd benefit any GNUstep deployment that has libxpc available (Darling-libxpc on Linux, future ports elsewhere). That's another argument for it living in gnustep-base, not here.</li>
+</ul>
+
+<p><strong>What it unlocks downstream:</strong></p>
+<ul>
+  <li><strong>Source-level compat with Cocoa apps</strong> that use NSXPCConnection. Today such apps won't compile on GNUstep at all; with this, they'd compile unchanged and talk to our system daemons via libxpc.</li>
+  <li><strong>Modernization path for GNUstep's Distributed Objects users.</strong> GNUstep already has <code>NSConnection</code> / <code>NSDistantObject</code> (the NeXTSTEP-era predecessor to NSXPCConnection &mdash; same "proxy objects over IPC with type-safe protocols" idea, different transport). NSXPCConnection is the migration target Apple chose.</li>
+  <li><strong>Ergonomic system-service clients.</strong> Cocoa-style code calling <code>[[conn remoteObjectProxy] doThing:arg]</code> instead of constructing xpc_dictionaries by hand.</li>
+</ul>
+
+<p><strong>How to encourage it:</strong> open an enhancement issue in <a href="https://github.com/gnustep/libs-base"><code>gnustep/libs-base</code></a> citing the libxpc availability on FreeBSD and the protocol/proxy machinery already present in <code>NSDistantObject</code>. Once the libxpc port stabilizes on FreeBSD and Darling-libxpc keeps improving on Linux, the case for a clean-room NSXPCConnection in upstream GNUstep gets stronger. Sequence-wise it doesn't matter when this lands &mdash; libxpc's C API works on its own, and the NSXPCConnection wrapper can come along whenever a GNUstep maintainer takes interest.</p>
+
+<h3>9.5. swift-corelibs-libdispatch &mdash; Mach RECV is unresolved on FreeBSD</h3>
 
 <p>Audit of <code>gershwin-developer/Library/Sources/swift-corelibs-libdispatch/</code>:</p>
 
@@ -620,7 +646,7 @@ ravynOS (2022-present, history squashed 2025-09-28)
 <p><strong>Phase 0 verification (the simple "does it work?" test) won't pass as-is.</strong> Gershwin's libdispatch needs at minimum a new backend file (Path 1 above), which is ~500-1000 lines of code. This is real work, not a build-flag flip. Plan accordingly.</p>
 </div>
 
-<h3>9.5. libs-corebase &mdash; covers value types, gaps locallyh IPC</h3>
+<h3>9.6. libs-corebase &mdash; covers value types, gaps on Mach IPC</h3>
 
 <p>Audit of <code>gershwin-developer/Library/Sources/libs-corebase/</code> vs <code>freebsd-launchd/configd/</code> (the 126,707-LoC verbatim Apple configd import):</p>
 

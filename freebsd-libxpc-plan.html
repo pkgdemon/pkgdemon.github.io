@@ -479,7 +479,12 @@ ravynOS (2022-present, history squashed 2025-09-28)
 
 <p><strong>Critical missing pieces from <code>freebsd-launchd</code>:</strong> EnvironmentVariables, StartCalendarInterval, WorkingDirectory, UserName/GroupName, StandardOut/ErrorPath, Umask, ThrottleInterval, <code>launchctl load -w</code>, enable/disable, override-file mechanism. Per <a href="freebsd-launchd-plan.html"><code>freebsd-launchd-plan</code></a>'s matrix &mdash; Phase 5 batch is the remaining work.</p>
 
-<p><strong>Decision-critical:</strong> The NextBSD/ravynOS launchd is closer to Apple parity but only runs on a Mach-coupled kernel. Now that our <code>mach.ko</code> exists, we could theoretically <em>swap forward</em> &mdash; replace <code>freebsd-launchd</code>'s daemon with NextBSD/ravynOS's launchd source built against our libmach + libxpc. The cost is wiring all the missing Mach port traps (see <a href="#deps">&sect;6</a>) and getting the bootstrap server alive. The benefit is jumping from 1,500 LoC of hand-coded subset to 16k LoC of battle-tested Apple-shape code. <strong>This swap is enabled by libxpc.</strong></p>
+<p><strong>Decision-critical:</strong> The NextBSD/ravynOS launchd is closer to Apple parity but only runs on a Mach-coupled kernel. Now that our <code>mach.ko</code> exists, we have two ways to swap forward to the Apple-shape launchd:</p>
+<ul>
+  <li><strong>Fork ravynOS's launchd source</strong> &mdash; faster, inherits ravynOS's FreeBSD-15 patches, but inherits NextBSD's squashed-history mess and 36 dormant <code>#if 0</code>/FIXME bisect markers.</li>
+  <li><strong>Clean import from Apple <code>launchd-842.92.1</code></strong> &mdash; same source code as the ravynOS path (everyone descends from this), but with clean provenance, our own patch series, and no inherited cruft. Same model as our configd / libdispatch / libxpc imports. <strong>Chosen approach</strong> &mdash; see Phase 5 below.</li>
+</ul>
+<p>Either way, the swap is enabled by libxpc and jumps us from 1,500 LoC of hand-coded subset to 16k+ LoC of battle-tested Apple-shape code.</p>
 
 <h3>configd / SystemConfiguration</h3>
 
@@ -695,7 +700,7 @@ ravynOS (2022-present, history squashed 2025-09-28)
   <tr><td>libdispatch</td><td><span class="pill pill-good">pure C + blocks</span></td><td>gershwin-developer install</td></tr>
   <tr><td>libnv (bundled with libxpc)</td><td><span class="pill pill-good">pure C</span></td><td>BSD libnv, bundled in libxpc tree</td></tr>
   <tr><td>liblaunch</td><td><span class="pill pill-good">pure C</span></td><td>freebsd-launchd's existing version</td></tr>
-  <tr><td>launchd daemon</td><td><span class="pill pill-good">pure C</span></td><td>freebsd-launchd or ravynOS launchd swap (both C)</td></tr>
+  <tr><td>launchd daemon</td><td><span class="pill pill-good">pure C</span></td><td>freebsd-launchd (current minimal); Phase 5 swaps to clean Apple <code>launchd-842.92.1</code> import</td></tr>
   <tr><td>configd daemon</td><td><span class="pill pill-warn">C + CoreFoundation</span></td><td>Apple verbatim &mdash; CF supplied by hybrid <strong>libs-corebase</strong> (value types) + <strong>CF-Lite</strong> (CFMachPort, CFRunLoop v1, CFBundle, CFPreferences); see &sect;9.5</td></tr>
   <tr><td>configd's small ObjC shim</td><td><span class="pill pill-good">GNUstep libobjc2</span></td><td><code>NCDaemon.m</code> already uses GNUstep runtime</td></tr>
   <tr><td>SystemConfiguration framework</td><td><span class="pill pill-warn">C + CoreFoundation</span></td><td>Apple verbatim &mdash; same CF dependency as configd</td></tr>
@@ -813,7 +818,7 @@ FreeBSD libc / kernel                 (C)</code></pre>
 <p><span class="verdict verdict-warn">Significant gaps &mdash; hybrid with Apple CF-Lite required.</span> Per the audit in &sect;9.5: corebase has CFMachPort absent, CFRunLoop version1 sources unimplemented (TODO stub), CFPreferences absent. Roughly 3,000-5,000 lines of new/imported code needed &mdash; pulled from Apple's open-source CF-Lite (plain C, not ObjC). This is its own sub-project, sequenced before Phase 6 (configd functional).</p>
 
 <h3>Bootstrap server complexity</h3>
-<p><span class="verdict verdict-warn">Real work.</span> <code>bootstrap_check_in</code> / <code>bootstrap_look_up</code> need a userspace name service. NextBSD/ravynOS have a working bootstrap server inside their launchd, but they're disabled in our cut-down <code>freebsd-launchd</code>. Bringing the bootstrap server up means partially or fully swapping <code>freebsd-launchd</code> for the NextBSD/ravynOS launchd source built against our libmach. This is the most significant scope change implied by libxpc.</p>
+<p><span class="verdict verdict-warn">Real work.</span> <code>bootstrap_check_in</code> / <code>bootstrap_look_up</code> need a userspace name service. Apple's launchd <em>is</em> the bootstrap server &mdash; the bootstrap subsystem is internal to the launchd daemon. Our current <code>freebsd-launchd</code> minimal rewrite doesn't have it; the clean Apple <code>launchd-842.92.1</code> import in Phase 5 will. Either we stand up a small standalone bootstrap server in Phase 3 (smaller, faster, gets libxpc tested), or we wait for Phase 5's full Apple launchd to bring the bootstrap server along with it. The plan recommends both: Phase 3 minimal standalone for testing, Phase 5 swap to Apple's full launchd for production.</p>
 
 <h3>"Should we just use D-Bus or AF_UNIX everywhere?"</h3>
 <p><span class="verdict verdict-no">Already decided: no.</span> The whole project's premise is that Apple's system-service plumbing &mdash; including XPC's connection-based-async-with-typed-dictionaries shape &mdash; is what we want to modernize FreeBSD <em>toward</em>. Substituting another IPC mechanism breaks source compatibility with every daemon we want to inherit. The cost of libxpc is the price of admission.</p>
@@ -999,10 +1004,10 @@ make install   # to /usr/local/lib, NOT /System/Library/Libraries
 <p>The hard part. Options, in order of effort:</p>
 <ol>
   <li><strong>Option A: minimal standalone bootstrap server.</strong> Write a tiny daemon that owns the bootstrap port, accepts <code>bootstrap_register</code> / <code>bootstrap_look_up</code> over Mach, stores port-name mappings in memory. ~500-1000 lines. Reuses NextBSD's MIG <code>.defs</code> for the bootstrap protocol.</li>
-  <li><strong>Option B: port NextBSD/ravynOS launchd's bootstrap subsystem</strong> piecemeal &mdash; just <code>job_mig_dispatch</code> + the bootstrap port handling, not the rest of launchd. Maybe 2000-3000 lines. Closer to Apple-shape but heavier.</li>
-  <li><strong>Option C: full launchd swap.</strong> Replace <code>freebsd-launchd</code>'s daemon entirely with NextBSD/ravynOS launchd source built against our libmach + libxpc. Highest payoff (16k LoC of working Apple-shape code), highest risk (most surface to debug). Defer to Phase 5.</li>
+  <li><strong>Option B: extract just the bootstrap subsystem from Apple's launchd</strong> &mdash; pull <code>job_mig_dispatch</code> + bootstrap port handling out of <code>launchd-842.92.1</code> source, ship it as a standalone daemon. Maybe 2000-3000 lines. Closer to Apple-shape but heavier.</li>
+  <li><strong>Option C: full clean Apple launchd import.</strong> Phase 5's plan: import <code>launchd-842.92.1</code> verbatim from <code>apple-oss-distributions/launchd</code>, build against our libmach + libxpc + libdispatch with a patch series for FreeBSD adaptations. Highest payoff (16k+ LoC of upstream-clean Apple code), highest risk (most surface to debug). This becomes the production launchd.</li>
 </ol>
-<p>Recommended Phase 3 scope: <strong>Option A</strong>. Smallest critical path to "libxpc connections actually work end-to-end." Defer the larger launchd swap to Phase 5 once libxpc is proven.</p>
+<p>Recommended Phase 3 scope: <strong>Option A</strong>. Smallest critical path to "libxpc connections actually work end-to-end." The full Apple-launchd import comes in Phase 5 once libxpc is proven.</p>
 
 <h3>Phase 4 &mdash; xpc_connection end-to-end test (1 week)</h3>
 <ol>
@@ -1012,14 +1017,70 @@ make install   # to /usr/local/lib, NOT /System/Library/Libraries
   <li>This is the libxpc equivalent of C3's "userland mach_msg works end-to-end" milestone.</li>
 </ol>
 
-<h3>Phase 5 &mdash; launchd swap (3-6 weeks)</h3>
+<h3>Phase 5 &mdash; Apple launchd-842.92.1 clean import (4-8 weeks)</h3>
+
+<p>Replace <code>freebsd-launchd</code>'s 1,496-LoC minimal rewrite with a clean verbatim import of Apple's last open-source launchd, building against our libmach + libxpc + libdispatch stack and keeping all Mach paths intact (no stripping, unlike <code>freebsd-launchd</code>'s original approach).</p>
+
+<p><strong>Why this over a ravynOS fork:</strong> same source code either way (ravynOS's launchd descends from NextBSD which descends from Apple <code>launchd-842.x</code>), but a clean import gives us:</p>
+<ul>
+  <li>Clean provenance &mdash; every commit is either "Apple verbatim" or "our patch"</li>
+  <li>License clarity &mdash; Apple's APSL preserved on imported files; patches unambiguously ours</li>
+  <li>Same model as our configd / libdispatch / libxpc imports &mdash; project-wide consistency</li>
+  <li>No inheritance of NextBSD's 36 dormant <code>#if 0</code>/FIXME bisect markers</li>
+  <li>Easy re-imports if Apple ever publishes a newer launchd (unlikely but possible)</li>
+</ul>
+
+<p><strong>Layout (mirrors configd's import pattern):</strong></p>
+
+<pre><code>freebsd-launchd-mach/
+├── src/sbin/launchd/
+│   ├── (Apple verbatim from launchd-842.92.1)
+│   ├── core.c                     (~12k lines)
+│   ├── runtime.c, launchd.c, ipc.c, log.c
+│   ├── *.defs                     (MIG protocol_jobmgr, job, job_reply, ...)
+│   └── ...
+├── scripts/import-launchd.sh      (refresh-from-upstream tool)
+└── patches/launchd/
+    ├── 0001-freebsd-15-availability-header.patch    (~20 lines)
+    ├── 0002-build-flags-pic-no-werror.patch          (~10 lines)
+    ├── 0003-audit-session-self-workaround.patch      (~30 lines)
+    ├── 0004-link-against-libmach-libxpc-libdispatch.patch
+    ├── 0005-freebsd-mach-compat-shim.patch           (the bulk)
+    ├── 0006-mig-defs-for-freebsd-makefile.patch
+    └── 0007-per-user-env-file.patch                  (~45 lines; useful ravynOS feature)</code></pre>
+
+<p><strong>Estimated patch size:</strong> ~700-1500 lines sitting on top of Apple's ~16,500 lines of clean source. Comparable to gershwin's libdispatch patch in approach, larger in absolute size.</p>
+
+<p><strong>What the patches must do:</strong></p>
 <ol>
-  <li>Build ravynOS's launchd source against our libmach + libxpc + bootstrap server.</li>
-  <li>Migrate the FreeBSD-15 fixes (per-user env file, audit-session workaround, build flags) from ravynOS's tree.</li>
-  <li>Audit-mark the 36 <code>#if 0</code> / FIXME sites for which need re-enabling on FreeBSD.</li>
-  <li>CI gate: ravynOS-launchd boots a livecd to multiuser, can start/stop a daemon, processes the existing FreeBSD launch.plists.</li>
-  <li>Cut over the ISO build from <code>freebsd-launchd</code> to <code>freebsd-launchd-mach</code> launchd. Keep <code>freebsd-launchd</code>'s minimal daemon around as a fallback for non-Mach-aware deployments.</li>
+  <li><strong>FreeBSD <code>bsd.prog.mk</code> Makefile</strong> replacing Apple's xcconfig. ~50-100 lines.</li>
+  <li><strong>MIG <code>.defs</code> compilation</strong> &mdash; Apple's <code>protocol_jobmgr.defs</code>, <code>job.defs</code>, etc. via a FreeBSD-host <code>mig</code> tool producing our shape of stubs. ~100-200 lines of build orchestration.</li>
+  <li><strong>Mach API compat shims</strong> &mdash; Apple's launchd assumes the full XNU Mach ABI (<code>bootstrap_*</code>, <code>mach_port_construct</code>, <code>MACH_NOTIFY_DEAD_NAME</code>, voucher APIs). Our libmach exposes a subset (Phase 1 expansion + Phase 3 bootstrap server). Either widen libmach to cover what launchd needs, or write thin compat shims that route to what we have. ~500-1000 lines.</li>
+  <li><strong><code>&lt;Availability.h&gt;</code> shim</strong> &mdash; Apple's headers reference <code>__OSX_AVAILABLE_STARTING(...)</code>; trivial macro stubs. ~20 lines.</li>
+  <li><strong>Audit-session workarounds</strong> &mdash; same <code>_audit_session_self()</code> issues ravynOS hit on FreeBSD 15. ~30 lines.</li>
+  <li><strong>Per-user env file</strong> &mdash; <code>_read_env_file()</code> that ravynOS added; useful for FreeBSD-style <code>/etc/launchd_user.env</code>. ~45 lines.</li>
 </ol>
+
+<p><strong>Dependencies on prior phases:</strong></p>
+<ul>
+  <li>Phase 0 (libdispatch Mach backend) &mdash; required, launchd uses dispatch heavily</li>
+  <li>Phase 1 (mach.ko port-management syscalls) &mdash; required, launchd allocates ports</li>
+  <li>Phase 2-4 (libxpc) &mdash; required, modern launchd routes job management through libxpc</li>
+  <li>Phase 3 (bootstrap server) &mdash; or absorbed into this phase; Apple's launchd is itself the bootstrap server</li>
+</ul>
+
+<p><strong>Reference NOT fork:</strong> NextBSD's <code>sbin/launchd/</code> and ravynOS's <code>sbin/launchd/</code> are useful prior art &mdash; their FreeBSD shims have already solved many of the same problems we'll hit. We can read their patches as guidance, but our patches stay clean-room (commit messages describe the underlying problem, not "ported from NextBSD"). Keep the lineage cleanly "Apple upstream + our patches."</p>
+
+<p><strong>Test gate (matches Phase B Tier 1's smoke-driven completion criterion):</strong></p>
+<ol>
+  <li>launchd boots as PID 1 on a livecd</li>
+  <li>Processes <code>org.freebsd.*</code> launch.plists from <code>/System/Library/LaunchDaemons/</code></li>
+  <li>Can start/stop a daemon via <code>launchctl load</code> / <code>launchctl unload</code></li>
+  <li>Bootstrap port-name registration / lookup works (proves the libxpc + bootstrap server integration)</li>
+  <li>System reaches multiuser without panic across at least 100 boot cycles</li>
+</ol>
+
+<p><strong>Cutover:</strong> ISO build switches from <code>freebsd-launchd</code> to <code>freebsd-launchd-mach</code> launchd. Keep <code>freebsd-launchd</code>'s minimal daemon around as a fallback for non-Mach-aware deployments (e.g. a stripped-down FreeBSD build that doesn't load mach.ko).</p>
 
 <h3>Phase 5.5 &mdash; CoreFoundation hybrid (libCoreFoundation-freebsd) (3-6 weeks)</h3>
 

@@ -645,6 +645,50 @@ registration).</p>
 matrix, and what remains for Phase C &mdash; lives in the repo at
 <code>src/mach_kmod/PHASE_B_FINDINGS.md</code>.</p>
 </div>
+
+<h4>Where this puts us vs ravynOS / NextBSD</h4>
+
+<p>Verified from a clean state: reboot &rarr; <code>rm -rf</code> the
+local repo and <code>/boot/kernel/mach.ko</code> &rarr; <code>git
+clone</code> upstream &rarr; <code>make</code> &rarr;
+<code>cp</code> &rarr; <code>kldload mach</code>. Works first time.
+A 200-concurrent-fork stress test (each fork firing our six
+eventhandlers) runs through with the system alive. Zero hand-edits on
+the target machine.</p>
+
+<div class="pros-cons">
+<div class="pros">
+<h4>What we have that ravynOS / NextBSD didn't</h4>
+<ul>
+  <li>Same ~99 KLoC ravynOS-derived Mach IPC source</li>
+  <li>Same kernel-internal primitives functional at load &mdash; <code>ipc_host_init</code> exercises <code>ipc_port_alloc_kernel</code>, <code>uma_zalloc</code> against the IPC zones, and <code>ipc_kobject_set</code> every time</li>
+  <li>Same <code>EVFILT_MACHPORT</code> kqueue filter machinery</li>
+  <li>Same struct definitions, same MIG-generated server stubs</li>
+  <li><strong>Zero kernel patches.</strong> Stock FreeBSD-15.0-RELEASE-p8 GENERIC, untouched. mach.ko is a normal out-of-tree kmod.</li>
+</ul>
+</div>
+<div class="cons">
+<h4>What we don't yet have that they did</h4>
+<ul>
+  <li>Apple Mach syscalls not reachable from userland. Compat shim's <code>SYS_&lt;name&gt; = NO_SYSCALL</code> doubles as the helper-register loop sentinel; Phase C wires real numbers.</li>
+  <li><code>EVFILT_MACHPORT</code> filter isn't registered (registration soft-fails because <code>-16</code> is out of stock FreeBSD's <code>EVFILT_SYSCOUNT</code> bounds).</li>
+  <li>Per-process Mach state is opt-in via <code>mach_task_init</code>; ravynOS seeded it for every process via kernel patch.</li>
+  <li>No userland: no libmach, no launchd-with-Mach, no libxpc, no bootstrap server. Phase D+.</li>
+</ul>
+</div>
+</div>
+
+<div class="callout">
+<p><strong>Precise summary.</strong> At the kernel-IPC-primitive layer:
+equivalent capability, zero kernel patches. The Mach IPC subsystem
+(ports, messages, queues, rights) is loaded and demonstrably
+functional. At the "userland can speak Mach" layer: not yet &mdash;
+ravynOS shipped patched kernel + libmach + Apple launchd, end-to-end;
+we've cleared the kernel side. Phase C is syscall wiring + libmach.</p>
+<p>Roughly <strong>70&ndash;80% of ravynOS / NextBSD's Mach kernel
+capability, with zero kernel modifications</strong>. That last clause
+is the part neither ravynOS nor NextBSD attempted.</p>
+</div>
 <ul>
   <li>Copy <code>sys/compat/mach/</code> + <code>sys/sys/mach/</code> + <code>sys/modules/mach/Makefile</code> from ravynOS into <code>mach-kmod/</code>.</li>
   <li>Out-of-tree-ify per Section 5: redirect <code>SYSDIR</code>, bundle MIG-generated stubs, stub <code>opt_*.h</code>.</li>

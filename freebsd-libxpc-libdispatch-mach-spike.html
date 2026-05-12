@@ -78,6 +78,7 @@
   <li><a href="#nothing">What happens if we don't add Mach support</a></li>
   <li><a href="#options">Three options for adding it</a></li>
   <li><a href="#all-apps">All in-scope apps &mdash; dispatch + Mach-dispatch requirements</a></li>
+  <li><a href="#install-path">Install path: <code>/System</code> vs unix paths</a></li>
   <li><a href="#recommendation">Recommendation</a></li>
   <li><a href="#refs">References</a></li>
 </ol>
@@ -496,7 +497,238 @@ void mach_dispatch_source_release(mach_dispatch_source_t src);</code></pre>
   <li><strong>aslmanager:</strong> can probably be replaced by FreeBSD's standard newsyslog if we don't want the full Apple log-rotation policy machinery. Trade-off: lose feature parity, drop the libdispatch dependency. Probably not worth it.</li>
 </ul>
 
-<h2 id="recommendation">6. Recommendation</h2>
+<h2 id="install-path">6. Install path: <code>/System</code> vs unix paths</h2>
+
+<p>Where does <code>libdispatch.so</code> (and its headers) actually live on the filesystem? Apple uses one model on macOS; FreeBSD has two conventions in base and ports; gershwin established a third. <strong>Block.h coordination is baked into this decision</strong> because FreeBSD 15 base ships its own <code>Block.h</code> via pkgbase (<code>FreeBSD-libblocksruntime-dev-15.0</code>) which can collide with the one swift-corelibs-libdispatch wants to bundle.</p>
+
+<h3>6.1. The four candidate paths</h3>
+
+<table>
+<thead><tr><th>Path</th><th>Convention</th><th>Used by</th></tr></thead>
+<tbody>
+  <tr>
+    <td><code>/usr/lib/system/libdispatch.dylib</code> (conceptually inside Libsystem)</td>
+    <td>Apple macOS</td>
+    <td>macOS — but on modern macOS this is a shared-cache entry, not a real file. Reference only; not directly applicable.</td>
+  </tr>
+  <tr>
+    <td><strong><code>/System/Library/Libraries/libdispatch.so</code></strong></td>
+    <td>Gershwin convention</td>
+    <td>gershwin-developer's <code>Install-System-Domain.sh</code>; freebsd-launchd's <code>build.sh</code> also installs here. Header pair: <code>/System/Library/Headers/dispatch/*.h</code> + <code>/System/Library/Headers/Block.h</code> + <code>/System/Library/Headers/os/*.h</code>.</td>
+  </tr>
+  <tr>
+    <td><code>/usr/lib/libdispatch.so</code></td>
+    <td>FreeBSD base / pkgbase</td>
+    <td>What FreeBSD's own libraries use. Header pair: <code>/usr/include/dispatch/*.h</code> + <code>/usr/include/Block.h</code> + <code>/usr/include/os/*.h</code>. FreeBSD-libblocksruntime-15.0 already owns <code>/usr/include/Block.h</code>.</td>
+  </tr>
+  <tr>
+    <td><code>/usr/local/lib/libdispatch.so</code></td>
+    <td>FreeBSD ports</td>
+    <td>Standard third-party port placement. Header pair: <code>/usr/local/include/dispatch/*.h</code> etc.</td>
+  </tr>
+</tbody>
+</table>
+
+<h3>6.2. <code>/System/Library/Libraries/</code> (gershwin) &mdash; option A</h3>
+
+<h4>Pros</h4>
+<ul>
+  <li><strong>Matches gershwin's existing layout.</strong> libobjc2, libgnustep-base, libgnustep-corebase, libdispatch all currently install here. Adding libxpc / libCFRuntime / liblaunch / libnotify / libasl alongside is consistent.</li>
+  <li><strong>Visual / namespace separation.</strong> Clear "this is the Apple-source system-services layer" boundary distinct from FreeBSD base.</li>
+  <li><strong>Existing precedent in our own repos.</strong> freebsd-launchd's <code>build.sh</code> already uses <code>-DCMAKE_INSTALL_PREFIX=/System/Library -DCMAKE_INSTALL_LIBDIR=Libraries</code>. No new pattern to invent.</li>
+  <li><strong>Easy bulk-replace.</strong> Reinstalling the entire system-services layer is "wipe and reinstall <code>/System/</code>" &mdash; one path, one operation. (See caveats in 6.5 for the live-reinstall risk.)</li>
+  <li><strong>Co-located with other gershwin stack components</strong> &mdash; downstream apps don't need multi-path <code>-L</code> arguments.</li>
+</ul>
+
+<h4>Cons</h4>
+<ul>
+  <li><strong>Block.h duplicate</strong> &mdash; gershwin's libdispatch build installs <code>/System/Library/Headers/Block.h</code> alongside FreeBSD base's <code>/usr/include/Block.h</code>. Identical Apple-derived content, but two copies. If they ever diverge it's a problem. (Mitigation: patch the build to skip Block.h install, defer to base. See 6.6.)</li>
+  <li><strong>Live-reinstall fragility</strong> &mdash; <code>rm -rf /System; pkg install gershwin</code> opens a window where any new process needing libdispatch fails to launch (per the running-process / new-process discussion). Already-running launchd survives because it has libdispatch mapped. Atomic-rename pattern mitigates but requires discipline.</li>
+  <li><strong>Diverges from FreeBSD package conventions.</strong> Neither pkgbase nor ports puts things in <code>/System/</code>. If a sysadmin asks "which pkg owns this?", the answer is "our custom install script", not a normal <code>pkg which</code>.</li>
+  <li><strong>Different from Apple's actual macOS layout.</strong> Apple puts libdispatch at <code>/usr/lib/system/libdispatch.dylib</code> (logically; physically in the dyld shared cache). <code>/System/Library/Libraries/</code> is a gershwin invention.</li>
+  <li><strong>Future pkgbase compatibility</strong> &mdash; if we ever want to ship our Apple-source stack via pkgbase, the /System layout doesn't naturally fit pkgbase's "everything under /usr" model.</li>
+</ul>
+
+<h3>6.3. <code>/usr/lib/</code> (FreeBSD base / pkgbase) &mdash; option B</h3>
+
+<h4>Pros</h4>
+<ul>
+  <li><strong>Standard FreeBSD base library location.</strong> ldconfig finds it automatically. <code>pkg which /usr/lib/libdispatch.so</code> returns a useful answer.</li>
+  <li><strong>No Block.h duplicate</strong> &mdash; pkgbase's <code>/usr/include/Block.h</code> stays the only one on the system. Patch swift-corelibs-libdispatch to skip its bundled BlocksRuntime install, link against base's instead. ~10-30 lines of build patch.</li>
+  <li><strong>Atomic upgrades via pkg.</strong> Standard <code>pkg upgrade</code> workflow handles install-replacement correctly; no manual <code>/System</code> wipe needed.</li>
+  <li><strong>Path forward to pkgbase distribution.</strong> If we ever want our Apple-source stack distributed alongside base via pkgbase (rather than as a third-party package), <code>/usr/lib</code> is where it'd naturally live.</li>
+  <li><strong>Native to FreeBSD's mental model.</strong> Sysadmins recognize the layout.</li>
+</ul>
+
+<h4>Cons</h4>
+<ul>
+  <li><strong>Mixes with FreeBSD base files</strong> &mdash; less visual separation between Apple-source and BSD-native. <code>ls /usr/lib | grep dispatch</code> shows our library alongside base libraries with no obvious "this came from the gershwin stack" marker.</li>
+  <li><strong>Diverges from gershwin's existing pattern.</strong> Anything currently expecting <code>/System/Library/Libraries/libdispatch.so</code> would need to find it elsewhere. Existing gershwin consumer apps may have hardcoded paths.</li>
+  <li><strong>Coordination overhead.</strong> Gershwin would need a parallel patch (drop the <code>-DCMAKE_INSTALL_LIBDIR=Libraries</code>, drop the <code>-DINSTALL_BLOCK_HEADERS_DIR</code>). Two install paths in flight simultaneously while we migrate consumers.</li>
+  <li><strong>Risk of pkgbase conflict</strong> &mdash; if FreeBSD's pkgbase ever adds a <code>FreeBSD-libdispatch</code> package at <code>/usr/lib/libdispatch.so</code>, we'd collide directly. Unlikely but possible (FreeBSD 15 already added libBlocksRuntime to pkgbase).</li>
+</ul>
+
+<h3>6.4. <code>/usr/local/lib/</code> (FreeBSD ports) &mdash; option C</h3>
+
+<h4>Pros</h4>
+<ul>
+  <li><strong>No collision with anything.</strong> Neither base, nor pkgbase, nor gershwin uses this. Cleanest from a packaging-namespace standpoint.</li>
+  <li><strong>Familiar FreeBSD ports convention.</strong> Sysadmins know exactly what this means and how to manage it.</li>
+  <li><strong>Easy uninstall.</strong> Wholesale remove via <code>pkg delete</code> or <code>rm -rf /usr/local</code> if needed.</li>
+  <li><strong>Mirror of how the FreeBSD ports tree currently ships <code>devel/libdispatch</code>.</strong> Consistent with existing FreeBSD ecosystem.</li>
+</ul>
+
+<h4>Cons</h4>
+<ul>
+  <li><strong>Block.h duplication still possible.</strong> If we ship our own bundled BlocksRuntime at <code>/usr/local/include/Block.h</code> alongside pkgbase's <code>/usr/include/Block.h</code>, same divergence risk as the gershwin path. Mitigation: same as 6.6 — skip the bundled install, link against pkgbase's.</li>
+  <li><strong>Splits the system-services layer.</strong> libdispatch at <code>/usr/local/lib</code>; libobjc2/libgnustep-base at <code>/System/Library/Libraries</code> (gershwin); libxpc decision still pending. Cross-component link lines get long.</li>
+  <li><strong>Doesn't match gershwin's existing precedent</strong> for the Apple-source system-services layer.</li>
+  <li><strong>Treats Apple-source-as-system-services like a third-party port.</strong> Mismatches the project's strategic framing &mdash; we want these to feel like first-class system services, not optional add-ons.</li>
+</ul>
+
+<h3>6.5. Live-reinstall fragility, by path</h3>
+
+<table>
+<thead><tr><th>Scenario</th><th>/System</th><th>/usr/lib</th><th>/usr/local/lib</th></tr></thead>
+<tbody>
+  <tr>
+    <td>Already-running launchd survives reinstall</td>
+    <td><span class="pill pill-good">yes</span> &mdash; libdispatch mapped, file removal doesn't unload it</td>
+    <td><span class="pill pill-good">yes</span> &mdash; same kernel semantics</td>
+    <td><span class="pill pill-good">yes</span> &mdash; same</td>
+  </tr>
+  <tr>
+    <td>New process starts during the install window</td>
+    <td><span class="pill pill-warn">fails</span> if <code>libdispatch.so</code> is briefly missing</td>
+    <td><span class="pill pill-good">pkg-managed</span> &mdash; <code>pkg upgrade</code> handles atomic replace via temp files</td>
+    <td><span class="pill pill-good">pkg-managed</span> &mdash; same</td>
+  </tr>
+  <tr>
+    <td>"Wipe and reinstall everything" workflow</td>
+    <td><span class="pill pill-warn">requires care</span> &mdash; atomic-rename or single-user-mode</td>
+    <td><span class="pill pill-good">via <code>pkg upgrade</code></span></td>
+    <td><span class="pill pill-good">via <code>pkg upgrade</code></span></td>
+  </tr>
+  <tr>
+    <td>Atomic-rename mitigation</td>
+    <td><code>mv /System /System.old; install; rm -rf /System.old</code></td>
+    <td>not needed &mdash; pkg handles it</td>
+    <td>not needed &mdash; pkg handles it</td>
+  </tr>
+</tbody>
+</table>
+
+<p>The <code>/System</code> path is more sensitive to "live wholesale wipe" workflows because there's no system-level packaging tool that knows how to atomically replace the directory. The atomic-rename pattern works but requires discipline.</p>
+
+<h3>6.6. Block.h coordination &mdash; the cross-cutting concern</h3>
+
+<p>FreeBSD 15 base ships <code>/usr/include/Block.h</code> + <code>/usr/lib/libBlocksRuntime.so</code> via pkgbase (<code>FreeBSD-libblocksruntime-dev-15.0</code> and <code>FreeBSD-libblocksruntime-15.0</code>). swift-corelibs-libdispatch bundles its own Block.h, intending to install one alongside the libdispatch headers. The two files are byte-near-identical (same 2008-2010 Apple source).</p>
+
+<table>
+<thead><tr><th>libdispatch install path</th><th>Block.h coordination strategy</th></tr></thead>
+<tbody>
+  <tr>
+    <td><code>/System/Library/Libraries/</code></td>
+    <td><strong>Option 1:</strong> ship the duplicate &mdash; <code>/System/Library/Headers/Block.h</code> alongside pkgbase's <code>/usr/include/Block.h</code>. Different paths, same file. Consumers compile with both <code>-I</code> dirs; either one resolves correctly. Live with the duplicate; if they diverge, fix later. <br><strong>Option 2 (recommended):</strong> patch the libdispatch build to skip Block.h install. Use only pkgbase's <code>/usr/include/Block.h</code>. ~10-30 lines of build patch.</td>
+  </tr>
+  <tr>
+    <td><code>/usr/lib/</code></td>
+    <td><strong>Mandatory:</strong> patch the libdispatch build to skip Block.h install &mdash; pkgbase owns <code>/usr/include/Block.h</code> and re-installing it from our build would either fail (pkg refuses to overwrite a package-owned file) or clobber it (pkgbase update later restores it, breaking our build). Use only pkgbase's <code>Block.h</code> + <code>libBlocksRuntime</code>.</td>
+  </tr>
+  <tr>
+    <td><code>/usr/local/lib/</code></td>
+    <td><strong>Either:</strong> ship duplicate at <code>/usr/local/include/Block.h</code> (matches FreeBSD ports convention &mdash; <code>devel/libblocksruntime</code> from ports puts Block.h here) OR patch out and use pkgbase's <code>/usr/include/Block.h</code>. Patching out is cleaner.</td>
+  </tr>
+</tbody>
+</table>
+
+<p><strong>Net rule:</strong> regardless of which libdispatch install path we pick, the cleanest Block.h coordination is to patch swift-corelibs-libdispatch's build to skip installing Block.h / libBlocksRuntime, and link against FreeBSD pkgbase's <code>FreeBSD-libblocksruntime-15.0</code>. Single source of truth for Block.h on the system.</p>
+
+<p>Required patch sketch:</p>
+<pre><code># In gershwin-developer/Library/Patches/swift-corelibs-libdispatch-no-blocks-install.patch
+# (alongside the existing kqueue/timer patch and our planned Mach backend patch)
+#
+# - Remove or skip add_subdirectory(src/BlocksRuntime) in CMakeLists.txt
+# - Skip INSTALL_BLOCK_HEADERS_DIR install
+# - Add target_link_libraries(dispatch PRIVATE BlocksRuntime) pointing at
+#   /usr/lib/libBlocksRuntime.so
+# - find_library(BLOCKSRUNTIME BlocksRuntime PATHS /usr/lib NO_DEFAULT_PATH)</code></pre>
+
+<h3>6.7. Required FreeBSD performance patches &mdash; independent of install path</h3>
+
+<p>Regardless of which install path we choose, swift-corelibs-libdispatch needs gershwin-developer's existing <code>swift-corelibs-libdispatch.patch</code> applied for FreeBSD to perform correctly. The four hunks all apply to the kqueue / timer / workqueue paths and have <strong>nothing to do with Mach</strong> &mdash; they're FreeBSD-kqueue accommodations:</p>
+
+<table>
+<thead><tr><th>Hunk</th><th>File</th><th>Fix</th><th>Why it matters</th></tr></thead>
+<tbody>
+  <tr>
+    <td>1</td>
+    <td><code>src/event/event_kevent.c</code> lines 61-101</td>
+    <td>FreeBSD-specific timer-fflags init array using FreeBSD's <code>NOTE_ABSOLUTE</code>, <code>NOTE_LEEWAY</code>, <code>NOTE_CRITICAL</code>, <code>NOTE_BACKGROUND</code> set</td>
+    <td>FreeBSD's kqueue <code>NOTE_*</code> constants differ from Apple's; without the patch, timers either don't compile or use wrong semantics.</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td><code>src/event/event_kevent.c</code> lines 752-778</td>
+    <td><code>KEVENT_FLAG_IMMEDIATE</code> with zero timeout busy-waits on FreeBSD; patch substitutes a 1ms minimum timeout</td>
+    <td>Without this, libdispatch worker threads tight-spin on <code>kevent()</code> with no events, burning CPU.</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td><code>src/event/event_kevent.c</code> lines 2399-2433</td>
+    <td>Avoid scheduling timers at or before "now" &mdash; enforce a configurable minimum delay (<code>LIBDISPATCH_TIMER_MIN_DELAY_MS</code>, default 10ms)</td>
+    <td>Without this, timer programming triggers immediate re-arms and tight kevent loops on FreeBSD's kqueue.</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td><code>src/event/workqueue.c</code> line 326</td>
+    <td>Fix a typo: <code>for (int j = 0; i &lt; count; ++i)</code> → <code>j &lt; count; ++j</code></td>
+    <td>Pre-existing bug in libdispatch's FreeBSD workqueue thread-counting; would scan past array bounds. Pure correctness fix.</td>
+  </tr>
+</tbody>
+</table>
+
+<p><strong>Implication:</strong> the gershwin-developer Patches directory ends up with three FreeBSD-related patches on swift-corelibs-libdispatch:</p>
+
+<table>
+<thead><tr><th>Patch file</th><th>Purpose</th><th>Required?</th></tr></thead>
+<tbody>
+  <tr><td><code>swift-corelibs-libdispatch.patch</code></td><td>FreeBSD kqueue / timer / workqueue performance + correctness (4 hunks above)</td><td><strong>required for any FreeBSD build</strong> &mdash; libdispatch doesn't work well on FreeBSD without it</td></tr>
+  <tr><td><code>swift-corelibs-libdispatch-mach.patch</code> (Phase 0 of <a href="freebsd-libxpc-plan.html">libxpc plan</a>)</td><td>Add <code>event_mach_freebsd.c</code> backend defining <code>_dispatch_source_type_mach_recv</code> against libmach</td><td>required for libxpc / libnotify / notifyd / SystemConfiguration framework to link &mdash; see &sect;3</td></tr>
+  <tr><td><code>swift-corelibs-libdispatch-no-blocks-install.patch</code> (recommended; this spike)</td><td>Skip installing the bundled Block.h / libBlocksRuntime; link against pkgbase's <code>FreeBSD-libblocksruntime-15.0</code> instead</td><td>recommended &mdash; single Block.h on system, no divergence risk</td></tr>
+</tbody>
+</table>
+
+<p>All three apply to vanilla upstream <code>apple/swift-corelibs-libdispatch</code> in series; gershwin-developer's <code>Install-System-Domain.sh</code> applies them via the existing <code>apply_swift-corelibs-libdispatch_patch.sh</code> mechanism, extended to chain through the new patches.</p>
+
+<h3>6.8. Decision matrix</h3>
+
+<table>
+<thead><tr><th>Criterion</th><th>/System (A)</th><th>/usr/lib (B)</th><th>/usr/local/lib (C)</th></tr></thead>
+<tbody>
+  <tr><td>Matches existing gershwin layout</td><td><span class="pill pill-good">yes</span></td><td><span class="pill pill-bad">no</span></td><td><span class="pill pill-bad">no</span></td></tr>
+  <tr><td>Matches existing freebsd-launchd <code>build.sh</code></td><td><span class="pill pill-good">yes</span></td><td><span class="pill pill-bad">no</span></td><td><span class="pill pill-bad">no</span></td></tr>
+  <tr><td>Live-reinstall safe without atomic-rename discipline</td><td><span class="pill pill-warn">fragile</span></td><td><span class="pill pill-good">yes</span> (pkg)</td><td><span class="pill pill-good">yes</span> (pkg)</td></tr>
+  <tr><td>Block.h coordination needed</td><td>skip install (recommended) or live with duplicate</td><td>skip install (mandatory)</td><td>skip install (recommended)</td></tr>
+  <tr><td>Pkgbase-friendly future</td><td><span class="pill pill-warn">awkward</span></td><td><span class="pill pill-good">natural</span></td><td>n/a (ports model)</td></tr>
+  <tr><td>Sysadmin recognizability</td><td>unfamiliar</td><td><span class="pill pill-good">familiar</span></td><td><span class="pill pill-good">familiar</span></td></tr>
+  <tr><td>Visual "Apple-source system-services" boundary</td><td><span class="pill pill-good">clear</span></td><td>mixed with base</td><td>mixed with ports</td></tr>
+  <tr><td>Risk of future pkgbase collision</td><td><span class="pill pill-good">none</span></td><td><span class="pill pill-warn">latent</span></td><td><span class="pill pill-good">none</span></td></tr>
+</tbody>
+</table>
+
+<h3>6.9. Recommendation</h3>
+
+<div class="callout callout-good">
+<p><strong>Recommended: Option A &mdash; <code>/System/Library/Libraries/libdispatch.so</code>.</strong> Matches gershwin's existing precedent and freebsd-launchd's existing build pipeline. Pair with a build patch to skip the bundled Block.h install (defer to pkgbase's <code>/usr/include/Block.h</code>) &mdash; single source of truth on the system, no duplicate, no divergence risk.</p>
+<p>The live-reinstall fragility is real but manageable via the atomic-rename pattern (<code>mv /System /System.old; install; rm /System.old</code>). The existing freebsd-launchd users already operate under these semantics.</p>
+</div>
+
+<p>The <code>/usr/lib</code> path is also defensible &mdash; it's the more "standard FreeBSD" choice. The strongest argument against it is the migration cost: every existing gershwin consumer expects libdispatch at <code>/System/Library/Libraries/</code>; switching would require coordinated updates across multiple repos.</p>
+
+<p><code>/usr/local/lib</code> is the weakest option for system services that we want to feel first-class &mdash; it treats Apple-source-as-system-services like a third-party port, which mismatches the project's framing.</p>
+
+<h2 id="recommendation">7. Recommendation</h2>
 
 <div class="callout callout-good">
 <p><strong>Option 1 &mdash; patch libdispatch.</strong> The dominant factor is "every Apple-source consumer expects <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> to exist." Option 1 honors that expectation; Options 2 and 3 force every Apple-source import to be modified, which complicates re-imports forever.</p>

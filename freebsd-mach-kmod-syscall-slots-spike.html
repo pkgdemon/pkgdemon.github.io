@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mach.ko syscall slot expansion &mdash; audit plan</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --bg: #fafaf7;
+    --accent: #b8472a;
+    --accent-soft: #f3e7df;
+    --border: #d8d4c8;
+    --code-bg: #f0ece2;
+    --table-stripe: #f4efe5;
+    --warn: #8a5a00;
+    --good: #2d6f3b;
+    --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif; color: var(--fg); background: var(--bg); line-height: 1.55; margin: 0; padding: 0; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 32px 96px; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--border); letter-spacing: -0.005em; }
+  h3 { font-size: 1.15rem; margin: 32px 0 10px; color: var(--accent); }
+  h4 { font-size: 1rem; margin: 24px 0 6px; color: var(--fg); }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg); }
+  code { padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  pre { padding: 14px 18px; border-radius: 4px; overflow-x: auto; font-size: 0.86rem; line-height: 1.45; margin: 0 0 18px; }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+  .lede { font-size: 1.05rem; color: var(--fg-muted); margin-bottom: 32px; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 8px 10px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 18px 0 22px; border-radius: 0 4px 4px 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn { border-left-color: var(--warn); background: #fbf3df; }
+  .callout-good { border-left-color: var(--good); background: #e8f1e3; }
+  .callout-bad { border-left-color: var(--bad); background: #f7e0e0; }
+  .pill { display: inline-block; font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 10px; margin-right: 8px; }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 18px 24px 14px 36px; margin: 0 0 36px; font-size: 0.95rem; }
+  .toc h2 { margin: 0 0 8px; padding-top: 0; border-top: none; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-left: -14px; }
+  .toc ol { margin: 0 0 0 6px; }
+  .toc li { margin-bottom: 4px; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  .verdict { font-size: 1.1rem; font-weight: 600; margin: 8px 0 14px; }
+  .verdict-go { color: var(--good); }
+  .verdict-warn { color: var(--warn); }
+  .verdict-no { color: var(--bad); }
+  @media (max-width: 600px) { .wrap { padding: 24px 18px 64px; } table { font-size: 0.82rem; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1><code>mach.ko</code> syscall slot expansion &mdash; audit plan</h1>
+<p class="lede">freebsd-launchd-mach has wired 10 Mach syscalls into FreeBSD&rsquo;s reserved <code>lkmnosys</code> slot range (210&ndash;219). Adding an 11th fails with <code>ENFILE</code>. Forward-demand estimate puts total Mach syscalls at 30&ndash;40 by the time launchd+configd+notifyd+asl are ported. We need to expand somehow. This is an <strong>audit plan</strong>, not a design decision &mdash; before picking a path we want sub-agents to verify there isn&rsquo;t a simpler mechanism we&rsquo;ve missed.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#problem">Problem statement</a></li>
+  <li><a href="#inventory">Current syscall inventory (10/10)</a></li>
+  <li><a href="#why-limit">Why the 10-slot limit exists</a></li>
+  <li><a href="#apple-compare">What Apple does instead</a></li>
+  <li><a href="#risk">Risk of using more slots</a></li>
+  <li><a href="#demand">Forward-demand estimate</a></li>
+  <li><a href="#options">Candidate paths under consideration</a></li>
+  <li><a href="#audit">Audit plan &mdash; what sub-agents will verify</a></li>
+  <li><a href="#rubric">Decision rubric</a></li>
+  <li><a href="#nextstep">Next step</a></li>
+</ol>
+</div>
+
+<h2 id="problem">1. Problem statement</h2>
+
+<p>FreeBSD&rsquo;s <code>sys/kern/syscalls.master</code> reserves <strong>exactly ten <code>lkmnosys</code> slots</strong> at syscall numbers 210&ndash;219. The kernel&rsquo;s <code>kern_syscall_register(..., offset=NO_SYSCALL, ...)</code> scans for slots whose <code>sysent[].sy_call == lkmnosys</code> and grabs the first free one. After ten dynamic registrations, the eleventh call returns <code>ENFILE</code>.</p>
+
+<p>freebsd-launchd-mach hit this boundary at Phase G2b: trying to wire <code>host_set_special_port</code> as the eleventh Mach syscall, kld load printed:</p>
+
+<pre><code>mach: mach_reply_port            registered at syscall 210
+mach: task_self_trap             registered at syscall 211
+mach: thread_self_trap           registered at syscall 212
+mach: host_self_trap             registered at syscall 213
+mach: mach_msg_trap              registered at syscall 214
+mach: mach_port_allocate         registered at syscall 215
+mach: mach_port_deallocate       registered at syscall 216
+mach: mach_port_insert_right     registered at syscall 217
+mach: task_get_special_port      registered at syscall 218
+mach: task_set_special_port      registered at syscall 219
+mach: syscall_register(host_set_special_port) failed: 23</code></pre>
+
+<p>(errno 23 = <code>ENFILE</code>.)</p>
+
+<p>Phase G2b shipped a workaround: have <code>libsystem_kernel</code>&rsquo;s <code>host_set_special_port</code> route through the existing <code>task_set_special_port</code> syscall, with the kernel handler disambiguating by the <code>which</code> argument. That works for one extra entry. It does not scale.</p>
+
+<h2 id="inventory">2. Current syscall inventory (10/10)</h2>
+
+<table>
+  <thead><tr><th>#</th><th>Slot</th><th>Name</th><th>Phase</th><th>User</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>210</td><td><code>mach_reply_port</code></td><td>B Tier 1</td><td>libdispatch poller, libxpc, tests</td></tr>
+    <tr><td>2</td><td>211</td><td><code>task_self_trap</code></td><td>B Tier 1</td><td>everywhere (<code>mach_task_self()</code>)</td></tr>
+    <tr><td>3</td><td>212</td><td><code>thread_self_trap</code></td><td>B Tier 1</td><td>tests, libdispatch internals</td></tr>
+    <tr><td>4</td><td>213</td><td><code>host_self_trap</code></td><td>B Tier 1</td><td>tests, <code>host_set_special_port</code> shim</td></tr>
+    <tr><td>5</td><td>214</td><td><code>mach_msg_trap</code></td><td>C3</td><td>core IPC; libdispatch RECV poller; libxpc; libbootstrap</td></tr>
+    <tr><td>6</td><td>215</td><td><code>mach_port_allocate</code></td><td>F</td><td>libxpc, bootstrap server, tests</td></tr>
+    <tr><td>7</td><td>216</td><td><code>mach_port_deallocate</code></td><td>F</td><td>libxpc</td></tr>
+    <tr><td>8</td><td>217</td><td><code>mach_port_insert_right</code></td><td>F</td><td>libxpc, bootstrap server</td></tr>
+    <tr><td>9</td><td>218</td><td><code>task_get_special_port</code></td><td>G prereq</td><td>bootstrap clients via <code>task_get_bootstrap_port</code></td></tr>
+    <tr><td>10</td><td>219</td><td><code>task_set_special_port</code></td><td>G prereq</td><td>tests; bootstrap server (via <code>host_set_special_port</code> routing)</td></tr>
+  </tbody>
+</table>
+
+<h2 id="why-limit">3. Why the 10-slot limit exists</h2>
+
+<p>FreeBSD&rsquo;s syscall table is a fixed-size array at compile time. The kernel allocates one <code>struct sysent</code> per slot at boot; each is ~24 bytes on amd64. The number of slots is determined by <code>SYS_MAXSYSCALL</code>, which is generated from <code>syscalls.master</code> at kernel build time. There&rsquo;s no runtime knob to grow it &mdash; the entire syscall dispatch path (<code>amd64_syscall</code>, <code>fast_syscall_common</code>, etc.) bounds-checks against this compile-time constant.</p>
+
+<p>The 10 <code>lkmnosys</code> entries at 210&ndash;219 are a <em>convenience</em>: they let third-party modules grab a slot at kld load time without coordinating with the FreeBSD project for a permanent number. The limit of ten dates to early-1990s BSD when KLDs were uncommon and the typical use case was a single out-of-tree module. The number was never raised because the FreeBSD answer to &ldquo;I need more&rdquo; has historically been &ldquo;commit your syscall to base or use sysctl/ioctl/<code>kern_sysctl</code>&rdquo; &mdash; both of which sidestep the slot question entirely.</p>
+
+<p>So the cap isn&rsquo;t a hard kernel limit; it&rsquo;s a <em>convention</em> baked into <code>syscalls.master</code>. The <code>RESERVED</code> slots scattered through 91&hellip;296 are a separate convention: &ldquo;these slot numbers are intentionally left for non-base callers to claim by explicit assignment.&rdquo; The official comment says <em>&ldquo;reserved for local or vendor use (not for FreeBSD).&rdquo;</em></p>
+
+<h2 id="apple-compare">4. What Apple does instead</h2>
+
+<p>Apple&rsquo;s macOS XNU kernel does <strong>not</strong> use FreeBSD&rsquo;s <code>sysent</code> table for Mach traps. There are two separate dispatch tables:</p>
+
+<ul>
+  <li><strong>BSD syscalls</strong> (<code>sysent</code>): conventional POSIX-shaped syscalls. Same model as FreeBSD; same compile-time-sized table.</li>
+  <li><strong>Mach traps</strong> (<code>mach_trap_table</code> in <code>osfmk/kern/mach_trap_table.c</code>): a separate table indexed by <em>negative</em> syscall numbers. The amd64 <code>system_call_64</code> trampoline branches on the sign of <code>rax</code>: positive routes to <code>sysent</code>, negative routes to <code>mach_trap_table</code>. Around 80 entries today (<code>mach_reply_port</code>, <code>thread_self_trap</code>, <code>task_self_trap</code>, the whole <code>_kernelrpc_mach_port_*</code> family, <code>mach_msg2_trap</code>, etc.).</li>
+</ul>
+
+<p>Userland on macOS uses <code>MACH_TRAP_TABLE_COUNT</code>-aware glue: <code>libsystem_kernel.dylib</code>&rsquo;s assembly stubs do <code>movq $-N, %rax</code> for trap N, then <code>syscall</code>. The kernel sees the negative number, dispatches accordingly.</p>
+
+<p>So Apple-side, there&rsquo;s no equivalent of our 10-slot problem: Mach has its own private table with as many entries as Apple wants to define. They simply allocated a different number space.</p>
+
+<p>This is relevant to our Option 4.2 (multiplexer dispatcher): we could approximate Apple&rsquo;s separation by claiming <em>one</em> FreeBSD syscall slot to host an internally-routed <code>mach_trap_table</code>-style table. The userland shim would dispatch by trap number to the right kernel handler. Agent C&rsquo;s job below is to verify this is mechanically clean.</p>
+
+<h2 id="risk">5. Risk of using more slots</h2>
+
+<p>Three risk axes depending on how we expand:</p>
+
+<table>
+  <thead><tr><th>Mechanism</th><th>Risk</th><th>Likelihood</th><th>Mitigation</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Claim a RESERVED slot explicitly (e.g. 91)</td>
+      <td>A future FreeBSD release assigns slot 91 to a real syscall; our module either fails to load (slot now occupied) or its registration is rejected because <code>sy_call != nosys</code>.</td>
+      <td><strong>Low</strong> historically. The RESERVED slots have been stable for many FreeBSD majors. They&rsquo;re explicitly documented as off-limits for FreeBSD base.</td>
+      <td>Pin the module to a known-good <code>OSVERSION</code> range; document the chosen slots in a release manifest; CI rebuilds against new majors before publishing.</td>
+    </tr>
+    <tr>
+      <td>Use multiplexer dispatcher in one slot</td>
+      <td>If FreeBSD ever changes how that one slot is dispatched (unlikely &mdash; it&rsquo;s a single LKM-allocated syscall), our internal trap table breaks. Debug introspection is harder (one syscall name covers many operations).</td>
+      <td><strong>Very low</strong> &mdash; we own the dispatch.</td>
+      <td>None needed at the kernel level. Userland debug helpers (a <code>sysctl mach.trap.&lt;op&gt;</code> tree) preserve introspection.</td>
+    </tr>
+    <tr>
+      <td>Patch FreeBSD base to add more <code>lkmnosys</code> entries</td>
+      <td>Breaks the project&rsquo;s &ldquo;no kernel patches&rdquo; rule; module no longer loads on stock FreeBSD; per-major rebuild required.</td>
+      <td><strong>N/A &mdash; disqualified.</strong></td>
+      <td>&mdash;</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The dominant risk for RESERVED-slot claiming is a slot collision on a future FreeBSD bump. Looking at FreeBSD&rsquo;s recent history, the rate of new syscalls is ~5&ndash;10 per major release, and they tend to be appended at the high end (currently 602), not into the RESERVED gaps mid-table. The lowest-numbered RESERVED slots (91, 94, 119, 151&ndash;153) have been RESERVED since BSD 4.4. So claiming low-numbered RESERVED slots is empirically very safe.</p>
+
+<p>The multiplexer route eliminates this risk entirely at the cost of debuggability.</p>
+
+<h2 id="demand">6. Forward-demand estimate</h2>
+
+<p>Phases G2b through eventual launchd-PID-1 plus the cluster of system daemons (configd, notifyd, asl, mDNSResponder, IPConfiguration) require additional Mach syscalls. Non-exhaustive forecast based on Apple/ravynOS source surveys:</p>
+
+<table>
+  <thead><tr><th>Phase</th><th>Likely new syscalls</th><th>Running total</th></tr></thead>
+  <tbody>
+    <tr><td>G2 done (current)</td><td>&mdash; (<code>host_set_special_port</code> piggybacks)</td><td>10</td></tr>
+    <tr><td>G2 polish</td><td><code>host_get_special_port</code>; possibly <code>mach_port_mod_refs</code></td><td>~12</td></tr>
+    <tr><td>libxpc port</td><td>0 (uses what we have)</td><td>~12</td></tr>
+    <tr><td>bootstrap server / launchd-842 import</td><td><code>mach_port_destroy</code>, <code>mach_port_request_notification</code> (NO_SENDERS, DEAD_NAME), <code>mach_port_get_attributes</code>, <code>mach_port_set_attributes</code>, <code>mach_msg2_trap</code></td><td>~17</td></tr>
+    <tr><td>configd / notifyd / asl</td><td><code>mach_port_extract_member</code>, <code>mach_port_move_member</code>, <code>mach_port_insert_member</code>, <code>mach_port_construct</code> / <code>destruct</code>, <code>mach_port_extract_right</code></td><td>~22</td></tr>
+    <tr><td>thread / task introspection</td><td><code>task_threads</code>, <code>task_info</code>, <code>thread_get_state</code>, <code>thread_set_state</code>, <code>thread_resume</code> / <code>suspend</code></td><td>~27</td></tr>
+    <tr><td>vm</td><td><code>vm_allocate</code>, <code>vm_deallocate</code>, <code>vm_remap</code>, <code>vm_protect</code></td><td>~31</td></tr>
+    <tr><td>semaphore (existing UNSUPPORTED stubs)</td><td><code>semaphore_signal_trap</code>, <code>semaphore_wait_trap</code>, friends</td><td>~36</td></tr>
+  </tbody>
+</table>
+
+<p>Rough total: <strong>30&ndash;40 Mach syscalls</strong>. Some of those can be reasonably multiplexed (e.g. the <code>mach_port_*member</code> family) but not 3&ndash;4&times; over.</p>
+
+<h2 id="options">7. Candidate paths under consideration</h2>
+
+<h3>4.1 RESERVED slot expansion</h3>
+
+<p>FreeBSD&rsquo;s <code>syscalls.master</code> contains ~48 entries marked <code>RESERVED</code>, with the explicit comment <em>&ldquo;RESERVED reserved for local or vendor use (not for FreeBSD).&rdquo;</em> Slots include 91, 94, 119, 151&ndash;153, 159, 167&ndash;168, 172, 177&ndash;180, 193, 208, 245&ndash;246, 249, 258&ndash;271, 273, 281&ndash;288, 291&ndash;296. RESERVED slots have <code>sy_call = nosys</code>.</p>
+
+<p><code>kern_syscall_register</code> accepts an <em>explicit</em> non-<code>NO_SYSCALL</code> offset and registers if the existing handler is either <code>lkmnosys</code> or <code>nosys</code> &mdash; meaning RESERVED slots are claimable, just not auto-allocated.</p>
+
+<p><strong>Pros</strong>: stable syscall numbers across reboots; ample headroom (48 + 10 = 58 slots); zero changes to FreeBSD base.</p>
+<p><strong>Cons</strong>: a future FreeBSD release could co-opt a RESERVED slot, breaking our module. Requires per-syscall explicit slot assignment and tracking.</p>
+
+<h3>4.2 Multiplexer dispatcher</h3>
+
+<p>One reserved-range slot becomes a generic <code>mach_dispatch_trap(op, args*)</code> that branches on <code>op</code> to call the underlying Mach implementations. All future Mach traps share that one slot; userland shims pack args into a struct.</p>
+
+<p><strong>Pros</strong>: only consumes one syscall slot ever; precedent in XNU&rsquo;s own mach-trap dispatch.</p>
+<p><strong>Cons</strong>: every new Mach trap needs an <code>op</code> code and arg-packing convention; debugging traces / dtrace become less informative (single syscall covers everything); extra dispatch indirection per call.</p>
+
+<h3>4.3 Per-syscall routing (status-quo workaround scaled up)</h3>
+
+<p>Keep finding ways to overload existing syscalls&rsquo; <code>which</code> / <code>op</code> / disposition arguments to handle new operations. Phase G2b does this for <code>host_set_special_port</code> via <code>task_set_special_port</code>.</p>
+
+<p><strong>Pros</strong>: no new infrastructure.</p>
+<p><strong>Cons</strong>: doesn&rsquo;t scale; quickly creates obscure API overloading; each new operation requires ad-hoc disambiguation rules; not viable for 20+ more syscalls.</p>
+
+<h3>4.4 Out-of-tree FreeBSD kernel patch</h3>
+
+<p>Add more <code>lkmnosys</code> entries to <code>syscalls.master</code> via a FreeBSD-base patch.</p>
+
+<p><strong>Pros</strong>: most idiomatic from FreeBSD&rsquo;s perspective.</p>
+<p><strong>Cons</strong>: violates the project&rsquo;s explicit no-base-kernel-patches rule (<code>mach.ko</code> must build/load on unmodified FreeBSD); rebuild required at every FreeBSD bump.</p>
+
+<h2 id="audit">8. Audit plan &mdash; what sub-agents will verify</h2>
+
+<p>Before picking a path we want concrete answers to the following. Each bullet maps to one sub-agent dispatch.</p>
+
+<h3>Agent A &mdash; FreeBSD syscall-extension mechanisms</h3>
+
+<p>Read <code>sys/kern/init_sysent.c</code>, <code>sys/kern/kern_syscalls.c</code> (or wherever <code>kern_syscall_register</code> / <code>kern_syscall_helper_register</code> lives), and adjacent infrastructure. Confirm:</p>
+
+<ul>
+  <li>Does <code>kern_syscall_register</code> with an explicit offset accept RESERVED slots (where <code>sysent[N].sy_call == nosys</code>)? Cite the exact source location.</li>
+  <li>Is there a <strong>second</strong> syscall table for KLDs (separate from the global <code>sysent</code>) that we&rsquo;ve missed &mdash; e.g. <code>kern_syscall_helper_register</code>, <code>module_register_init</code>, freebsd32 / linuxulator-style alternate tables?</li>
+  <li>Are there sysctls / kenv tunables that change <code>SYS_MAXSYSCALL</code> or alter the syscall-table sizing? Confirm one way or the other.</li>
+  <li>What happens if a KLD reserves an explicit offset, then a future FreeBSD release assigns that slot to a real syscall? Loader behavior? Boot fault? Silent override?</li>
+  <li>Are there <strong>NODEF / NOTSTATIC</strong> or other flag combinations in <code>syscalls.master</code> that allow append-style growth at module-load time?</li>
+</ul>
+
+<h3>Agent B &mdash; survey existing Mach-syscall users</h3>
+
+<p>Across <code>nextbsd/</code>, <code>ravynos/</code>, and the local <code>freebsd-launchd-mach</code> tree, produce a complete frequency table of Mach syscalls actually called. We want hard numbers, not estimates.</p>
+
+<ul>
+  <li>For each Mach syscall (<code>mach_port_*</code>, <code>task_*</code>, <code>thread_*</code>, <code>host_*</code>, <code>mach_msg_*</code>, <code>semaphore_*</code>, <code>vm_*</code>), list the consumers (launchd, libxpc, configd, notifyd, asl, etc.).</li>
+  <li>Identify syscalls that are <em>theoretically</em> in the Mach surface but never actually invoked by any consumer in our porting scope. Those don&rsquo;t need slots.</li>
+  <li>Identify syscalls that are <em>only</em> called via MIG (so they go through <code>mach_msg</code>, not direct syscalls). Those don&rsquo;t need slots either.</li>
+  <li>Output: realistic minimum count of direct-syscall Mach traps we&rsquo;d need to ship a working stack. Replace the 30&ndash;40 estimate with a measured number.</li>
+</ul>
+
+<h3>Agent C &mdash; XNU&rsquo;s own Mach-trap dispatch</h3>
+
+<p>How does Apple&rsquo;s actual XNU expose Mach traps? Mach traps are <em>not</em> regular syscalls on macOS &mdash; they live in a separate table (<code>mach_trap_table</code>) with negative syscall numbers in some configurations. Survey:</p>
+
+<ul>
+  <li>Does XNU&rsquo;s model give us any inspiration for how to expose Mach traps in a separate space from the FreeBSD <code>sysent</code> table?</li>
+  <li>Is there a way to register a custom syscall <em>handler</em> (single entry point) and route Mach traps internally based on the trap number, analogous to XNU&rsquo;s <code>mach_trap_table</code> dispatch?</li>
+  <li>If yes, the answer to our slot problem might be &ldquo;one FreeBSD syscall slot, hosting an XNU-style mach-trap-table internally,&rdquo; which is mechanically similar to option 4.2 but with the architectural justification XNU provides.</li>
+</ul>
+
+<h3>Agent D &mdash; impact on existing wired syscalls if we change the scheme</h3>
+
+<p>Whatever we pick (RESERVED slots, multiplexer, hybrid), we&rsquo;d want to migrate the existing 10 syscalls into the new scheme so the implementation is uniform. Audit:</p>
+
+<ul>
+  <li>What breaks if syscall numbers change (e.g. moving <code>mach_reply_port</code> from auto-allocated 210 to RESERVED slot 91)? Are any consumers hard-coding numbers, or do all of them resolve via <code>sysctl mach.syscall.&lt;name&gt;</code>?</li>
+  <li>Does the sysctl-resolution path work uniformly for multiplexer-style dispatch (where the &ldquo;number&rdquo; might be an op-code inside a single syscall)?</li>
+  <li>Does the smoke-test harness need adjustments? Boot-test expect grammar?</li>
+</ul>
+
+<h2 id="rubric">9. Decision rubric</h2>
+
+<p>Once Agents A&ndash;D return, evaluate each candidate path against:</p>
+
+<table>
+  <thead><tr><th>Criterion</th><th>Weight</th><th>Why it matters</th></tr></thead>
+  <tbody>
+    <tr><td>Respects no-FreeBSD-kernel-patch constraint</td><td>Hard</td><td>Project rule. Disqualifying if violated.</td></tr>
+    <tr><td>Headroom for 30&ndash;40 future Mach syscalls (or whatever Agent B finds)</td><td>High</td><td>Phase H+ won&rsquo;t land otherwise.</td></tr>
+    <tr><td>Survives FreeBSD-base bumps without per-major rework</td><td>High</td><td>Project ships per-major release artifact.</td></tr>
+    <tr><td>Debuggability: traces / dtrace / ktrace remain informative</td><td>Medium</td><td>Bug hunt cycles matter; we&rsquo;ve already spent N CI iterations finding subtle Mach bugs.</td></tr>
+    <tr><td>Apple-canonical surface preserved (consumer code unmodified)</td><td>Medium</td><td>libxpc, future launchd-842 import must compile without surface rewrites.</td></tr>
+    <tr><td>Code complexity / new infrastructure</td><td>Low</td><td>Smaller is better when other criteria tie.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="nextstep">10. Next step</h2>
+
+<p>Joe reviews this plan. On approval:</p>
+
+<ol>
+  <li>Dispatch Agents A&ndash;D in parallel (each returns a focused report under ~600 words).</li>
+  <li>Synthesize findings into a follow-up &ldquo;decision&rdquo; doc that picks one path with rationale.</li>
+  <li>Land the chosen migration as a discrete commit before Phase G2c (standalone bootstrap daemon) so future Mach syscalls drop in cleanly.</li>
+</ol>
+
+<p>Phase G2b&rsquo;s routing workaround stays in place in the meantime so the build remains green; the migration commit revisits it.</p>
+
+<p class="footnote">
+Spike doc, 2026-05-13. Captures state at <code>freebsd-launchd-mach@main</code> commit <code>2e3fc7e</code> (Phase G2b post-routing-fix).
+</p>
+
+</div>
+</body>
+</html>

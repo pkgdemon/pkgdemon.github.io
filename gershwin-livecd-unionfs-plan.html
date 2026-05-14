@@ -75,7 +75,7 @@
 <header class="page">
   <h1>Port <code>init_chroot</code> + unionfs/tmpfs full read-write architecture into Gershwin</h1>
   <div class="sub">Fixes "admin can't log in after install" at its source, and makes the installed
-    system a bit-exact copy of the live ISO.</div>
+    system a faithful copy of the pristine live ISO image.</div>
   <div class="repos">
     <span class="pill">gershwin-on-freebsd @ unionfs-full-readwrite</span>
     <span class="pill">gershwin-system @ unionfs-full-readwrite</span>
@@ -100,13 +100,13 @@
   whole root becomes one writable union, the real rc.d scripts run normally, and
   <strong>nothing is neutered</strong>. Port the <code>/boot/firmware</code> symlink; split
   <code>loader.conf</code> into a live-only tier and an "everywhere" tier; and change the installer
-  to <strong><code>dd</code> the pristine uzip UFS</strong> onto the target disk instead of
-  tree-copying the running root.</p>
+  to copy the <strong>pristine uzip with <code>bsdtar</code></strong> (from a read-only mount of
+  <code>/dev/md0.uzip</code>) instead of tree-copying the live union.</p>
   <div class="callout info" style="margin-bottom:4px;"><strong>Design north star:</strong> minimize
-    divergence between the livecd and the installed system — achieved by installing a bit-exact copy
-    of the uzip, baking all system config into the uzip, and keeping the one genuinely live-only
-    setting out of the uzip via the tmpfs upper. No new live-only rc.d script; no
-    <code>SystemPrepare.sh</code> hook.</div>
+    divergence between the livecd and the installed system — achieved by installing a faithful copy
+    of the <em>pristine uzip</em> (not the live union, so no live-session cruft), baking all system
+    config into the uzip, and keeping the one genuinely live-only setting out of the uzip via the
+    tmpfs upper. No new live-only rc.d script; no <code>SystemPrepare.sh</code> hook.</div>
 </div>
 
 <h2><span class="n">Decisions</span> Locked during planning</h2>
@@ -123,13 +123,18 @@
 
 <div class="decision">
   <div class="q"><span class="tag locked">D2</span> Installer copy method</div>
-  <div class="a">→ <code>dd</code> the uzip UFS — not <code>cp -a</code>, not <code>rsync</code>, no <code>SystemPrepare.sh</code>.</div>
+  <div class="a">→ <code>bsdtar</code> from a read-only mount of the uzip — not <code>cp -a</code>, not <code>rsync</code>, no <code>SystemPrepare.sh</code>.</div>
   <p class="muted" style="margin:6px 0 0;"><code>cp -a</code> is unfit on FreeBSD: no hardlink
   preservation (<code>/rescue</code> ≈200 hardlinks → explodes), no exclude mechanism (the current
   installer bug), no <code>--one-file-system</code> (crosses into <code>/dev</code>,<code>/proc</code>).
-  <code>rsync</code> fixes those but isn't in base. <code>dd if=/dev/md0.uzip of=&lt;part&gt;</code> +
-  <code>growfs</code> is base, bit-exact, and copies the <em>pristine build artifact</em> —
-  live-session cruft lives in the tmpfs upper and is naturally excluded.</p>
+  <code>rsync</code> fixes those but isn't in base. The installer mounts the pristine uzip UFS
+  (<code>/dev/md0.uzip</code>) read-only and runs <code>bsdtar --acls --xattrs --fflags</code> from it
+  — a base-only, file-level copy with full metadata fidelity (ACLs, xattrs, BSD flags, hardlinks,
+  ownership, perms, timestamps, setuid/sticky). Reading the <em>read-only uzip</em> (not the live
+  union) keeps the copy off unionfs's <code>readdir</code> and means no exclude list — the source is
+  a clean static image, free of tmpfs-upper cruft. (<code>dd</code> of the uzip was the prior choice;
+  switched to a file-level tool per maintainer preference — it shares the conceptual model of the
+  planned native GNUstep backend; see Follow-up.)</p>
 </div>
 
 <div class="decision">
@@ -164,8 +169,8 @@
       <code>/upper</code>, <code>/rescue</code>. Kernel's real root, hidden from the post-pivot
       chroot, not part of the uzip — never reaches an install.</li>
     <li><strong>uzip layer</strong> — built from <code>RELEASE_DIR</code>: the actual system. The
-      installer <code>dd</code>s this (via <code>/dev/md0.uzip</code>). Everything that should reach
-      installs lives here.</li>
+      installer copies this (via <code>bsdtar</code> from a read-only mount of <code>/dev/md0.uzip</code>).
+      Everything that should reach installs lives here.</li>
     <li><strong>unionfs tmpfs upper</strong> — live-only runtime state. <code>init_script</code>
       writes <code>root_rw_mount="NO"</code> here before pivot; live-only, never in the uzip.</li>
   </ul>
@@ -291,9 +296,9 @@ kenv init_chroot=/sysroot ; kenv -u init_script init_shell ; exit 0</code></pre>
 
 <div class="filehdr"><span class="tag keep">KEEP</span> build.sh — <code>generate_iso()</code></div>
 <div class="filebody">
-  <p>No structural change. Optional tuning (pairs well with the <code>dd</code> installer): trim the
-  <code>makefs -b 75% -f 75%</code> slack on the uzip UFS — <code>growfs</code> handles expansion at
-  install time, so a tighter image keeps the dd'd bytes down. Not required for correctness.</p>
+  <p>No change. (The <code>dd</code>-era note about trimming the <code>makefs -b 75%</code> slack no
+  longer applies — <code>bsdtar</code> copies file content, not the UFS free space, so the slack
+  doesn't affect the installed-system size.)</p>
 </div>
 
 <div class="filehdr"><span class="tag change">CHANGE</span> build.sh — <code>configure_system()</code> (~lines 226–283)</div>
@@ -327,40 +332,49 @@ kenv init_chroot=/sysroot ; kenv -u init_script init_shell ; exit 0</code></pre>
 
 <h2><span class="n">Repo B</span> gershwin-system — installer</h2>
 
-<div class="filehdr"><span class="tag change">CHANGE</span> Library/Scripts/installer.sh — install by <code>dd</code>'ing the uzip UFS</div>
+<div class="filehdr"><span class="tag change">CHANGE</span> Library/Scripts/installer.sh — install with <code>bsdtar</code> from the read-only uzip</div>
 <div class="filebody">
   <p>Replace the tree-copy logic (the <code>rsync</code> path and the broken <code>cp -a</code>
-  fallback) for the normal "install this live system" path. All steps run <strong>inside the
-  installer, on the target disk, before the user ever reboots</strong>:</p>
+  fallback) for the normal "install this live system" path:</p>
   <ul>
     <li><span class="tag keep">KEEP</span><code>gpart</code> partitioning (EFI + freebsd-ufs, or
       freebsd-boot + freebsd-ufs).</li>
-    <li><span class="tag change">CHANGE</span><code>dd if=/dev/md0.uzip of=${ROOT_PART} bs=1m</code>
-      — bit-exact pristine clone; no <code>newfs</code> needed, <code>dd</code> brings the filesystem.
-      <strong>Hardlinks are a non-issue</strong> — <code>dd</code> copies the UFS image
-      block-for-block, so <code>/rescue</code>'s hardlink farm is preserved exactly. The hardlink
-      problem only ever applied to tree-walking copiers (the reason <code>cp -a</code> was rejected).</li>
-    <li><span class="tag new">NEW</span><code>growfs -y ${ROOT_PART}</code> — expand the UFS to fill
-      the partition. Runs <strong>once, here, on the still-unmounted target</strong>; the installed
-      system boots an already-full-size filesystem with no boot-time growth step (no
-      <code>firstboot</code> / <code>rc.d/growfs</code> needed — that's only for imageless cloud deploys).</li>
-    <li><span class="tag keep">KEEP</span>mount <code>${ROOT_PART}</code>, write <code>/etc/fstab</code>
-      and append <code>vfs.root.mountfrom="ufs:${ROOT_PART}"</code> / <code>nvme_load</code> to
-      <code>/boot/loader.conf</code>; bootcode / EFI loader staging; the post-copy
-      <code>chroot "$MNT" …/dscli init</code>.</li>
+    <li><span class="tag change">CHANGE</span><code>newfs -U ${ROOT_PART}</code>, then mount the target.</li>
+    <li><span class="tag new">NEW</span>mount the pristine uzip read-only at a temp point:
+      <code>mount -t ufs -o ro /dev/md0.uzip $(mktemp -d)</code>.</li>
+    <li><span class="tag new">NEW</span><code>bsdtar</code> pipe, full metadata fidelity (<code>tar</code>
+      is bsdtar on FreeBSD):<br>
+      <code>( cd $UZIP_SRC &amp;&amp; tar --acls --xattrs --fflags --one-file-system -cf - . ) | ( cd $MNT &amp;&amp; tar --acls --xattrs --fflags -xpf - )</code><br>
+      No exclude list needed — the RO uzip is a clean static image (its <code>/dev</code>,<code>/var</code>,<code>/tmp</code>
+      are just empty dirs), so the copy never touches unionfs. <strong>Hardlinks</strong> (<code>/rescue</code>),
+      ACLs, xattrs, BSD flags, ownership, perms, timestamps and setuid/sticky are all preserved by bsdtar.</li>
+    <li><span class="tag new">NEW</span><code>umount</code> the uzip temp mount.</li>
+    <li><span class="tag keep">KEEP</span>the post-copy <code>chroot "$MNT" …/dscli init</code>;
+      bootcode / EFI loader staging; the <code>loader.conf</code> append
+      (<code>vfs.root.mountfrom="ufs:..."</code> / <code>nvme_load</code>).</li>
+    <li><span class="tag change">CHANGE</span><code>/etc/fstab</code> — on this path, <strong>prepend</strong>
+      the per-install root + EFI entries to the uzip's copied fstab (which carries the
+      <code>fstab.extra</code> mounts) rather than overwriting.</li>
   </ul>
   <p>Detect <code>/dev/md0.uzip</code>; if absent (installer run outside a live boot), error clearly.
-  The separate image-based install path (copying from a mounted <code>da0</code>) can keep a
-  <code>tar</code>-pipe — but the <code>cp -a</code> fallback is removed either way.</p>
+  The separate image-based install path (copying from a mounted <code>da0</code>) keeps
+  <code>rsync</code> with a hardlink-safe <code>tar</code>-pipe fallback — the <code>cp -a</code>
+  fallback is removed either way.</p>
 </div>
 
-<h2><span class="n">Scope</span> Out of scope — note for the PR</h2>
+<h2><span class="n">Scope</span> Follow-up &amp; out of scope</h2>
 <div class="card tight">
-  <p><code>dshelper.rc</code>'s <code>dshelper_start()</code> checks <code>[ -f pidfile ]</code> rather
-  than process liveness — a latent weakness in the DirectoryServices component
-  (<code>gershwin-developer</code>), not these two repos. With the architecture + <code>dd</code>
-  installer the stale pidfile is never present on an install, so it won't be triggered. Flag it for
-  a separate follow-up.</p>
+  <ul style="margin:0;">
+    <li><strong>Native GNUstep installer backend</strong> — a future, separate PR: a Foundation-based
+      <code>Copier.framework</code> + CLI as a fully-native, cross-platform file-level copier, scoped
+      in its own pkgdemon.github.io plan doc. The current <code>bsdtar</code> step is the interim;
+      both are file-level walkers, so the swap is clean.</li>
+    <li><code>dshelper.rc</code>'s <code>dshelper_start()</code> checks <code>[ -f pidfile ]</code>
+      rather than process liveness — a latent weakness in the DirectoryServices component
+      (<code>gershwin-developer</code>), not these two repos. With the architecture + bsdtar installer
+      the stale pidfile is never present on an install, so it won't be triggered. Flag it for a
+      separate follow-up.</li>
+  </ul>
 </div>
 
 <h2><span class="n">Verify</span> How this gets tested end-to-end</h2>
@@ -402,7 +416,7 @@ kenv init_chroot=/sysroot ; kenv -u init_script init_shell ; exit 0</code></pre>
     <tr><td>gershwin-on-freebsd</td><td><code>resources/overlays/boot/loader.conf</code></td><td><span class="tag change">CHANGE</span> reduce to Tier 1</td></tr>
     <tr><td>gershwin-on-freebsd</td><td><code>resources/overlays/boot/loader.conf.d/gershwin.conf</code></td><td><span class="tag new">NEW</span> Tier 2</td></tr>
     <tr><td>gershwin-on-freebsd</td><td><code>resources/overlays/boot/loader.mute.d/</code></td><td><span class="tag delete">DELETE</span> merged into Tier 2</td></tr>
-    <tr><td>gershwin-system</td><td><code>Library/Scripts/installer.sh</code></td><td><span class="tag change">CHANGE</span> dd-based install</td></tr>
+    <tr><td>gershwin-system</td><td><code>Library/Scripts/installer.sh</code></td><td><span class="tag change">CHANGE</span> bsdtar-based install</td></tr>
     <tr><td><span class="muted">reference</span></td><td><code>freebsd-livecd-unionfs/ramdisk/init.sh</code>, <code>.../build.sh</code></td><td><span class="muted">read-only</span></td></tr>
   </tbody>
 </table>

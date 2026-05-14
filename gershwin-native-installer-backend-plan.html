@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gershwin · native GNUstep installer backend — scoping plan</title>
+<style>
+  :root {
+    --bg:#f6f7f9; --card:#fff; --ink:#1c2128; --muted:#5b6570; --line:#e3e6ea;
+    --accent:#2f6f4f; --accent-soft:#e7f1ec; --warn:#8a5a00; --warn-soft:#fbf1dd;
+    --danger:#9b2c2c; --danger-soft:#fbe8e8; --code-bg:#1e2228; --code-ink:#e6e6e6;
+    --blue:#2b5d8a; --blue-soft:#e6eef5;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:920px; margin:0 auto; padding:48px 24px 96px; }
+  header.page { border-bottom:3px solid var(--accent); padding-bottom:20px; margin-bottom:32px; }
+  header.page h1 { margin:0 0 6px; font-size:27px; letter-spacing:-0.01em; }
+  header.page .sub { color:var(--muted); font-size:15px; }
+  header.page .repos { margin-top:14px; display:flex; gap:8px; flex-wrap:wrap; }
+  .pill { font:12px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    background:var(--accent-soft); color:var(--accent); padding:6px 10px; border-radius:999px;
+    border:1px solid #cfe2d8; }
+  .pill.warn { background:var(--warn-soft); color:var(--warn); border-color:#e8d6a8; }
+  h2 { font-size:20px; margin:40px 0 14px; letter-spacing:-0.01em; display:flex;
+    align-items:baseline; gap:10px; }
+  h2 .n { font:13px/1 ui-monospace,monospace; color:#fff; background:var(--accent);
+    padding:5px 9px; border-radius:6px; flex:none; }
+  h3 { font-size:16px; margin:22px 0 8px; }
+  p { margin:10px 0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+    padding:20px 22px; margin:16px 0; }
+  .card.tight { padding:16px 18px; }
+  code { font:13.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    background:#eef0f2; padding:1.5px 5px; border-radius:4px; color:#2a2f36; }
+  pre { background:var(--code-bg); color:var(--code-ink); padding:14px 16px; border-radius:8px;
+    overflow-x:auto; font-size:13px; line-height:1.55; margin:12px 0; }
+  pre code { background:none; padding:0; color:inherit; }
+  ul,ol { margin:10px 0; padding-left:24px; }
+  li { margin:5px 0; }
+  .muted { color:var(--muted); }
+  .callout { border-left:4px solid var(--warn); background:var(--warn-soft);
+    border-radius:0 8px 8px 0; padding:12px 16px; margin:14px 0; font-size:14.5px; }
+  .callout.danger { border-left-color:var(--danger); background:var(--danger-soft); }
+  .callout.info   { border-left-color:var(--blue);   background:var(--blue-soft); }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:0.04em; }
+  td code { font-size:12.5px; }
+  footer { margin-top:56px; padding-top:18px; border-top:1px solid var(--line);
+    color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="page">
+  <h1>Gershwin native installer backend — <code>Copier.framework</code> scoping plan</h1>
+  <div class="sub">A fully-native, cross-platform GNUstep file-level copier to eventually replace the
+    interim <code>bsdtar</code> step in the livecd installer.</div>
+  <div class="repos">
+    <span class="pill warn">Scoping plan — not yet scheduled</span>
+    <span class="pill">gershwin-system / gershwin-developer</span>
+  </div>
+</header>
+
+<h2><span class="n">Why</span> Context</h2>
+<div class="card">
+  <p>The livecd installer (<a href="gershwin-livecd-unionfs-plan.html">init_chroot + unionfs plan</a>)
+  currently copies the system with <code>bsdtar --acls --xattrs --fflags</code> from a read-only mount
+  of the pristine uzip. That is a sound <em>interim</em> answer — base-only, file-level, good metadata
+  fidelity — but it has two ceilings:</p>
+  <ul>
+    <li><strong>libarchive round-trip.</strong> bsdtar walks the tree into a tar stream and back out;
+      a few edge cases (sparse-file detection, immutable-flag ordering inside an archive pipeline,
+      NFSv4 ACL round-tripping on less-common filesystems) live in that round-trip. For a
+      distribution's <em>only</em> supported install path, that residual ~5% is where 2am bug reports
+      come from.</li>
+    <li><strong>It's a one-off.</strong> bsdtar copies; it isn't a reusable building block. GWorkspace,
+      a future Disk Utility, a backup tool — they all re-invent file-op code.</li>
+  </ul>
+  <p>The ISO always ships GNUstep, so a Foundation-based copier carries <strong>no incremental
+  dependency</strong> — the GNUstep cost is already paid. The non-Foundation surface (xattrs, ACLs,
+  BSD flags, sparse files) is a small, stable platform shim, not a third-party library. That makes a
+  native <code>Copier.framework</code> the right long-term home: one engine, controlled operation
+  ordering, no archive round-trip, reusable across the desktop, and — with the shim — the same code
+  on FreeBSD <em>and</em> Linux Gershwin.</p>
+  <div class="callout info" style="margin-bottom:4px;">This is a <strong>scoping</strong> doc for a
+    future, separate PR. The interim <code>bsdtar</code> installer ships first and stays until this
+    is hardened; both are file-level walkers, so the swap is a localized change.</div>
+</div>
+
+<h2><span class="n">Goal</span> What it must get right</h2>
+<div class="card">
+  <p>A "no compromise" file-level copy preserves everything a block copy would, walking a tree:</p>
+  <table>
+    <thead><tr><th>Category</th><th>Items</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Trivial</td><td>mode bits, setuid/setgid/sticky, uid/gid, mtime/atime</td>
+        <td><code>lchown</code> + <code>chmod</code> + <code>lutimensat</code>. Ordering: chown
+          <em>before</em> chmod (chown clears setuid/setgid by design).</td></tr>
+      <tr><td>Hardlinks</td><td><code>st_nlink &gt; 1</code> → link, don't copy</td>
+        <td><code>(st_dev, st_ino)</code> → first-path map; second sighting calls <code>link()</code>.
+          <code>/rescue</code> is the canonical case (~200 links to one crunched binary).</td></tr>
+      <tr><td>Extended attrs</td><td>FreeBSD <code>extattr_*</code> / Linux <code>*xattr</code></td>
+        <td>Same concept, different APIs and namespaces — needs both code paths.</td></tr>
+      <tr><td>ACLs</td><td>POSIX.1e + NFSv4 (FreeBSD); POSIX.1e (Linux)</td>
+        <td>FreeBSD <code>acl_*_link_np</code> handles both ACL types; Linux <code>acl_*_file</code>
+          with <code>ACL_TYPE_ACCESS</code>/<code>ACL_TYPE_DEFAULT</code>.</td></tr>
+      <tr><td>BSD file flags</td><td><code>schg</code>, <code>uchg</code>, <code>sappnd</code>, …</td>
+        <td><code>lchflags</code> — FreeBSD-clean; Linux <code>FS_IOC_*FLAGS</code> ioctls map only
+          partially ("preserve what you can, document the divergence").</td></tr>
+      <tr><td>Sparse files</td><td><code>SEEK_HOLE</code>/<code>SEEK_DATA</code></td>
+        <td>Not exposed by Foundation — drop to the fd via <code>-fileDescriptor</code>; both kernels
+          support the constants identically.</td></tr>
+      <tr><td>Special files</td><td>symlinks, device nodes, FIFOs</td>
+        <td><code>l*</code> variants throughout for symlinks; <code>mknod</code>/<code>mkfifo</code>;
+          sockets are skipped by convention.</td></tr>
+      <tr><td>Unpreservable</td><td><code>ctime</code>, <code>birthtime</code></td>
+        <td>No syscall sets either portably — document as known-unpreservable.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout danger" style="margin-bottom:4px;"><strong>Per-file operation order is load-bearing.</strong>
+    stat source → create dest (open/mknod/mkfifo/symlink) → write content (sparse-aware) → set xattrs
+    → set ACLs → <code>chown</code> → <code>chmod</code> → set mtime/atime → set flags <em>last</em>.
+    Directories: recurse into children <em>before</em> setting the directory's own flags (once
+    <code>schg</code> is on, nothing else about the entry can change).</div>
+</div>
+
+<h2><span class="n">Design</span> Framework shape</h2>
+<div class="card">
+  <p>A <code>Copier.framework</code> (libs-base citizen) plus a thin CLI wrapper
+  (<code>gscopy</code>, or <code>Copier</code> per GNUstep tool-naming). The framework earns its keep
+  because GWorkspace's file ops, a future Disk Utility, and a backup tool can all consume the same
+  engine. Class layout falls out of Cocoa idioms:</p>
+  <table>
+    <thead><tr><th>Class</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>GSFileCopier</code></td><td>Coordinator — takes source/destination/options, walks
+        the tree single-threaded, drives the per-entry pipeline. Delegate + notifications for progress
+        and per-file errors (a GUI consumer gets sensible callbacks for free).</td></tr>
+      <tr><td><code>GSCopyOptions</code></td><td>Flag bag: <code>preserveXattrs</code>,
+        <code>preserveACLs</code>, <code>preserveFlags</code>, <code>preserveHardlinks</code>,
+        <code>oneFileSystem</code>, <code>sparseFiles</code>, <code>excludePatterns</code>,
+        <code>dryRun</code>, <code>deleteExtra</code>, <code>verify</code>.</td></tr>
+      <tr><td><code>GSFileMetadata</code></td><td>One entry's full metadata; the platform shim lives
+        in <code>GSFileMetadata+FreeBSD.m</code> / <code>GSFileMetadata+Linux.m</code>.</td></tr>
+      <tr><td><code>GSInodeMap</code></td><td><code>NSMapTable</code> keyed by
+        <code>(st_dev, st_ino)</code> for hardlink reconstruction.</td></tr>
+      <tr><td><code>GSExcludeMatcher</code></td><td><code>fnmatch</code>-backed rsync-style
+        include/exclude patterns.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>The platform shim — the entire non-Foundation surface</h3>
+  <p>~600–800 lines of C wrapped in Objective-C, behind <code>#ifdef __FreeBSD__</code> /
+  <code>#ifdef __linux__</code> in the right files; the rest of the framework never knows which
+  platform it's on. This is the same shape as <code>libs-base</code>'s existing <code>GS*</code>
+  platform splits (e.g. <code>GSFileHandle.m</code>), so it's idiomatic, not novel.</p>
+<pre><code>GSFileMetadata+FreeBSD.m   extattr_get_link / extattr_set_link / extattr_list_link
+                           acl_get_link_np / acl_set_link_np   (POSIX.1e + NFSv4)
+                           lchflags
+
+GSFileMetadata+Linux.m     lgetxattr / lsetxattr / llistxattr
+                           acl_get_file / acl_set_file  (ACL_TYPE_ACCESS / _DEFAULT)
+                           FS_IOC_GETFLAGS / FS_IOC_SETFLAGS  (partial parity)
+
+(shared)                   lseek SEEK_HOLE / SEEK_DATA  — identical on both kernels</code></pre>
+
+  <h3>What Foundation already gives us</h3>
+  <p><code>NSFileManager</code> (recursive create, symlink create/resolve, attribute queries —
+  <code>NSFileSystemFileNumber</code> for inodes, <code>NSFileSystemNumber</code> for the
+  one-file-system <code>st_dev</code> check), <code>NSDirectoryEnumerator</code> (the walk),
+  <code>NSFileHandle</code> (I/O, and <code>-fileDescriptor</code> for the <code>lseek</code> escape
+  hatch), <code>NSData</code> (buffers), <code>NSOperationQueue</code> (parallel byte-copy / checksum,
+  cap at CPU count — the directory walk itself stays single-threaded).</p>
+</div>
+
+<h2><span class="n">Scope</span> v1 boundaries</h2>
+<div class="card">
+  <ul>
+    <li><strong>Local-to-local only.</strong> Serves the installer completely and any local
+      clone/backup case. No network transport, no rolling-hash delta engine in v1.</li>
+    <li><strong>Atomic replacement</strong> via <code>&lt;name&gt;.copier.tmp</code> + <code>rename(2)</code>
+      (ditto-style semantics).</li>
+    <li><strong>One-file-system</strong> by default for the installer use (capture root
+      <code>st_dev</code>, refuse to descend across it).</li>
+    <li><strong>Optional verify pass</strong> — content checksums, useful as an installer-correctness
+      check.</li>
+    <li><em>Deferred:</em> network transport (the rsync-style "NSTask out to <code>ssh</code>" answer,
+      or better, a service exposed via the existing gdomap/Network-Domain layer), and an rsync-style
+      delta engine. Both are separate problems; v1 proves the metadata engine first.</li>
+  </ul>
+</div>
+
+<h2><span class="n">Integration</span> How it lands in the installer</h2>
+<div class="card">
+  <p>The livecd installer's normal-install path is already a file-level walker (bsdtar from a
+  read-only mount of <code>/dev/md0.uzip</code>). Swapping in <code>Copier.framework</code> is a
+  localized change to <code>gershwin-system/Library/Scripts/installer.sh</code> — or, better, the
+  installer logic moves into a small Foundation tool that calls the framework directly. The source
+  stays the same (the read-only uzip mount); only the copy engine changes. Until then, the bsdtar
+  step is the supported path, and this framework is built and hardened independently.</p>
+  <p>Bonus: the same framework, pointed at the live union mount with the right excludes, also powers
+  the <em>other</em> live-ISO use case — snapshotting a running session (including tmpfs-resident pkg
+  installs) to a backing store. The installer keeps the "deploy pristine base" path; the same engine
+  powers "capture current session" if that ever becomes a feature. Two operations, one toolchain.</p>
+</div>
+
+<h2><span class="n">Phasing</span></h2>
+<div class="card tight">
+  <ol style="margin:0;">
+    <li><strong>P1 — engine.</strong> <code>Copier.framework</code> + <code>gscopy</code> CLI:
+      local-to-local copy, the platform shim, the per-file operation ordering, hardlink map, sparse
+      support, exclude matcher, dry-run. Test against a known tree with the full metadata matrix.</li>
+    <li><strong>P2 — installer swap.</strong> Replace the installer's bsdtar step with the framework
+      (or a Foundation installer tool). Gate behind the same boot-test + manual install verification
+      the bsdtar path uses.</li>
+    <li><strong>P3 — later.</strong> Verify mode hardening; the session-snapshot use case; only then,
+      network transport.</li>
+  </ol>
+</div>
+
+<footer>
+  Scoping plan — for review and future scheduling. Companion to the
+  <a href="gershwin-livecd-unionfs-plan.html">init_chroot + unionfs livecd plan</a>, whose interim
+  <code>bsdtar</code> installer this would eventually replace. No code written yet.
+</footer>
+
+</div>
+</body>
+</html>

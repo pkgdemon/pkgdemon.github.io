@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gershwin · init_chroot + unionfs/tmpfs port — Implementation Plan</title>
+<style>
+  :root {
+    --bg:#f6f7f9; --card:#fff; --ink:#1c2128; --muted:#5b6570; --line:#e3e6ea;
+    --accent:#2f6f4f; --accent-soft:#e7f1ec; --warn:#8a5a00; --warn-soft:#fbf1dd;
+    --danger:#9b2c2c; --danger-soft:#fbe8e8; --code-bg:#1e2228; --code-ink:#e6e6e6;
+    --blue:#2b5d8a; --blue-soft:#e6eef5;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:920px; margin:0 auto; padding:48px 24px 96px; }
+  header.page { border-bottom:3px solid var(--accent); padding-bottom:20px; margin-bottom:32px; }
+  header.page h1 { margin:0 0 6px; font-size:27px; letter-spacing:-0.01em; }
+  header.page .sub { color:var(--muted); font-size:15px; }
+  header.page .repos { margin-top:14px; display:flex; gap:8px; flex-wrap:wrap; }
+  .pill { font:12px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    background:var(--accent-soft); color:var(--accent); padding:6px 10px; border-radius:999px;
+    border:1px solid #cfe2d8; }
+  h2 { font-size:20px; margin:40px 0 14px; letter-spacing:-0.01em; display:flex;
+    align-items:baseline; gap:10px; }
+  h2 .n { font:13px/1 ui-monospace,monospace; color:#fff; background:var(--accent);
+    padding:5px 9px; border-radius:6px; flex:none; }
+  h3 { font-size:16px; margin:22px 0 8px; }
+  p { margin:10px 0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+    padding:20px 22px; margin:16px 0; }
+  .card.tight { padding:16px 18px; }
+  code { font:13.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    background:#eef0f2; padding:1.5px 5px; border-radius:4px; color:#2a2f36; }
+  pre { background:var(--code-bg); color:var(--code-ink); padding:14px 16px; border-radius:8px;
+    overflow-x:auto; font-size:13px; line-height:1.55; margin:12px 0; }
+  pre code { background:none; padding:0; color:inherit; }
+  ul,ol { margin:10px 0; padding-left:24px; }
+  li { margin:5px 0; }
+  .muted { color:var(--muted); }
+  .tag { display:inline-block; font:11px/1 ui-monospace,monospace; padding:3px 7px;
+    border-radius:5px; vertical-align:middle; margin-right:6px; font-weight:600;
+    letter-spacing:0.02em; }
+  .tag.keep   { background:var(--accent-soft); color:var(--accent); }
+  .tag.new    { background:var(--blue-soft);   color:var(--blue); }
+  .tag.change { background:var(--warn-soft);   color:var(--warn); }
+  .tag.delete { background:var(--danger-soft); color:var(--danger); }
+  .tag.locked { background:var(--accent); color:#fff; }
+  .decision { border-left:4px solid var(--accent); background:var(--accent-soft);
+    border-radius:0 8px 8px 0; padding:14px 18px; margin:12px 0; }
+  .decision .q { font-weight:600; margin-bottom:4px; }
+  .decision .a { color:var(--accent); font-weight:600; }
+  .callout { border-left:4px solid var(--warn); background:var(--warn-soft);
+    border-radius:0 8px 8px 0; padding:12px 16px; margin:14px 0; font-size:14.5px; }
+  .callout.danger { border-left-color:var(--danger); background:var(--danger-soft); }
+  .callout.info   { border-left-color:var(--blue);   background:var(--blue-soft); }
+  table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:0.04em; }
+  td code { font-size:12.5px; }
+  .filehdr { font:13px/1.4 ui-monospace,monospace; background:#eef0f2; border:1px solid var(--line);
+    border-radius:6px 6px 0 0; padding:8px 12px; margin:18px 0 0; font-weight:600; border-bottom:none; }
+  .filebody { border:1px solid var(--line); border-radius:0 0 6px 6px; padding:14px 18px; margin:0 0 8px; }
+  .filebody ul { margin-top:4px; }
+  footer { margin-top:56px; padding-top:18px; border-top:1px solid var(--line);
+    color:var(--muted); font-size:13px; }
+  .legend { display:flex; gap:14px; flex-wrap:wrap; margin:8px 0 0; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="page">
+  <h1>Port <code>init_chroot</code> + unionfs/tmpfs full read-write architecture into Gershwin</h1>
+  <div class="sub">Fixes "admin can't log in after install" at its source, and makes the installed
+    system a bit-exact copy of the live ISO.</div>
+  <div class="repos">
+    <span class="pill">gershwin-on-freebsd @ unionfs-full-readwrite</span>
+    <span class="pill">gershwin-system @ unionfs-full-readwrite</span>
+    <span class="pill">reference: freebsd-livecd-unionfs</span>
+  </div>
+</header>
+
+<h2><span class="n">Why</span> Context &amp; root cause</h2>
+<div class="card">
+  <p>The live ISO boots via <code>resources/overlays/boot/init_script</code>, which nullfs-mounts
+  each top-level dir from the uzip over the cd9660 root and layers tmpfs/unionfs piecemeal.
+  Because that hand-built layout fights the normal rc boot, the script
+  <strong>overwrites <code>/etc/rc.d/{cleanvar,var,cleartmp,tmp,hostname}</code> with neutered
+  stubs</strong>.</p>
+  <p>The installer (<code>gershwin-system/Library/Scripts/installer.sh</code>) copies <code>/</code>
+  wholesale with a broken <code>cp -a</code> fallback, so those neutered stubs — plus stale
+  <code>/var/run</code> cruft — land on installed disks. Diagnosed downstream effect: a stale
+  <code>/var/run/dshelper.pid</code> is never cleared (the real <code>cleanvar</code> is gone), so
+  <code>dshelper</code> never starts, and <code>admin</code> (a Directory Services user) can't log in.</p>
+  <p><strong>The fix:</strong> replace the piecemeal <code>init_script</code> with the
+  <code>init_chroot</code> + in-kernel-unionfs pivot from <code>freebsd-livecd-unionfs</code> — the
+  whole root becomes one writable union, the real rc.d scripts run normally, and
+  <strong>nothing is neutered</strong>. Port the <code>/boot/firmware</code> symlink; split
+  <code>loader.conf</code> into a live-only tier and an "everywhere" tier; and change the installer
+  to <strong><code>dd</code> the pristine uzip UFS</strong> onto the target disk instead of
+  tree-copying the running root.</p>
+  <div class="callout info" style="margin-bottom:4px;"><strong>Design north star:</strong> minimize
+    divergence between the livecd and the installed system — achieved by installing a bit-exact copy
+    of the uzip, baking all system config into the uzip, and keeping the one genuinely live-only
+    setting out of the uzip via the tmpfs upper. No new live-only rc.d script; no
+    <code>SystemPrepare.sh</code> hook.</div>
+</div>
+
+<h2><span class="n">Decisions</span> Locked during planning</h2>
+
+<div class="decision">
+  <div class="q"><span class="tag locked">D1</span> Pivot mechanism &amp; single-user mode</div>
+  <div class="a">→ D1a — fallback-only (<code>init_chroot</code> kenv).</div>
+  <p class="muted" style="margin:6px 0 0;"><code>init_script</code> runs as a child of
+  <code>/sbin/init</code>, sets <code>kenv init_chroot=/sysroot</code>, exits; init chroots and
+  continues. Single-user (<code>boot -s</code>) works natively — init keeps its own argv and honors
+  <code>-s</code> after the chroot. The <code>freebsd-launchd-mach</code> <code>"$@"</code>-forwarding
+  fix is only needed for the dual-mode PID-1 design, which we are not using.</p>
+</div>
+
+<div class="decision">
+  <div class="q"><span class="tag locked">D2</span> Installer copy method</div>
+  <div class="a">→ <code>dd</code> the uzip UFS — not <code>cp -a</code>, not <code>rsync</code>, no <code>SystemPrepare.sh</code>.</div>
+  <p class="muted" style="margin:6px 0 0;"><code>cp -a</code> is unfit on FreeBSD: no hardlink
+  preservation (<code>/rescue</code> ≈200 hardlinks → explodes), no exclude mechanism (the current
+  installer bug), no <code>--one-file-system</code> (crosses into <code>/dev</code>,<code>/proc</code>).
+  <code>rsync</code> fixes those but isn't in base. <code>dd if=/dev/md0.uzip of=&lt;part&gt;</code> +
+  <code>growfs</code> is base, bit-exact, and copies the <em>pristine build artifact</em> —
+  live-session cruft lives in the tmpfs upper and is naturally excluded.</p>
+</div>
+
+<div class="decision">
+  <div class="q"><span class="tag locked">D3</span> No <code>gershwin_live</code> rc.d script</div>
+  <div class="a">→ Redistribute the old per-boot tweaks into baked, universal config.</div>
+  <p class="muted" style="margin:6px 0 0;">The old "Gershwin specific" tweaks go into rc.conf /
+  sysctl.conf / loader.conf / <code>/etc/rc.local</code> — all identical on live and installed.
+  Debug aids are dropped or made universal, never <code>is_live()</code>-gated. The one genuinely
+  live-only setting, <code>root_rw_mount="NO"</code>, is written by <code>init_script</code> into the
+  ephemeral tmpfs upper, so the uzip stays byte-identical.</p>
+</div>
+
+<div class="decision">
+  <div class="q"><span class="tag locked">D4</span> Zero live-only behavioral branches</div>
+  <div class="a">→ Drop the SMBIOS hostname override; make full console-mute universal.</div>
+  <p class="muted" style="margin:6px 0 0;">The old <code>init_script</code> quietly set the live
+  ISO's hostname from the SMBIOS product name — that's dropped; both live and installed use
+  <code>hostname="gershwin"</code>. <code>conscontrol mute on</code> becomes universal via
+  <code>kern.consmute=1</code> in the Tier-2 <code>loader.conf.d/gershwin.conf</code> — full quiet
+  boot on live <em>and</em> installed, no "1 line of text" on either. Result: <strong>no
+  <code>is_live()</code>-gated behavior anywhere.</strong> The only live-only setting at all,
+  <code>root_rw_mount="NO"</code>, is written to the tmpfs upper by <code>init_script</code> and
+  never touches the uzip.</p>
+</div>
+
+<h2><span class="n">Layers</span> The cd9660 / uzip boundary</h2>
+<div class="card">
+  <ul>
+    <li><strong>cd9660 boot layer</strong> — staged in <code>CD_ROOT</code> by
+      <code>prepare_boot_env()</code>: <code>init_script</code>, the Tier-1 <code>loader.conf</code>,
+      the <code>/sbin/init</code> + <code>/boot/firmware</code> symlinks, <code>/sysroot</code>,
+      <code>/upper</code>, <code>/rescue</code>. Kernel's real root, hidden from the post-pivot
+      chroot, not part of the uzip — never reaches an install.</li>
+    <li><strong>uzip layer</strong> — built from <code>RELEASE_DIR</code>: the actual system. The
+      installer <code>dd</code>s this (via <code>/dev/md0.uzip</code>). Everything that should reach
+      installs lives here.</li>
+    <li><strong>unionfs tmpfs upper</strong> — live-only runtime state. <code>init_script</code>
+      writes <code>root_rw_mount="NO"</code> here before pivot; live-only, never in the uzip.</li>
+  </ul>
+</div>
+
+<h2><span class="n">Audit</span> Live → installed propagation</h2>
+
+<div class="card">
+  <h3 style="margin-top:4px;">loader.conf — split into two tiers</h3>
+  <p><strong>Tier 1 — live-only, stays in cd9660 <code>loader.conf</code>:</strong>
+  <code>init_script</code>, <code>init_shell</code>, <code>unionfs_load</code>,
+  <code>geom_uzip_load</code>, <code>geom_ventoy_load</code>, <code>vfs.root.mountfrom=cd9660:…</code>,
+  <code>vfs.mountroot.timeout</code>, <code>vm.kmem_size*</code> (LiveCD low-RAM ARC cap — harmful on
+  installs), <code>kern.geom.label.debug</code>, <code>loader_conf_dirs="/boot/loader.conf.d"</code>.</p>
+  <p><strong>Tier 2 — everywhere, new <code>loader.conf.d/gershwin.conf</code></strong> (baked into
+  <code>RELEASE_DIR/boot/loader.conf.d/</code> → uzip → installs, read via the base-default
+  <code>loader_conf_dirs</code>; also staged onto cd9660 for the live loader): quiet boot
+  (<code>boot_mute</code>, <code>kern.vt.color.*</code>, <code>splash=""</code>),
+  <code>beastie_disable</code>, <code>autoboot_delay</code>, <code>screen.font</code>,
+  <code>hw.vga.textmode</code>, <code>screen.textmode</code>, the <code>hw.usb.quirk.*</code>
+  SD-card-reader block, <code>hw.psm.*</code> touchpad tap, <code>hint.pcm.*.eq</code>,
+  <code>hw.syscons.bell=0</code>, <code>hw.usb.no_shutdown_wait</code>, <code>dev.bge.0.msi=0</code>,
+  <code>firewire_load</code>, <code>aio_load</code>, <strong><code>kern.consmute=1</code></strong>
+  (full console mute — replaces the old runtime <code>conscontrol mute on</code>; falls back to
+  <code>/etc/sysctl.conf</code> if not loader-tunable). The separate <code>loader.mute.d/</code> dir
+  is merged in here and removed.</p>
+
+  <h3>rc.conf / sysctl.conf — uzip → installs (everywhere)</h3>
+  <p>All <code>configure_system</code> sysrc settings stay everywhere (services, networking,
+  <code>kld_list</code>, <code>sendmail_*="NO"</code>), plus <code>allscreens_kbdflags="-b quiet.off"</code>
+  (replaces the old <code>kbdcontrol</code> call). <code>kern.panic_reboot_wait_time</code> →
+  <code>/etc/sysctl.conf</code> if kept.
+  <strong><code>root_rw_mount="NO"</code> is NOT baked</strong> — live-only, written by
+  <code>init_script</code> to the tmpfs upper (an installed UFS root needs the rw remount).</p>
+
+  <h3>init_script "Gershwin specific" block — redistribution</h3>
+  <table>
+    <thead><tr><th>Item</th><th>Decision</th><th>Mechanism</th></tr></thead>
+    <tbody>
+    <tr><td>rc.d neutering (cleanvar/var/cleartmp/tmp/hostname)</td><td><span class="tag delete">DELETED</span></td><td>—</td></tr>
+    <tr><td><code>LoginWindow.plist</code></td><td>everywhere</td><td><code>configure_system</code> copies overlay → <code>RELEASE_DIR/Local/…</code></td></tr>
+    <tr><td>rc.d REQUIRE-reorder seds; initgfx <code>__wait 3→1</code></td><td>everywhere</td><td><code>configure_system</code> build-time edit of <code>RELEASE_DIR</code> rc.d files</td></tr>
+    <tr><td>sysrc service / sendmail-off writes; <code>allscreens_kbdflags</code></td><td>everywhere</td><td><code>configure_system</code> heredoc</td></tr>
+    <tr><td><code>kbdcontrol -b quiet.off</code></td><td>everywhere</td><td>folded into <code>allscreens_kbdflags</code> — no script</td></tr>
+    <tr><td><code>kern.panic_reboot_wait_time=30</code></td><td>everywhere, or drop</td><td><code>/etc/sysctl.conf</code> baked into uzip</td></tr>
+    <tr><td>VirtualBox kmod load + sysrc</td><td>everywhere</td><td><code>/etc/rc.local</code> (base; runs on live + installed; wanted on both)</td></tr>
+    <tr><td><code>conscontrol mute on</code></td><td>everywhere</td><td><code>kern.consmute=1</code> in Tier-2 <code>loader.conf.d/gershwin.conf</code></td></tr>
+    <tr><td>SMBIOS hostname override</td><td><span class="tag delete">DROPPED</span></td><td>both use <code>hostname="gershwin"</code></td></tr>
+    <tr><td><code>start-hello</code> verbose logging sed</td><td>drop (dev aid)</td><td>—</td></tr>
+    <tr><td>monkey-patch</td><td>dropped (user-chosen)</td><td>—</td></tr>
+    </tbody>
+  </table>
+  <p class="muted" style="margin-bottom:0;">Other: <code>fstab.extra</code> / <code>devfs.rules.extra</code>
+  → everywhere (baked into the uzip). <code>local.lua</code> boot menu → live-only (cd9660 only,
+  inherent). <code>resources/config/Gershwin.conf</code> → build-time pkg-repo config, not
+  live-system state.</p>
+</div>
+
+<h2><span class="n">Repo A</span> gershwin-on-freebsd — boot architecture</h2>
+
+<div class="legend">
+  <span><span class="tag new">NEW</span>new file</span>
+  <span><span class="tag change">CHANGE</span>modified</span>
+  <span><span class="tag keep">KEEP</span>unchanged</span>
+  <span><span class="tag delete">DELETE</span>removed</span>
+</div>
+
+<div class="filehdr"><span class="tag change">CHANGE</span> resources/overlays/boot/init_script &nbsp;— rewrite contents (name &amp; location unchanged)</div>
+<div class="filebody">
+  <p>Minimal pre-pivot script (modeled on <code>freebsd-livecd-unionfs/ramdisk/init.sh</code>). It
+  lives only on the cd9660 boot layer, so it is <strong>not</strong> copied to installed systems:</p>
+<pre><code>PATH=/rescue ; silence stdout/stderr
+kldload geom_uzip ; kldload unionfs
+mdconfig -a -t vnode -o readonly -f /boot/rootfs.uzip -u 0
+wait-loop for /dev/md0.uzip   (halt after ~30s)
+mount -t ufs -o ro /dev/md0.uzip /sysroot
+mount -t tmpfs tmpfs /upper
+mount -t unionfs /upper /sysroot
+mount -t devfs devfs /sysroot/dev
+echo 'root_rw_mount="NO"' >> /sysroot/etc/rc.conf.local   # live-only, tmpfs upper
+kenv init_chroot=/sysroot ; kenv -u init_script init_shell ; exit 0</code></pre>
+  <p><span class="tag delete">DELETE</span><strong>Dropped vs. the old script:</strong> all per-directory
+  nullfs mounts, the <code>/etc</code> &amp; <code>/var</code> tmpfs+cp dance, <strong>the rc.d
+  neutering</strong>, the whole "Gershwin specific" block (redistributed — see audit), the
+  <code>ps -o command 1</code> single-user shell-out (single-user works natively now), and the
+  monkey-patch.</p>
+</div>
+
+<div class="filehdr"><span class="tag change">CHANGE</span> resources/overlays/boot/loader.conf (Tier 1) &nbsp;+&nbsp; <span class="tag new">NEW</span> loader.conf.d/gershwin.conf (Tier 2)</div>
+<div class="filebody">
+  <ul>
+    <li><strong>Tier 1</strong> — <code>loader.conf</code> reduced to the live-only set.
+      <code>init_script="/boot/init_script"</code> unchanged; add <code>init_shell="/rescue/sh"</code>
+      and <code>unionfs_load="YES"</code>; keep <code>loader_conf_dirs="/boot/loader.conf.d"</code>
+      (drop the <code>loader.mute.d</code> entry).</li>
+    <li><span class="tag new">NEW</span><strong>Tier 2</strong> —
+      <code>resources/overlays/boot/loader.conf.d/gershwin.conf</code>: quiet boot + hardware
+      quirks/tuning, including everything merged in from <code>loader.mute.d</code>.</li>
+    <li><span class="tag delete">DELETE</span><code>resources/overlays/boot/loader.mute.d/</code>.</li>
+  </ul>
+</div>
+
+<div class="filehdr"><span class="tag change">CHANGE</span> build.sh — <code>prepare_boot_env()</code> (~lines 325–395)</div>
+<div class="filebody">
+  <ul>
+    <li><span class="tag keep">KEEP</span><code>tar -cf - boot | tar … -C CD_ROOT</code>, COPYRIGHT
+      copy, <code>rm -rf boot/modules/*</code>, the <code>.ko</code> prune, kernel + module gzip,
+      <code>cp …/login.conf CD_ROOT/etc/</code>, the <code>/rescue</code> tar-pipe, <code>fdupes</code>,
+      the <code>splash</code> and <code>tmpfs_load</code> seds, <code>rm tmpfs.ko*</code>.</li>
+    <li><span class="tag change">CHANGE</span>replace the ~25-entry <code>mkdir -p</code> block with
+      <code>mkdir -p CD_ROOT/{sysroot,upper,dev,etc,sbin}</code>.</li>
+    <li><span class="tag keep">KEEP</span><code>cp -R OVERLAYS_DIR/boot CD_ROOT</code> still merges
+      <code>loader.conf</code>/<code>lua</code> and the rewritten <code>init_script</code> into
+      CD_ROOT/boot. Keep <code>chmod 755 CD_ROOT/boot/init_script</code>.</li>
+    <li><span class="tag new">NEW</span>stage the Tier-2 drop-in:
+      <code>cp RELEASE_DIR/boot/loader.conf.d/gershwin.conf CD_ROOT/boot/loader.conf.d/</code>.</li>
+    <li><span class="tag new">NEW</span><code>ln -sf /rescue/init CD_ROOT/sbin/init</code></li>
+    <li><span class="tag new">NEW</span><code>ln -sf /sysroot/boot/firmware CD_ROOT/boot/firmware</code>
+      — kernel-context firmware loads resolve via the cd9660 namespace; Repo A ships
+      drm-kmod / gpu-firmware-kmod. Rock Ridge preserves both symlinks.</li>
+  </ul>
+</div>
+
+<div class="filehdr"><span class="tag keep">KEEP</span> build.sh — <code>generate_iso()</code></div>
+<div class="filebody">
+  <p>No structural change. Optional tuning (pairs well with the <code>dd</code> installer): trim the
+  <code>makefs -b 75% -f 75%</code> slack on the uzip UFS — <code>growfs</code> handles expansion at
+  install time, so a tighter image keeps the dd'd bytes down. Not required for correctness.</p>
+</div>
+
+<div class="filehdr"><span class="tag change">CHANGE</span> build.sh — <code>configure_system()</code> (~lines 226–283)</div>
+<div class="filebody">
+  <p>Add to the existing <code>sysrc</code> heredoc: <code>sendmail_*="NO"</code> (×4),
+  <code>allscreens_kbdflags="-b quiet.off"</code>,
+  <code>kld_list+="cuse ig4 iicbus iichid utouch asmc if_urndis if_cdce if_ipheth"</code>.</p>
+  <div class="callout danger" style="margin:8px 0;"><strong>Do NOT</strong> put
+    <code>root_rw_mount="NO"</code> here — it would bake into the uzip and reach installs, where a
+    UFS root <em>needs</em> the rw remount. It's live-only, written by <code>init_script</code> into
+    the unionfs tmpfs upper instead.</div>
+  <p>After <code>dscli init</code>:</p>
+  <ul>
+    <li><span class="tag new">NEW</span><code>mkdir -p RELEASE_DIR/Local/Library/Preferences</code> +
+      copy in the existing <code>resources/overlays/Local/Library/Preferences/LoginWindow.plist</code>.</li>
+    <li><span class="tag new">NEW</span><code>mkdir -p RELEASE_DIR/nvidia</code>.</li>
+    <li><span class="tag change">CHANGE</span>rc.d ordering seds, retargeted from <code>/</code> to
+      <code>RELEASE_DIR</code> (ldconfig→<code>REQUIRE: zfs</code>;
+      dbus/initgfx→<code>REQUIRE: ldconfig</code>; slim→<code>REQUIRE: localize dbus initgfx</code>;
+      initgfx <code>__wait 3</code>→<code>1</code>).</li>
+    <li><span class="tag new">NEW</span><code>mkdir -p RELEASE_DIR/boot/loader.conf.d</code> + write
+      the Tier-2 <code>gershwin.conf</code> into it.</li>
+    <li><span class="tag new">NEW</span>append <code>kern.panic_reboot_wait_time=30</code> to
+      <code>RELEASE_DIR/etc/sysctl.conf</code> (if kept).</li>
+    <li><span class="tag new">NEW</span>add the VirtualBox-detection block to
+      <code>RELEASE_DIR/etc/rc.local</code> (kenv product check → kldload vboxguest + sysrc enables);
+      create <code>rc.local</code> if absent.</li>
+  </ul>
+  <p class="muted" style="margin-bottom:0;">No <code>gershwin_live</code> rc.d script is created.</p>
+</div>
+
+<h2><span class="n">Repo B</span> gershwin-system — installer</h2>
+
+<div class="filehdr"><span class="tag change">CHANGE</span> Library/Scripts/installer.sh — install by <code>dd</code>'ing the uzip UFS</div>
+<div class="filebody">
+  <p>Replace the tree-copy logic (the <code>rsync</code> path and the broken <code>cp -a</code>
+  fallback) for the normal "install this live system" path. All steps run <strong>inside the
+  installer, on the target disk, before the user ever reboots</strong>:</p>
+  <ul>
+    <li><span class="tag keep">KEEP</span><code>gpart</code> partitioning (EFI + freebsd-ufs, or
+      freebsd-boot + freebsd-ufs).</li>
+    <li><span class="tag change">CHANGE</span><code>dd if=/dev/md0.uzip of=${ROOT_PART} bs=1m</code>
+      — bit-exact pristine clone; no <code>newfs</code> needed, <code>dd</code> brings the filesystem.
+      <strong>Hardlinks are a non-issue</strong> — <code>dd</code> copies the UFS image
+      block-for-block, so <code>/rescue</code>'s hardlink farm is preserved exactly. The hardlink
+      problem only ever applied to tree-walking copiers (the reason <code>cp -a</code> was rejected).</li>
+    <li><span class="tag new">NEW</span><code>growfs -y ${ROOT_PART}</code> — expand the UFS to fill
+      the partition. Runs <strong>once, here, on the still-unmounted target</strong>; the installed
+      system boots an already-full-size filesystem with no boot-time growth step (no
+      <code>firstboot</code> / <code>rc.d/growfs</code> needed — that's only for imageless cloud deploys).</li>
+    <li><span class="tag keep">KEEP</span>mount <code>${ROOT_PART}</code>, write <code>/etc/fstab</code>
+      and append <code>vfs.root.mountfrom="ufs:${ROOT_PART}"</code> / <code>nvme_load</code> to
+      <code>/boot/loader.conf</code>; bootcode / EFI loader staging; the post-copy
+      <code>chroot "$MNT" …/dscli init</code>.</li>
+  </ul>
+  <p>Detect <code>/dev/md0.uzip</code>; if absent (installer run outside a live boot), error clearly.
+  The separate image-based install path (copying from a mounted <code>da0</code>) can keep a
+  <code>tar</code>-pipe — but the <code>cp -a</code> fallback is removed either way.</p>
+</div>
+
+<h2><span class="n">Scope</span> Out of scope — note for the PR</h2>
+<div class="card tight">
+  <p><code>dshelper.rc</code>'s <code>dshelper_start()</code> checks <code>[ -f pidfile ]</code> rather
+  than process liveness — a latent weakness in the DirectoryServices component
+  (<code>gershwin-developer</code>), not these two repos. With the architecture + <code>dd</code>
+  installer the stale pidfile is never present on an install, so it won't be triggered. Flag it for
+  a separate follow-up.</p>
+</div>
+
+<h2><span class="n">Verify</span> How this gets tested end-to-end</h2>
+<div class="card">
+  <ol>
+    <li><strong>Build.</strong> <code>build.sh</code> on a FreeBSD 15 host produces the ISO. Inspect
+      the cdroot: <code>boot/init_script</code> rewritten, <code>sbin/init</code> +
+      <code>boot/firmware</code> are symlinks, <code>sysroot</code>/<code>upper</code> present,
+      <code>boot/loader.conf.d/gershwin.conf</code> present, <code>boot/rootfs.uzip</code> present.</li>
+    <li><strong>Live boot</strong> (VM + bare metal). Reaches the login window; <code>admin</code>
+      logs in. <code>mount</code> shows the <code>unionfs</code> overlay;
+      <code>ls -la /etc/rc.d/cleanvar</code> is the <em>real</em> FreeBSD script;
+      <code>sysrc -n root_rw_mount</code> is <code>NO</code>; quiet boot active; in VirtualBox
+      <code>kldstat | grep vbox</code>.</li>
+    <li><strong>Firmware.</strong> On hardware needing it, <code>dmesg | grep -i firmware</code>
+      shows drm / iwlwifi firmware loaded.</li>
+    <li><strong>Install + the actual bug.</strong> Clone <code>gershwin-system</code>, run its
+      <code>installer.sh</code> from the clone against a target disk; reboot the installed system.
+      Verify: <code>/etc/rc.d/cleanvar</code> is the real script; <code>/var/run</code> has no stale
+      <code>dshelper.pid</code>; <code>service dshelper status</code> running; <code>admin</code>
+      logs in; <code>sysrc -n root_rw_mount</code> is empty/<code>YES</code> and root is rw;
+      <code>loader.conf</code> has the installer's <code>ufs:</code> mountfrom and <strong>no</strong>
+      <code>unionfs_load</code>/<code>init_script</code>; <code>loader.conf.d/gershwin.conf</code> present.</li>
+    <li><strong>Divergence check.</strong> Diff the installed root against a read-only mount of
+      <code>/dev/md0.uzip</code> — should differ only in expected per-install files
+      (<code>/etc/fstab</code>, <code>/boot/loader.conf</code>, no <code>/etc/rc.conf.local</code> on
+      install, dshelper/DS runtime state). Confirm quiet boot on the <em>installed</em> system
+      (<code>kern.consmute</code> set, no console text) and <code>hostname</code> = <code>gershwin</code>
+      on both — no <code>is_live()</code>-gated behavior should exist.</li>
+  </ol>
+</div>
+
+<h2><span class="n">Files</span> Critical files touched</h2>
+<table>
+  <thead><tr><th>Repo</th><th>Path</th><th>Action</th></tr></thead>
+  <tbody>
+    <tr><td>gershwin-on-freebsd</td><td><code>build.sh</code> — <code>prepare_boot_env()</code>, <code>configure_system()</code></td><td><span class="tag change">CHANGE</span></td></tr>
+    <tr><td>gershwin-on-freebsd</td><td><code>resources/overlays/boot/init_script</code></td><td><span class="tag change">CHANGE</span> rewrite (name/location unchanged)</td></tr>
+    <tr><td>gershwin-on-freebsd</td><td><code>resources/overlays/boot/loader.conf</code></td><td><span class="tag change">CHANGE</span> reduce to Tier 1</td></tr>
+    <tr><td>gershwin-on-freebsd</td><td><code>resources/overlays/boot/loader.conf.d/gershwin.conf</code></td><td><span class="tag new">NEW</span> Tier 2</td></tr>
+    <tr><td>gershwin-on-freebsd</td><td><code>resources/overlays/boot/loader.mute.d/</code></td><td><span class="tag delete">DELETE</span> merged into Tier 2</td></tr>
+    <tr><td>gershwin-system</td><td><code>Library/Scripts/installer.sh</code></td><td><span class="tag change">CHANGE</span> dd-based install</td></tr>
+    <tr><td><span class="muted">reference</span></td><td><code>freebsd-livecd-unionfs/ramdisk/init.sh</code>, <code>.../build.sh</code></td><td><span class="muted">read-only</span></td></tr>
+  </tbody>
+</table>
+
+<footer>
+  Implementation plan — generated for review. No repo files have been modified yet. All decisions
+  (D1–D4) are locked; there are no live-vs-installed behavioral branches. Approve to proceed on the
+  <code>unionfs-full-readwrite</code> branches of both repos.
+</footer>
+
+</div>
+</body>
+</html>

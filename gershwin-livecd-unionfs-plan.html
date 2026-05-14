@@ -100,14 +100,14 @@
   whole root becomes one writable union, the real rc.d scripts run normally, and
   <strong>nothing is neutered</strong>. Port the <code>/boot/firmware</code> symlink; split
   <code>loader.conf</code> into a live-only tier and an "everywhere" tier; and change the installer
-  to copy the live system with <strong><code>bsdtar --one-file-system</code></strong> from the union
-  root (plus a short anchored exclude list) instead of the broken <code>cp -a</code> fallback.</p>
+  to copy the <strong>pristine uzip with <code>bsdtar</code></strong> — mounted as its own clean UFS
+  via a fresh <code>mdconfig</code> — sidestepping both the broken <code>cp -a</code> fallback and the
+  unreliable unionfs read path.</p>
   <div class="callout info" style="margin-bottom:4px;"><strong>Design north star:</strong> minimize
     divergence between the livecd and the installed system — achieved by installing a faithful
-    file-level copy of the live system with the few live-only files (<code>/var/run</code> cruft,
-    <code>/etc/rc.conf.local</code>) explicitly excluded, baking all system config into the uzip,
-    and keeping the one genuinely live-only setting out of the uzip via the tmpfs upper (and
-    excluding it again in the installer — belt and suspenders). No new live-only rc.d script; no
+    file-level copy of the <em>pristine uzip</em> (the build artifact — no live-session cruft, so
+    nothing to exclude), baking all system config into the uzip, and keeping the one genuinely
+    live-only setting out of the uzip via the tmpfs upper. No new live-only rc.d script; no
     <code>SystemPrepare.sh</code> hook.</div>
 </div>
 
@@ -125,22 +125,21 @@
 
 <div class="decision">
   <div class="q"><span class="tag locked">D2</span> Installer copy method</div>
-  <div class="a">→ <code>bsdtar --one-file-system</code> from the live union root — not <code>cp -a</code>, not <code>rsync</code>, no <code>SystemPrepare.sh</code>.</div>
+  <div class="a">→ <code>bsdtar</code> from a fresh, standalone mount of the uzip — not <code>cp -a</code>, not <code>rsync</code>, no <code>SystemPrepare.sh</code>.</div>
   <p class="muted" style="margin:6px 0 0;"><code>cp -a</code> is unfit on FreeBSD: no hardlink
-  preservation (<code>/rescue</code> ≈200 hardlinks → explodes), no exclude mechanism (the original
-  installer bug), no <code>--one-file-system</code>. <code>rsync</code> fixes those but isn't in base.
-  <code>dd</code> of the uzip (and then <code>bsdtar</code> from a <em>second</em> read-only mount of
-  the uzip) were both tried and rejected — <code>dd</code> per maintainer preference for a file-level
-  tool, and a second mount of <code>/dev/md0.uzip</code> fails (<code>Device busy</code>: it's already
-  mounted as the union's lower). The installer runs <code>bsdtar --acls --xattrs --fflags
-  --one-file-system</code> straight from <code>/</code> — the in-kernel unionfs the running system
-  already uses. <code>--one-file-system</code> skips every sub-mount (devfs, procfs, the tmpfs
-  <code>/tmp</code>, the target at <code>/mnt</code>, linprocfs/linsysfs under <code>/compat</code>);
-  a short anchored exclude list drops the live-only cruft <em>within</em> the union
-  (<code>var/run</code> stale pidfiles, <code>var/tmp</code>, <code>var/cache</code>,
-  <code>etc/rc.conf.local</code> — the live-only <code>root_rw_mount</code> override). Base-only,
-  full metadata fidelity (ACLs, xattrs, BSD flags, hardlinks, ownership, perms, timestamps,
-  setuid/sticky).</p>
+  preservation (<code>/rescue</code> ≈200 hardlinks → explodes), no exclude mechanism. <code>rsync</code>
+  fixes those but isn't in base. The path here took three tries: <code>dd</code> of the uzip
+  (rejected — maintainer wants a file-level tool); <code>bsdtar</code> from a second read-only mount
+  of <code>/dev/md0.uzip</code> (impossible — FFS won't mount an already-mounted device,
+  <code>Device busy</code>); <code>bsdtar</code> straight from the live union <code>/</code> (rejected
+  — FreeBSD unionfs read reliability isn't good enough for a full-tree walk; it truncated the archive
+  mid-stream). The working approach: the <strong>cd9660 boot media allows a second read-only mount</strong>
+  (no FFS exclusivity), so the installer re-mounts it, reaches <code>/boot/rootfs.uzip</code>, attaches
+  that file as a <strong>fresh</strong> <code>md</code> device (<code>geom_uzip</code> auto-tastes it),
+  and mounts the resulting UFS read-only. <code>bsdtar --acls --xattrs --fflags</code> copies from that
+  standalone, pristine source — no unionfs in the read path, no live-session cruft, <strong>no excludes
+  needed</strong>. Base-only, full metadata fidelity (ACLs, xattrs, BSD flags, hardlinks, ownership,
+  perms, timestamps, setuid/sticky).</p>
 </div>
 
 <div class="decision">
@@ -175,7 +174,7 @@
       <code>/upper</code>, <code>/rescue</code>. Kernel's real root, hidden from the post-pivot
       chroot, not part of the uzip — never reaches an install.</li>
     <li><strong>uzip layer</strong> — built from <code>RELEASE_DIR</code>: the actual system. The
-      installer copies this (via <code>bsdtar --one-file-system</code> from the live union root).
+      installer copies this (via <code>bsdtar</code> from a fresh standalone mount of the uzip — see D2).
       Everything that should reach installs lives here.</li>
     <li><strong>unionfs tmpfs upper</strong> — live-only runtime state. <code>init_script</code>
       writes <code>root_rw_mount="NO"</code> here before pivot; live-only, never in the uzip.</li>
@@ -341,27 +340,28 @@ kenv init_chroot=/sysroot ; kenv -u init_script init_shell ; exit 0</code></pre>
 
 <h2><span class="n">Repo B</span> gershwin-system — installer</h2>
 
-<div class="filehdr"><span class="tag change">CHANGE</span> Library/Scripts/installer.sh — install with <code>bsdtar</code> from the live union</div>
+<div class="filehdr"><span class="tag change">CHANGE</span> Library/Scripts/installer.sh — install with <code>bsdtar</code> from a fresh uzip mount</div>
 <div class="filebody">
   <p>Replace the tree-copy logic (the <code>rsync</code> path and the broken <code>cp -a</code>
   fallback) for the normal "install this live system" path:</p>
   <ul>
     <li><span class="tag keep">KEEP</span><code>gpart</code> partitioning (EFI + freebsd-ufs, or
       freebsd-boot + freebsd-ufs).</li>
+    <li><span class="tag new">NEW</span>set up a <strong>clean, non-union copy source</strong>:
+      <code>mount -t cd9660 -o ro /dev/iso9660/FREEBSD</code> a fresh mountpoint (the cd9660 allows a
+      second RO mount — no FFS exclusivity), then
+      <code>mdconfig -a -t vnode -o readonly -f &lt;cd&gt;/boot/rootfs.uzip</code> and
+      <code>mount -t ufs -o ro /dev/&lt;md&gt;.uzip</code> — a standalone, pristine UFS, no unionfs
+      in the read path.</li>
     <li><span class="tag change">CHANGE</span><code>newfs -U ${ROOT_PART}</code>, then mount the target (+ EFI).</li>
-    <li><span class="tag new">NEW</span><code>bsdtar</code> pipe straight from <code>/</code> — the
-      in-kernel unionfs the running system uses. The uzip device can't be mounted a second time
-      (<code>Device busy</code>), so there's no separate pristine source to copy from. <code>tar</code>
-      is bsdtar on FreeBSD:<br>
-      <code>( cd / &amp;&amp; tar --acls --xattrs --fflags --one-file-system --exclude=./var/run --exclude=./var/tmp --exclude=./var/cache --exclude=./etc/rc.conf.local -cf - . ) | ( cd $MNT &amp;&amp; tar --acls --xattrs --fflags -xpf - )</code><br>
-      <code>--one-file-system</code> skips every sub-mount (devfs/procfs/tmpfs <code>/tmp</code>/the
-      target/linprocfs+linsysfs under <code>/compat</code>); the anchored excludes drop the live-only
-      cruft <em>within</em> the union (<code>var/run</code> stale pidfiles — the original bug — plus
-      <code>var/tmp</code>, <code>var/cache</code>, and <code>etc/rc.conf.local</code>, the live-only
-      <code>root_rw_mount</code> override). <strong>Hardlinks</strong> (<code>/rescue</code>), ACLs,
-      xattrs, BSD flags, ownership, perms, timestamps, setuid/sticky all preserved by bsdtar.</li>
-    <li><span class="tag new">NEW</span>recreate the excluded / mount-point dirs as empty
-      (<code>dev proc tmp mnt var/run var/tmp var/cache</code>); <code>chmod 1777 $MNT/tmp</code>.</li>
+    <li><span class="tag new">NEW</span><code>bsdtar</code> pipe from the uzip mount — <strong>no
+      excludes needed</strong> (the pristine uzip has no live-session cruft). <code>tar</code> is
+      bsdtar on FreeBSD:<br>
+      <code>( cd $UZIP_SRC &amp;&amp; tar --acls --xattrs --fflags -cf - . ) | ( cd $MNT &amp;&amp; tar --acls --xattrs --fflags -xpf - )</code><br>
+      <strong>Hardlinks</strong> (<code>/rescue</code>), ACLs, xattrs, BSD flags, ownership, perms,
+      timestamps, setuid/sticky all preserved by bsdtar.</li>
+    <li><span class="tag new">NEW</span>tear down the temp uzip + cd9660 mounts (order: umount uzip →
+      <code>mdconfig -d</code> → umount cd9660).</li>
     <li><span class="tag keep">KEEP</span>the post-copy <code>chroot "$MNT" …/dscli init</code>;
       bootcode / EFI loader staging; the <code>loader.conf</code> append
       (<code>vfs.root.mountfrom="ufs:..."</code> / <code>nvme_load</code>).</li>

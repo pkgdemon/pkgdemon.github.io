@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>freebsd-apple-userland-cmds: porting bootstrap_cmds + network_cmds onto FreeBSD</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --bg: #fafaf7;
+    --accent: #b8472a;
+    --accent-soft: #f3e7df;
+    --border: #d8d4c8;
+    --code-bg: #f0ece2;
+    --table-stripe: #f4efe5;
+    --warn: #8a5a00;
+    --good: #2d6f3b;
+    --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif; color: var(--fg); background: var(--bg); line-height: 1.55; margin: 0; padding: 0; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 32px 96px; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--border); letter-spacing: -0.005em; }
+  h3 { font-size: 1.15rem; margin: 32px 0 10px; color: var(--accent); }
+  h4 { font-size: 1rem; margin: 24px 0 6px; color: var(--fg); }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg); }
+  code { padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  pre { padding: 14px 18px; border-radius: 4px; overflow-x: auto; font-size: 0.86rem; line-height: 1.45; margin: 0 0 18px; }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+  .lede { font-size: 1.05rem; color: var(--fg-muted); margin-bottom: 32px; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 0.94rem; }
+  th, td { text-align: left; padding: 10px 12px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 18px 0 22px; border-radius: 0 4px 4px 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn { border-left-color: var(--warn); background: #fbf3df; }
+  .callout-good { border-left-color: var(--good); background: #e8f1e3; }
+  .pill { display: inline-block; font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 10px; margin-right: 8px; }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 18px 24px 14px 36px; margin: 0 0 36px; font-size: 0.95rem; }
+  .toc h2 { margin: 0 0 8px; padding-top: 0; border-top: none; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-left: -14px; }
+  .toc ol { margin: 0 0 0 6px; }
+  .toc li { margin-bottom: 4px; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  @media (max-width: 600px) { .wrap { padding: 24px 18px 64px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1><code>freebsd-apple-userland-cmds</code> &mdash; <code>bootstrap_cmds</code> + <code>network_cmds</code></h1>
+<p class="lede">Porting Apple's <a href="https://github.com/apple-oss-distributions/bootstrap_cmds"><code>bootstrap_cmds</code></a> (ships MIG; needed before launchd-842 can use its <code>.defs</code> stubs) and <a href="https://github.com/apple-oss-distributions/network_cmds"><code>network_cmds</code></a> (Apple's network userland: <code>arp</code>, <code>ifconfig</code>, <code>ndp</code>, <code>netstat</code>, <code>ping</code>, <code>route</code>, etc.) onto FreeBSD. Tools install at their <strong>Apple-canonical paths</strong>; we overwrite FreeBSD-runtime's binaries where they conflict and accept CI breakage during the transition rather than build an alternate-prefix shadow stack we'd have to unwind later. A companion to the <a href="freebsd-launchd-842-porting-plan.html"><code>launchd-842</code> port plan</a>.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#decisions">Decisions made</a></li>
+  <li><a href="#bootstrap_cmds"><code>bootstrap_cmds</code> &mdash; install table + plan</a></li>
+  <li><a href="#network_cmds"><code>network_cmds</code> &mdash; install table + plan</a></li>
+  <li><a href="#install-order">Install order in <code>build.sh</code></a></li>
+  <li><a href="#risks">Risks &amp; known sharp edges</a></li>
+  <li><a href="#out-of-scope">Out of scope (deferred to Phase I3+)</a></li>
+</ol>
+</div>
+
+<h2 id="decisions">1. Decisions made</h2>
+
+<ul>
+  <li><strong>Apple-canonical install paths.</strong> No <code>/System/Library/Tools/</code>, no <code>/usr/local/sbin/</code>, no PATH-shadowing scheme. <code>ifconfig</code> goes at <code>/sbin/ifconfig</code>, full stop. The Apple tools are the production tools.</li>
+  <li><strong>FreeBSD-runtime stays installed for now.</strong> It carries <code>/sbin/init</code>, <code>/sbin/halt</code>, <code>/sbin/reboot</code>, <code>mount</code> &mdash; bits we still need until <code>launchd-842</code> is PID 1 (Phase I3+) and Apple's <code>system_cmds</code> lands (Tier B, much later). pkgbase doesn't expose subpackage granularity, so we install <code>FreeBSD-runtime</code> intact and then overwrite the conflict paths with our binaries.</li>
+  <li><strong>Accept CI breakage during transition.</strong> We're not building a stable shadow stack. Each port either works at its canonical path or doesn't. Breakage is fixed in-place rather than worked around. The 20-marker safety net comes back online once each component lands &mdash; same iterate-on-red model we used during Phase H libxpc.</li>
+  <li><strong>No spike doc, no preemptive conflict matrix.</strong> The replacement table below is the spike. <code>pkg info -l FreeBSD-runtime</code> on bsd01 will confirm exact path ownership if needed later; we don't need it before starting.</li>
+  <li><strong>Unregistered overwrites are fine.</strong> pkg's database still believes <code>FreeBSD-runtime</code> owns <code>/sbin/ifconfig</code>. Subsequent <code>pkg upgrade FreeBSD-runtime</code> would silently restore the FreeBSD version. We don't <code>pkg upgrade</code> on the live ISO; this only matters on dev machines and is documented as a known sharp edge.</li>
+</ul>
+
+<h2 id="bootstrap_cmds">2. <code>bootstrap_cmds</code> &mdash; install table + plan</h2>
+
+<p>Source: <a href="https://github.com/apple-oss-distributions/bootstrap_cmds">apple-oss-distributions/bootstrap_cmds</a>. Vendored at <code>freebsd-launchd-mach/src/bootstrap_cmds/</code>. Produces MIG (the Mach Interface Generator) plus its compiler backend.</p>
+
+<table>
+<tr><th>Apple binary</th><th>Source path in repo</th><th>FreeBSD path today</th><th>Install path (replacement)</th><th>FreeBSD pkg owning conflict</th></tr>
+<tr><td><code>mig</code></td><td><code>bootstrap_cmds/xcodescripts/install-mig.sh</code></td><td><em>(not present)</em></td><td><code>/usr/bin/mig</code></td><td><span class="pill pill-good">none</span> &mdash; clean add</td></tr>
+<tr><td><code>migcom</code></td><td><code>bootstrap_cmds/migcom.tproj/</code></td><td><em>(not present)</em></td><td><code>/usr/libexec/migcom</code></td><td><span class="pill pill-good">none</span> &mdash; clean add</td></tr>
+<tr><td><code>mig.1</code></td><td><code>bootstrap_cmds/migcom.tproj/mig.1</code></td><td><em>(not present)</em></td><td><code>/usr/share/man/man1/mig.1</code></td><td><span class="pill pill-good">none</span></td></tr>
+<tr><td><code>migcom.1</code></td><td><code>bootstrap_cmds/migcom.tproj/migcom.1</code></td><td><em>(not present)</em></td><td><code>/usr/share/man/man1/migcom.1</code></td><td><span class="pill pill-good">none</span></td></tr>
+</table>
+
+<div class="callout callout-good">
+<p><strong>Zero conflict.</strong> FreeBSD ships no MIG anywhere in base or ports today. This is a pure addition; CI risk is just "does the code build". Smoke marker: <code>MIG-BUILD-OK</code> &mdash; <code>mig --help</code> exits 0 and <code>migcom</code> emits a plausible help/usage on stderr.</p>
+</div>
+
+<h3>Build approach</h3>
+<ul>
+  <li><code>migcom</code> is yacc/lex/C; FreeBSD has <code>byacc</code> + <code>lex</code> in base. Should compile with stock <code>cc</code> + minimal Apple-shim headers.</li>
+  <li><code>mig</code> itself is the shell wrapper <code>mig.sh</code> &mdash; installed as <code>/usr/bin/mig</code>, invokes <code>/usr/libexec/migcom</code>.</li>
+  <li>Once installed, generate the seven <code>.defs</code> files from <code>launchd-842</code> into a vendored <code>mig-output/</code> directory so launchd-842 builds don't require regenerating per CI run.</li>
+</ul>
+
+<h2 id="network_cmds">3. <code>network_cmds</code> &mdash; install table + plan</h2>
+
+<p>Source: <a href="https://github.com/apple-oss-distributions/network_cmds">apple-oss-distributions/network_cmds</a>. Vendored at <code>freebsd-launchd-mach/src/network_cmds/</code>. 14 separate <code>.tproj</code> directories, one binary each.</p>
+
+<table>
+<tr><th>Apple binary</th><th>Source dir</th><th>FreeBSD path today</th><th>Install path (replacement)</th><th>FreeBSD pkg owning conflict</th></tr>
+<tr><td><code>arp</code></td><td><code>arp.tproj/</code></td><td><code>/usr/sbin/arp</code></td><td><code>/usr/sbin/arp</code></td><td><span class="pill pill-bad">FreeBSD-runtime</span></td></tr>
+<tr><td><code>ifconfig</code></td><td><code>ifconfig.tproj/</code></td><td><code>/sbin/ifconfig</code></td><td><code>/sbin/ifconfig</code></td><td><span class="pill pill-bad">FreeBSD-runtime</span></td></tr>
+<tr><td><code>ndp</code></td><td><code>ndp.tproj/</code></td><td><code>/usr/sbin/ndp</code></td><td><code>/usr/sbin/ndp</code></td><td><span class="pill pill-bad">FreeBSD-runtime</span></td></tr>
+<tr><td><code>netstat</code></td><td><code>netstat.tproj/</code></td><td><code>/usr/bin/netstat</code></td><td><code>/usr/bin/netstat</code></td><td><span class="pill pill-bad">FreeBSD-runtime</span></td></tr>
+<tr><td><code>ping</code></td><td><code>ping.tproj/</code></td><td><code>/sbin/ping</code></td><td><code>/sbin/ping</code></td><td><span class="pill pill-bad">FreeBSD-runtime</span></td></tr>
+<tr><td><code>ping6</code></td><td><code>ping6.tproj/</code></td><td><code>/sbin/ping6</code> <em>(symlink &rarr; ping)</em></td><td><code>/sbin/ping6</code> <em>(real binary)</em></td><td><span class="pill pill-bad">FreeBSD-runtime</span></td></tr>
+<tr><td><code>route</code></td><td><code>route.tproj/</code></td><td><code>/sbin/route</code></td><td><code>/sbin/route</code></td><td><span class="pill pill-bad">FreeBSD-runtime</span></td></tr>
+<tr><td><code>rtadvd</code></td><td><code>rtadvd.tproj/</code></td><td><code>/usr/sbin/rtadvd</code></td><td><code>/usr/sbin/rtadvd</code></td><td><span class="pill pill-bad">FreeBSD-runtime</span></td></tr>
+<tr><td><code>rtsol</code></td><td><code>rtsol.tproj/</code></td><td><code>/usr/sbin/rtsold</code> <em>(name diff)</em></td><td><code>/usr/sbin/rtsol</code></td><td><span class="pill pill-warn">FreeBSD-runtime</span> &mdash; different filename; can coexist on disk, name choice is ours</td></tr>
+<tr><td><code>traceroute</code></td><td><code>traceroute.tproj/</code></td><td><code>/usr/sbin/traceroute</code></td><td><code>/usr/sbin/traceroute</code></td><td><span class="pill pill-bad">FreeBSD-runtime</span></td></tr>
+<tr><td><code>traceroute6</code></td><td><code>traceroute6.tproj/</code></td><td><code>/usr/sbin/traceroute6</code></td><td><code>/usr/sbin/traceroute6</code></td><td><span class="pill pill-bad">FreeBSD-runtime</span></td></tr>
+<tr><td><code>dnctl</code></td><td><code>dnctl/</code></td><td><em>(absent; FreeBSD-ipfw omitted)</em></td><td><code>/sbin/dnctl</code></td><td><span class="pill pill-good">none</span></td></tr>
+<tr><td><code>rarpd</code></td><td><code>rarpd.tproj/</code></td><td><em>(absent; FreeBSD-rcmds omitted)</em></td><td><code>/usr/sbin/rarpd</code></td><td><span class="pill pill-good">none</span></td></tr>
+<tr><td><code>spray</code></td><td><code>spray.tproj/</code></td><td><em>(absent; FreeBSD-rcmds omitted)</em></td><td><code>/usr/bin/spray</code></td><td><span class="pill pill-good">none</span></td></tr>
+<tr><td><code>kdumpd</code></td><td><code>kdumpd.tproj/</code></td><td><em>(not present)</em></td><td><code>/usr/libexec/kdumpd</code></td><td><span class="pill pill-good">none</span> &mdash; clean add (Apple-only TFTP server for kernel-crash dumps)</td></tr>
+</table>
+
+<p><strong>Counts:</strong> 11 conflicts with <code>FreeBSD-runtime</code>; 4 clean adds (already-omitted pkgs or Apple-only).</p>
+
+<h3>Build approach</h3>
+<ul>
+  <li>Each <code>.tproj</code> dir builds independently; <code>cc</code> + small Apple-shim header set (<code>&lt;TargetConditionals.h&gt;</code>, etc., reused from libxpc shims).</li>
+  <li><code>ifconfig</code> is the riskiest port: it talks to kernel via <code>SIOCG*</code>/<code>SIOCS*</code> ioctls, and Apple's struct definitions diverge from FreeBSD's in places. Expect per-ifconfig-subcommand patches.</li>
+  <li><code>ping</code>, <code>route</code>, <code>traceroute</code> are mostly self-contained &mdash; raw sockets + routing-socket parsing. Most likely to land cleanly.</li>
+  <li><code>netstat</code> reads kernel structures via <code>sysctl(net.*)</code> &mdash; another candidate for divergence between Apple and FreeBSD struct shapes.</li>
+  <li>Per-tool smoke markers: <code>NETCMD-IFCONFIG-OK</code> (just <code>ifconfig -l</code> succeeds), <code>NETCMD-PING-OK</code> (loopback ping returns), etc. One marker per tool keeps blast radius narrow.</li>
+</ul>
+
+<h2 id="install-order">4. Install order in <code>build.sh</code></h2>
+
+<p>Linear sequence inside the existing build pipeline (additive after the libxpc stage):</p>
+
+<ol>
+  <li><code>pkg install FreeBSD-runtime</code> (already done in the pkgbase stage).</li>
+  <li>Build <code>bootstrap_cmds</code>; install <code>mig</code> + <code>migcom</code>. Verify <code>mig --help</code> exits 0 in chroot.</li>
+  <li>Run <code>mig</code> against <code>launchd-842/src/*.defs</code>; cache generated output under <code>src/launchd/mig-output/</code>.</li>
+  <li>Build <code>network_cmds</code> tool-by-tool; install each at the path in the table above. Each <code>cp</code> overwrites the <code>FreeBSD-runtime</code>-owned file.</li>
+  <li>Run each tool's smoke marker; advance to the next.</li>
+</ol>
+
+<div class="callout callout-warn">
+<p><strong>The overwrite step is intentionally <em>not</em> registered with pkg.</strong> No <code>pkg create</code>, no <code>pkg add</code>, no replacement pkg manifest. The binaries simply sit on the rootfs at their canonical paths. <code>pkg check</code> will flag them as modified; we accept that.</p>
+<p>If a future iteration wants properly-registered ownership, the right path is to build a slim <code>FreeBSD-apple-network</code>-shaped pkg that <code>CONFLICTS=</code> with the affected subset of <code>FreeBSD-runtime</code> &mdash; but that requires either rolling our own pkgbase manifest or vendoring a custom <code>FreeBSD-runtime</code> minus the network bits. Both are out of scope here.</p>
+</div>
+
+<h2 id="risks">5. Risks &amp; known sharp edges</h2>
+
+<h3>ABI drift between Apple and FreeBSD kernel structs</h3>
+<p><code>ifconfig</code> and <code>netstat</code> reach into kernel-defined structs (<code>struct ifreq</code>, <code>struct ifmediareq</code>, <code>struct rt_msghdr</code>, the <code>net.inet.*</code> sysctl namespaces). Apple has extended several of these (e.g., <code>SIOCSIFLLADDR</code> internals, multicast routing extras). Per-tool patching is expected. Some Apple-only features will simply be unavailable on FreeBSD &mdash; we accept it.</p>
+
+<h3>pkg upgrade restores FreeBSD versions</h3>
+<p>Any <code>pkg upgrade FreeBSD-runtime</code> silently puts the FreeBSD binaries back. The live ISO never <code>pkg upgrade</code>s; dev machines should add the affected paths to a "do not touch" list or simply re-run the overwrite step after upgrades.</p>
+
+<h3>Symlinks: <code>ping6</code></h3>
+<p>FreeBSD ships <code>/sbin/ping6</code> as a symlink to <code>/sbin/ping</code>. Apple's <code>network_cmds</code> ships them as two independent binaries. We replace the symlink with a real binary. <code>ping</code> with no <code>-6</code> flag should still default to IPv4 either way; minor behavioral difference.</p>
+
+<h3>rtsol vs rtsold</h3>
+<p>FreeBSD names it <code>rtsold</code> (daemon). Apple names the daemon variant <code>rtsol</code> and the controller <code>rtsold</code>. We pick Apple's naming and let <code>rtsold</code> stop being a file the ISO ships. Cosmetic; no daemon-supervision impact.</p>
+
+<h3>SystemConfiguration coupling</h3>
+<p>Apple's <code>network_cmds</code> tools occasionally call into <code>SystemConfiguration.framework</code> for store reads/writes (DNS notifications, link-state changes). FreeBSD has no SC framework yet. Stub those code paths out per-tool; reactivate when configd lands.</p>
+
+<h2 id="out-of-scope">6. Out of scope (deferred to Phase I3+ or later)</h2>
+
+<ul>
+  <li><strong><code>FreeBSD-rc</code> removal.</strong> Once <code>launchd-842</code> is PID 1 and its plists own multi-user bring-up, the <code>/etc/rc*</code> shell scripts become dead weight. Drop the pkg then. Gershwin Phase 2 is the reference for how this works in practice.</li>
+  <li><strong><code>/sbin/init</code> replacement.</strong> Cannot drop <code>FreeBSD-runtime</code>, but can overwrite <code>/sbin/init</code> with launchd-842 (or a symlink to it). Same overwrite-after-install model as the network tools.</li>
+  <li><strong><code>system_cmds</code> port</strong> (halt, reboot, shutdown, mount, ps, kill, ...). Tier B in the <a href="freebsd-launchd-842-porting-plan.html">launchd-842 plan</a>. Its own dedicated phase, after Phase I3.</li>
+  <li><strong><code>shell_cmds</code> + <code>file_cmds</code></strong>. Tier B continuation. Replaces the rest of FreeBSD-runtime's userland; lets us aggressively slim the runtime pkg footprint.</li>
+  <li><strong>Custom pkgbase manifest</strong> that excludes the overwritten paths. Nice-to-have. Doesn't block any port.</li>
+</ul>
+
+<p class="footnote">Drafted 2026-05-13 alongside the <a href="freebsd-launchd-842-porting-plan.html">launchd-842 port plan</a>. Tables grounded in direct source inspection of the <code>apple-oss-distributions/bootstrap_cmds</code> and <code>apple-oss-distributions/network_cmds</code> repos at <code>/Users/jmaloney/Documents/launchd/{bootstrap_cmds,network_cmds}/</code>.</p>
+
+</div>
+</body>
+</html>

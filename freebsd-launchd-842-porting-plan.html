@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>freebsd-launchd-842: porting Apple launchd-842.92.1 onto our libxpc + mach.ko stack</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --bg: #fafaf7;
+    --accent: #b8472a;
+    --accent-soft: #f3e7df;
+    --border: #d8d4c8;
+    --code-bg: #f0ece2;
+    --table-stripe: #f4efe5;
+    --warn: #8a5a00;
+    --good: #2d6f3b;
+    --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    line-height: 1.55;
+    margin: 0;
+    padding: 0;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 32px 96px; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--border); letter-spacing: -0.005em; }
+  h3 { font-size: 1.15rem; margin: 32px 0 10px; color: var(--accent); }
+  h4 { font-size: 1rem; margin: 24px 0 6px; color: var(--fg); }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg); }
+  code { padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  pre { padding: 14px 18px; border-radius: 4px; overflow-x: auto; font-size: 0.86rem; line-height: 1.45; margin: 0 0 18px; }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+  .lede { font-size: 1.05rem; color: var(--fg-muted); margin-bottom: 32px; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 0.94rem; }
+  th, td { text-align: left; padding: 10px 12px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 18px 0 22px; border-radius: 0 4px 4px 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn { border-left-color: var(--warn); background: #fbf3df; }
+  .callout-good { border-left-color: var(--good); background: #e8f1e3; }
+  .pill { display: inline-block; font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 10px; margin-right: 8px; }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 18px 24px 14px 36px; margin: 0 0 36px; font-size: 0.95rem; }
+  .toc h2 { margin: 0 0 8px; padding-top: 0; border-top: none; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-left: -14px; }
+  .toc ol { margin: 0 0 0 6px; }
+  .toc li { margin-bottom: 4px; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  .verdict { font-size: 1.1rem; font-weight: 600; margin: 8px 0 14px; }
+  .verdict-go { color: var(--good); }
+  .verdict-warn { color: var(--warn); }
+  .verdict-no { color: var(--bad); }
+  @media (max-width: 600px) { .wrap { padding: 24px 18px 64px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1><code>freebsd-launchd-842</code> &mdash; porting Apple's <code>launchd-842.92.1</code></h1>
+<p class="lede">A data-grounded porting plan for Apple's last open-source launchd (<code>launchd-842.92.1</code>, 2014) onto our now-working <a href="freebsd-launchd-mach-plan.html"><code>freebsd-launchd-mach</code></a> stack: <code>mach.ko</code> + <code>libsystem_kernel</code> + <code>libdispatch</code> + <code>libxpc</code> + standalone <code>bootstrap_server</code>. Drafted from four parallel research passes through the actual <code>launchd-842</code> source &mdash; no warmed-over spike-doc summaries, no assumptions held over from earlier phases. Phases lay out as <strong>I1</strong> (build + exec only), <strong>I2</strong> (core functionality with multiple test daemons), checkpoint, then a deferred PID-1 phase.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#starting-point">Starting point &mdash; what's in the stack today</a></li>
+  <li><a href="#source-map">Source map &mdash; what's in <code>launchd-842</code></a></li>
+  <li><a href="#mach-surface">Mach / IPC surface &mdash; gap analysis</a></li>
+  <li><a href="#pid1-split">PID-1 vs daemon-mode split</a></li>
+  <li><a href="#launchctl-surface">launchctl + control-protocol surface</a></li>
+  <li><a href="#phases">Phase plan &mdash; I1, I2, checkpoint, I3</a></li>
+  <li><a href="#risks">Risks &amp; open questions</a></li>
+  <li><a href="#references">References</a></li>
+</ol>
+</div>
+
+<h2 id="starting-point">1. Starting point &mdash; what's in the stack today</h2>
+
+<p>At end of Phase H (<code>freebsd-launchd-mach</code> commit <code>f408db9</code>), the stack provides:</p>
+
+<table>
+<tr><th>Component</th><th>Status</th><th>Install path</th></tr>
+<tr><td><code>mach.ko</code></td><td>port-management traps, special-port traps, multiplexer slot 219, audit-trailer types defined</td><td>kernel module</td></tr>
+<tr><td><code>libsystem_kernel.so</code></td><td><code>mach_msg</code>, <code>mach_port_*</code>, <code>task_*_special_port</code>, <code>host_set_special_port</code></td><td><code>/usr/lib/libsystem/</code></td></tr>
+<tr><td><code>libdispatch.so</code></td><td>full type system + Mach RECV polling backend</td><td><code>/usr/lib/libsystem/</code></td></tr>
+<tr><td><code>libxpc.so.4</code></td><td>type system round-trips; connection / bootstrap surface compiles, untested</td><td><code>/usr/lib/libsystem/</code></td></tr>
+<tr><td><code>bootstrap_server</code> daemon</td><td>standalone, hand-rolled message-ID dispatch (no MIG), host-bootstrap-port fallback</td><td><code>/usr/local/sbin/</code></td></tr>
+<tr><td>Smoke markers</td><td>20 markers green on CI; LIBXPC-OK fires</td><td>&mdash;</td></tr>
+</table>
+
+<p>What we do <em>not</em> have:</p>
+<ul>
+  <li>MIG codegen on FreeBSD &mdash; our <code>bootstrap_server</code> hand-rolls its wire dispatch.</li>
+  <li>Mach port sets / dead-name notifications / port attributes / exception ports.</li>
+  <li><code>fileport_make{port,fd}</code> &mdash; stubs returning <code>ENOSYS</code> in <code>libxpc</code>.</li>
+  <li>Audit-trailer materialization in the kernel &mdash; the types are defined; the kernel doesn't fill them.</li>
+  <li><code>vproc_*</code> internals &mdash; stubs in <code>libxpc</code>.</li>
+  <li>CoreFoundation &mdash; <code>launchctl</code> uses <code>CFPropertyList</code> for plist parsing.</li>
+</ul>
+
+<h2 id="source-map">2. Source map &mdash; what's in <code>launchd-842</code></h2>
+
+<p>Apple's <code>launchd-842.92.1</code> at <a href="https://github.com/apple-oss-distributions/launchd">apple-oss-distributions/launchd</a>, tagged 2014-08-13. Total <strong>~28,500 LOC</strong> of C across five directories.</p>
+
+<table>
+<tr><th>Directory</th><th>LOC</th><th>Produces</th><th>Notes</th></tr>
+<tr><td><code>src/</code></td><td>16,285</td><td><code>launchd</code> binary</td><td><code>core.c</code> is 12,126 lines on its own. 7 MIG <code>.defs</code> files.</td></tr>
+<tr><td><code>liblaunch/</code></td><td>4,448</td><td><code>liblaunch.dylib</code></td><td><code>liblaunch.c</code> + <code>libvproc.c</code> + <code>libbootstrap.c</code>. Public <code>launch.h</code> / <code>bootstrap.h</code> / <code>vproc.h</code>.</td></tr>
+<tr><td><code>support/</code></td><td>4,836</td><td><code>launchctl</code> + <code>launchproxy</code> + <code>wait4path</code></td><td><code>launchctl.c</code> alone is 1,847 lines (single-file CLI with 25 subcommands).</td></tr>
+<tr><td><code>SystemStarter/</code></td><td>1,939</td><td><code>SystemStarter</code> binary</td><td>Legacy startup-items runner; <strong>safe to skip entirely</strong> for our port.</td></tr>
+<tr><td><code>man/</code>, <code>rc/</code></td><td>&mdash;</td><td>doc + rc scripts</td><td>No compiled code.</td></tr>
+</table>
+
+<h3>MIG (Mach Interface Generator) inventory</h3>
+
+<p>Seven <code>.defs</code> files; MIG generates RPC client+server stubs as <code>.c</code> + <code>.h</code> pairs at build time. <strong>We do not ship MIG on FreeBSD.</strong> Three handling options exist; the plan recommends a hybrid.</p>
+
+<table>
+<tr><th>File</th><th>Subsystem</th><th>Role</th><th>Generated headers consumed by</th></tr>
+<tr><td><code>job.defs</code></td><td>400</td><td><code>vproc_mig_*</code> client + <code>job_mig_*</code> server</td><td><code>core.c:126</code>, <code>runtime.c:77</code></td></tr>
+<tr><td><code>protocol_jobmgr.defs</code></td><td>400</td><td>same wire as <code>job.defs</code> + <code>ServerAuditToken</code> trailer</td><td>same demux table</td></tr>
+<tr><td><code>internal.defs</code></td><td>137000</td><td>kernel &rarr; launchd kqueue notification</td><td><code>runtime.c:65</code></td></tr>
+<tr><td><code>helper.defs</code></td><td>4241011</td><td>UserEventAgent downcall</td><td><code>libvproc.c</code></td></tr>
+<tr><td><code>job_reply.defs</code></td><td>&mdash;</td><td>internal MIG reply marshaling</td><td>internal</td></tr>
+<tr><td><code>job_forward.defs</code></td><td>&mdash;</td><td>internal MIG forward marshaling</td><td>internal</td></tr>
+<tr><td><code>job_types.defs</code></td><td>&mdash;</td><td>type definitions for the above</td><td>shared</td></tr>
+</table>
+
+<p><strong>Important wire fact:</strong> message IDs for subsystem 400 are <code>400 + routine_offset</code>; e.g. <code>bootstrap_check_in</code> = 408, <code>bootstrap_register</code> = 412, <code>bootstrap_look_up</code> = 416. <strong>Our standalone <code>bootstrap_server</code> is wire-compatible with subsystem 400</strong> &mdash; same Mach message layout, same trailer expectations. We hand-rolled what MIG would have generated for the subset we need; <code>launchd-842</code> uses MIG output for the full set.</p>
+
+<h3>Closed-source link dependencies</h3>
+
+<p>Apple links <code>liblaunch.dylib</code> against the closed-source <code>libsystem_*</code> family. Reading <code>xcconfigs/liblaunch.xcconfig</code>:</p>
+
+<pre><code>-umbrella System -L/usr/lib/system
+-ldyld -lcompiler_rt -lsystem_kernel -lsystem_platform
+-lsystem_pthread -lsystem_malloc -lsystem_c -lquarantine -ldispatch</code></pre>
+
+<p>For our port:</p>
+<table>
+<tr><th>Apple lib</th><th>FreeBSD replacement</th></tr>
+<tr><td><code>libdyld</code></td><td>ld-elf rtld (no shim needed)</td></tr>
+<tr><td><code>libcompiler_rt</code></td><td>FreeBSD ships <code>libcompiler_rt</code>; usable directly</td></tr>
+<tr><td><code>libsystem_kernel</code></td><td>Our existing <code>/usr/lib/libsystem/libsystem_kernel.so</code></td></tr>
+<tr><td><code>libsystem_platform</code></td><td>covered by FreeBSD libc</td></tr>
+<tr><td><code>libsystem_pthread</code></td><td>FreeBSD <code>libthr</code> (<code>-lpthread</code>)</td></tr>
+<tr><td><code>libsystem_malloc</code></td><td>jemalloc in FreeBSD libc</td></tr>
+<tr><td><code>libsystem_c</code></td><td>FreeBSD libc</td></tr>
+<tr><td><code>libquarantine</code></td><td><span class="pill pill-warn">Stub</span> macOS Gatekeeper attr-tracking; no-op shim is fine</td></tr>
+<tr><td><code>libdispatch</code></td><td>Our existing <code>/usr/lib/libsystem/libdispatch.so</code></td></tr>
+</table>
+
+<p>Apple-private headers that need stubs or replacement: <code>&lt;TargetConditionals.h&gt;</code> (define for FreeBSD), <code>&lt;System/sys/spawn.h&gt;</code> + <code>&lt;System/sys/spawn_internal.h&gt;</code> (private posix_spawn extensions), <code>&lt;sandbox.h&gt;</code> (no-op shim &mdash; we don't have macOS Sandbox), <code>&lt;libkern/OSAtomic.h&gt;</code> + <code>&lt;libkern/OSByteOrder.h&gt;</code> (replace with C11 atomics + FreeBSD endian.h), <code>&lt;asl.h&gt;</code> (port Apple System Logger later or stub to syslog), <code>&lt;_simple.h&gt;</code> (Apple's mini-allocator &mdash; trivial port), <code>&lt;quarantine.h&gt;</code> (no-op), <code>&lt;responsibility.h&gt;</code> (no-op). <code>&lt;CoreFoundation/CFPriv.h&gt;</code> is only used by <code>SystemStarter</code> which we skip entirely. <code>&lt;IOKit/IOKitLib.h&gt;</code> + <code>&lt;DiskArbitration/&hellip;&gt;</code> are also <code>SystemStarter</code>-only.</p>
+
+<h2 id="mach-surface">3. Mach / IPC surface &mdash; gap analysis</h2>
+
+<p>What Mach symbols does <code>launchd-842</code> actually call, and how does that map against our coverage today?</p>
+
+<table>
+<tr><th>Symbol</th><th>Call sites</th><th>Coverage</th><th>Notes</th></tr>
+<tr><td><code>mach_msg</code></td><td>~10+</td><td><span class="pill pill-good">Have</span></td><td>Core dispatch at <code>runtime.c:1022-1029</code>.</td></tr>
+<tr><td><code>mach_task_self</code>, <code>mach_host_self</code></td><td>14</td><td><span class="pill pill-good">Have</span></td><td>Port-name queries.</td></tr>
+<tr><td><code>mach_port_allocate</code> / <code>_deallocate</code> / <code>_insert_right</code></td><td>~10</td><td><span class="pill pill-good">Have</span></td><td>Phase F shipped these.</td></tr>
+<tr><td><code>task_get_special_port</code> / <code>_set_</code></td><td>2</td><td><span class="pill pill-good">Have</span></td><td>Phase G prereq shipped these.</td></tr>
+<tr><td><code>bootstrap_check_in</code> / <code>_look_up</code></td><td>40+ MIG refs</td><td><span class="pill pill-good">Have</span></td><td>Hand-rolled subsystem 400 wire format matches.</td></tr>
+<tr><td><code>host_reboot</code></td><td>4 (<code>core.c:4212</code>, <code>4221</code>, <code>7277</code>)</td><td><span class="pill pill-neutral">Trivial</span></td><td>Fits multiplexer slot 219 pattern.</td></tr>
+<tr><td><code>mach_port_request_notification</code></td><td>1 (<code>core.c:5445</code>)</td><td><span class="pill pill-bad">Hard</span></td><td><strong>Dead-name notifications</strong>; needs kernel mailbox infra.</td></tr>
+<tr><td><code>mach_port_move_member</code></td><td>2 (<code>runtime.c:714</code>, <code>722</code>)</td><td><span class="pill pill-bad">Hard</span></td><td>Port-set membership; kernel port-set object.</td></tr>
+<tr><td><code>mach_port_get_set_status</code></td><td>1 (<code>runtime.c:487</code>)</td><td><span class="pill pill-bad">Hard</span></td><td>Enumerate port-set members.</td></tr>
+<tr><td><code>mach_port_set_mscount</code></td><td>1 (<code>runtime.c:621</code>)</td><td><span class="pill pill-bad">Hard</span></td><td>No-senders-notification suppression.</td></tr>
+<tr><td><code>mach_port_get_attributes</code> / <code>_set_attributes</code></td><td>6 (TEMPOWNER, LIMITS, RECEIVE_STATUS)</td><td><span class="pill pill-bad">Hard</span></td><td>Per-port kernel state.</td></tr>
+<tr><td><code>task_set_exception_ports</code></td><td>1 (<code>core.c:6458</code>)</td><td><span class="pill pill-bad">Hard</span></td><td>EXC_CRASH / EXC_GUARD routing.</td></tr>
+<tr><td><code>host_set_exception_ports</code></td><td>1 (<code>core.c:6468</code>)</td><td><span class="pill pill-bad">Hard</span></td><td>Host-wide; <strong>PID-1 only</strong>, defers naturally.</td></tr>
+<tr><td><code>host_statistics</code> HOST_VM_INFO</td><td>1 (<code>runtime.c:1273</code>)</td><td><span class="pill pill-bad">Hard</span></td><td>Memory introspection; can be stubbed to <code>0</code>.</td></tr>
+<tr><td><code>fileport_makeport</code> / <code>_makefd</code></td><td>3 (<code>core.c:11657</code>, <code>11717</code>, <code>libvproc.c:1040</code>)</td><td><span class="pill pill-warn">Stub</span></td><td>Already stubbed in <code>libxpc</code>; <code>ENOSYS</code> degrades gracefully.</td></tr>
+<tr><td><code>vproc_transaction_*</code></td><td>declared, internal counters only</td><td><span class="pill pill-warn">Stub</span></td><td>Already stubbed in <code>libxpc</code>.</td></tr>
+</table>
+
+<h3>Audit-trailer requirement</h3>
+
+<div class="callout callout-warn">
+<p><strong>The audit trailer is mandatory.</strong> <code>runtime.c:999-1000</code> casts the post-message trailer area to <code>mach_msg_audit_trailer_t*</code> and calls <code>audit_token_to_au32()</code> to extract caller <code>{euid, egid, uid, gid, pid, asid}</code>. <code>core.c</code> access-control checks at lines ~9033-9050 gate <code>check_in</code> and <code>register</code> calls on these fields. If we don't materialize a real audit trailer in <code>mach.ko</code>, every cross-task lookup would either crash on uninitialized memory or accept the request with caller PID&nbsp;0 &mdash; effectively root.</p>
+<p>This is the single biggest <strong>kernel-side</strong> work item that must happen before <code>launchd-842</code> can supervise non-trivial workloads. The trailer types are already defined in our <code>&lt;mach/message.h&gt;</code>; what's missing is the trailer-write path inside <code>mach.ko</code>'s receive routine. Scoped at one new file in <code>src/mach_kmod/</code> referencing the calling thread's <code>td_ucred</code> at message-receive time.</p>
+</div>
+
+<h3>The five hardest kernel-side items, ranked</h3>
+
+<ol>
+  <li><strong>Audit-trailer materialization.</strong> Without this, no security-conscious operation works. Scope: ~150 LOC in mach.ko's <code>ipc_kmsg_make_trailer</code> path.</li>
+  <li><strong>Dead-name notifications</strong> (<code>mach_port_request_notification</code>). Without this, launchd can't tell when a supervised process's reply port goes away &mdash; supervision degrades to polling. Scope: kernel mailbox queue per requesting port, dead-port event delivery.</li>
+  <li><strong>Port sets</strong> (<code>mach_port_move_member</code>, <code>_get_set_status</code>). Launchd's <code>runtime.c</code> demand-dispatch uses a port set to batch-poll. Without it, we route every receive through its own kqueue&hellip;which is actually how <code>libdispatch</code> already works on FreeBSD. <strong>May be possible to skip</strong> by routing each Mach receive through its own <code>dispatch_source</code>; needs validation.</li>
+  <li><strong>Port attributes</strong> (TEMPOWNER, LIMITS, RECEIVE_STATUS). Used for queue-depth tuning and ownership transfer at exec. Scope: per-port kernel state additions.</li>
+  <li><strong>Exception ports.</strong> EXC_CRASH / EXC_GUARD / EXC_RESOURCE delivery. Without these, launchd can't intercept process crashes. <strong>Can defer entirely</strong> until we have a real crash-reporter daemon.</li>
+</ol>
+
+<h2 id="pid1-split">4. PID-1 vs daemon-mode split</h2>
+
+<p><strong>Good news:</strong> launchd-842 has a clean single-gate split. The whole codebase keys off one boolean, <code>pid1_magic</code>, set by <code>getpid() == 1</code> at <code>runtime.c:1387</code>. There is <em>no</em> separate <code>init/</code> heritage subdirectory; the legacy BSD init code Apple inherited got fully absorbed into the core path long before <code>launchd-842</code>.</p>
+
+<p>There is also a built-in non-PID-1 mode: <strong>per-user launchd</strong>. When <code>pid1_magic == false</code>, the code runs the per-user path: socket in <code>/tmp/launchd-&lt;pid&gt;.XXXXXX/</code>, per-user database under <code>/private/var/db/launchd.db/com.apple.launchd.peruser.&lt;uid&gt;</code>, idle-exit timer enabled, no console output, no audit-session initialization. <strong>This is the natural shape for our daemon-mode port.</strong></p>
+
+<h3>What PID-1 mode does that daemon mode doesn't</h3>
+
+<ul>
+  <li>Opens <code>/dev/console</code> (<code>launchd.c:177-182</code>) and routes log lines to it.</li>
+  <li>Initializes an audit session with <code>AU_SESSION_FLAG_IS_INITIAL</code> (<code>launchd.c:469-487</code>).</li>
+  <li>Spawns the periodic <code>update_thread</code> that calls <code>sync()</code> every 30 s (<code>launchd.c:298-309</code>).</li>
+  <li>Registers as the host exception port via <code>host_set_exception_ports</code> for jobs that declare <code>LAUNCH_JOBKEY_MACH_HOSTEXCEPTIONPORT</code> (<code>core.c:6466-6468</code>).</li>
+  <li>Drains the <code>kern.bootargs</code> sysctl for verbose-boot flags (<code>runtime.c:1421</code>).</li>
+  <li>Runs <code>/etc/rc.deferred_install</code> if present at shutdown (<code>core.c:11860-11908</code>).</li>
+  <li>Sweeps stray processes at shutdown via <code>kill -TERM</code> on every PID not in the supervised set (<code>core.c:6710-6718</code>).</li>
+  <li>Disables the flat Mach namespace (<code>launchd.c:227-228</code>).</li>
+  <li>Sets session type to <code>VPROCMGR_SESSION_SYSTEM</code> instead of <code>VPROCMGR_SESSION_BACKGROUND</code>.</li>
+</ul>
+
+<p>All of these are isolated behind <code>pid1_magic</code> gates. For Phase I2 we override <code>pid1_magic = false</code> unconditionally (or run as non-root and let the natural test fire), turning every gated branch off automatically. <strong>No surgery in <code>core.c</code> is needed</strong> &mdash; the codebase already knows how to be a non-PID-1 launchd.</p>
+
+<h2 id="launchctl-surface">5. launchctl + control-protocol surface</h2>
+
+<p><code>launchctl</code> is a single 4,549-line file at <code>support/launchctl.c</code>. It dispatches 25 subcommands via a command table at <code>launchctl.c:228-265</code>. The control protocol uses <code>liblaunch</code>'s <code>launch_msg()</code> over a Unix socket at <code>/var/run/launchd/sock</code> &mdash; <strong>not Mach</strong>. Plist parsing is via CoreFoundation's <code>CFPropertyList</code>; the <code>CF2launch_data</code> converter at <code>launchctl.c:2001-2066</code> walks the CF tree and rebuilds it as <code>launch_data_t</code>.</p>
+
+<table>
+<tr><th>Subcommand</th><th>IPC mechanism</th><th>Notes</th></tr>
+<tr><td><code>help</code></td><td>none</td><td>Prints table. <strong>Phase I1 smoke marker.</strong></td></tr>
+<tr><td><code>list</code></td><td><code>vproc_swap_complex(VPROC_GSK_ALLJOBS)</code></td><td>Empty dict if no jobs. <strong>Phase I2 first IPC test.</strong></td></tr>
+<tr><td><code>load</code> / <code>unload</code></td><td><code>launch_msg</code> + <code>LAUNCH_KEY_SUBMITJOB</code></td><td>Requires plist parsing.</td></tr>
+<tr><td><code>start</code> / <code>stop</code> / <code>remove</code></td><td><code>launch_msg</code> + <code>LAUNCH_KEY_STARTJOB</code> / <code>STOPJOB</code> / <code>REMOVEJOB</code></td><td>String payload (job label).</td></tr>
+<tr><td><code>setenv</code> / <code>getenv</code> / <code>export</code> / <code>unsetenv</code></td><td>vproc layer + <code>LAUNCH_KEY_SETUSERENVIRONMENT</code></td><td>Global env. Phase I2 later.</td></tr>
+<tr><td><code>limit</code> / <code>umask</code> / <code>log</code></td><td>vproc + <code>LAUNCH_KEY_GET/SETRESOURCELIMITS</code></td><td>Resource controls.</td></tr>
+<tr><td><code>shutdown</code> / <code>singleuser</code></td><td><code>launch_msg</code> + <code>LAUNCH_KEY_SHUTDOWN</code></td><td>Defer.</td></tr>
+<tr><td><code>bsexec</code> / <code>bslist</code> / <code>bstree</code></td><td>Mach bootstrap subset machinery</td><td><strong>Defer to post-PID-1 phase.</strong></td></tr>
+</table>
+
+<p>The launchd-side handlers live in <code>ipc.c</code> via <code>ipc_readmsg2()</code> at lines 360-457. Each handler is small (3-10 LOC) and dispatches to <code>core.c</code> functions for the actual work.</p>
+
+<div class="callout callout-good">
+<p><strong>Implication for plist parsing:</strong> <code>launchctl</code> wants CoreFoundation. The <code>freebsd-libxpc-plan</code> already calls for either CF-Lite or libs-corebase. For Phase I2, the lowest-friction path is to <strong>swap CoreFoundation for a minimal plist parser inside <code>launchctl.c</code></strong> (we already need to patch the file to switch to FreeBSD-native paths); a 200-300-line XML-plist tokenizer is enough for Phase I2 jobs. Full CF can land later when configd needs it.</p>
+</div>
+
+<h2 id="phases">6. Phase plan</h2>
+
+<h3>Phase I0 &mdash; research (this document)</h3>
+<p><span class="pill pill-good">Done</span> Four parallel research passes through <code>launchd-842</code>; gap analysis above.</p>
+
+<h3>Phase I1 &mdash; build + exec only</h3>
+<p><strong>Goal:</strong> <code>launchd</code> + <code>launchctl</code> binaries compile, link cleanly against our stack, and execute the no-side-effect CLI paths. <strong>No plist loading, no IPC opened.</strong></p>
+
+<h4>Tasks</h4>
+<ol>
+  <li>Vendor <code>launchd-842</code> verbatim into <code>freebsd-launchd-mach/src/launchd/</code> (top-level <code>src/</code>, <code>liblaunch/</code>, <code>support/</code>); skip <code>SystemStarter/</code> entirely.</li>
+  <li>Decide MIG strategy &mdash; <strong>recommended: bring MIG to FreeBSD</strong> by porting <code>bootstrap_cmds</code> (Apple open-source). Fallback: pre-generate the seven <code>.defs</code> files on macOS and vendor the output. Hand-roll is the worst option here; the LOC count is too high.</li>
+  <li>Write FreeBSD shims for: <code>&lt;TargetConditionals.h&gt;</code>, <code>&lt;sandbox.h&gt;</code>, <code>&lt;quarantine.h&gt;</code>, <code>&lt;_simple.h&gt;</code>, <code>&lt;responsibility.h&gt;</code>, <code>&lt;libkern/OSAtomic.h&gt;</code>, <code>&lt;libkern/OSByteOrder.h&gt;</code>, <code>&lt;System/sys/spawn.h&gt;</code> + <code>&lt;System/sys/spawn_internal.h&gt;</code>. Install at <code>/usr/include/</code> following the libxpc shim pattern.</li>
+  <li>Build Makefile that emits both binaries; install at <code>/usr/local/sbin/launchd</code> and <code>/usr/local/bin/launchctl</code> (not <code>/sbin</code> &mdash; we're not PID 1 yet).</li>
+  <li>Smoke test: <code>launchd --help</code> exits 0; <code>launchctl help</code> prints the command table and exits 0.</li>
+</ol>
+
+<h4>Smoke marker</h4>
+<p><code>LAUNCHD-BUILD-OK</code> &mdash; both binaries run their zero-IPC code paths cleanly. CI signal.</p>
+
+<h4>Out of scope for I1</h4>
+<p>Loading plists. Opening Mach ports. Talking to <code>bootstrap_server</code>. Spawning anything. Running as a daemon.</p>
+
+<h3>Phase I2 &mdash; core functionality (multiple test daemons)</h3>
+<p><strong>Goal:</strong> <code>launchd</code> runs in daemon mode (per-user codepath, <code>pid1_magic == false</code>), loads plists via <code>launchctl load</code>, supervises real processes. One test daemon per feature; failures map cleanly.</p>
+
+<h4>Feature scope &mdash; one test plist + one marker per feature</h4>
+
+<table>
+<tr><th>Feature</th><th>Marker</th><th>Test plist</th><th>What it proves</th></tr>
+<tr><td>Basic plist parse + spawn</td><td><code>LAUNCHD-SPAWN-OK</code></td><td>RunAtLoad+ProgramArguments writing to file</td><td>plist loader, fork/exec</td></tr>
+<tr><td>KeepAlive supervision</td><td><code>LAUNCHD-KEEPALIVE-OK</code></td><td>Binary exits after 2 s, KeepAlive=true</td><td>respawn loop</td></tr>
+<tr><td>StartInterval timer</td><td><code>LAUNCHD-INTERVAL-OK</code></td><td>StartInterval=5 timer + log file</td><td>kqueue timer dispatch</td></tr>
+<tr><td>WatchPaths</td><td><code>LAUNCHD-WATCH-OK</code></td><td>Touches a file, launchd spawns reactor</td><td>kqueue vnode events</td></tr>
+<tr><td>Sockets (inetd-style)</td><td><code>LAUNCHD-SOCKETS-OK</code></td><td>Echo daemon on TCP, fd via <code>launch_activate_socket</code></td><td>socket listener + fd inheritance</td></tr>
+<tr><td>Stdout/StderrPath</td><td><code>LAUNCHD-STDIO-OK</code></td><td>Writes to redirected files</td><td>fd setup pre-exec</td></tr>
+<tr><td><code>launchctl list</code></td><td><code>LAUNCHCTL-LIST-OK</code></td><td>&mdash;</td><td>read-only IPC roundtrip</td></tr>
+<tr><td><code>launchctl load</code> / <code>unload</code> / <code>start</code> / <code>stop</code></td><td><code>LAUNCHCTL-CTRL-OK</code></td><td>One plist exercises all four</td><td>write IPC + state mgmt</td></tr>
+</table>
+
+<h4>Required kernel work before I2</h4>
+<ul>
+  <li><strong>Audit-trailer materialization in mach.ko</strong> &mdash; non-negotiable security gate (~150 LOC).</li>
+  <li><strong>Validate port-set workaround:</strong> can we route every Mach receive through its own <code>dispatch_source</code> and skip <code>mach_port_move_member</code>? If yes, drop port-set work; if no, kernel port-set object (~400 LOC).</li>
+  <li><strong>Dead-name notifications</strong> (<code>mach_port_request_notification</code> NOTIFY_DEAD_NAME) &mdash; or accept supervision-via-kqueue and stub the trap. If we stub, launchd loses some prompt cleanup but a periodic reaper covers it.</li>
+</ul>
+
+<p>Everything else from the gap table can stay stubbed for I2.</p>
+
+<h3>Checkpoint &mdash; user sign-off before PID 1</h3>
+<p>Hold here. Discuss whether to graduate to PID 1, how to coordinate with FreeBSD's existing <code>init(8)</code> and <code>rc.d</code> handoff, whether to keep <code>freebsd-launchd</code> as a fallback for non-Mach builds.</p>
+
+<h3>Phase I3 &mdash; PID 1 (deferred, scoped after checkpoint)</h3>
+<p>Out of this plan's scope; flag the work without committing to it. Likely items: ISO build swaps init to <code>launchd</code>, console / audit-session / exception-port paths come back online, single-user mode integration, shutdown-stray-process sweep, host exception port wiring, <code>kern.bootargs</code> verbose-boot handling. Many of these reactivate when the same code runs as PID 1; the gates are already in place.</p>
+
+<h2 id="risks">7. Risks &amp; open questions</h2>
+
+<h3>MIG on FreeBSD &mdash; decision needed before I1 starts</h3>
+<p>The three options:</p>
+<ul>
+  <li><strong>Port Apple's <code>bootstrap_cmds</code></strong> (which contains MIG) to FreeBSD. Highest cost up front, lowest cost forever after. Other Apple-source daemons (<code>configd</code>, <code>notifyd</code>) also use MIG, so the investment amortizes.</li>
+  <li><strong>Vendor pre-generated MIG output</strong> for the seven <code>launchd-842</code> <code>.defs</code> files. Generate on a macOS machine, commit the <code>.c</code> + <code>.h</code>. Brittle &mdash; any <code>.defs</code> edit means re-generating. Apple's MIG is BSD-licensed though, so this is allowed.</li>
+  <li><strong>Hand-roll the launchd surface</strong> like we did for <code>bootstrap_server</code>. Bad &mdash; subsystem 400 alone has 25+ routines and they're meant to evolve in lockstep with the <code>.defs</code> files.</li>
+</ul>
+<p><strong>Recommendation:</strong> port MIG. ~3-5k LOC of yacc/lex. Done once, used by every subsequent Apple-source daemon.</p>
+
+<h3>Kernel work creep</h3>
+<p>The audit-trailer + dead-name + port-set work is real kernel engineering, not shim-and-link work. It will land before I2 can sign off. Budget: 1-2 weeks of focused mach.ko work. The Phase E libdispatch work landed two latent mach.ko bugs along the way; expect similar.</p>
+
+<h3>Plist parsing &mdash; CoreFoundation or hand-roll</h3>
+<p><code>launchctl.c</code> uses <code>CFPropertyListCreateFromStream</code>. For Phase I2, hand-rolling a minimal XML-plist parser (200-300 LOC) avoids the CoreFoundation dependency entirely. We pay the bill again when configd lands and CF becomes unavoidable; that's the right time to swap in real CF, not now.</p>
+
+<h3>Shape of "supervised binary that exits"</h3>
+<p>For the KeepAlive test the supervised binary is trivial. For the Sockets test we need to use Apple's <code>launch_activate_socket</code> API &mdash; which is part of <code>liblaunch</code> we're vendoring, so it comes for free. Good news.</p>
+
+<h3>vproc_* surface</h3>
+<p><code>libvproc.c</code> is 1,040 LOC. We've stubbed the surface in <code>libxpc</code>, but <code>launchctl</code> reaches into <code>vproc_swap_complex</code> for <code>list</code>, <code>getenv</code>, etc. We need a working <code>libvproc</code> (the file from <code>launchd-842/liblaunch/libvproc.c</code>) compiled against our IPC layer. Estimate: most of it works after the FreeBSD shims land; some routines may need stubs.</p>
+
+<h3>Apple's launchd-842 is pre-libxpc-split</h3>
+<p>From OS X 10.10 onward Apple folded launchd's job-management into closed-source libxpc. <code>launchd-842</code> predates that split, which is exactly why we can use it. The downside is that some "modern" Apple-source daemons assume modern launchd behavior we don't have (e.g., XPC service activation). Not our problem for Phase I2; flag for the configd / asl / mDNSResponder follow-on phases.</p>
+
+<h2 id="references">8. References</h2>
+
+<ul>
+  <li><a href="https://github.com/apple-oss-distributions/launchd"><code>apple-oss-distributions/launchd</code></a> at tag <code>launchd-842.92.1</code> (2014-08-13). 28.5k LOC, last open source. Apache 2.0 license.</li>
+  <li><a href="https://github.com/apple-oss-distributions/bootstrap_cmds"><code>apple-oss-distributions/bootstrap_cmds</code></a> &mdash; ships MIG. Apple Public Source License.</li>
+  <li><a href="freebsd-launchd-mach-plan.html"><code>freebsd-launchd-mach-plan</code></a> &mdash; the underlying mach.ko + Mach-IPC stack this plan builds on.</li>
+  <li><a href="freebsd-libxpc-plan.html"><code>freebsd-libxpc-plan</code></a> &mdash; the libxpc port, where Phase 5 references this launchd-842 import.</li>
+  <li><a href="freebsd-launchd-plan.html"><code>freebsd-launchd-plan</code></a> &mdash; the minimal scratch-rewrite launchd we ship today; kept as fallback for non-Mach builds.</li>
+  <li><a href="freebsd-libxpc-foundation-spike.html"><code>freebsd-libxpc-foundation-spike</code></a> &mdash; the CoreFoundation / Foundation analysis for configd / asl / mDNSResponder.</li>
+  <li>Local mirrors used during research: <code>/Users/jmaloney/Documents/launchd/launchd-842/</code> (verbatim Apple), <code>/Users/jmaloney/Documents/launchd/nextbsd/sbin/launchd/</code> (NextBSD port reference), <code>/Users/jmaloney/Documents/launchd/ravynos/sbin/launchd/</code> (ravynOS port reference).</li>
+</ul>
+
+<p class="footnote">Drafted 2026-05-13 from four parallel agent passes over the verbatim <code>launchd-842.92.1</code> tree. Findings are file:line-cited throughout; the underlying agent reports live in the project's session transcript.</p>
+
+</div>
+</body>
+</html>

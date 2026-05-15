@@ -557,6 +557,63 @@ CFApplicationPreferences.c</code></pre>
 
 <p>The recommendation is "A unless something changes." If a future need surfaces (e.g., we decide to ship a Cocoa app on the bare freebsd-launchd-mach ISO without the full gershwin overlay), revisit. Option C remains the cleanest forward-compat answer if self-containment ever becomes a hard requirement (no FreeBSD-port chain).</p>
 
+<h3>13.5 The porting-tax math &mdash; what does Option A cost across the project lifetime?</h3>
+
+<p>Option A (drop ICU) does add a small per-port tax: every daemon that calls CF-ICU APIs needs ~5-40 LOC of mechanical patches at port time to replace those calls with libc equivalents. Worth pricing out explicitly.</p>
+
+<table>
+<thead><tr><th>Repo</th><th>Patch sites</th><th>LOC of mechanical patches</th><th>Per-port time</th><th>Worst-case impact if patch is wrong</th></tr></thead>
+<tbody>
+  <tr><td><code>configd</code></td><td>3 (in 2 files)</td><td>~20</td><td>30-60 min</td><td>Debug log timestamps appear in en_US instead of localized. <code>ENABLE_SC_FORMATTING</code> is already a build-time toggle &mdash; setting it OFF compiles two of the three sites out entirely (zero patches needed for those two).</td></tr>
+  <tr><td><code>bootp</code> (IPConfiguration)</td><td>1 feature (2 files)</td><td>~10 OR skip feature</td><td>30 min</td><td>PvD info expiration parsing for RFC 8801 carrier hints rarely deployed in the wild.</td></tr>
+  <tr><td><code>PowerManagement</code></td><td>3 binaries, 6 files</td><td>~40</td><td>60-90 min</td><td><code>pmset</code> shows ISO-style timestamps instead of locale-formatted in CLI output.</td></tr>
+  <tr><td><code>IOKitUser</code></td><td>1 site, 1 file</td><td>~5</td><td>15 min</td><td>One dict-key formatter; trivial <code>CFStringCreateWithFormat(@"%lld")</code> swap.</td></tr>
+  <tr><td><strong>Total across known consumers</strong></td><td><strong>~10 sites in 11 files</strong></td><td><strong>~75-100 LOC</strong></td><td><strong>~3-4 hours</strong></td><td>All in cosmetic / debug paths. None affect core daemon functionality.</td></tr>
+</tbody>
+</table>
+
+<p><strong>What we save in return:</strong></p>
+
+<ul>
+  <li><strong>~30 MiB smaller ISO</strong> &mdash; no <code>libicuuc.so</code> / <code>libicui18n.so</code> / <code>libicudata.so</code> in <code>/usr/lib</code>. Dominated by the CLDR data tables in libicudata.</li>
+  <li><strong>No transitive pkg dependency</strong> on FreeBSD's <code>devel/icu</code> port. Matches the rest of the project's vendor-everything posture.</li>
+  <li><strong>Cleaner <code>ldd</code> on system daemons</strong> &mdash; no surprise ICU pulled in via libCoreFoundation.</li>
+  <li><strong>Slightly faster build</strong> &mdash; libCoreFoundation skips 9 source files (~30k LOC) and avoids resolving ICU headers / libs at compile / link time.</li>
+</ul>
+
+<p><strong>Per-port economics:</strong> a 30-90 minute mechanical-patch session per daemon, paid once at port time. With 4 known consumers totaling ~3-4 hours of work across the project lifetime, this is a small price for the savings. If a future port surfaces 200+ LOC of CF-ICU we'd treat that as a signal to flip and use Option B (FreeBSD pkg), not a reason to keep cycling through patches.</p>
+
+<h3>13.6 The trapdoor &mdash; flipping back is a four-change commit</h3>
+
+<p>If patch volume gets painful at some point, or a future port surfaces a CF-ICU dependency that's not mechanically replaceable, switching from Option A to Option B is:</p>
+
+<ol>
+  <li>Add <code>icu</code> to <code>pkglist-base.txt</code> (1 line).</li>
+  <li>Restore the 9 dropped <code>.c</code> files to libCoreFoundation's <code>SRCS</code> in <code>src/libCoreFoundation/Makefile</code> (1 Makefile section).</li>
+  <li><code>git revert</code> the daemon CF-ICU patches (one revert commit per affected port that we already patched).</li>
+  <li>Rebuild &mdash; the libCoreFoundation SONAME stays the same; nothing else needs touching.</li>
+</ol>
+
+<p>So Option A is not a one-way door &mdash; it's the "carry small patches while it's cheap to do so, flip if it stops being cheap" trade. The exit ramp stays open.</p>
+
+<h3>13.7 What also gets simpler if we drop ICU: <code>buildpkgs.txt</code></h3>
+
+<p>The chroot's build-only package list (<code>buildpkgs.txt</code>) currently carries three packages that were there to support GNUstep's autotools build path: <code>gmake</code>, <code>autoconf</code>, <code>libtool</code>. With GNUstep out of scope on this ISO and ICU dropped, none of these have a remaining consumer:</p>
+
+<table>
+<thead><tr><th>Pkg</th><th>Originally for</th><th>Used by anything we still build?</th><th>Action</th></tr></thead>
+<tbody>
+  <tr><td><code>cmake</code></td><td>libdispatch's CMakeLists.txt build</td><td>Yes &mdash; libdispatch's chroot build still uses <code>cmake -G Ninja</code></td><td>keep</td></tr>
+  <tr><td><code>ninja</code></td><td>libdispatch's build generator</td><td>Yes &mdash; same</td><td>keep</td></tr>
+  <tr><td><code>gmake</code></td><td>GNUstep autotools, ICU upstream, any autoconf-driven vendored source</td><td>No &mdash; every active build now uses either <code>bsd.lib.mk</code> / <code>bsd.prog.mk</code> (bmake, in base) or <code>cmake -G Ninja</code></td><td><strong>drop</strong></td></tr>
+  <tr><td><code>autoconf</code></td><td>Regenerate <code>configure</code> scripts in autotools-based sources (libs-base, libs-corebase, ICU upstream)</td><td>No &mdash; swift-corelibs-foundation uses CMake; libdispatch uses CMake; nothing autoconf-based remains</td><td><strong>drop</strong></td></tr>
+  <tr><td><code>libtool</code></td><td>GNU libtool for autotools-based shared-library builds</td><td>No &mdash; same reason as autoconf</td><td><strong>drop</strong></td></tr>
+  <tr><td><code>pkgconf</code></td><td>libs-base's ICU discovery via <code>icu-i18n.pc</code> / <code>icu-uc.pc</code></td><td>Yes (different reason) &mdash; CMake's <code>find_package</code> module-mode probes use pkg-config under the hood; safer to keep, minimal cost. Comment can be updated to drop the libs-base reference.</td><td>keep, update comment</td></tr>
+</tbody>
+</table>
+
+<p>So the drop-ICU decision drags along a clean-up of the build-pkg list as a free byproduct &mdash; three package installs the chroot doesn't need anymore.</p>
+
 <h2 id="methodology">14. Audit provenance</h2>
 
 <p>This consolidated report aggregates findings from four parallel audit passes performed 2026-05-15 against the local clones at <code>/Users/jmaloney/Documents/launchd/</code>. Method was identical across all four: ripgrep / awk / find over each repo, manual adjudication of grep hits, build-file scan for link-line evidence, false-positive filtering (notably the jq/decNumber and jq/oniguruma cases in <code>text_cmds</code>).</p>

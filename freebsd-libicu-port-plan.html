@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>libicu port plan &mdash; vendoring Apple ICU into freebsd-launchd-mach</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --bg: #fafaf7;
+    --accent: #b8472a;
+    --accent-soft: #f3e7df;
+    --border: #d8d4c8;
+    --code-bg: #f0ece2;
+    --table-stripe: #f4efe5;
+    --warn: #8a5a00;
+    --good: #2d6f3b;
+    --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif; color: var(--fg); background: var(--bg); line-height: 1.55; margin: 0; padding: 0; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 48px 32px 96px; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--border); letter-spacing: -0.005em; }
+  h3 { font-size: 1.1rem; margin: 28px 0 6px; color: var(--accent); }
+  h4 { font-size: 0.92rem; margin: 18px 0 4px; color: var(--fg-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg); }
+  code { padding: 1px 4px; border-radius: 3px; font-size: 0.83em; }
+  pre { padding: 14px 18px; border-radius: 4px; overflow-x: auto; font-size: 0.84rem; line-height: 1.45; margin: 0 0 18px; }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+  .lede { font-size: 1.02rem; color: var(--fg-muted); margin-bottom: 28px; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 24px; font-size: 0.82rem; }
+  th, td { text-align: left; padding: 7px 10px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; font-size: 0.78rem; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  td code { white-space: nowrap; font-size: 0.85em; }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 18px 0 22px; border-radius: 0 4px 4px 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn { border-left-color: var(--warn); background: #fbf3df; }
+  .callout-good { border-left-color: var(--good); background: #e8f1e3; }
+  .callout-bad  { border-left-color: var(--bad);  background: #f7e3e3; }
+  .pill { display: inline-block; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 10px; margin-right: 6px; }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 16px 22px 12px 32px; margin: 0 0 32px; font-size: 0.92rem; }
+  .toc h2 { margin: 0 0 8px; padding-top: 0; border-top: none; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-left: -14px; }
+  .toc ol { margin: 0 0 0 4px; columns: 2; column-gap: 28px; }
+  .toc li { margin-bottom: 3px; break-inside: avoid; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  .verdict { background: white; border-left: 4px solid var(--accent); padding: 12px 18px; margin: 20px 0; font-size: 1.02rem; }
+  .verdict strong { color: var(--accent); }
+  @media (max-width: 900px) { .wrap { padding: 24px 18px 64px; } table { font-size: 0.7rem; } th { font-size: 0.66rem; } .toc ol { columns: 1; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>libicu port plan</h1>
+<p class="lede">Concrete plan for vendoring Apple's swift-foundation-icu into <code>freebsd-launchd-mach/src/libicu/</code> and shipping it as a system library at <code>/usr/lib/libsystem/</code>. Replaces the guess-based "Option C is a multi-day sub-project" framing in &sect;13 of the <a href="freebsd-libcorefoundation-icu-audit.html">ICU audit</a> with empirical findings from four parallel research agents and one major mid-plan correction (see &sect;0).</p>
+
+<div class="callout callout-warn">
+<p><strong>Why this exists.</strong> The audit at <a href="freebsd-libcorefoundation-icu-audit.html">freebsd-libcorefoundation-icu-audit.html</a> recommended Option A (drop ICU). Mid-execution, CI surfaced three additional CF source files with hard ICU includes the audit missed: <code>CFString.c</code> (4 calls), <code>CFTimeZone.c</code> (25 calls), <code>CFBundle_Locale.c</code> (4 calls including the Apple-only <code>ualoc_localizationsToUse</code>). These files are cross-referenced too heavily to drop. With the "~50&ndash;80 LOC patch" budget broken and a confirmed Apple-only symbol dependency, the decision flipped to Option C. This doc captures the new plan.</p>
+</div>
+
+<h2 id="vendor-pivot">0. Mid-plan vendor-source pivot &mdash; what we learned</h2>
+
+<p>The first vendor commit (<code>0022d49</code>, 2026-05-15) brought in <code>apple-oss-distributions/ICU</code> at tag <code>ICU-76142.2</code>: 137 MB, 6,853 files, license Unicode V3. While drafting the build pipeline, two findings forced a re-evaluation:</p>
+
+<h3>0.1 The <code>_foundation_unicode/</code> namespace doesn't come from Apple's general-purpose ICU</h3>
+
+<p>11 of swift-corelibs-foundation's <code>libCoreFoundation</code> source files include ICU headers via Apple's private namespace prefix:</p>
+
+<pre><code>#include &lt;_foundation_unicode/uloc.h&gt;
+#include &lt;_foundation_unicode/ucal.h&gt;
+...</code></pre>
+
+<p>Searches turned up zero <code>_foundation_unicode</code> string anywhere in the freshly-vendored <code>apple-oss-distributions/ICU</code> tree, on the macOS SDK at <code>/usr/include/</code>, or in the Xcode SDK headers. The string lives only in CF's <code>.c</code> files. Where does it come from?</p>
+
+<p>swift-corelibs-foundation's own <code>CMakeLists.txt</code> answers this:</p>
+
+<pre><code>FetchContent_Declare(SwiftFoundationICU
+    GIT_REPOSITORY https://github.com/apple/swift-foundation-icu.git)</code></pre>
+
+<p><strong><code>apple/swift-foundation-icu</code> is a separate Apple repository.</strong> Its README:</p>
+
+<blockquote><p>This version of the ICU4C project contains customized extensions for use by the Foundation package. It is automatically extracted from Apple OSS Distribution's ICU to add Swift Package Manager support. &hellip; This package is intended to be a dependency for the Foundation package. It is not useful as a general-purpose ICU4C library because all files irrelevant to the SwiftPM build are removed.</p></blockquote>
+
+<p>The repo ships 212 headers natively under <code>icuSources/include/_foundation_unicode/</code>. The header layout swift-corelibs CF expects exists by design here, with no symlink alias needed.</p>
+
+<h3>0.2 macOS ground truth on Apple's ICU install layout</h3>
+
+<p>Apple ships <strong><code>/usr/lib/libicucore.dylib</code></strong> on macOS &mdash; a single unified library, not in <code>/usr/local/</code>. It's invisible to <code>ls /usr/lib/</code> on Big Sur and later because modern macOS hides system libraries inside the dyld shared cache, but <code>dlopen("/usr/lib/libicucore.dylib", RTLD_NOW)</code> succeeds. This confirms two things: (a) ICU is a <em>system</em> library on macOS, not a third-party port; (b) Apple uses the unified <code>libicucore</code> shape, validating our choice in &sect;3 to skip the upstream 3-lib split.</p>
+
+<p>Our install layout differs from Apple's on one axis: we land it at <code>/usr/lib/libsystem/lib_FoundationICU.so</code> rather than <code>/usr/lib/lib_FoundationICU.so</code>. This is per the <a href="freebsd-libxpc-install-layout-spike.html">install-layout spike</a>: the <code>libsystem/</code> subdir is the project's deliberate separation between self-built Apple-source libraries (libdispatch, libxpc, libCoreFoundation, libicu, etc.) and stock FreeBSD base under <code>/usr/lib/</code>. It also keeps <code>/usr/local/lib/</code> free for any future pkg-installed parallel (e.g. <code>devel/icu</code> if the gershwin overlay ever needs a separate ICU for GNUstep), with zero risk of collision.</p>
+
+<h3>0.3 Comparison: which upstream to vendor?</h3>
+
+<table>
+<thead><tr><th>Aspect</th><th><code>apple-oss-distributions/ICU</code></th><th><code>apple/swift-foundation-icu</code></th></tr></thead>
+<tbody>
+  <tr><td>ICU version</td><td>76.142.2</td><td>74.0</td></tr>
+  <tr><td>License</td><td>Unicode V3</td><td>Apache 2.0</td></tr>
+  <tr><td><code>_foundation_unicode/</code> layout</td><td>Absent &mdash; need symlink alias</td><td><strong>Native</strong></td></tr>
+  <tr><td>Trim level</td><td>Full ICU, all features</td><td>Slimmed for SwiftPM</td></tr>
+  <tr><td>Build system</td><td>Autotools (FreeBSD-supported)</td><td>CMake</td></tr>
+  <tr><td>Build flags for FreeBSD</td><td>Set them all explicitly</td><td>Override Darwin-specific defaults</td></tr>
+  <tr><td>Designed for</td><td>General use</td><td>swift-corelibs-foundation specifically</td></tr>
+  <tr><td>Tree size</td><td>137 MB</td><td>262 MB (more pre-built data)</td></tr>
+</tbody>
+</table>
+
+<h3>0.4 Decision: pivot to swift-foundation-icu</h3>
+
+<div class="callout callout-good">
+<p><strong>Replace <code>src/libicu/</code> with <code>apple/swift-foundation-icu</code>.</strong> Reasoning: the <code>_foundation_unicode/</code> layout is native (no symlink papering-over a namespace mismatch); Apache 2.0 is cleaner than Unicode V3 for our license stack; the package is <em>designed</em> for the exact CF surface we're building. The CMake build needs a few Darwin-assumption overrides for FreeBSD but doesn't require any symlinks or post-install renames. ICU 74 vs 76 is a minor version delta &mdash; Apple curates this fork specifically for swift-corelibs-foundation, so the version drift is intentional.</p>
+</div>
+
+<p>The original <code>0022d49</code> vendor commit will be reverted by a follow-up commit in this same session; the swift-foundation-icu vendor lands as a clean replacement.</p>
+
+<p>Sections 1&ndash;12 below were drafted against the original vendor-source choice; portions about the build pipeline, header symlink hack, and 3-lib-vs-unified-lib choice were reasonable for that codebase but no longer apply once we pivot. The build-defines list (&sect;4), CF-side rewire instructions (&sect;9), dropped-CF-files matrix (&sect;10), and ICU-symbol inventory (&sect;8) carry over directly.</p>
+
+<h2 id="what-we-vendored">1. What we (originally) vendored, what we didn't</h2>
+
+<p><em>Records the pre-pivot vendor shape; superseded by &sect;0.4. Kept for context.</em></p>
+
+<p>Vendored: <strong>2026-05-15, commit 0022d49</strong>. Upstream: <code>github.com/apple-oss-distributions/ICU</code> tag <code>ICU-76142.2</code>. License: <strong>Unicode License V3</strong> (permissive, BSD-like). Tree size: 137 MB at <code>src/libicu/</code> (109 MB of that is the CLDR data sources at <code>icu/icu4c/source/data/</code>).</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#vendor-pivot">0. Mid-plan vendor-source pivot</a></li>
+  <li><a href="#what-we-vendored">1. What we (originally) vendored, what we didn't</a></li>
+  <li><a href="#apple-vs-upstream">2. Apple-vs-upstream divergence (apple-oss-distributions)</a></li>
+  <li><a href="#build-strategy">3. Build strategy &mdash; CMake post-pivot</a></li>
+  <li><a href="#defines">4. Required CPP defines</a></li>
+  <li><a href="#configure">5. CMake invocation</a></li>
+  <li><a href="#header-layout">6. Header layout (now native)</a></li>
+  <li><a href="#data">7. Data bundle &mdash; Path FAST vs Path TRIM</a></li>
+  <li><a href="#cf-symbols">8. Which ICU symbols CF actually calls</a></li>
+  <li><a href="#cf-rewire">9. Re-threading libCoreFoundation</a></li>
+  <li><a href="#dropped-files">10. Dropped CF files &mdash; which can come back</a></li>
+  <li><a href="#commit-plan">11. Commit-by-commit plan</a></li>
+  <li><a href="#open-questions">12. Open questions for review</a></li>
+</ol>
+</div>
+
+<h2 id="what-we-vendored">1. What we vendored, what we didn't</h2>
+
+<p>The vendor commit drops 6,853 files into <code>src/libicu/</code>. To keep the working tree tractable, the following upstream subtrees were excluded:</p>
+
+<table>
+<thead><tr><th>Path</th><th>Size</th><th>Reason</th></tr></thead>
+<tbody>
+  <tr><td><code>icu/icu4c/source/test/</code></td><td>~50 MB</td><td>Conformance + unit tests &mdash; we don't run them on the ISO</td></tr>
+  <tr><td><code>icu/icu4c/source/ICU.xcodeproj/</code></td><td>~2.2 MB</td><td>Apple's Xcode project &mdash; we use autotools</td></tr>
+  <tr><td><code>icu/icu4c/source/allinone/</code></td><td>~96 KB</td><td>Xcode all-in-one workspace</td></tr>
+  <tr><td><code>icu/icu4c/source/samples/</code></td><td>~212 KB</td><td>Example programs</td></tr>
+  <tr><td><code>icu/icu4c/source/xc_*</code></td><td>~12 KB</td><td>Xcode test plans / configs</td></tr>
+</tbody>
+</table>
+
+<p>What's kept:</p>
+
+<ul>
+  <li><code>icu/icu4c/source/common/</code> (11 MB) &mdash; libicuuc</li>
+  <li><code>icu/icu4c/source/i18n/</code> (12 MB) &mdash; libicui18n</li>
+  <li><code>icu/icu4c/source/data/</code> (109 MB) &mdash; CLDR source data (compiled into <code>libicudata.so</code> at build time)</li>
+  <li><code>icu/icu4c/source/io/</code> (284 KB) &mdash; libicuio (stdio bindings; small, keep)</li>
+  <li><code>icu/icu4c/source/tools/</code> (3.5 MB) &mdash; genrb, pkgdata, etc. &mdash; needed to build data</li>
+  <li><code>icu/icu4c/source/config/</code> (236 KB) &mdash; platform makefile-helpers (includes <code>mh-bsd-gcc</code>)</li>
+  <li><code>icu/icu4c/source/python/</code> (152 KB) &mdash; <code>icutools.databuilder</code>, needed if we ever do Path TRIM</li>
+  <li><code>icu/icu4c/source/configure</code> + <code>runConfigureICU</code> &mdash; pre-generated, FreeBSD branch present</li>
+  <li><code>apple/</code> &mdash; Apple's overlays (featureFlags, build scripts, integration glue)</li>
+</ul>
+
+<h2 id="apple-vs-upstream">2. Apple-vs-upstream divergence</h2>
+
+<p><strong>The source tree under <code>icu/icu4c/source/</code> is 99% pristine upstream IBM ICU.</strong> Apple's divergence is cleanly separated into:</p>
+
+<ul>
+  <li><strong>Top-level <code>makefile</code></strong> &mdash; Xcode-bound (uses <code>xcrun</code>, <code>SDKPATH</code>, <code>RC_*</code> env vars). <strong>Do not use.</strong> Same goes for <code>apple/makefile.old</code>.</li>
+  <li><strong><code>apple/featureFlags/</code></strong> &mdash; runtime feature switches installed to <code>/System/Library/FeatureFlags/Domain</code>. Irrelevant on FreeBSD; skip.</li>
+  <li><strong>A handful of inline <code>#if APPLE_ICU_CHANGES</code> guards</strong> &mdash; e.g., <code>tools/icuinfo/icuinfo.cpp</code> adds a <code>-p</code> perf option; <code>tools/gencfu/gencfu.cpp</code> guards a rdar:// fix. None affect the library API.</li>
+  <li><strong>Apple-only headers in <code>common/</code></strong> &mdash; most notably <code>ualoc.h</code>, which defines <code>ualoc_localizationsToUse()</code>. <code>CFBundle_Locale.c</code> in our libCoreFoundation calls this symbol unconditionally; <strong>this is the load-bearing reason we vendor Apple's ICU instead of using FreeBSD's <code>devel/icu</code> port</strong>.</li>
+</ul>
+
+<h2 id="build-strategy">3. Build strategy &mdash; CMake (post-pivot)</h2>
+
+<p>swift-foundation-icu ships a <code>CMakeLists.txt</code> at <code>icuSources/CMakeLists.txt</code> requiring <code>cmake_minimum_required(VERSION 3.24)</code>. Build via:</p>
+
+<pre><code>cmake -G Ninja /tmp/libicu/icuSources \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_LIBDIR=lib/libsystem \
+    -DCMAKE_BUILD_TYPE=Release
+ninja
+ninja install</code></pre>
+
+<p>This matches the existing libdispatch build pattern in <code>build.sh</code> exactly &mdash; same <code>cmake -G Ninja</code> invocation shape, same <code>CMAKE_INSTALL_LIBDIR</code> override to land libs at <code>/usr/lib/libsystem/</code>.</p>
+
+<p><strong>Lib output: unified <code>libicucore</code>-style.</strong> The CMakeLists sets <code>U_COMBINED_IMPLEMENTATION</code>, <code>U_COMMON_IMPLEMENTATION</code>, <code>U_I18N_IMPLEMENTATION</code>, <code>U_IO_IMPLEMENTATION</code>, and <code>U_TOOLUTIL_IMPLEMENTATION</code>; the produced library matches Apple's macOS <code>libicucore.dylib</code> shape. CF's link line becomes <code>-l_FoundationICU</code> (or whatever target name we settle on) instead of <code>-licuuc -licui18n</code>. This is the same shape Apple ships on macOS &mdash; one library file at <code>/usr/lib/libsystem/</code>.</p>
+
+<p>Toolchain (all already in <code>buildpkgs.txt</code>):</p>
+
+<ul>
+  <li><code>clang</code> / <code>clang++</code> &mdash; FreeBSD base</li>
+  <li><code>cmake</code> &mdash; already present</li>
+  <li><code>ninja</code> &mdash; already present</li>
+  <li><code>pkgconf</code> &mdash; already present</li>
+</ul>
+
+<p>The <code>gmake</code> restore that was needed for the autotools path is no longer required &mdash; this is a pure win.</p>
+
+<h2 id="defines">4. Required CPP defines</h2>
+
+<p>swift-foundation-icu's <code>CMakeLists.txt</code> already sets most of these. The post-pivot work is mostly <em>overriding</em> a few Darwin assumptions:</p>
+
+<table>
+<thead><tr><th>Define</th><th>Upstream default</th><th>Action for FreeBSD</th></tr></thead>
+<tbody>
+  <tr><td><code>U_DISABLE_RENAMING</code></td><td><code>1</code> on Darwin only</td><td><strong>Force to 1 on FreeBSD</strong> &mdash; CF references un-renamed symbols (<code>ucol_open</code>, not <code>icu_74_ucol_open</code>); without this CF won't link. Patch the CMake conditional or set <code>-DU_DISABLE_RENAMING=1</code> in <code>CMAKE_C_FLAGS</code>.</td></tr>
+  <tr><td><code>U_COMBINED_IMPLEMENTATION</code></td><td>Set</td><td>Keep &mdash; produces unified library matching Apple's <code>libicucore</code> shape.</td></tr>
+  <tr><td><code>U_COMMON_IMPLEMENTATION</code></td><td>Set</td><td>Keep.</td></tr>
+  <tr><td><code>U_SHOW_CPLUSPLUS_API=1</code></td><td>Set</td><td>Keep.</td></tr>
+  <tr><td><code>U_SHOW_INTERNAL_API=1</code></td><td>Set</td><td>Keep.</td></tr>
+  <tr><td><code>U_HAVE_XLOCALE_H=1</code></td><td>Set</td><td><strong>Verify</strong> &mdash; FreeBSD does ship <code>&lt;xlocale.h&gt;</code> (in libc) but the API differs slightly from macOS. May need to patch the value or add a compat shim depending on which xlocale calls CF exercises.</td></tr>
+  <tr><td><code>MAC_OS_X_VERSION_MIN_REQUIRED=101500</code></td><td>Set</td><td><strong>Drop on FreeBSD</strong> &mdash; this gates Apple-version-specific code paths in ICU sources; meaningless on FreeBSD and may pull in macOS-only API references.</td></tr>
+  <tr><td><code>U_HAVE_STRTOD_L=1</code></td><td>Set</td><td>Keep &mdash; FreeBSD libc provides <code>strtod_l</code>.</td></tr>
+  <tr><td><code>U_TIMEZONE_PACKAGE</code>=<code>"icutz44l"</code></td><td>Set</td><td>Verify timezone package ships in vendored data; otherwise drop.</td></tr>
+</tbody>
+</table>
+
+<p>One additional CF-side define is needed (in <code>libCoreFoundation/Makefile</code>, not ICU's): <code>__HAS_APPLE_ICU__=1</code>. This enables CF's Apple-ICU-only code paths (e.g. <code>ualoc_localizationsToUse</code> in <code>CFBundle_Locale.c</code>). Three currently-dropped CF files (<code>CFLocale.c</code>, <code>CFCalendar.c</code>, <code>CFDateFormatter.c</code>) also have <code>__HAS_APPLE_ICU__</code> guards around Apple-private ICU extensions; setting it to 1 lets them rejoin SRCS.</p>
+
+<h2 id="configure">5. CMake invocation</h2>
+
+<p>The exact in-chroot reproducer (lands in <code>build.sh</code>'s libicu step):</p>
+
+<pre><code>mkdir -p /tmp/libicu-build &amp;&amp; cd /tmp/libicu-build &amp;&amp; \
+cmake -G Ninja /tmp/libicu/icuSources \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_LIBDIR=lib/libsystem \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DCMAKE_C_FLAGS="-DU_DISABLE_RENAMING=1" \
+    -DCMAKE_CXX_FLAGS="-DU_DISABLE_RENAMING=1" &amp;&amp; \
+ninja &amp;&amp; \
+ninja install</code></pre>
+
+<p>Key shape:</p>
+
+<ul>
+  <li><code>CMAKE_INSTALL_PREFIX=/usr</code> + <code>CMAKE_INSTALL_LIBDIR=lib/libsystem</code> &mdash; matches the install-layout spike. Library lands at <code>/usr/lib/libsystem/lib_FoundationICU.so</code> (or whatever the upstream CMake target produces; will confirm post-build).</li>
+  <li><code>-DU_DISABLE_RENAMING=1</code> via CMake C/CXX flags overrides the Darwin-only conditional in the upstream CMakeLists.</li>
+  <li><strong>No <code>--disable-tests</code>-equivalent needed</strong> &mdash; swift-foundation-icu has no test/samples/layoutex subdirs; it's already trimmed.</li>
+</ul>
+
+<p>Anticipate one or two CMakeLists patches for the Darwin-specific assumptions called out in &sect;4 (the <code>MAC_OS_X_VERSION_MIN_REQUIRED</code> compile def and the xlocale handling). These patches land in the libicu vendor tree as project-side modifications, recorded in <code>src/libicu/README.md</code>.</p>
+
+<h2 id="header-layout">6. Header layout (now native)</h2>
+
+<p>11 CF source files include ICU headers via Apple's private namespace prefix:</p>
+
+<pre><code>#include &lt;_foundation_unicode/uloc.h&gt;
+#include &lt;_foundation_unicode/ucal.h&gt;
+#include &lt;_foundation_unicode/uchar.h&gt;
+...</code></pre>
+
+<p><strong>swift-foundation-icu ships these headers natively at <code>icuSources/include/_foundation_unicode/</code>.</strong> 212 headers in that directory. The CMakeLists installs them to <code>${CMAKE_INSTALL_INCLUDEDIR}/_foundation_unicode/</code>, which with our <code>--prefix=/usr</code> lands at <code>/usr/include/_foundation_unicode/</code>. No symlink alias, no install-time rename, no post-install fixup &mdash; the layout CF expects is the layout the package produces.</p>
+
+<p>This is the single biggest payoff from the &sect;0 vendor-source pivot: the namespace-mismatch problem that drove a symlink workaround in the original draft simply doesn't exist with this upstream.</p>
+
+<h2 id="data">7. Data bundle &mdash; what we ship + the repo bloat tradeoff</h2>
+
+<p>swift-foundation-icu pre-builds ICU's CLDR data into 4 hex-encoded source-file chunks at <code>icuSources/common/icu_packaged_main_data.{0,1,2,3}.inc.h</code> (~50 MB each, 200 MB total). One <code>icu_packaged_data.cpp</code> <code>#include</code>s all four; the compiler emits the hex literals into the .o, the linker bakes them into the data section of <code>libicucore.so</code>.</p>
+
+<table>
+<thead><tr><th>Layer</th><th>Size</th><th>Notes</th></tr></thead>
+<tbody>
+  <tr><td>Repo (vendored hex source)</td><td>~224 MB raw / ~60&ndash;100 MB git-packed</td><td>Build-time only; never ships on the ISO</td></tr>
+  <tr><td>Build-tree intermediate (.o files)</td><td>~40 MB raw bytes</td><td>Hex decodes ~5:1 to binary</td></tr>
+  <tr><td><strong>Installed <code>libicucore.so</code></strong></td><td><strong>~40&ndash;50 MB total</strong></td><td>Per-byte data + ~3&ndash;5 MB of compiled C/C++; lands at <code>/usr/lib/libsystem/</code></td></tr>
+  <tr><td>Headers</td><td>~5.5 MB</td><td>Lands at <code>/usr/include/_foundation_unicode/</code> &mdash; build-tools only, runtime cost zero</td></tr>
+</tbody>
+</table>
+
+<p>For comparison: macOS ships <code>/usr/lib/libicucore.dylib</code> at roughly the same size &mdash; Apple's slimming applied to the swift-foundation-icu chunks gets us to the same place.</p>
+
+<h3>7.1 Decision: vendor the hex chunks</h3>
+
+<div class="callout callout-good">
+<p>Honor the project's vendor-everything pattern. The 4 chunks are how Apple ships swift-foundation-icu &mdash; treating them as fetch-at-build-time would set a precedent that some vendored deps are fetchable, weakening the rule. Trade: ~60&ndash;100 MB permanent repo growth (after git-pack), 4 GitHub 50-MB push warnings (under the 100-MB hard limit, accepted), slower fresh clones forever. Reproducible offline builds remain possible. Bit-for-bit reproducible from git SHA alone. No GitHub LFS infrastructure or distfile cache to maintain.</p>
+</div>
+
+<p>Safety net: if the push fails or we change our minds, <code>git filter-repo</code> can strip the 4 chunks from history in a single one-shot rewrite. Same operation could simultaneously strip the abandoned <code>0022d49</code> apple-oss-distributions vendor commit if we want a clean cut.</p>
+
+<h3>7.2 Locale trim &mdash; deferred</h3>
+
+<p>swift-foundation-icu ships its data bundle pre-built &mdash; we don't drive the data builder ourselves. Trimming locales would mean either (a) regenerating the chunks ourselves from upstream IBM ICU's <code>data/</code> tree using <code>icutools.databuilder</code> + a locale-filter JSON, or (b) accepting whatever locale set Apple ships and letting unused locales dead-code-strip naturally (they won't &mdash; ICU loads them from the data section by name lookup). Path (a) is a real engineering project; defer until measurement says it matters.</p>
+
+<h2 id="cf-symbols">8. Which ICU symbols CF actually calls</h2>
+
+<p>From the 4 in-SRCS CF files that touch ICU (per the integration-shape agent audit, 2026-05-15):</p>
+
+<table>
+<thead><tr><th>CF file</th><th>ICU symbol</th><th>Sublibrary</th><th>Apple-only?</th></tr></thead>
+<tbody>
+  <tr><td><code>CFString.c</code></td><td><code>u_hasBinaryProperty</code></td><td>libicuuc</td><td>No</td></tr>
+  <tr><td><code>CFString.c</code></td><td><code>u_getIntPropertyValue</code></td><td>libicuuc</td><td>No</td></tr>
+  <tr><td><code>CFTimeZone.c</code></td><td><code>u_strlen</code></td><td>libicuuc</td><td>No</td></tr>
+  <tr><td><code>CFTimeZone.c</code></td><td><code>ucal_close</code> + 8 more <code>ucal_*</code></td><td>libicui18n</td><td>No</td></tr>
+  <tr><td><code>CFBundle_Locale.c</code></td><td><code>ualoc_localizationsToUse</code></td><td>libicuuc</td><td><strong>Yes</strong></td></tr>
+  <tr><td><code>CFStringUtilities.c</code></td><td>8 &times; <code>ucol_*</code></td><td>libicui18n</td><td>No</td></tr>
+</tbody>
+</table>
+
+<p>The Apple-only <code>ualoc_localizationsToUse</code> is the symbol that disqualified FreeBSD's <code>devel/icu</code> port and forced the vendor-Apple-ICU decision.</p>
+
+<h2 id="cf-rewire">9. Re-threading libCoreFoundation</h2>
+
+<p>Once libicu is built and installed, the changes to <code>src/libCoreFoundation/Makefile</code>:</p>
+
+<pre><code># Add to CFLAGS (the CF-side, after the existing CFLAGS+= lines):
+CFLAGS+=    -D__HAS_APPLE_ICU__=1
+
+# Add to LDADD (after the existing -ldispatch -lBlocksRuntime -lpthread).
+# swift-foundation-icu produces a single unified library; the exact
+# CMake target name (libicucore.so / lib_FoundationICU.so / etc.)
+# will be confirmed at build time and pinned here:
+LDADD+=     -l_FoundationICU         # placeholder; confirm post-build</code></pre>
+
+<p>The single-library link line is simpler than the split-lib <code>-licuuc -licui18n -licudata</code> we'd have needed under the apple-oss-distributions/ICU plan, and matches Apple's macOS shape (one <code>libicucore.dylib</code>).</p>
+
+<p>SRCS additions land in &sect;10.</p>
+
+<h2 id="dropped-files">10. Dropped CF files &mdash; which can come back</h2>
+
+<p>The libCoreFoundation Makefile currently drops 16 CF .c files (the Option A drop list). With ICU wired in, these split three ways:</p>
+
+<h3>10.1 Safe to re-add immediately</h3>
+
+<p>Use only standard ICU symbols (no Apple-only APIs). Add to SRCS once ICU is linked:</p>
+
+<ul>
+  <li><code>CFLocaleIdentifier.c</code> &mdash; <code>uloc_*</code> only</li>
+  <li><code>CFCharacterSet.c</code> &mdash; <code>uchar_*</code>, <code>uset_*</code> only</li>
+  <li><code>CFICUConverters.c</code> &mdash; <code>ucnv_*</code>, <code>uversion_*</code> only</li>
+  <li><code>CFRegularExpression.c</code> &mdash; <code>uregex_*</code> only</li>
+  <li><code>CFStringTransform.c</code> &mdash; <code>utrans_*</code> only</li>
+  <li><code>CFDateIntervalFormatter.c</code> &mdash; <code>udateintervalformat_*</code> only</li>
+  <li><code>CFStringEncodingDatabase.c</code> &mdash; encoding tables, no Apple-only APIs</li>
+</ul>
+
+<h3>10.2 Safe to re-add with <code>__HAS_APPLE_ICU__=1</code></h3>
+
+<p>Have Apple-private code paths gated by <code>__HAS_APPLE_ICU__</code>; with the flag set + Apple's ICU linked, the Apple paths activate:</p>
+
+<ul>
+  <li><code>CFLocale.c</code> &mdash; uses <code>ualoc_*</code> alongside standard <code>uloc_*</code>, <code>ucal_*</code></li>
+  <li><code>CFCalendar.c</code> &mdash; <code>__HAS_APPLE_ICU__</code> guards around <code>udat_patternCharToDateFormatField</code></li>
+  <li><code>CFDateFormatter.c</code> &mdash; <code>__HAS_APPLE_ICU__</code> guards around <code>UADATPG_FORCE_*_HOUR_CYCLE</code> and <code>useTemplatePatternGenerator</code></li>
+  <li><code>CFNumberFormatter.c</code> &mdash; <code>unum_*</code>, may have Apple guards</li>
+  <li><code>CFListFormatter.c</code> &mdash; <code>ulistfmt_*</code></li>
+  <li><code>CFRelativeDateTimeFormatter.c</code> &mdash; <code>ureldatefmt_*</code></li>
+  <li><code>CFApplicationPreferences.c</code> &mdash; preferences with locale awareness</li>
+</ul>
+
+<h3>10.3 Verify first</h3>
+
+<p>Need a per-file check before re-adding:</p>
+
+<ul>
+  <li><code>CFNumber_DateFormatter.c</code> &mdash; relationship to CFDateFormatter unclear from agent grep</li>
+  <li><code>CFCalendar_Enumerate.c</code> &mdash; Calendar enumeration helper</li>
+</ul>
+
+<p>Net: the SRCS list grows from 68 back up toward 84 (full upstream). The dropped <code>BlockRuntime/</code> stays dropped (libdispatch provides it).</p>
+
+<h2 id="commit-plan">11. Commit-by-commit plan</h2>
+
+<p>Tasks already created in the in-session task list. Numbering is the task ID. Post-pivot, the plan is shorter than the original autotools-based draft because CMake matches our existing libdispatch build pattern exactly.</p>
+
+<table>
+<thead><tr><th>Task</th><th>Commit</th><th>Files touched</th><th>CI marker added</th></tr></thead>
+<tbody>
+  <tr><td>27 (superseded)</td><td>libicu: vendor Apple ICU into src/libicu/ (apple-oss-distributions)</td><td>6,853 vendored files + README</td><td>none</td></tr>
+  <tr><td>33</td><td>libicu: replace src/libicu with apple/swift-foundation-icu</td><td>vendor swap + README rewrite</td><td>none</td></tr>
+  <tr><td>28</td><td>build.sh: cmake/ninja libicu in chroot, install to /usr/lib/libsystem/</td><td><code>build.sh</code></td><td>none</td></tr>
+  <tr><td>28</td><td>libicu: any FreeBSD-specific CMakeLists patches (xlocale, MAC_OS_X_VERSION_MIN_REQUIRED) discovered in CI</td><td><code>src/libicu/icuSources/CMakeLists.txt</code></td><td>none</td></tr>
+  <tr><td>31</td><td>tests: test_libicu.c (u_init + u_getVersion + ucal_open) and ICU-OK marker</td><td><code>src/libicu-tests/</code>, <code>overlays/usr/tests/.../run.sh</code>, <code>tests/boot-test.sh</code></td><td><strong>ICU-OK</strong></td></tr>
+  <tr><td>29</td><td>libCoreFoundation: -l_FoundationICU, -D__HAS_APPLE_ICU__=1, restore 7 SRCS files (the safe-now set)</td><td><code>src/libCoreFoundation/Makefile</code></td><td>none</td></tr>
+  <tr><td>29</td><td>libCoreFoundation: restore 7 __HAS_APPLE_ICU__-gated SRCS files</td><td><code>src/libCoreFoundation/Makefile</code></td><td>none</td></tr>
+  <tr><td>20</td><td>build.sh: rebuild libCoreFoundation against ICU + test_corefoundation</td><td><code>build.sh</code>, smoke harness</td><td><strong>COREFOUNDATION-OK</strong></td></tr>
+  <tr><td>30</td><td>docs: rewrite freebsd-libcorefoundation-icu-audit.html &sect;14 with the Option-A miss + Option-C pivot record</td><td>pkgdemon.github.io</td><td>none</td></tr>
+</tbody>
+</table>
+
+<p>Each commit gets its own CI iteration. Expect 2&ndash;4 fixup commits in task 28 for FreeBSD-specific CMake assumption overrides; the swift-foundation-icu CMakeLists is small and well-structured, so the FreeBSD port surface is contained.</p>
+
+<h2 id="open-questions">12. Open questions for review</h2>
+
+<p>None blocking. The two questions in earlier drafts have been resolved:</p>
+
+<ol>
+  <li><strong>libicuio:</strong> moot post-pivot. swift-foundation-icu's CMakeLists builds <code>common/</code> + <code>i18n/</code> + <code>io/</code> as one unified library; no per-subdir disable knob exists like autotools' <code>--disable-io</code>. The 216 KB <code>io/</code> subtree goes in for free as part of <code>libicucore</code>.</li>
+  <li><strong>devel/icu shadowing:</strong> not a real concern. pkgbase ships no ICU, nothing in <code>buildpkgs.txt</code> (cmake / ninja / pkgconf) pulls it in transitively, devel/icu would install to <code>/usr/local/{lib,include}/</code>, and our CF <code>CFLAGS</code> never reach into <code>/usr/local/</code>. Different prefixes, no collision possible.</li>
+</ol>
+
+<div class="callout callout-good">
+<p><strong>Net effect:</strong> ~30 MB added to the ISO (libicuuc + libicui18n + libicudata under <code>/usr/lib/libsystem/</code>), all 16 dropped CF files come back, CF surface is at parity with macOS for the launchctl needs. The original "no <code>/usr/local</code> ever" rule holds &mdash; libicu lives at <code>/usr/lib/libsystem/</code>, headers under <code>/usr/include/unicode/</code> with <code>/usr/include/_foundation_unicode</code> as a symlink alias. Apple-only <code>ualoc_*</code> works because we're shipping Apple's ICU.</p>
+</div>
+
+<div class="footnote">
+<p>Plan derived from four parallel research agents run against the freshly-vendored <code>src/libicu/</code> tree on 2026-05-15: (1) Apple-vs-upstream divergence audit, (2) FreeBSD autotools build-path audit, (3) CF&harr;ICU integration-shape audit, (4) ICU data-size and ship-plan audit. Synthesized into this single source of truth for execution; supersedes &sect;13 of the <a href="freebsd-libcorefoundation-icu-audit.html">ICU audit</a> which estimated Option C as a "multi-day sub-project" without the empirical grounding this doc provides.</p>
+</div>
+
+</div>
+</body>
+</html>

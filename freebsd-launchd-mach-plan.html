@@ -215,9 +215,24 @@
 <div class="wrap">
 
 <h1><code>freebsd-launchd-mach</code> &mdash; a pure-port track that forks ravynOS's Mach + launchd stack</h1>
-<p class="lede">A revised plan, after surveying NextBSD and ravynOS as prior art. <strong>The primary goal is dragging FreeBSD into the 21st century &mdash; better init, better IPC, better service management, better network configuration, better logging, better notification.</strong> Apple-source porting is the chosen technique, not the destination. GNUstep stays for the application / framework layer (Foundation NSXxx, AppKit, libobjc2) and lives in the gershwin desktop overlay &mdash; <strong>not on this ISO</strong>. Apple source covers the lower system-services layer (Mach, launchd, configd, notifyd, asl, libdispatch, libxpc, plus pure-C CoreFoundation via swift-corelibs-foundation &mdash; see the <a href="freebsd-launchctl-corefoundation-spike.html">launchctl-corefoundation-spike</a> for the CF choice). The entire userland remains FreeBSD ELF.</p>
+<p class="lede">A revised plan, after surveying NextBSD and ravynOS as prior art. <strong>The primary goal is dragging FreeBSD into the 21st century &mdash; better init, better IPC, better service management, better network configuration, better logging, better notification.</strong> Apple-source porting is the chosen technique, not the destination. GNUstep stays for the application / framework layer (Foundation NSXxx, AppKit, libobjc2) and lives in the gershwin desktop overlay &mdash; <strong>not on this ISO</strong>. Apple source covers the lower system-services layer (Mach, launchd, configd, notifyd, asl, libdispatch, libxpc, plus pure-C CoreFoundation via swift-corelibs-foundation &mdash; see the <a href="freebsd-launchctl-corefoundation-spike.html">launchctl-corefoundation-spike</a> for the CF choice and the <a href="freebsd-libcorefoundation-icu-audit.html">libcorefoundation-icu-audit</a> for the no-ICU-on-ISO follow-on decision). The entire userland remains FreeBSD ELF.</p>
 <p class="lede">The earlier <a href="freebsd-mach-kmod-plan.html">freebsd-mach-kmod-plan</a> proposed building a minimal <code>mach.ko</code> from scratch. This plan supersedes that one with a much shorter path: <strong>the legacy FreeBSD-based ravynOS tree contains a working, modular, OSF/CMU-licensed Mach implementation derived from NextBSD, packaged via <code>bsd.kmod.mk</code>, with launchd, libxpc, libdispatch, and a Mach-native bootstrap server already wired in</strong>. We snapshot it &mdash; ravynOS itself has pivoted away from FreeBSD to port XNU directly, so we are inheritors, not collaborators &mdash; and out-of-tree-ify it as a new repo, <code>freebsd-launchd-mach</code>, reusing the existing <code>freebsd-launchd</code> CI / ISO / release scaffolding.</p>
-<p class="meta">Companion to <a href="freebsd-launchd-service-ordering.html">freebsd-launchd-service-ordering.html</a> and <a href="freebsd-mach-kmod-plan.html">freebsd-mach-kmod-plan.html</a>. Written 2026-05-10 after concrete inspection of the NextBSD and ravynOS source trees.</p>
+<p class="meta">Companion to <a href="freebsd-launchd-service-ordering.html">freebsd-launchd-service-ordering.html</a>, and direct successor to the predecessor investigation <a href="freebsd-mach-kmod-plan.html">freebsd-mach-kmod-plan</a> &mdash; the v1 feasibility study that led to this plan (superseded once direct inspection of NextBSD and ravynOS revealed a working module already exists, retained for the API-surface analysis: the configd Mach-surface inventory in its &sect;8 and the stable-KPI / KBI diet in its &sect;5). Written 2026-05-10 after concrete inspection of the NextBSD and ravynOS source trees. <a href="freebsd-launchd-plan.html">freebsd-launchd-plan</a> is the separate AF_UNIX (non-mach) track preserved alongside &mdash; not part of this mach-porting tree.</p>
+
+<div class="card">
+  <p class="meta" style="margin:0 0 6px 0;"><strong>Sub-plans and spikes that elaborate parts of this plan</strong></p>
+  <ul style="margin:0;">
+    <li><a href="freebsd-launchd-842-porting-plan.html">freebsd-launchd-842-porting-plan</a> &mdash; the concrete userspace porting plan for Apple's launchd-842 (Phase&nbsp;D in this plan).</li>
+    <li><a href="freebsd-libxpc-plan.html">freebsd-libxpc-plan</a> &mdash; porting the iXsystems/ravynOS libxpc onto <code>mach.ko</code>, with launchd / configd / IPConfiguration call-site audits.</li>
+    <li><a href="freebsd-libxpc-foundation-spike.html">freebsd-libxpc-foundation-spike</a> &mdash; CF + Foundation implementation comparison and per-port audit feeding the libxpc plan.</li>
+    <li><a href="freebsd-libxpc-libdispatch-mach-spike.html">freebsd-libxpc-libdispatch-mach-spike</a> &mdash; justifies the libdispatch Mach patch (the libdispatch choice in &sect;9 / Phase&nbsp;C).</li>
+    <li><a href="freebsd-libxpc-install-layout-spike.html">freebsd-libxpc-install-layout-spike</a> &mdash; per-component install paths across four candidate layouts.</li>
+    <li><a href="freebsd-launchctl-corefoundation-spike.html">freebsd-launchctl-corefoundation-spike</a> &mdash; picks swift-corelibs-foundation as the CF source (referenced in the lede).</li>
+    <li><a href="freebsd-libcorefoundation-icu-audit.html">freebsd-libcorefoundation-icu-audit</a> &mdash; 22-component audit that reverses the CF spike's "install ICU" call to "no ICU on the ISO."</li>
+    <li><a href="freebsd-mach-kmod-syscall-slots-spike.html">freebsd-mach-kmod-syscall-slots-spike</a> &mdash; 10-slot <code>lkmnosys</code> cap audit for the kmod's syscall surface (Phase&nbsp;C concern).</li>
+    <li><a href="freebsd-apple-userland-cmds-plan.html">freebsd-apple-userland-cmds-plan</a> &mdash; bootstrap_cmds + network_cmds port plan (the Apple userland utilities that go on top).</li>
+  </ul>
+</div>
 
 <div class="toc">
 <h2>Contents</h2>
@@ -640,7 +655,9 @@ Mach syscalls are not yet wired into the sysent table &mdash; that's
 a Phase C concern (the compat shim sets all <code>SYS_&lt;name&gt;</code>
 to <code>NO_SYSCALL</code> for compile-time stub generation, which
 doubles as the helper-register loop sentinel and prevents actual
-registration).</p>
+registration). The <a href="freebsd-mach-kmod-syscall-slots-spike.html">mach-kmod-syscall-slots
+spike</a> audits the 10-slot <code>lkmnosys</code> cap and lays out how
+the Mach syscall surface fits within it.</p>
 <p>Full empirical writeup &mdash; the 9 shim categories, the bisect
 matrix, and what remains for Phase C &mdash; lives in the repo at
 <code>src/mach_kmod/PHASE_B_FINDINGS.md</code>.</p>
@@ -706,7 +723,7 @@ is the part neither ravynOS nor NextBSD attempted.</p>
   <li>Is <code>mach.ko</code> stable, leak-free, fast enough?</li>
   <li>Did it kldload cleanly against stock FreeBSD-CURRENT, or did we have to patch the kernel?</li>
   <li>What does the round-trip latency look like? (Configd's load profile is modest, but this number sets the budget for everything above it.)</li>
-  <li><strong>libxpc:</strong> Apple never open-sourced it. The iXsystems implementation in ravynOS's <code>lib/libxpc/</code> is the only realistic source. Do we adopt it, write our own, or skip XPC entirely? This decision blocks Phase C and needs an explicit discussion.</li>
+  <li><strong>libxpc:</strong> Apple never open-sourced it. The iXsystems implementation in ravynOS's <code>lib/libxpc/</code> is the only realistic source. Do we adopt it, write our own, or skip XPC entirely? This decision blocks Phase C and needs an explicit discussion. The <a href="freebsd-libxpc-plan.html">freebsd-libxpc plan</a> works out the adopt-and-port path in detail, with sub-spikes on <a href="freebsd-libxpc-foundation-spike.html">CF + Foundation implementation choice</a>, <a href="freebsd-libxpc-libdispatch-mach-spike.html">the libdispatch Mach patch</a>, and <a href="freebsd-libxpc-install-layout-spike.html">install layout</a>.</li>
   <li>Plist format (Apple XML vs. ravynOS's JSON) decision before launchd lands.</li>
   <li>libdispatch choice (gershwin's existing libdispatch + Mach patches vs. ravynOS's Mach-aware libdispatch). Also blocks Phase C.</li>
   <li>Is the timeline for D+E+F realistic given what we've learned? Should the scope shrink, or is everything tracking?</li>
@@ -724,7 +741,7 @@ is the part neither ravynOS nor NextBSD attempted.</p>
 
 <h3>Phase D &mdash; Apple's launchd, fresh from opensource.apple.com (post-checkpoint, ~2 weeks if committed)</h3>
 <ul>
-  <li>Drop Apple's actual launchd source into <code>launchd/</code>. Apache 2.0. Includes <code>liblaunch</code>, <code>libbootstrap</code>, <code>libvproc</code>.</li>
+  <li>Drop Apple's actual launchd source into <code>launchd/</code>. Apache 2.0. Includes <code>liblaunch</code>, <code>libbootstrap</code>, <code>libvproc</code>. The <a href="freebsd-launchd-842-porting-plan.html">freebsd-launchd-842-porting-plan</a> works out the concrete porting steps against the launchd-842 drop.</li>
   <li>Build against the userland Mach stack from Phase C.</li>
   <li>Switch the ISO's <code>init=</code> to <code>/sbin/launchd</code>. launchd is now PID 1; bootstrap server is live; <code>MachServices</code> activation works; entire plist key vocabulary available (<code>Sockets</code>, <code>WatchPaths</code>, <code>KeepAlive</code> predicates, <code>LaunchEvents</code>) for free because that's Apple's actual implementation.</li>
   <li>Translate the existing <code>freebsd-launchd</code> bedrock plists to Apple XML format.</li>
@@ -885,7 +902,7 @@ is the part neither ravynOS nor NextBSD attempted.</p>
 <tr>
   <td>CoreFoundation (pure-C CF API: CFString/Array/Dictionary/PropertyList/&hellip;)</td>
   <td><strong>swift-corelibs-foundation</strong> (Apache 2.0), built with <code>DEPLOYMENT_RUNTIME_SWIFT=0</code></td>
-  <td>Required by every Apple-source system service (<code>launchctl</code>, <code>configd</code>, <code>IPConfiguration</code>, <code>mDNSResponder</code>, <code>asl</code>, <code>DiskArbitration</code>). They're pure C with CF by Apple's design &mdash; GNUstep <code>libgnustep-corebase</code>'s plist parser is stubbed and would block launchctl. swift-corelibs CF ships real Apple plist + the SPI surface launchd-842 was written against. Installed at <code>/usr/lib/libsystem/libCoreFoundation.so.6</code>. Full reasoning in <a href="freebsd-launchctl-corefoundation-spike.html">launchctl-corefoundation-spike</a>.</td>
+  <td>Required by every Apple-source system service (<code>launchctl</code>, <code>configd</code>, <code>IPConfiguration</code>, <code>mDNSResponder</code>, <code>asl</code>, <code>DiskArbitration</code>). They're pure C with CF by Apple's design &mdash; GNUstep <code>libgnustep-corebase</code>'s plist parser is stubbed and would block launchctl. swift-corelibs CF ships real Apple plist + the SPI surface launchd-842 was written against. Installed at <code>/usr/lib/libsystem/libCoreFoundation.so.6</code>. Full reasoning in <a href="freebsd-launchctl-corefoundation-spike.html">launchctl-corefoundation-spike</a>; the follow-on <a href="freebsd-libcorefoundation-icu-audit.html">libcorefoundation-icu-audit</a> covers why ICU does not ship on the ISO.</td>
 </tr>
 <tr>
   <td>Async runtime (libdispatch / GCD)</td>
@@ -1071,7 +1088,7 @@ is the part neither ravynOS nor NextBSD attempted.</p>
 
 <p>Committed scope right now is <strong>Phase A and Phase B only &mdash; 4 weeks</strong>: get a vanilla FreeBSD ISO booting with stock <code>init</code> from the new repo, then port ravynOS's <code>mach.ko</code> so it kldloads at boot and a userland round-trip works. Hard stop after Phase B. The rest of the v2 plan (libxpc choice, libdispatch choice, Apple's launchd as PID 1, configd, IPConfiguration) is post-checkpoint scope &mdash; sketched in Section 9 but explicitly contingent on what Phase B reveals and on a separate discussion before each commitment. Long-term home: either a unique FreeBSD distro or absorption into <a href="https://github.com/pkgdemon/gershwin-on-freebsd">gershwin-on-freebsd</a>, owned and maintained by Joe.</p>
 
-<p class="footnote">Research basis: direct inspection of <code>/Users/jmaloney/Documents/launchd/{nextbsd,ravynos,freebsd-launchd,freebsd-src}</code> on 2026-05-10. Companion to <a href="freebsd-launchd-service-ordering.html">freebsd-launchd-service-ordering.html</a>, <a href="freebsd-mach-kmod-plan.html">freebsd-mach-kmod-plan.html</a> (the earlier "build minimal" framing), and <a href="freebsd-launchd-plan.html">freebsd-launchd-plan.html</a> (the AF_UNIX track).</p>
+<p class="footnote">Research basis: direct inspection of <code>/Users/jmaloney/Documents/launchd/{nextbsd,ravynos,freebsd-launchd,freebsd-src}</code> on 2026-05-10. Companion to <a href="freebsd-launchd-service-ordering.html">freebsd-launchd-service-ordering.html</a>. Direct successor to the predecessor investigation <a href="freebsd-mach-kmod-plan.html">freebsd-mach-kmod-plan</a> (the earlier "build minimal mach.ko from scratch" framing &mdash; the v1 that led to this plan and is retained for its API-surface analysis). The separate AF_UNIX track <a href="freebsd-launchd-plan.html">freebsd-launchd-plan</a> is preserved alongside but is not part of this mach-porting tree. The sub-plans and spikes that elaborate parts of <em>this</em> plan are listed in the card at the top of the page.</p>
 
 </div>
 </body>

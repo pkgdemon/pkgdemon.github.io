@@ -83,7 +83,7 @@
   <li><a href="#asl">asl (syslogd + aslmanager + libasl + syslog)</a></li>
   <li><a href="#notify">notifyd + libnotify + notifyutil</a></li>
   <li><a href="#configd">configd + scutil + SystemConfiguration framework + libSystemConfiguration + plugins</a></li>
-  <li><a href="#cf">CoreFoundation hybrid (libCFRuntime + libgnustep-corebase)</a></li>
+  <li><a href="#cf">CoreFoundation (swift-corelibs-foundation, non-Swift mode)</a></li>
   <li><a href="#mdns">mDNSResponder</a></li>
   <li><a href="#ipconfig">IPConfiguration (ipconfig + bootpd)</a></li>
   <li><a href="#diskarb">DiskArbitration (framework + daemon + agent)</a></li>
@@ -301,20 +301,29 @@
 </table>
 </div>
 
-<h2 id="cf">11. CoreFoundation hybrid (libCFRuntime + libgnustep-corebase)</h2>
+<h2 id="cf">11. CoreFoundation (swift-corelibs-foundation, non-Swift mode)</h2>
 <div class="component">
-<h3>CF stack &mdash; per the <a href="freebsd-libxpc-foundation-spike.html">Foundation spike</a>'s Option B</h3>
+<h3>CF on this ISO</h3>
+
+<p><span class="pill pill-good">Decided</span> Use swift-corelibs-foundation's pure-C CoreFoundation as the CF engine for every system service on this ISO. Built with <code>DEPLOYMENT_RUNTIME_SWIFT=0</code> to avoid pulling the Swift runtime onto every CF-using binary. <strong>The earlier "libCFRuntime + libgnustep-corebase hybrid" plan from <a href="freebsd-libxpc-foundation-spike.html">freebsd-libxpc-foundation-spike</a> is superseded</strong> &mdash; the current authoritative source is <a href="freebsd-launchctl-corefoundation-spike.html">freebsd-launchctl-corefoundation-spike</a>, which audited the three candidate CF implementations against actual <code>launchctl.c</code> usage and found that swift-corelibs CF is the only viable choice (libgnustep-corebase's plist parser is stubbed; libgnustep-base has zero CF C surface).</p>
 
 <table>
-<thead><tr><th class="col-label">Artifact</th><th class="col-apple">Apple macOS</th><th class="col-libsystem">Apple-like FreeBSD</th><th class="col-gershwin">Gershwin</th><th class="col-base">FreeBSD base</th></tr></thead>
+<thead><tr><th class="col-label">Artifact</th><th class="col-apple">Apple macOS (reference)</th><th class="col-libsystem">Apple-like FreeBSD (chosen)</th></tr></thead>
 <tbody>
-  <tr><td><strong>libgnustep-corebase.so</strong> (value-type CF)</td><td>n/a &mdash; Apple's CF is monolithic</td><td colspan="3"><strong><code>/System/Library/Libraries/libgnustep-corebase.so</code></strong> &mdash; GNUstep core libraries stay at <code>/System/Library/Libraries/</code> always per project policy; no relocation regardless of the layout chosen for Apple-source libraries</td></tr>
-  <tr><td><strong>libCFRuntime.so</strong> (supplementary CF: CFMachPort, CFPreferences, CFBundle plugins, CFRunLoop v1 sources)</td><td>n/a</td><td><code>/usr/lib/libCFRuntime.so</code></td><td><code>/System/Library/Libraries/libCFRuntime.so</code></td><td><code>/usr/lib/libCFRuntime.so</code></td></tr>
-  <tr><td>CoreFoundation.framework (optional bundle wrapper for compatibility)</td><td><code>/System/Library/Frameworks/CoreFoundation.framework/</code></td><td>could symlink to flat files</td><td><code>/System/Library/Frameworks/CoreFoundation.framework/</code> via symlinks pointing to libgnustep-corebase + libCFRuntime</td><td>flat &mdash; no framework</td></tr>
-  <tr><td>CoreFoundation headers (corebase set)</td><td>inside framework</td><td><code>/usr/include/CoreFoundation/*.h</code></td><td><code>/System/Library/Headers/CoreFoundation/*.h</code></td><td><code>/usr/include/CoreFoundation/*.h</code></td></tr>
-  <tr><td>CoreFoundationExtras headers (libCFRuntime additions)</td><td>n/a</td><td><code>/usr/include/CoreFoundationExtras/*.h</code></td><td><code>/System/Library/Headers/CoreFoundationExtras/*.h</code></td><td><code>/usr/include/CoreFoundationExtras/*.h</code></td></tr>
+  <tr><td><strong>libCoreFoundation.so</strong> (swift-corelibs CF, non-Swift mode)</td><td><code>/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation</code></td><td><code>/usr/lib/libsystem/libCoreFoundation.so.6</code> &mdash; same Apple-libsystem lane as libdispatch / libxpc / liblaunch / libsystem_kernel / libBlocksRuntime</td></tr>
+  <tr><td>CoreFoundation public headers</td><td>inside framework bundle</td><td><code>/usr/include/CoreFoundation/{CoreFoundation,CFArray,CFDictionary,CFPropertyList,&hellip;}.h</code></td></tr>
+  <tr><td>CoreFoundation SPI headers (<code>CFPriv.h</code>, <code>CFLogUtilities.h</code>, <code>CFBundlePriv.h</code>, <code>CFURLPriv.h</code>, <code>*_Private.h</code>)</td><td>inside framework bundle</td><td><code>/usr/include/CoreFoundation/</code> &mdash; same dir as public; system services that need SPI surface get it transparently</td></tr>
+  <tr><td>Build deps</td><td>n/a</td><td><code>libdispatch</code>, <code>libBlocksRuntime</code> (already in <code>/usr/lib/libsystem/</code>); ICU (new dep, added via FreeBSD pkg)</td></tr>
+  <tr><td>SOVERSION</td><td>varies</td><td><code>6</code> (matches Apple's CoreFoundation.framework version 6)</td></tr>
 </tbody>
 </table>
+
+<p><strong>What this is not:</strong></p>
+<ul>
+  <li>Not Apple's binary <code>CoreFoundation.framework</code> &mdash; that's closed source; we ship swift-corelibs-foundation's Apache-2.0 open-source reimplementation derived from Apple's CF-Lite drops.</li>
+  <li>Not <code>libgnustep-corebase</code> &mdash; that stays in gershwin's lane (next section), used by GNUstep apps in the desktop overlay. The two CFs coexist with the "one CF per binary" rule from the <a href="freebsd-launchctl-corefoundation-spike.html">launchctl spike</a> &sect;10.</li>
+  <li>Not a framework bundle &mdash; the install-layout spike's blanket "no framework bundles, flat files only" rule applies here too.</li>
+</ul>
 </div>
 
 <h2 id="mdns">12. mDNSResponder</h2>
@@ -414,6 +423,7 @@
 
 <div class="callout callout-warn">
 <p><strong>Project policy:</strong> the GNUstep core libraries (<code>libobjc2</code>, <code>libgnustep-base</code>, <code>libgnustep-corebase</code>) and gershwin's tooling (<code>tools-make</code>, <code>GNUstep.conf</code>, helper CLIs) <strong>always live at <code>/System/Library/</code></strong>. They are gershwin's domain &mdash; we don't relocate them to <code>/usr/lib</code>, <code>/usr/local/lib</code>, or <code>/usr/lib/libsystem/</code> regardless of what layout we pick for the Apple-source-userland libraries. Cross-layout choice does not apply to the GNUstep stack.</p>
+<p><strong>Scope:</strong> the GNUstep stack lives in the <strong>gershwin desktop overlay</strong> &mdash; a separate fork/overlay on top of the freebsd-launchd-mach ISO. <strong>It is not installed by the freebsd-launchd-mach ISO itself.</strong> The launchd-adjacent system services (launchctl, configd, IPConfiguration, mDNSResponder, asl, notifyd, DiskArbitration) are all pure C with CoreFoundation by Apple's original design and link <code>/usr/lib/libsystem/libCoreFoundation.so.6</code> (swift-corelibs CF), not libgnustep-corebase. See the <a href="freebsd-launchctl-corefoundation-spike.html">launchctl-corefoundation-spike</a> for the audit and reasoning. The GNUstep paths below are still authoritative for gershwin once that overlay lands.</p>
 </div>
 
 <table>
@@ -431,7 +441,7 @@
 </tbody>
 </table>
 
-<p>The choice between Apple-like <code>/usr/lib/libsystem/</code>, gershwin <code>/System/Library/Libraries/</code>, or FreeBSD-base <code>/usr/lib/</code> applies <strong>only to Apple-source system-services libraries</strong> (libdispatch, libxpc, libmach, liblaunch, libnotify, libasl, libSystemConfiguration, libCFRuntime). GNUstep core libraries are out of scope for that choice.</p>
+<p>The choice between Apple-like <code>/usr/lib/libsystem/</code>, gershwin <code>/System/Library/Libraries/</code>, or FreeBSD-base <code>/usr/lib/</code> applies <strong>only to Apple-source system-services libraries</strong> (libdispatch, libxpc, libmach, liblaunch, libnotify, libasl, libSystemConfiguration, libCoreFoundation). GNUstep core libraries are out of scope for that choice &mdash; they live in the gershwin desktop overlay, not on this ISO.</p>
 </div>
 
 <h2 id="cross">17. Cross-cutting concerns</h2>

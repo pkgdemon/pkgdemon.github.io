@@ -215,7 +215,7 @@
 <div class="wrap">
 
 <h1><code>freebsd-launchd-mach</code> &mdash; a pure-port track that forks ravynOS's Mach + launchd stack</h1>
-<p class="lede">A revised plan, after surveying NextBSD and ravynOS as prior art. <strong>The primary goal is dragging FreeBSD into the 21st century &mdash; better init, better IPC, better service management, better network configuration, better logging, better notification.</strong> Apple-source porting is the chosen technique, not the destination. GNUstep stays for the application / framework layer (Foundation, AppKit, libobjc2); Apple source covers only the lower system-services layer (Mach, launchd, configd, notifyd, asl, libdispatch, libxpc). The entire userland remains FreeBSD ELF.</p>
+<p class="lede">A revised plan, after surveying NextBSD and ravynOS as prior art. <strong>The primary goal is dragging FreeBSD into the 21st century &mdash; better init, better IPC, better service management, better network configuration, better logging, better notification.</strong> Apple-source porting is the chosen technique, not the destination. GNUstep stays for the application / framework layer (Foundation NSXxx, AppKit, libobjc2) and lives in the gershwin desktop overlay &mdash; <strong>not on this ISO</strong>. Apple source covers the lower system-services layer (Mach, launchd, configd, notifyd, asl, libdispatch, libxpc, plus pure-C CoreFoundation via swift-corelibs-foundation &mdash; see the <a href="freebsd-launchctl-corefoundation-spike.html">launchctl-corefoundation-spike</a> for the CF choice). The entire userland remains FreeBSD ELF.</p>
 <p class="lede">The earlier <a href="freebsd-mach-kmod-plan.html">freebsd-mach-kmod-plan</a> proposed building a minimal <code>mach.ko</code> from scratch. This plan supersedes that one with a much shorter path: <strong>the legacy FreeBSD-based ravynOS tree contains a working, modular, OSF/CMU-licensed Mach implementation derived from NextBSD, packaged via <code>bsd.kmod.mk</code>, with launchd, libxpc, libdispatch, and a Mach-native bootstrap server already wired in</strong>. We snapshot it &mdash; ravynOS itself has pivoted away from FreeBSD to port XNU directly, so we are inheritors, not collaborators &mdash; and out-of-tree-ify it as a new repo, <code>freebsd-launchd-mach</code>, reusing the existing <code>freebsd-launchd</code> CI / ISO / release scaffolding.</p>
 <p class="meta">Companion to <a href="freebsd-launchd-service-ordering.html">freebsd-launchd-service-ordering.html</a> and <a href="freebsd-mach-kmod-plan.html">freebsd-mach-kmod-plan.html</a>. Written 2026-05-10 after concrete inspection of the NextBSD and ravynOS source trees.</p>
 
@@ -864,8 +864,9 @@ is the part neither ravynOS nor NextBSD attempted.</p>
 <p><strong>Direct answers:</strong></p>
 <ul>
   <li><span class="verdict verdict-no" style="display:inline">No to dyld and Mach-O execution.</span> Out of scope for this project. The whole userland stays as FreeBSD ELF. No <code>imgact_macho</code>, no Phase F, no <code>freebsd-dyld</code> repo.</li>
-  <li><span class="verdict verdict-no" style="display:inline">No to Apple's Foundation, CoreFoundation, AppKit, libobjc.</span> GNUstep covers those layers and continues to. Apple-source porting stops at the system-services layer.</li>
-  <li><span class="verdict verdict-go" style="display:inline">Yes to the system-services layer pieces only:</span> Mach (this plan), launchd (this plan), configd (this plan), notifyd, asl, libdispatch (already extracted), libxpc (already extracted), the parts of liblaunch and libnotify clients need.</li>
+  <li><span class="verdict verdict-no" style="display:inline">No to Apple's Foundation NS classes, AppKit, libobjc.</span> GNUstep covers those layers in the gershwin desktop overlay. Apple-source NS Foundation never lands.</li>
+  <li><span class="verdict verdict-go" style="display:inline">Yes to pure-C CoreFoundation via swift-corelibs-foundation</span> &mdash; the Apple system-services Apple ships (<code>launchctl</code>, <code>configd</code>, <code>IPConfiguration</code>, <code>mDNSResponder</code>, <code>asl</code>, <code>DiskArbitration</code>) are pure C with CF by Apple's original design, not Obj-C / NS. swift-corelibs CF gives them what they need; GNUstep would not. Built with <code>DEPLOYMENT_RUNTIME_SWIFT=0</code> to avoid pulling the Swift runtime onto every system service. See the <a href="freebsd-launchctl-corefoundation-spike.html">launchctl-corefoundation-spike</a> for the full evidence.</li>
+  <li><span class="verdict verdict-go" style="display:inline">Yes to the system-services layer pieces:</span> Mach (this plan), launchd (this plan), configd (this plan), notifyd, asl, libdispatch (already extracted), libxpc (already extracted), libCoreFoundation (swift-corelibs), the parts of liblaunch and libnotify clients need.</li>
   <li><span class="verdict verdict-go" style="display:inline">Yes to ELF + Linux compat coexistence, by definition</span> &mdash; we never add Mach-O recognition to the kernel, so there's nothing to coexist with. Stock FreeBSD's <code>imgact_elf</code> + <code>linux64.ko</code> arrangement is unchanged. <code>mach.ko</code> is just an IPC kernel module; it doesn't affect <code>execve(2)</code>.</li>
 </ul>
 <p>The reframe: this is a <strong>FreeBSD modernization project</strong>, not a macOS-on-FreeBSD project. The Apple stack has the better lower-level system services (init, IPC, network configuration, notification, structured logging, async dispatch); we lift those. GNUstep has the better Objective-C framework layer for FreeBSD use (it's already running on FreeBSD; it's the framework Gershwin uses); we keep that. The two layers compose cleanly.</p>
@@ -880,6 +881,11 @@ is the part neither ravynOS nor NextBSD attempted.</p>
   <td>Apps and frameworks (Foundation, AppKit, libobjc2, GUI, Back, app bundles)</td>
   <td><strong>GNUstep</strong></td>
   <td>Already runs on FreeBSD, already used by Gershwin, mature, BSD/LGPL licensing, no Mach-O dependency, ELF-native.</td>
+</tr>
+<tr>
+  <td>CoreFoundation (pure-C CF API: CFString/Array/Dictionary/PropertyList/&hellip;)</td>
+  <td><strong>swift-corelibs-foundation</strong> (Apache 2.0), built with <code>DEPLOYMENT_RUNTIME_SWIFT=0</code></td>
+  <td>Required by every Apple-source system service (<code>launchctl</code>, <code>configd</code>, <code>IPConfiguration</code>, <code>mDNSResponder</code>, <code>asl</code>, <code>DiskArbitration</code>). They're pure C with CF by Apple's design &mdash; GNUstep <code>libgnustep-corebase</code>'s plist parser is stubbed and would block launchctl. swift-corelibs CF ships real Apple plist + the SPI surface launchd-842 was written against. Installed at <code>/usr/lib/libsystem/libCoreFoundation.so.6</code>. Full reasoning in <a href="freebsd-launchctl-corefoundation-spike.html">launchctl-corefoundation-spike</a>.</td>
 </tr>
 <tr>
   <td>Async runtime (libdispatch / GCD)</td>
@@ -934,12 +940,12 @@ is the part neither ravynOS nor NextBSD attempted.</p>
   <li><strong>dyld</strong> &mdash; Apple's dynamic linker. Not needed if we don't run Mach-O binaries. <code>ld-elf.so.1</code> handles all our dynamic loading.</li>
   <li><strong>imgact_macho</strong> &mdash; the kernel image activator that recognizes Mach-O magic. Not needed if no Mach-O execution.</li>
   <li><strong>libsystem_kernel</strong> &mdash; Apple's syscall wrapper layer mapping Mach traps to userland. Not needed; our userland calls Mach via the syscalls <code>mach.ko</code> registers, with the wrappers in libmach.</li>
-  <li><strong>CoreFoundation, Foundation.framework, AppKit, QuartzCore, etc.</strong> &mdash; GNUstep covers these.</li>
+  <li><strong>Apple's CoreFoundation.framework binary (the macOS one), Foundation.framework (NSXxx), AppKit, QuartzCore, etc.</strong> &mdash; GNUstep covers the Foundation / AppKit / QuartzCore layers in the gershwin desktop overlay. For CoreFoundation specifically we ship swift-corelibs-foundation's pure-C CF as <code>/usr/lib/libsystem/libCoreFoundation.so.6</code> &mdash; that's the engine our Apple-source system services need, not the Apple-built macOS framework.</li>
   <li><strong>WindowServer / Quartz</strong> &mdash; covered by the <a href="WindowServer-Plan.html">existing GNUstep WindowServer plan</a> at the GNUstep layer.</li>
   <li><strong>Mach-O conversion tools, otool, codesign</strong> &mdash; not relevant to an ELF userland.</li>
 </ul>
 
-<p>The Apple-source porting list shrinks to a tight set: <strong>Mach, launchd, configd, notifyd, asl, libdispatch, libxpc, liblaunch + the small bootstrap/vproc client surface</strong>. That's it. Everything above that line is GNUstep; everything below that line is FreeBSD.</p>
+<p>The Apple-source porting list shrinks to a tight set: <strong>Mach, launchd, configd, notifyd, asl, libdispatch, libxpc, liblaunch + the small bootstrap/vproc client surface + swift-corelibs CoreFoundation as the CF engine</strong>. That's it. Everything above that line is GNUstep (gershwin desktop overlay, separate fork); everything below that line is FreeBSD.</p>
 
 <h3 id="unlocks-roadmap-effect">13.3 Effect on the existing FreeBSD-modernization roadmap</h3>
 

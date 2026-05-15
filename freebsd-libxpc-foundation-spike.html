@@ -78,8 +78,19 @@
 <body>
 <div class="wrap">
 
-<h1>Foundation &amp; CoreFoundation spike for <code>freebsd-libxpc</code></h1>
-<p class="lede">Companion spike to the <a href="freebsd-libxpc-plan.html"><code>freebsd-libxpc-plan</code></a>: which Foundation and CoreFoundation implementation(s) do we use for the downstream daemon ports (configd, mDNSResponder, IPConfiguration, asl, notifyd, modern launchd)? Three CoreFoundation implementations exist in the open-source world plus two Foundation implementations; this doc audits each, measures what each daemon actually consumes from them, analyzes symbol-level coexistence, and recommends a layered approach that requires no modifications to GNUstep's <code>libs-corebase</code> upstream.</p>
+<h1>Foundation &amp; CoreFoundation spike for <code>freebsd-libxpc</code> <span style="font-size:0.55em; color: var(--bad); font-weight: normal;">(superseded — see banner)</span></h1>
+<p class="lede">Companion spike to the <a href="freebsd-libxpc-plan.html"><code>freebsd-libxpc-plan</code></a>: which Foundation and CoreFoundation implementation(s) do we use for the downstream daemon ports (configd, mDNSResponder, IPConfiguration, asl, notifyd, modern launchd)? Three CoreFoundation implementations exist in the open-source world plus two Foundation implementations; this doc audits each, measures what each daemon actually consumes from them, analyzes symbol-level coexistence, and recommends a layered approach.</p>
+
+<div class="callout callout-bad">
+<p><strong>SUPERSEDED 2026-05-15.</strong> The recommendation in &sect;8 below &mdash; "build a hybrid <code>libCFRuntime</code> alongside <code>libgnustep-corebase</code>" &mdash; is no longer the project's plan. The current authoritative source for the CoreFoundation question is <a href="freebsd-launchctl-corefoundation-spike.html">freebsd-launchctl-corefoundation-spike</a>, which audited <code>launchctl.c</code>'s actual symbol surface (49 distinct CF function calls + 17 types + 25 constants + 1 SPI symbol) against the three candidate implementations and found:</p>
+<ul>
+  <li><code>libs-base</code> contributes zero CF C surface (Obj-C NS only).</li>
+  <li><code>libs-corebase</code> has the right shape but its plist parser is stubbed (XML read returns NULL, binary read <code>#if 0</code>'d, binary write empty body) &mdash; <em>fatal</em> for launchctl.</li>
+  <li>swift-corelibs-foundation's pure-C CF covers 48 of 49 launchctl function calls with real plist support and the full SPI surface (<code>CFPriv.h</code>, <code>CFLogUtilities.h</code>).</li>
+</ul>
+<p><strong>Current plan:</strong> vendor swift-corelibs-foundation's <code>Sources/CoreFoundation/</code> as <code>src/libCoreFoundation/</code> in freebsd-launchd-mach, build with <code>DEPLOYMENT_RUNTIME_SWIFT=0</code> (avoids pulling the Swift runtime onto every system service), install as <code>/usr/lib/libsystem/libCoreFoundation.so.6</code>. GNUstep is <strong>not on the freebsd-launchd-mach ISO</strong> &mdash; it remains the framework/app layer for the separate gershwin desktop overlay/fork.</p>
+<p>The factual content below (per-implementation audits in &sect;2&ndash;3, per-port symbol-usage audit in &sect;4, coexistence analysis in &sect;5, Mach gotchas in &sect;6) is preserved as historical record. The <strong>recommendations</strong> in &sect;1.4, &sect;7, and &sect;8 are not the current plan &mdash; read the launchctl spike instead.</p>
+</div>
 
 <div class="toc">
 <h2>Contents</h2>
@@ -738,9 +749,16 @@
 
 <p>For NS, the recommendation is straightforward: <strong>libgnustep-base only</strong>. swift-corelibs-foundation stays out of the system Foundation slot. Future Swift-on-FreeBSD work can pull in swift-corelibs-foundation as a separate package (different SONAME, different headers dir, only loaded into Swift-aware processes).</p>
 
-<h2 id="recommendations">8. Recommendations</h2>
+<h2 id="recommendations">8. Recommendations <span style="font-size:0.55em; color: var(--bad); font-weight: normal;">(superseded — see banner at top)</span></h2>
 
-<h3>For freebsd-launchd-mach</h3>
+<div class="callout callout-bad">
+<p>The recommendations preserved below were the conclusion of this spike at the time of writing (early 2026). They are <strong>no longer the project's plan</strong>. See the banner at the top of this doc for the current direction, or jump straight to <a href="freebsd-launchctl-corefoundation-spike.html">freebsd-launchctl-corefoundation-spike</a> for the audit-driven replacement.</p>
+<p><strong>Short version of what changed:</strong> the launchctl audit (2026-05-15) found that <code>libs-corebase</code>'s plist code paths are stubbed (XML read returns NULL, binary read <code>#if 0</code>'d, binary write empty body) &mdash; fatal for launchctl, which exists to load <code>.plist</code> files. swift-corelibs-foundation's pure-C CF ships the real Apple plist driver and the full SPI surface. The "hybrid libCFRuntime + libgnustep-corebase" recommendation below was based on an earlier read of libs-corebase that didn't dig into the plist stubs.</p>
+</div>
+
+<h3>Original recommendations (kept as historical record):</h3>
+
+<h4>For freebsd-launchd-mach</h4>
 
 <ol>
   <li><strong>Build <code>libCFRuntime.so</code></strong> as a sibling of <code>libxpc</code> &mdash; the supplementary CF library following the Option B layout. Source the CFMachPort / CFMessagePort / CFRunLoop v1 implementations from swift-corelibs-foundation CF with Mach paths enabled via <code>__FreeBSD__ &amp;&amp; HAVE_LIBMACH</code>. Fall back to CF-Lite-1153.18 for any .c files swift-corelibs only ships as headers (CFMachPort.c, CFMessagePort.c, CFUserNotification.c).</li>
@@ -749,7 +767,7 @@
   <li><strong>Reconsider freebsd-launchd's <code>core.m</code></strong> &mdash; once libCFRuntime ships <code>CFPropertyList</code> via swift-corelibs CF (which already supports binary plist), the only reason freebsd-launchd's launchd is in Objective-C goes away. Could convert <code>core.m</code> to <code>core.c</code> against CFLite-style plist API. Removes the ObjC runtime dependency from launchd entirely. <em>Optional cleanup, not required.</em></li>
 </ol>
 
-<h3>For downstream daemons</h3>
+<h4>For downstream daemons</h4>
 
 <ol>
   <li><strong>launchd</strong> (clean Apple <code>launchd-842.92.1</code> import per the <a href="freebsd-libxpc-plan.html">libxpc plan</a> Phase 5): plain C, no CF, no NS. No new infrastructure required.</li>
@@ -760,9 +778,16 @@
   <li><strong>IPConfiguration</strong>: heavy CF, no NS &mdash; same as configd minus the ObjC subclasses. <code>-lgnustep-corebase -lCFRuntime</code>.</li>
 </ol>
 
-<h3>For NSXPCConnection (downstream GNUstep contribution)</h3>
+<h3>Current recommendations (per <a href="freebsd-launchctl-corefoundation-spike.html">launchctl-corefoundation-spike</a>):</h3>
 
-<p>The GNUstep <code>NSXPCConnection</code> stub at <code>libs-base/Source/NSXPCConnection.m</code> is a real opportunity. Class signatures already declared; bodies all return <code>[self notImplemented:]</code>. Filling them in against our libxpc would be a tractable ~3-5k LoC contribution back to gnustep/libs-base upstream. <strong>Not in scope for libxpc itself</strong> &mdash; tracked as a downstream enhancement.</p>
+<ol>
+  <li><strong>Vendor swift-corelibs-foundation's <code>Sources/CoreFoundation/</code></strong> as <code>src/libCoreFoundation/</code>. Build with <code>DEPLOYMENT_RUNTIME_SWIFT=0</code>. Install at <code>/usr/lib/libsystem/libCoreFoundation.so.6</code>.</li>
+  <li><strong>Install ICU as a build dep</strong> (FreeBSD pkg). Keep all CF source files in scope (CFLocale / CFCalendar / CFDateFormatter / CFCharacterSet etc.) for future configd / IPConfiguration / SystemConfiguration consumers.</li>
+  <li><strong>Drop the upstream <code>BlockRuntime/</code> subdir</strong> &mdash; redundant with the <code>libBlocksRuntime.so</code> already bundled by our vendored swift-corelibs-libdispatch build.</li>
+  <li><strong>All Apple-source system services</strong> (launchctl, configd, IPConfiguration, mDNSResponder, asl, notifyd, DiskArbitration) link <code>-lCoreFoundation</code> from <code>/usr/lib/libsystem/</code>. Apple's upstream MIG-generated Mach IPC stubs are used as-is &mdash; we now have <code>mach.ko</code>, so the earlier "GNUstep DO over AF_UNIX" rewrites in the daemon plans (for the sockets-version <code>freebsd-launchd</code> fork) are not done here.</li>
+  <li><strong>GNUstep stays in the gershwin desktop overlay</strong> &mdash; a separate fork on top of freebsd-launchd-mach. Not on this ISO. Its libobjc2 + libgnustep-base + libgnustep-corebase serve the framework/app layer (NSAppKit equivalents, GUI), which the system services do not need.</li>
+  <li><strong>NSXPCConnection</strong> remains a downstream GNUstep enhancement opportunity if a future GNUstep desktop app wants Cocoa-shape IPC into our libxpc-managed system services. Not on this critical path.</li>
+</ol>
 
 <h2 id="refs">9. References</h2>
 

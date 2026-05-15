@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>launchctl CoreFoundation spike &mdash; picking the CF source for the launchd-842 launchctl port</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --bg: #fafaf7;
+    --accent: #b8472a;
+    --accent-soft: #f3e7df;
+    --border: #d8d4c8;
+    --code-bg: #f0ece2;
+    --table-stripe: #f4efe5;
+    --warn: #8a5a00;
+    --good: #2d6f3b;
+    --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif; color: var(--fg); background: var(--bg); line-height: 1.55; margin: 0; padding: 0; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 48px 32px 96px; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--border); letter-spacing: -0.005em; }
+  h3 { font-size: 1.1rem; margin: 28px 0 6px; color: var(--accent); }
+  h4 { font-size: 0.92rem; margin: 18px 0 4px; color: var(--fg-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg); }
+  code { padding: 1px 4px; border-radius: 3px; font-size: 0.83em; }
+  pre { padding: 14px 18px; border-radius: 4px; overflow-x: auto; font-size: 0.84rem; line-height: 1.45; margin: 0 0 18px; }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+  .lede { font-size: 1.02rem; color: var(--fg-muted); margin-bottom: 28px; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 24px; font-size: 0.82rem; }
+  th, td { text-align: left; padding: 7px 10px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; font-size: 0.78rem; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  td code { white-space: nowrap; font-size: 0.85em; }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 18px 0 22px; border-radius: 0 4px 4px 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn { border-left-color: var(--warn); background: #fbf3df; }
+  .callout-good { border-left-color: var(--good); background: #e8f1e3; }
+  .callout-bad  { border-left-color: var(--bad);  background: #f7e3e3; }
+  .pill { display: inline-block; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 10px; margin-right: 6px; }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 16px 22px 12px 32px; margin: 0 0 32px; font-size: 0.92rem; }
+  .toc h2 { margin: 0 0 8px; padding-top: 0; border-top: none; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-left: -14px; }
+  .toc ol { margin: 0 0 0 4px; columns: 2; column-gap: 28px; }
+  .toc li { margin-bottom: 3px; break-inside: avoid; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  .component { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 16px 20px; margin: 14px 0 24px; }
+  .component h3 { margin-top: 0; }
+  .matrix th, .matrix td { font-size: 0.78rem; }
+  .matrix .yes { color: var(--good); font-weight: 600; }
+  .matrix .no  { color: var(--bad); font-weight: 600; }
+  .matrix .part { color: var(--warn); font-weight: 600; }
+  .verdict { background: white; border-left: 4px solid var(--accent); padding: 12px 18px; margin: 20px 0; font-size: 1.02rem; }
+  .verdict strong { color: var(--accent); }
+  @media (max-width: 900px) { .wrap { padding: 24px 18px 64px; } table { font-size: 0.7rem; } th { font-size: 0.66rem; } .toc ol { columns: 1; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>launchctl CoreFoundation spike</h1>
+<p class="lede">Picking the CoreFoundation source for the launchd-842 <code>launchctl</code> port. Apple's <code>launchctl.c</code> is 4,549 LOC of CF-heavy code. Three candidate implementations are on the table: <strong>gnustep/libs-base</strong>, <strong>gnustep/libs-corebase</strong>, and <strong>swiftlang/swift-corelibs-foundation</strong>. This spike audits each repo against the exact symbol set <code>launchctl.c</code> uses and produces a buy/build/skip decision per candidate, with a concrete porting plan for the winner.</p>
+
+<p class="lede">Companion to the <a href="freebsd-libxpc-foundation-spike.html">libxpc Foundation spike</a> (which scoped Foundation at the project level) and the <a href="freebsd-launchd-842-porting-plan.html">launchd-842 porting plan</a> (which schedules launchctl as task I1e). This spike is narrower: it's specifically about which CF source <code>launchctl.c</code> compiles and links against on FreeBSD.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#problem">1. The problem &mdash; why pick CF now</a></li>
+  <li><a href="#audit-launchctl">2. What <code>launchctl.c</code> actually needs</a></li>
+  <li><a href="#audit-libs-base">3. gnustep/libs-base &mdash; audit</a></li>
+  <li><a href="#audit-libs-corebase">4. gnustep/libs-corebase &mdash; audit</a></li>
+  <li><a href="#audit-swift-cf">5. swift-corelibs-foundation &mdash; audit</a></li>
+  <li><a href="#matrix">6. Side-by-side matrix</a></li>
+  <li><a href="#decision">7. Decision</a></li>
+  <li><a href="#porting-plan">8. Porting plan for the winner</a></li>
+  <li><a href="#non-cf">9. Non-CF surface (IOKit, Mach-O, NSSystemDirectories)</a></li>
+  <li><a href="#coexistence">10. Coexistence with GNUstep &mdash; one CF per binary</a></li>
+  <li><a href="#no-rewrite">11. Why not rewrite to GNUstep instead?</a></li>
+  <li><a href="#gnustep-roadmap">12. What this means for the GNUstep roadmap</a></li>
+  <li><a href="#future-swift">13. Future: what if we want Swift on the ISO?</a></li>
+  <li><a href="#impacts">14. Impacts of these decisions &mdash; full accounting</a></li>
+  <li><a href="#open-questions">15. Open questions / follow-ups</a></li>
+  <li><a href="#methodology">16. Methodology &amp; audit provenance</a></li>
+</ol>
+</div>
+
+<h2 id="problem">1. The problem &mdash; why pick CF now</h2>
+
+<p>The launchd daemon itself (<code>/sbin/launchd</code>, 235 KiB ELF) was the last big I1c milestone &mdash; it builds, links, execs, smoke-passes. Audit of the seven hand-written daemon TUs (<code>launchd.c</code> + <code>core.c</code> + <code>runtime.c</code> + <code>ipc.c</code> + <code>log.c</code> + <code>kill2.c</code> + <code>ktrace.c</code>) finds <strong>zero</strong> CoreFoundation calls: the daemon reads plists through the lower-level <code>launch_data_t</code> API in liblaunch. So <em>nothing about the daemon depends on this decision</em>.</p>
+
+<p>The downstream consumer that <em>does</em> depend on it is <code>launchctl</code> (the user-facing CLI). <code>support/launchctl.c</code> in the launchd-842 vendor drop is 4,549 LOC, heavily plist-driven, and pulls in <code>&lt;CoreFoundation/CoreFoundation.h&gt;</code>, <code>&lt;CoreFoundation/CFPriv.h&gt;</code>, and <code>&lt;CoreFoundation/CFLogUtilities.h&gt;</code>. The default plan was "port <code>launchctl</code> after the GNUstep stack lands"; this spike re-examines that with actual symbol-level evidence.</p>
+
+<div class="callout callout-warn">
+<p><strong>Why now and not later:</strong> "let's port launchctl with a minimal CF shim and patch the gaps as they surface" is a viable plan only if the gaps are small. A 245-grep on <code>launchctl.c</code> for <code>CF*</code> identifiers fueled an early fear that the gap was large. This spike puts a precise number on it: <strong>49 distinct CF function calls, 1 CF SPI symbol, total surface ~90 identifiers including types and constants.</strong> That's small enough that the choice of CF source matters a lot &mdash; one candidate with broken plist parsing is fatal, but a different one with 48-of-49 coverage is essentially done.</p>
+</div>
+
+<h2 id="audit-launchctl">2. What <code>launchctl.c</code> actually needs</h2>
+
+<p>Full audit at <code>launchctl_api_audit.md</code> in the working tree. Grep methodology in &sect;<a href="#methodology">12</a>. Summary:</p>
+
+<table>
+<thead><tr><th>Bucket</th><th>Distinct symbols</th><th>Treatment for FreeBSD port</th></tr></thead>
+<tbody>
+  <tr><td><strong>Public CF API &mdash; functions</strong></td><td>48</td><td>Must be present in the CF source we pick.</td></tr>
+  <tr><td><strong>Public CF API &mdash; types</strong></td><td>17</td><td>Standard <code>CF*Ref</code> typedefs; in any CF header.</td></tr>
+  <tr><td><strong>Public CF API &mdash; <code>kCF*</code> constants</strong></td><td>25</td><td>Allocators, booleans, compare, number types, plist mutability, callbacks &mdash; in any CF header.</td></tr>
+  <tr><td><strong>CF SPI (<code>&lt;CFPriv.h&gt;</code> + <code>&lt;CFLogUtilities.h&gt;</code>)</strong></td><td>1</td><td>Only <code>_kCFSystemVersionBuildVersionKey</code>. <code>CFLog()</code> is included but never called. The <code>CFLogUtilities.h</code> include can be dropped from <code>launchctl.c</code>.</td></tr>
+  <tr><td>IOKit</td><td>7</td><td>Stub no-ops on FreeBSD. Both call paths (<code>IOKitWaitQuiet</code> in fsck/single-user, <code>IORegistryEntryFromPath</code> in <code>do_bootroot_magic</code>) are macOS-specific feature paths.</td></tr>
+  <tr><td>Mach-O</td><td>1</td><td><code>getsectiondata</code> only inside <code>#if TARGET_OS_EMBEDDED</code>. Zero impact.</td></tr>
+  <tr><td><code>&lt;NSSystemDirectories.h&gt;</code></td><td>9</td><td>Hand-rolled table replacement (4 paths + a domain bitmask). None of the CF candidates ship this header.</td></tr>
+</tbody>
+</table>
+
+<p>The <strong>49 distinct CF function calls</strong> (CF functions + macros, deduped) are the gold-standard "does this CF source compile launchctl" checklist:</p>
+
+<pre><code>CFArrayAppendValue            CFArrayCreateCopy             CFArrayCreateMutable
+CFArrayGetCount               CFArrayGetTypeID              CFArrayGetValueAtIndex
+CFBooleanGetTypeID            CFBooleanGetValue
+CFDataCreateWithBytesNoCopy   CFDataGetBytePtr              CFDataGetLength
+CFDataGetTypeID
+CFDictionaryAddValue          CFDictionaryApplyFunction     CFDictionaryCreateCopy
+CFDictionaryCreateMutable     CFDictionaryGetCount          CFDictionaryGetKeysAndValues
+CFDictionaryGetTypeID         CFDictionaryGetValue          CFDictionaryRemoveValue
+CFDictionarySetValue
+CFErrorCopyDescription
+CFGetTypeID                   CFRelease                     CFRetain
+CFNumberCompare               CFNumberCreate                CFNumberGetType
+CFNumberGetTypeID             CFNumberGetValue
+CFPropertyListCreateFromStream    CFPropertyListCreateFromXMLData
+CFPropertyListCreateWithData      CFPropertyListCreateXMLData
+CFRangeMake
+CFReadStreamClose             CFReadStreamCopyError         CFReadStreamCreateWithFile
+CFReadStreamOpen
+CFSTR
+CFStringCompareWithOptions    CFStringCreateWithBytes       CFStringCreateWithCString
+CFStringCreateWithCStringNoCopy   CFStringGetCString        CFStringGetLength
+CFStringGetTypeID
+CFURLCreateDataAndPropertiesFromResource    CFURLCreateFromFileSystemRepresentation
+CFURLWriteDataAndPropertiesToResource</code></pre>
+
+<p>The 25 <code>kCF*</code> constants are the standard set: <code>kCFAllocatorDefault</code>, <code>kCFAllocatorNull</code>, <code>kCFAllocatorSystemDefault</code>, <code>kCFBooleanFalse</code>, <code>kCFBooleanTrue</code>, <code>kCFCompareEqualTo</code>, the full <code>kCFNumber*Type</code> family (10 of them), <code>kCFPropertyListImmutable</code>, <code>kCFPropertyListMutableContainersAndLeaves</code>, <code>kCFStringEncodingUTF8</code>, <code>kCFTypeArrayCallBacks</code>, <code>kCFTypeDictionaryKeyCallBacks</code>, <code>kCFTypeDictionaryValueCallBacks</code>.</p>
+
+<p>The 17 types are exactly the <code>CF*Ref</code> typedef set you'd expect (<code>CFArrayRef</code>, <code>CFBooleanRef</code>, <code>CFDataRef</code>, <code>CFDictionaryRef</code>, <code>CFErrorRef</code>, <code>CFIndex</code>, <code>CFMutableArrayRef</code>, <code>CFMutableDictionaryRef</code>, <code>CFNumberRef</code>, <code>CFNumberType</code>, <code>CFPropertyListFormat</code>, <code>CFPropertyListRef</code>, <code>CFReadStreamRef</code>, <code>CFStringRef</code>, <code>CFTypeID</code>, <code>CFTypeRef</code>, <code>CFURLRef</code>).</p>
+
+<p>The one SPI symbol &mdash; <code>_kCFSystemVersionBuildVersionKey</code> from <code>&lt;CoreFoundation/CFPriv.h&gt;</code> &mdash; is referenced once at <code>launchctl.c:4341</code> inside <code>copySystemBuildVersion()</code> to read <code>/System/Library/CoreServices/SystemVersion.plist</code>. It's literally <code>CFSTR("ProductBuildVersion")</code>. Even a CF source with no SPI surface can have this one constant pasted in.</p>
+
+<div class="callout callout-good">
+<p><strong>Headline finding.</strong> <code>launchctl.c</code> is essentially a pure-public-CF client. The SPI surface is a single string constant. <code>CFLogUtilities.h</code> is included but unused. The IOKit/Mach-O/NSSystemDirectories surface is small enough to stub locally regardless of which CF candidate we pick.</p>
+</div>
+
+<h2 id="audit-libs-base">3. gnustep/libs-base &mdash; audit</h2>
+
+<div class="component">
+<p><span class="pill pill-neutral">repo</span> <code>github.com/gnustep/libs-base</code> &middot; LGPL/GPL &middot; ~253k LOC across 221 <code>.m</code> files &middot; cloned at <code>/Users/jmaloney/Documents/launchd/libs-base</code> &middot; full audit at <code>libs-base_audit.md</code>.</p>
+
+<p>libs-base is the GNUstep Foundation implementation &mdash; <code>NSString</code>, <code>NSArray</code>, <code>NSDictionary</code>, <code>NSPropertyList</code>, etc. It is the natural pair for libs-corebase and the right answer for any Foundation/NSXxx consumer.</p>
+
+<h4>CF C API exposure</h4>
+<ul>
+  <li><code>Headers/CoreFoundation/</code> contains a single 130-line file (<code>CFCGTypes.h</code>) with <code>CGFloat</code>/<code>CGPoint</code>/<code>CGSize</code>/<code>CGRect</code> typedefs only &mdash; there so <code>NSGeometry.h</code> can share struct ABI with CG.</li>
+  <li><strong>Zero <code>CF*()</code> C functions</strong> defined or exported anywhere in <code>Source/</code> or <code>Headers/</code>. Grepping for <code>CFTypeRef</code>, <code>CFRetain</code>, <code>CFGetTypeID</code>, <code>CFRuntime</code>, <code>CFPropertyList</code>, <code>CFString</code>, <code>CFDictionary</code>, <code>CFArray</code>, <code>CFData</code>, <code>CFNumber</code>, <code>CFRunLoop</code>, <code>CFBundle</code> returns no hits.</li>
+  <li>The only <code>CF[A-Z]*</code> identifiers in the tree are: <code>CFCGTypes</code> (above), four <code>CFBundle*</code> string keys looked up in info dicts, a comment in <code>typeEncodingHelper.h</code> explicitly saying <code>NSRange</code> and <code>CFRange</code> are <em>not</em> toll-free bridged, and one dead <code>#ifndef GNUSTEP</code> block in <code>NSURL+GNUstepBase.m</code> referencing <code>CFURLCopyPath</code> only when built against Apple's real CF.</li>
+</ul>
+
+<h4>Toll-free bridging</h4>
+<p>No <code>__CFRuntimeBase</code> head in <code>NSObject</code>, no <code>CFTypeID</code> registry, no <code>CFAllocator</code> plumbing. The GNUstep tradition is explicitly that NS and CF are not toll-free on this side. Apple-source code that hands an <code>NSDictionary*</code> across a "looks like a <code>CFDictionaryRef</code>" boundary would crash.</p>
+
+<h4>NS Foundation coverage (for reference)</h4>
+<p>Broad and mature. <code>NSPropertyListSerialization</code> in <code>Source/NSPropertyList.m</code> (4,305 lines) handles XML v1.0, binary v1.0 (<code>bplist00</code> &mdash; both <code>GSBinaryPLParser</code> and <code>GSBinaryPLGenerator</code>), OpenStep ASCII, plus GNUstep ASCII + GNUstep binary extensions. All of which is great for Foundation consumers and irrelevant to <code>launchctl</code>.</p>
+
+<h4>Build deps</h4>
+<p>gnustep-make (tools-make) + libobjc2 + libffi + libxml2 + libicu + libgnutls + libdispatch (+ optional avahi/libxslt). Effectively the existing gershwin/GNUstep stack.</p>
+
+<div class="verdict">
+<strong>Verdict for launchctl:</strong> <span class="pill pill-bad">unsuitable</span> libs-base contributes nothing to a pure-C-CF launchctl. It remains entirely appropriate for the GNUstep app/framework side of the scope split, but it is not the launchctl story.
+</div>
+
+<p>The side question raised in the audit &mdash; "could we build a small Objective-C shim that exposes <code>CFFooBar()</code> signatures wrapping libs-base NSXxx?" &mdash; is technically feasible but in practice is many person-weeks of mechanical glue, drags the full libobjc2 + libs-base + ICU + libxml2 + gnutls runtime into every <code>launchctl</code> invocation, and crucially is not toll-free with a real CoreFoundation, so any future handoff to Apple-source CF code would crash. Not pursued.</p>
+</div>
+
+<h2 id="audit-libs-corebase">4. gnustep/libs-corebase &mdash; audit</h2>
+
+<div class="component">
+<p><span class="pill pill-neutral">repo</span> <code>github.com/gnustep/libs-corebase</code> &middot; LGPL 2.1 &middot; ~37k LOC (26k C + 2.4k ObjC + 7.9k headers) &middot; HEAD <code>c629a11</code> 2026-04-26 pkgdemon merge; real activity ended 2021-09-30 &middot; cloned at <code>/Users/jmaloney/Documents/launchd/libs-corebase</code> &middot; full audit at <code>libs-corebase_audit.md</code>.</p>
+
+<p>libs-corebase is the GNUstep <em>CoreFoundation</em> implementation &mdash; specifically a C-only CF API clone, the right shape for our problem on paper.</p>
+
+<h4>Public CF API coverage</h4>
+<p><strong>909 distinct <code>CF*</code> function definitions</strong>. The core data types (CFString/Array/Dict/Number/Date/Data/UUID/Set/RunLoop/Socket/Stream/Tree/BitVector/CharacterSet/Calendar/Locale/{Date,Number}Formatter/Error) are genuinely implemented with ICU backing. All 49 of launchctl's CF function calls listed in &sect;2 have prototypes here.</p>
+
+<h4>The PropertyList blocker</h4>
+<p>This is fatal for launchctl. <code>Source/CFPropertyList.c</code>:</p>
+<ul>
+  <li><strong>XML plist reading</strong>: <code>CFXMLPlistCreate</code> at line 1263 is a <code>return NULL;</code> stub. There is no driver behind it.</li>
+  <li><strong>Binary plist reading</strong>: an entire <code>#if 0</code> block. Not compiled.</li>
+  <li><strong>Binary plist writing</strong>: an empty function body <code>{ }</code>.</li>
+  <li><strong>Only working format</strong>: OpenStep curly-brace .plist on read, plus XML and OpenStep on write.</li>
+</ul>
+
+<p>launchctl's whole job is loading <code>.plist</code> job descriptions, which Apple ships as either XML or binary plist. Neither format reads through libs-corebase as it stands today.</p>
+
+<h4>CF SPI</h4>
+<p>No <code>CFPriv.h</code>, no <code>CFLog</code>, no <code>CFLogUtilities.h</code>. The <code>_CF*</code> underscore symbols present are GNUstep's own bridging SPI (<code>_CFRuntimeRegisterClass</code>, <code>_CFBridgingRetain</code>, etc.), not Apple's launchd SPI.</p>
+
+<h4>Other gaps worth noting</h4>
+<ul>
+  <li><code>CFBundle.m</code> is a 268-LOC pass-through to <code>NSBundle</code>.</li>
+  <li><code>NSCF*.m</code> bridge classes <code>#import &lt;Foundation/*&gt;</code>.</li>
+  <li>CFURL is real-ish but the entire bookmark API and most resource-property functions are <code>FIXME</code> stubs &mdash; not encouraging given that <code>launchctl</code> uses <code>CFURLCreateDataAndPropertiesFromResource</code> + <code>CFURLWriteDataAndPropertiesToResource</code> as its plist read/write path.</li>
+  <li>No <code>CFNotificationCenter</code>, <code>CFMachPort</code>, <code>CFMessagePort</code>, <code>CFFileDescriptor</code>, <code>CFPreferences</code>, <code>CFPlugIn</code>. (None of these are used by launchctl, but it indicates the surface gnustep-corebase decided not to cover.)</li>
+</ul>
+
+<h4>Build deps</h4>
+<p>gnustep-make + libobjc + libs-base + ICU + libm. libdispatch optional but recommended for CFRunLoop main-queue integration + CFSocket dispatch sources. <strong>Not standalone</strong> &mdash; pulls libs-base in via the NSCF bridge classes.</p>
+
+<div class="verdict">
+<strong>Verdict for launchctl:</strong> <span class="pill pill-bad">fatally incomplete</span> The plist code paths (XML read, binary read, binary write) are stubs/<code>return NULL</code>/empty bodies. Without working plist parsing, launchctl cannot load a single job. We would be writing the plist driver ourselves to make libs-corebase functional, which is most of the value of picking a real CF source in the first place.
+</div>
+
+<p>That said: libs-corebase covers 909 CF functions, which is a much wider surface than launchctl needs. The breadth is real value if a project consumer outside launchctl ends up needing the secondary CF types (CFCalendar, CFDateFormatter, CFBag, CFBitVector, etc.). For launchctl specifically, the plist gap dominates.</p>
+</div>
+
+<h2 id="audit-swift-cf">5. swift-corelibs-foundation &mdash; audit</h2>
+
+<div class="component">
+<p><span class="pill pill-neutral">repo</span> <code>github.com/swiftlang/swift-corelibs-foundation</code> &middot; Apache-2.0 &middot; HEAD <code>0e20e4a</code> 2026-05-13 (actively maintained, master up-to-date) &middot; cloned at <code>/Users/jmaloney/Documents/launchd/swift-corelibs-foundation</code> &middot; full audit at <code>swift-corelibs-foundation_audit.md</code>.</p>
+
+<p>swift-corelibs-foundation is the open-source Foundation port originally for Swift on Linux. The relevant part for us is <code>Sources/CoreFoundation/</code> &mdash; <strong>a real CoreFoundation C implementation</strong> derived from Apple's CF-Lite drops, with Swift refcount hooks added on top.</p>
+
+<h4>CF C source presence</h4>
+<p><code>Sources/CoreFoundation/</code> ships <strong>78 standalone <code>CF*.c</code> files</strong>, ~97,738 LOC total. Highlights for the launchctl-relevant subset:</p>
+<table>
+<thead><tr><th>File</th><th>LOC</th><th>Notes</th></tr></thead>
+<tbody>
+  <tr><td><code>CFString.c</code></td><td>7,946</td><td>Full mutable/immutable string, encodings, formatting, transforms.</td></tr>
+  <tr><td><code>CFURL.c</code></td><td>5,494</td><td>Complete CFURL impl.</td></tr>
+  <tr><td><code>CFPropertyList.c</code></td><td>3,288</td><td>XML + OpenStep + binary plist driver. <strong>Real, not stubbed.</strong></td></tr>
+  <tr><td><code>CFBinaryPList.c</code></td><td>1,815</td><td>Real Apple binary plist reader+writer (<code>bplist00</code>).</td></tr>
+  <tr><td><code>CFOldStylePList.c</code></td><td>760</td><td>OpenStep / NeXT plist parser.</td></tr>
+  <tr><td><code>CFRuntime.c</code></td><td>1,867</td><td>The CF class/refcount runtime.</td></tr>
+  <tr><td><code>CFNumber.c</code> / <code>CFArray.c</code> / <code>CFDictionary.c</code> / <code>CFData.c</code> / <code>CFSet.c</code></td><td>1,322 / 1,039 / 437 / 870 / 339</td><td>Standard containers + Number.</td></tr>
+  <tr><td><code>CFUtilities.c</code></td><td>1,667</td><td><code>CFLog</code>, <code>CFShow</code>, hashing.</td></tr>
+  <tr><td><code>CFReadStream</code>/<code>CFStream.c</code></td><td>1,977</td><td>CFReadStream/CFWriteStream + dispatch.</td></tr>
+  <tr><td><code>CFBundle.c</code> + 11 <code>CFBundle_*.c</code></td><td>1,925 + ~7k</td><td>Full bundle impl.</td></tr>
+</tbody>
+</table>
+
+<p>These are <strong>not stripped-down</strong> &mdash; file headers say "Copyright (c) 1998-2019, Apple Inc." with Swift runtime hooks added. The plist code in particular is the real Apple driver, exercised by the Swift-side <code>plutil(1)</code> reimplementation included in the same repo.</p>
+
+<h4>Public CF API coverage</h4>
+<p><strong>915 distinct <code>CF*</code> function definitions</strong> with real bodies in <code>Sources/CoreFoundation/*.c</code>. Cross-checked against launchctl's 49-function list: <strong>48 of 49 present</strong>. The one missing symbol is <code>CFPropertyListCreateFromFile</code> &mdash; a deprecated thin wrapper. launchctl can substitute <code>CFReadStreamCreateWithFile</code> + <code>CFPropertyListCreateFromStream</code> (both present); one-line patch.</p>
+
+<h4>CF SPI</h4>
+<p>The full Apple-style "private but exposed" surface ships:</p>
+<ul>
+  <li><code>CFPriv.h</code> &mdash; 34 KB, <strong>138 visible declarations</strong>. File header: <em>"APPLE SPI: NOT TO BE USED OUTSIDE APPLE! *or swift-corelibs-foundation"</em>.</li>
+  <li><code>CFLogUtilities.h</code> &mdash; declares <code>CFLog</code>, <code>CFLog1</code>, and the full <code>kCFLogLevel*</code> set. Real impl in <code>CFUtilities.c</code> (<code>__CFLogCString</code> / <code>__CFLogCStringLegacy</code> &rarr; <code>asl_set</code>/<code>asl_send</code> on Darwin, <code>syslog</code> on Linux/BSD).</li>
+  <li><code>CFBundlePriv.h</code> (14 KB), <code>CFURLPriv.h</code> (<strong>67 KB</strong>), <code>CFStreamPriv.h</code>, <code>CFAttributedStringPriv.h</code>, <code>CFCalendarPriv.h</code>, <code>CFCharacterSetPriv.h</code>, plus per-type <code>*_Private.h</code> for DateFormatter / Error / Locale / Number / PropertyList / String.</li>
+  <li>884 distinct <code>_CF*</code>-prefixed function definitions in the <code>.c</code> files.</li>
+</ul>
+
+<p>This is essentially the same SPI launchd-842 was written against. Both <code>CFPriv.h</code> and <code>CFLogUtilities.h</code> are header-and-impl complete.</p>
+
+<h4>PropertyList support</h4>
+<p>Both XML and binary, both read and write, all with real implementations:</p>
+<ul>
+  <li><strong>XML reader/writer</strong>: hand-rolled in <code>CFPropertyList.c</code> (3,288 LOC). Validates against the Apple DTD, emits the canonical <code>&lt;?xml ...&gt;&lt;!DOCTYPE plist ...&gt;</code> header, supports <code>kCFPropertyListXMLFormat_v1_0</code>.</li>
+  <li><strong>Binary reader/writer</strong>: <code>CFBinaryPList.c</code> (1,815 LOC). Real <code>bplist00</code> format support including the trailer + offset table, integer/real/data/date/UID encoding.</li>
+  <li><strong>OpenStep/NeXT reader</strong>: <code>CFOldStylePList.c</code> (760 LOC). Read-only; writes return an error and log a message.</li>
+  <li><strong>Top-level entry points</strong> all present with real bodies: <code>CFPropertyListCreateWithData</code>, <code>CFPropertyListCreateWithStream</code>, <code>CFPropertyListCreateFromStream</code>, <code>CFPropertyListCreateFromXMLData</code>, <code>CFPropertyListCreateData</code>, <code>CFPropertyListCreateXMLData</code>, <code>CFPropertyListCreateDeepCopy</code>, <code>CFPropertyListIsValid</code>, <code>CFPropertyListWrite</code>, <code>CFPropertyListWriteToStream</code>. Format auto-detection works on read.</li>
+</ul>
+
+<h4>The Swift-runtime caveat</h4>
+<div class="callout callout-warn">
+<p><strong>This is the gotcha.</strong> CF source ships as a C-only static library on disk, but the build and the runtime are wired to Swift in three places:</p>
+<ol>
+  <li><code>Sources/CoreFoundation/internalInclude/CoreFoundation_Prefix.h:10</code> hard-defaults <code>DEPLOYMENT_RUNTIME_SWIFT</code> to <code>1</code>.</li>
+  <li>Top-level <code>CMakeLists.txt:181-194</code> further asserts <code>-DDEPLOYMENT_RUNTIME_SWIFT -DCF_BUILDING_CF -fcf-runtime-abi=swift -fblocks -fconstant-cfstrings</code>.</li>
+  <li><code>Sources/CoreFoundation/CMakeLists.txt:118-121</code> links <code>_FoundationICU</code> (fetched via CMake from <code>swift-foundation-icu</code>) and <code>dispatch</code>.</li>
+</ol>
+<p>With <code>DEPLOYMENT_RUNTIME_SWIFT=1</code> the CF C runtime takes the Swift-RC path: <code>_CFRetain()</code> becomes <code>swift_retain((void *)cf)</code>, <code>_CFRelease()</code> becomes <code>swift_release(void *)</code>, init calls <code>__CFInitializeSwift()</code>, and CF class table slots get their ObjC class from <code>__CFSwiftGetBaseClass()</code>. None of those symbols are defined in <code>Sources/CoreFoundation/</code> &mdash; they come from <code>Sources/Foundation/</code> (Swift) and from <code>libswiftCore.so</code>.</p>
+<p>The <em>legacy non-Swift refcount path</em> is fully present in the source &mdash; the long bitfield CAS loop in <code>CFRuntime.c:1430-1509</code> &mdash; but is <code>#if</code>'d out by the SwiftRT macro. To build standalone C-only we need to:</p>
+<ol>
+  <li>define <code>DEPLOYMENT_RUNTIME_SWIFT=0</code> before the prefix header is processed (patch <code>CoreFoundation_Prefix.h:11</code>),</li>
+  <li>remove <code>-fcf-runtime-abi=swift</code> from compile flags,</li>
+  <li>write our own build wrapper (small CMake or Makefile) that drops <code>_FoundationICU</code> and (optionally) <code>dispatch</code> from <code>target_link_libraries</code>, and either provides them from system or drops the <code>.c</code> files that need them. <strong>ICU consumers: <code>CFLocale</code>, <code>CFCalendar</code>, <code>CFDateFormatter</code>, <code>CFNumberFormatter</code>, <code>CFStringTransform</code>, <code>CFRegularExpression</code>, <code>CFCharacterSet</code>, <code>CFStringEncodingDatabase</code>, <code>CFICUConverters</code></strong>. None of those are referenced by launchctl, so the relevant <code>.c</code> files can be dropped entirely.</li>
+</ol>
+<p>The upstream build does not expose a "C-only" target. We have to maintain our own build wrapper. Estimated effort: about a day of CMake/Makefile work plus a small patch series on the prefix header. The <em>legacy non-Swift code path itself is intact upstream and tested</em> &mdash; we are flipping a knob, not reviving abandoned code.</p>
+</div>
+
+<h4>Dependencies (post-strip)</h4>
+<ul>
+  <li><strong>libdispatch</strong> &mdash; required by <code>CFRunLoop</code>, <code>CFStream</code>, <code>CFSocket</code>. We have it via gershwin (per <a href="../launchctl_blocked_on_gnustep.md">gershwin_provides memory</a>).</li>
+  <li><strong>libBlocksRuntime</strong> &mdash; FreeBSD 15 base ships it via pkgbase.</li>
+  <li><strong>ICU</strong> &mdash; only for the formatter/locale/calendar/regex/converters slice. <strong>None used by launchctl</strong>; those <code>.c</code> files can be dropped entirely from the build target.</li>
+  <li><strong>libxml2</strong> &mdash; NOT a CF dependency. It's only used by the sibling <code>_CFXMLInterface</code> module (which we don't need; the launchd plist parser is hand-rolled in <code>CFPropertyList.c</code>).</li>
+</ul>
+
+<div class="verdict">
+<strong>Verdict for launchctl:</strong> <span class="pill pill-good">recommended</span> swift-corelibs-foundation CF covers 48 of 49 launchctl CF calls, has working XML + binary plist read/write, ships <code>CFPriv.h</code> and <code>CFLogUtilities.h</code> with real impls, and stays under Apache 2.0. Cost: about one engineer-day of build-system surgery (fork prefix header, write a CMake/Makefile target that emits <code>libCoreFoundation.so</code>, drop ICU-only sources). After that, launchctl ports against a real Apple-shape CF.
+</div>
+</div>
+
+<h2 id="matrix">6. Side-by-side matrix</h2>
+
+<table class="matrix">
+<thead><tr><th>Capability</th><th>libs-base</th><th>libs-corebase</th><th>swift-corelibs-foundation</th></tr></thead>
+<tbody>
+  <tr><td>CF C function definitions</td><td class="no">0</td><td class="yes">909</td><td class="yes">915</td></tr>
+  <tr><td>Coverage of launchctl's 49 CF function calls</td><td class="no">0 of 49</td><td class="yes">49 of 49 (decls)</td><td class="yes">48 of 49 (real impl)</td></tr>
+  <tr><td>XML plist <strong>read</strong></td><td class="no">via NS</td><td class="no"><code>return NULL</code></td><td class="yes">real (3,288 LOC)</td></tr>
+  <tr><td>XML plist <strong>write</strong></td><td class="no">via NS</td><td class="part">partial</td><td class="yes">real</td></tr>
+  <tr><td>Binary plist <strong>read</strong></td><td class="no">via NS</td><td class="no"><code>#if 0</code></td><td class="yes">real (1,815 LOC)</td></tr>
+  <tr><td>Binary plist <strong>write</strong></td><td class="no">via NS</td><td class="no">empty <code>{}</code></td><td class="yes">real</td></tr>
+  <tr><td><code>CFPriv.h</code></td><td class="no">no</td><td class="no">no</td><td class="yes">138 decls</td></tr>
+  <tr><td><code>CFLogUtilities.h</code> + <code>CFLog</code> impl</td><td class="no">no</td><td class="no">no</td><td class="yes">yes</td></tr>
+  <tr><td>Standalone-buildable today</td><td class="yes">yes (NS only)</td><td class="yes">yes</td><td class="part">needs prefix-header fork + build wrapper (~1 day)</td></tr>
+  <tr><td>License</td><td>LGPL/GPL</td><td>LGPL 2.1</td><td>Apache 2.0</td></tr>
+  <tr><td>Upstream activity</td><td>active</td><td>2021-09-30 (one merge 2026-04)</td><td>2026-05-13, active</td></tr>
+  <tr><td>Build deps (minimum)</td><td>gnustep-make + libobjc2 + libffi + libxml2 + ICU + libgnutls + libdispatch</td><td>gnustep-make + libobjc + libs-base + ICU + libm</td><td>libdispatch + libBlocksRuntime (ICU optional — drop for launchctl)</td></tr>
+  <tr><td><strong>Fit for launchctl</strong></td><td class="no">no (no CF surface)</td><td class="no">no (plist stubs)</td><td class="yes">yes</td></tr>
+</tbody>
+</table>
+
+<h2 id="decision">7. Decision</h2>
+
+<div class="verdict">
+<strong>Pick: <a href="#audit-swift-cf">swift-corelibs-foundation CoreFoundation/</a></strong> as the CF source for launchctl, built standalone (non-Swift refcount path) with the ICU-only <code>.c</code> files dropped.
+</div>
+
+<p>The matrix collapses to one viable answer. libs-base contributes nothing on the CF axis. libs-corebase has the right shape but the plist code paths are stubs &mdash; and plist parsing is launchctl's primary job. swift-corelibs-foundation's CF source carries the real Apple plist driver, ships the SPI surface launchctl-842 was written against, and stays under Apache 2.0.</p>
+
+<p>The Swift-runtime entanglement is real but bounded: it's a knob (<code>DEPLOYMENT_RUNTIME_SWIFT</code>) the codebase still respects. We flip it, drop ICU-only sources, and write our own build target.</p>
+
+<h2 id="porting-plan">8. Porting plan for the winner</h2>
+
+<p>Concrete steps, ordered. Each step is a CI-checkpointable milestone.</p>
+
+<h3>8.1 Vendor</h3>
+<p>Copy <code>Sources/CoreFoundation/</code> + <code>Sources/CoreFoundation/include/</code> + <code>Sources/CoreFoundation/internalInclude/</code> + <code>uuid/</code> from <code>../swift-corelibs-foundation</code> into <code>src/libCoreFoundation/</code> in the freebsd-launchd-mach repo. Match the libdispatch precedent: vendored source, repo-local patches, no submodule.</p>
+
+<h3>8.2 Keep ICU files; install ICU as a build dep</h3>
+<p>Originally proposed: strip the nine ICU-consuming <code>.c</code> files (CFLocale*, CFCalendar, CFDateFormatter, CFNumberFormatter, CFStringTransform, CFRegularExpression, CFCharacterSet, CFStringEncodingDatabase, CFICUConverters). Revised after discussion: <strong>keep them, install ICU instead</strong>. Reasons:</p>
+<ul>
+  <li>gershwin/<code>libgnustep-base</code> needs ICU anyway &mdash; it's already in our dep graph for the desktop track.</li>
+  <li>configd / IPConfiguration / SystemConfiguration may transitively want CFLocale/CFCalendar/CFCharacterSet down the road. Keeping the files means we don't have to revert a stripping decision later.</li>
+  <li>Less local divergence from upstream &mdash; future re-vendor drops are easier when our patch surface is small.</li>
+</ul>
+<p>Build dep added: <code>libicuuc</code> + <code>libicui18n</code> + <code>libicudata</code> + their <code>-dev</code> headers (via FreeBSD <code>devel/icu</code> port or pkgbase if available). Add to <code>buildpkgs.txt</code> / <code>pkglist.txt</code>. Runtime cost on the ISO: ~30 MiB across the three libs.</p>
+<p>The only subdir we still drop is <code>src/libCoreFoundation/BlockRuntime/</code> &mdash; that's the WASI fallback for systems without a real libBlocksRuntime. We already ship <code>/usr/lib/libsystem/libBlocksRuntime.so</code> via the libdispatch build (per the post-2026-05-13 bundling decision), so the upstream fallback is redundant.</p>
+
+<h3>8.3 Disable the Swift RC path</h3>
+<p>Patch <code>internalInclude/CoreFoundation_Prefix.h:11</code> to set <code>DEPLOYMENT_RUNTIME_SWIFT 0</code>, or <code>#undef</code> + <code>#define</code> it explicitly. Confirm by inspection that <code>CFRuntime.c</code>'s legacy bitfield-CAS path is now active and <code>swift_retain</code>/<code>swift_release</code>/<code>__CFInitializeSwift</code>/<code>__CFSwiftGetBaseClass</code> references are <code>#else</code>'d out.</p>
+
+<h3>8.4 Write a bsd.lib.mk Makefile</h3>
+<p>Single <code>src/libCoreFoundation/Makefile</code> following the precedent set by liblaunch, libsystem_kernel, libxpc:</p>
+<ul>
+  <li><code>LIB=CoreFoundation</code></li>
+  <li><code>SHLIB_MAJOR=6</code> (or whatever upstream uses; double-check)</li>
+  <li><code>SRCS=</code> the post-strip <code>.c</code> file list</li>
+  <li><code>CFLAGS+= -DDEPLOYMENT_RUNTIME_C=1 -DDEPLOYMENT_TARGET_FREEBSD=1 -DCF_BUILDING_CF -fblocks -fconstant-cfstrings -I${.CURDIR}/include -I${.CURDIR}/internalInclude</code></li>
+  <li><code>LDADD+= -ldispatch -lBlocksRuntime -lpthread</code></li>
+  <li>Install to <code>/usr/lib/libsystem/libCoreFoundation.so.6</code> per the install-layout spike. Headers to <code>/usr/include/CoreFoundation/</code>.</li>
+</ul>
+
+<h3>8.5 Add build.sh step + smoke marker</h3>
+<p>Following the precedent of step 3i (libxpc) and 3m (liblaunch): a new <code>build.sh</code> step (call it 3p or wherever) that <code>make -C src/libCoreFoundation</code>'s the lib, ldconfig-hints it (already covered by <code>/etc/ld-elf.so.conf</code> &mdash; <code>/usr/lib/libsystem</code> is on it), and builds a tiny <code>test_corefoundation.c</code> at <code>/usr/tests/freebsd-launchd-mach/test_corefoundation</code> that round-trips a small dict through <code>CFPropertyListCreateData</code> + <code>CFPropertyListCreateWithData</code> in both XML and binary modes. Marker: <code>COREFOUNDATION-OK</code>. Expect grammar entry in <code>tests/boot-test.sh</code>.</p>
+
+<h3>8.6 Patch <code>launchctl.c</code> for the one missing symbol</h3>
+<p>Replace the single <code>CFPropertyListCreateFromFile</code> call (line ~526 vicinity per earlier audit) with a two-liner: <code>CFReadStreamCreateWithFile</code> + <code>CFPropertyListCreateFromStream</code>. Delete the unused <code>#include &lt;CoreFoundation/CFLogUtilities.h&gt;</code>.</p>
+
+<h3>8.7 Build launchctl</h3>
+<p>Mirrors the launchd daemon's Phase I1c flow: a <code>src/launchd/support/Makefile</code> using <code>bsd.prog.mk</code>, <code>PROG=launchctl</code>, <code>SRCS=launchctl.c</code>, <code>BINDIR=/bin</code> (per the install-layout spike &mdash; <em>not</em> <code>/sbin</code>; <code>launchctl</code> is on <code>/bin</code>). Link <code>-lCoreFoundation -llaunch -lxpc -lsystem_kernel -lutil -lpthread</code>. The non-CF shims (IOKit no-ops, NSSystemDirectories hand-roll, <code>os/assumes.h</code> reuse from the daemon build) live alongside.</p>
+
+<h3>8.8 LAUNCHCTL-BUILD-OK smoke marker</h3>
+<p>Boot-time <code>/bin/launchctl help</code> &mdash; the no-IPC CLI path, parallel to the LAUNCHD-BUILD-OK approach for the daemon. Expected output: the usage banner. Marker: <code>LAUNCHCTL-BUILD-OK</code>.</p>
+
+<h3>Estimated total effort</h3>
+<p>One to two engineer-days for steps 8.1&ndash;8.5 (the CF library), plus an unknown but bounded amount for 8.6&ndash;8.8 (the launchctl shims for the IOKit/NSSystemDirectories surface). The latter is at most a small <code>.c</code> file of stubs &mdash; smaller than what we already wrote for the launchd daemon's libsystem_kernel stubs.</p>
+
+<h2 id="non-cf">9. Non-CF surface (IOKit, Mach-O, NSSystemDirectories)</h2>
+
+<p>Outside the CF question, <code>launchctl.c</code> pulls in three small macOS-only surfaces. None of the three CF candidates ships these &mdash; they're handled locally in the launchctl port:</p>
+
+<h3>9.1 IOKit (7 symbols, 2 call paths)</h3>
+<table>
+<thead><tr><th>Symbol</th><th>Call path</th><th>Treatment</th></tr></thead>
+<tbody>
+  <tr><td><code>IOKitWaitQuiet</code></td><td><code>do_potential_fsck</code>, single-user, crash-debug (lines 2153, 2219, 2481)</td><td>No-op stub. FreeBSD has no IOKit registry to quiesce.</td></tr>
+  <tr><td><code>IORegistryEntryFromPath</code><br><code>IORegistryEntryCreateCFProperty</code><br><code>IOObjectRelease</code><br><code>io_service_t</code><br><code>kIOMasterPortDefault</code><br><code>kBootRootActiveKey</code></td><td><code>do_bootroot_magic</code> (lines 4501-4513)</td><td>Stub <code>do_bootroot_magic</code> to a no-op or surround with <code>#ifdef __APPLE__</code>. There's no <code>IODeviceTree:/chosen</code> on FreeBSD.</td></tr>
+</tbody>
+</table>
+
+<h3>9.2 Mach-O (1 symbol)</h3>
+<p><code>getsectiondata</code>, single call site at line 1717 inside <code>GetPropertyListFromCache()</code>, which is wrapped in <code>#if TARGET_OS_EMBEDDED</code>. We don't define <code>TARGET_OS_EMBEDDED</code> on FreeBSD; the whole code path drops out. The <code>#include &lt;mach-o/getsect.h&gt;</code> itself needs the same guard. <strong>Zero ELF-equivalent work needed.</strong></p>
+
+<h3>9.3 <code>&lt;NSSystemDirectories.h&gt;</code> (9 symbols)</h3>
+<p>Sole consumer is <code>load_and_unload_cmd()</code> (lines 2631-2769) iterating <code>/.../Library/LaunchAgents</code> + <code>LaunchDaemons</code> per domain. Replace with a hand-rolled domain table:</p>
+<pre><code>static const struct {
+    unsigned int mask;
+    const char *path;
+} _ns_dirs[] = {
+    { NSUserDomainMask,    "~/Library" },
+    { NSLocalDomainMask,   "/Local/Library" },   /* project policy: /Local replaces /Library */
+    { NSNetworkDomainMask, "/Network/Library" },
+    { NSSystemDomainMask,  "/System/Library" },
+};</code></pre>
+<p>Plus a one-function reimplementation of <code>NSStartSearchPathEnumeration</code> / <code>NSGetNextSearchPathEnumeration</code> against that table. ~30 lines of C.</p>
+
+<h3>9.4 Other Apple-only headers (already handled by the daemon shims)</h3>
+<p><code>&lt;os/assumes.h&gt;</code>, <code>&lt;libinfo.h&gt;</code>, <code>&lt;bootfiles.h&gt;</code>, the BSM auditd header &mdash; all of these already have shims in <code>src/launchd/freebsd-shims/</code> from the I1c launchd-daemon build. They get reused as-is.</p>
+
+<h2 id="coexistence">10. Coexistence with GNUstep &mdash; one CF per binary</h2>
+
+<p>Natural follow-up question, since gershwin already ships <code>libgnustep-base</code> and the GNUstep stack provides its own <code>libgnustep-corebase</code> with the same <code>CF*</code> API surface as the swift-corelibs CF we're recommending: <strong>do these two CoreFoundation implementations conflict if both are installed on the same system?</strong></p>
+
+<p>Answer: <strong>they coexist by design, provided no single binary links against both.</strong></p>
+
+<h3>10.1 Why they don't conflict at the system level</h3>
+
+<p>Each CF runtime is a separately-named ELF shared library with its own SONAME and its own type registry:</p>
+
+<table>
+<thead><tr><th>Property</th><th>swift-corelibs CF</th><th>gnustep-corebase</th></tr></thead>
+<tbody>
+  <tr><td>Install path</td><td><code>/usr/lib/libsystem/libCoreFoundation.so.6</code></td><td><code>/System/Library/Libraries/libgnustep-corebase.so.0</code> (gershwin convention)</td></tr>
+  <tr><td>SONAME</td><td><code>libCoreFoundation.so.6</code></td><td><code>libgnustep-corebase.so.0</code></td></tr>
+  <tr><td>Consumers</td><td>Apple-source: <code>launchctl</code>, future <code>configd</code>, <code>asl</code>, <code>notifyd</code>, &hellip;</td><td>GNUstep apps + frameworks (toll-free with libgnustep-base)</td></tr>
+  <tr><td>Header root</td><td><code>/usr/include/CoreFoundation/</code></td><td>gershwin's GNUstep tree (<code>/System/Library/Headers/CoreFoundation/</code> or similar &mdash; gershwin's call)</td></tr>
+  <tr><td>Type registry</td><td>internal to <code>libCoreFoundation.so.6</code></td><td>internal to <code>libgnustep-corebase.so.0</code></td></tr>
+</tbody>
+</table>
+
+<p>Each binary's <code>DT_NEEDED</code> records exactly one of the two library names. <code>ldconfig</code> finding both shared objects in different directories is harmless &mdash; the dynamic linker resolves <code>DT_NEEDED libCoreFoundation.so.6</code> by name and goes to <code>/usr/lib/libsystem/</code>; it doesn't see <code>libgnustep-corebase.so.0</code> at all. The two libraries can sit on the same disk indefinitely without anything bridging them.</p>
+
+<h3>10.2 Where the conflict WOULD happen (the rule)</h3>
+
+<p>CoreFoundation is a typed runtime, not just an API surface. <code>CFArrayGetTypeID()</code> returns a number that comes from the loaded CF's type-registry init &mdash; assigned at first call, different between the two implementations. A <code>CFArrayRef</code> created by one CF is just a pointer to an internal struct; the other CF doesn't recognize it as an array (its type ID is different), and <code>CFRelease</code> against the wrong runtime would either crash or corrupt refcounts. Same goes for the per-type vtables: each CF binds <code>CFArrayCreate</code>'s function pointer at init time to its own copy of the implementation, and the two copies do not share any state.</p>
+
+<p>So the project-wide rule:</p>
+
+<div class="callout callout-warn">
+<p><strong>One CF per binary.</strong> No single executable or shared library links both <code>libCoreFoundation</code> (swift-corelibs) and <code>libgnustep-corebase</code>. Pick one per consumer based on which lane the consumer is in:</p>
+<ul>
+  <li>Apple-source binaries (<code>launchctl</code>, <code>configd</code>, <code>asl</code>, <code>notifyd</code>, <code>mDNSResponder</code>, <code>IPConfiguration</code>, &hellip;) link <code>-lCoreFoundation</code>.</li>
+  <li>GNUstep Obj-C apps + frameworks link <code>-lgnustep-base -lgnustep-corebase</code> (libgnustep-base toll-free-bridges to libgnustep-corebase for them).</li>
+</ul>
+<p>If a future need to mix surfaces shows up &mdash; e.g. a GNUstep app that wants to call into a CF-typed Apple library &mdash; the answer is <em>not</em> "link both CFs in the same process". The answer is one of: (a) the libgnustep-corebase side already provides the API, route through it; (b) the Apple-shape library exposes a non-CF entry point (the way launchd exposes <code>launch_data_t</code>, not CF); or (c) an explicit RPC boundary that does not pass CF objects across the link.</p>
+</div>
+
+<h3>10.3 Header paths matter too</h3>
+
+<p>If both libs ever installed headers to the same <code>/usr/include/CoreFoundation/</code>, second-install wins and every translation unit compiled after that point picks up the wrong types. Different header roots prevent it:</p>
+
+<ul>
+  <li><strong>swift-corelibs CF</strong>: <code>/usr/include/CoreFoundation/{CoreFoundation,CFArray,CFDictionary,CFPropertyList,CFPriv,CFLogUtilities,&hellip;}.h</code> &mdash; the canonical Apple-shape path.</li>
+  <li><strong>gnustep-corebase</strong>: whatever gershwin chose for the GNUstep tree. The GNUstep convention is typically a separate include root under <code>/System/Library/Headers/</code> or <code>$GNUSTEP_SYSTEM_HEADERS</code>. As long as it's not <code>/usr/include/CoreFoundation/</code>, no conflict.</li>
+</ul>
+
+<p>Both <code>.pc</code> files (if pkg-config is used) get distinct names &mdash; <code>libCoreFoundation.pc</code> vs <code>libgnustep-corebase.pc</code>. Consumers ask for one or the other explicitly.</p>
+
+<h3>10.4 What this means in practice for the launchctl port</h3>
+
+<p>The port is unaffected by the question of whether gershwin's CF stack is installed. <code>launchctl</code> links <code>-lCoreFoundation</code> from <code>/usr/lib/libsystem/</code> and compiles against headers from <code>/usr/include/CoreFoundation/</code>. It has no knowledge of gershwin's GNUstep stack and doesn't need to. Installing gershwin on the same system puts <code>libgnustep-corebase.so.0</code> on disk in a different directory; the two CoreFoundations coexist without colliding at link time or at runtime.</p>
+
+<p>This is the same posture gershwin already takes with <code>libdispatch</code>: gershwin ships libdispatch through its own pkg, and we ship our own libdispatch via <code>/usr/lib/libsystem/libdispatch.so</code>. The two installations don't fight because each binary's link line picks one and the other is invisible to it.</p>
+
+<h2 id="no-rewrite">11. Why not rewrite to GNUstep instead?</h2>
+
+<p>The obvious alternative: skip CoreFoundation entirely, rewrite each Apple system service we want to port (<code>launchctl</code>, <code>configd</code>, <code>IPConfiguration</code>, <code>mDNSResponder</code>, <code>asl</code>, &hellip;) to use GNUstep <code>NSDictionary</code>/<code>NSArray</code>/<code>NSString</code> in place of the CF equivalents. The project would then have one Foundation stack (GNUstep) for the entire userland.</p>
+
+<p>This sounds clean. In practice it's worse than the swift-corelibs CF path by every meaningful axis. Four reasons:</p>
+
+<h3>11.1 CF is structural in these daemons, not decorative</h3>
+
+<p>For <code>launchctl</code> alone, CF is "the plist parser plus a few container helpers" &mdash; ~50 distinct functions per the audit. For the bigger Apple-source daemons further out on the roadmap, CF is the data model and the event model:</p>
+
+<ul>
+  <li><strong><code>IPConfiguration</code></strong> (Apple's DHCP/IPv6 client, ~10k LOC in <code>apple-oss-distributions/bootp</code>): <code>CFDictionaryRef</code> as the per-interface configuration state, <code>CFArrayRef</code> for lease history + DNS server lists, <code>CFStringRef</code> for every key passed to configd, <code>CFRunLoopRef</code> as the main event loop, <code>CFRunLoopTimer</code> for DHCP lease renewals + RFC 3315 timers, <code>CFSocketRef</code> for raw DHCP/DHCPv6 packet I/O. The daemon's overall shape is "configure a few CFRunLoopSources, enter <code>CFRunLoopRun</code>, never return." Rewriting that to NS is rewriting the daemon.</li>
+  <li><strong><code>configd</code></strong>: similar story. The SCDynamicStore <em>is</em> a <code>CFDictionaryRef</code>-backed cross-process store; the notification mechanism is CF-shaped. Plugin loading uses CFBundle/CFPlugIn.</li>
+  <li><strong><code>mDNSResponder</code></strong>: portable C core, with platform integration that pulls CF on Darwin (CFRunLoop, CFSocket, CFNetService advertisement). The Linux build of the same upstream avoids CF, so this one is the least CF-entangled &mdash; but the path of least resistance still uses the platform-Apple variant.</li>
+  <li><strong>asl</strong>: less CF-heavy, but the structured-logging API surface (<code>asl_object_t</code>) is CF-toll-free-bridged to <code>CFTypeRef</code> on Darwin.</li>
+</ul>
+
+<p>"Strip CF and rewrite to NS" for IPConfiguration is a multi-month rewrite. For configd it's larger still.</p>
+
+<h3>11.2 configd's <em>public API</em> is CF-shaped</h3>
+
+<p>Even setting the daemon internals aside, <code>configd</code> exposes its surface as <code>SystemConfiguration.framework</code> &mdash; a CF-typed cross-process store API. Every Apple-source binary that asks the system "what's my hostname?" / "am I on a captive portal?" / "what are my network interfaces?" (and that's a lot of them: mDNSResponder, network setup helpers, security extensions, GUI network prefs equivalents) talks <code>SystemConfiguration</code> in CF terms.</p>
+
+<p>Rewriting configd to use NS internally means rewriting <em>the public API too</em>, at which point every consumer of <code>SystemConfiguration</code> stops compiling against our fork. We'd be maintaining a divergent fork of every consumer for as long as the project exists. That's the spiral the <a href="freebsd-libxpc-plan.html">libxpc plan</a> explicitly warned against early.</p>
+
+<h3>11.3 The cost is asymmetric and one-way</h3>
+
+<table>
+<thead><tr><th>Path</th><th>One-time cost</th><th>Per-daemon cost</th><th>Cost on each upstream refresh</th></tr></thead>
+<tbody>
+  <tr><td><strong>swift-corelibs CF</strong></td><td>~1 day to vendor + strip ICU + flip Swift macro + write Makefile</td><td>only the daemon-specific platform shims (mach, kqueue, BSD socket dialect, &hellip;)</td><td>re-vendor; daemon source remains upstream-compatible</td></tr>
+  <tr><td><strong>Rewrite to GNUstep NS</strong></td><td>(nothing &mdash; GNUstep already exists)</td><td>weeks-to-months per daemon (CFDictionary/CFArray/CFString/CFRunLoop/CFSocket replacement throughout)</td><td>re-apply the entire NS rewrite to every upstream refresh; binary divergence grows over time</td></tr>
+</tbody>
+</table>
+
+<p>The first row is engineering done once. The second row is engineering done forever, against a moving upstream target, with no path back to "just compile the official source" if the rewrite gets behind.</p>
+
+<h3>11.4 The scope_split memory anticipated exactly this case</h3>
+
+<p>The project's internal scope-split memo, written before this audit, says:</p>
+<ul>
+  <li><strong>GNUstep owns</strong>: libobjc2, Foundation, Base, GUI, Back, AppKit-equivalents &mdash; the framework/application layer.</li>
+  <li><strong>Apple source owns</strong>: Mach, launchd, configd, notifyd, asl, libdispatch, libxpc, liblaunch &mdash; the system-services layer.</li>
+</ul>
+<p>swift-corelibs CF, deployed for system services only and never linked by apps (per &sect;<a href="#coexistence">10</a>'s one-CF-per-binary rule), sits cleanly inside the Apple-source-system-services lane. It's the <em>engine</em> the daemons need; it's not a framework apps would link against. The split holds.</p>
+
+<div class="callout callout-good">
+<p><strong>Bottom line.</strong> The CF-engine path is the one that uses the upstream's work. The NS-rewrite path is the one that replaces it. For a project sized to "get launchd-adjacent plumbing working on FreeBSD," using the upstream is the only viable plan. GNUstep stays exactly where it was &mdash; the right answer for the framework/app layer, not blocking the system-services layer.</p>
+</div>
+
+<h2 id="gnustep-roadmap">12. What this means for the GNUstep roadmap</h2>
+
+<p>The original plan was: port libobjc2 &rarr; tools-make &rarr; libs-base &rarr; libs-corebase, <em>then</em> launchctl. This spike says none of those are launchctl-blocking &mdash; and once we follow the reasoning in &sect;<a href="#no-rewrite">11</a>, <em>none of them are <code>configd</code>-blocking, IPConfiguration-blocking, mDNSResponder-blocking, asl-blocking, or notifyd-blocking either</em>. The Apple system-services layer is pure C with CF, by Apple's original design.</p>
+
+<h3>12.1 What the system services actually need from us</h3>
+
+<table>
+<thead><tr><th>Daemon / tool</th><th>Language</th><th>Foundation need</th><th>What it needs from us</th></tr></thead>
+<tbody>
+  <tr><td><code>launchctl</code></td><td>C</td><td>CF</td><td>libCoreFoundation</td></tr>
+  <tr><td><code>configd</code> + SystemConfiguration.framework</td><td>C</td><td>CF + SystemConfiguration (also CF-shaped)</td><td>libCoreFoundation + a SystemConfiguration port</td></tr>
+  <tr><td><code>IPConfiguration</code></td><td>C</td><td>CF + SystemConfiguration</td><td>libCoreFoundation + SystemConfiguration</td></tr>
+  <tr><td><code>mDNSResponder</code></td><td>C</td><td>CF on Darwin only (Linux build is CF-free)</td><td>libCoreFoundation <em>or</em> the existing portable POSIX build path</td></tr>
+  <tr><td><code>asl</code> family (syslogd, syslog, libasl, aslmanager)</td><td>C</td><td>CF only for some logging API surface</td><td>libCoreFoundation</td></tr>
+  <tr><td><code>notifyd</code> + <code>libnotify</code> + <code>notifyutil</code></td><td>C</td><td>none (Mach-port-driven)</td><td>nothing CF/NS at all &mdash; pure libxpc/libdispatch</td></tr>
+  <tr><td><code>DiskArbitration</code> + userland IOKit helpers</td><td>C</td><td>CF</td><td>libCoreFoundation</td></tr>
+</tbody>
+</table>
+
+<h3>12.2 The reshaped Apple-source porting tree</h3>
+
+<p>The launchd-adjacent porting roadmap, post-swift-corelibs-CF decision:</p>
+
+<pre><code>libsystem_kernel + libdispatch + libxpc + liblaunch     [done — Phase A&ndash;I1b]
+                              ↓
+                       launchd daemon                   [done — Phase I1c]
+                              ↓
+              swift-corelibs CoreFoundation             [in flight, task #16&ndash;20]
+                              ↓
+                          launchctl                     [task #21&ndash;23]
+                              ↓
+              SystemConfiguration.framework             [later — configd's API surface]
+                              ↓
+                          configd                       [later]
+                  ↓             ↓             ↓
+            IPConfiguration  mDNSResponder   asl + notifyd  DiskArbitration</code></pre>
+
+<p>That whole tree is C-with-CF. GNUstep does not appear in it.</p>
+
+<h3>12.3 Where GNUstep is still on the roadmap (just not <em>this</em> roadmap)</h3>
+
+<ol>
+  <li><strong>The gershwin desktop / app side.</strong> Anything <code>NS*</code>-using &mdash; the AppKit-equivalent apps, GUI plumbing, app frameworks. Parallel track to the system services, not blocked by them and not blocking them.</li>
+  <li><strong>CFPlugIn-loaded plugins for configd-class daemons.</strong> On Darwin, configd loads NetworkExtension / EAPOLController / EAP plugins that are Obj-C. Those plugins (not the daemon they plug into) would link GNUstep. Without them, the core daemons still run &mdash; we just lose plugin features. Defer until/unless we need them.</li>
+  <li><strong>Future Apple-source binaries with NS surface.</strong> Spotlight, AppKit-using daemons, NSTask consumers. None of these are on the launchd-adjacent shortlist. If one shows up, GNUstep is the answer for the NS half &mdash; with the one-CF-per-binary discipline from &sect;<a href="#coexistence">10</a>.</li>
+</ol>
+
+<h3>12.4 Practical consequence: parallel tracks, not a sequential bottleneck</h3>
+
+<p>Before this audit the plan was "GNUstep block <em>then</em> Apple-services block," conceptually a single critical-path queue. After the audit, the picture is two independent tracks:</p>
+
+<pre><code>Apple-source system services:  libCoreFoundation → launchctl → configd → IPConf/mDNS/asl/&hellip;
+                                                            (no GNUstep dep anywhere)
+
+GNUstep / gershwin desktop:    libobjc2 → tools-make → libs-base → libs-corebase → apps
+                                                            (no Apple-source-service dep)</code></pre>
+
+<p>If gershwin-developer already provides libobjc2 + libs-base (worth a single <code>pkg search</code> against the gershwin tree to confirm &mdash; the <a href="../launchctl_blocked_on_gnustep.md">gershwin_provides memory</a> confirms libdispatch is shipped; libobjc2/libs-base coverage TBD), the GNUstep track is largely "consume what's there." Either way, the two tracks run in parallel and don't block each other.</p>
+
+<p>That's the headline take-away from this spike: <strong>you can ship a working FreeBSD with launchd + configd + IPConfiguration + mDNSResponder + asl + notifyd + DiskArbitration without ever building libobjc2 or libs-base</strong>, and then layer gershwin on top of that whenever the desktop work picks up.</p>
+
+<h2 id="future-swift">13. Future: what if we want Swift on the ISO?</h2>
+
+<p>The choice to flip <code>DEPLOYMENT_RUNTIME_SWIFT=0</code> in our libCoreFoundation raises a natural question: does that close the door on shipping Swift programs (or the Swift toolchain itself) on FreeBSD later? Short answer: <strong>no</strong>. Swift gets its own lane, just like GNUstep got its own lane, and the three coexist by the same one-CF-per-binary discipline established in &sect;<a href="#coexistence">10</a>.</p>
+
+<h3>13.1 What "Swift on the ISO" actually means in pieces</h3>
+
+<p>"Swift" splits into three things that are technically independent:</p>
+
+<ol>
+  <li><strong>Swift toolchain</strong> &mdash; the <code>swift</code> / <code>swiftc</code> compiler + REPL + Foundation/XCTest for building Swift code on the system. FreeBSD has a <code>swift-lang</code> pkg.</li>
+  <li><strong>Swift runtime</strong> &mdash; <code>libswiftCore.so</code> + friends, needed by any program written in Swift. Comes from the same toolchain.</li>
+  <li><strong>Swift Foundation</strong> &mdash; swift-corelibs-foundation's Swift <code>NS*</code> classes layered over a Swift-RC-mode CF. Distributed as <code>libFoundation.so</code> (Swift) which on Linux/BSD <em>statically embeds</em> the Swift-mode CF C library inside itself. There's no upstream-shipped standalone <code>libCoreFoundation.so</code> in Swift mode &mdash; it's an internal static archive of the Swift Foundation build.</li>
+</ol>
+
+<p>For Swift programs to work on the ISO we need (1) and (2) installable as a pkg. Item (3) ships with (1) when a Swift program imports <code>Foundation</code>.</p>
+
+<h3>13.2 Three lanes, three CoreFoundations, no collisions</h3>
+
+<p>Once Swift lands on the system, there are three CF implementations on disk:</p>
+
+<table>
+<thead><tr><th>Lane</th><th>CF artifact on disk</th><th>SONAME</th><th>RC mode</th><th>Consumers</th></tr></thead>
+<tbody>
+  <tr><td><strong>Apple-source system services</strong></td><td><code>/usr/lib/libsystem/libCoreFoundation.so.6</code> (ours)</td><td><code>libCoreFoundation.so.6</code></td><td>legacy bitfield-CAS</td><td>launchctl, configd, IPConfiguration, mDNSResponder, asl, notifyd, DiskArbitration</td></tr>
+  <tr><td><strong>GNUstep / gershwin desktop</strong></td><td><code>/System/Library/Libraries/libgnustep-corebase.so.0</code> (gershwin)</td><td><code>libgnustep-corebase.so.0</code></td><td>GNUstep refcount (toll-free with libgnustep-base NSObject)</td><td>GNUstep apps + frameworks</td></tr>
+  <tr><td><strong>Swift runtime</strong></td><td>statically embedded inside <code>libFoundation.so</code> (Swift); no standalone shared lib</td><td>n/a (private to libFoundation)</td><td>Swift ARC (<code>swift_retain</code>/<code>swift_release</code>)</td><td>Swift programs that <code>import Foundation</code></td></tr>
+</tbody>
+</table>
+
+<p>The Swift Foundation's CF is statically linked into <code>libFoundation.so</code> &mdash; it doesn't export a <code>libCoreFoundation.so</code> file at all, so there's nothing for our SONAME to collide with. Apple's own macOS does the same trick: Swift's Foundation bundles a Swift-RC CF internally, separate from the system <code>CoreFoundation.framework</code>.</p>
+
+<h3>13.3 Why the lanes don't fight</h3>
+
+<p>The mechanism is identical to the GNUstep coexistence story in &sect;<a href="#coexistence">10</a>, just with one more lane:</p>
+
+<ul>
+  <li>Each lane has its own SONAME (or, for Swift, no SONAME because CF is internal).</li>
+  <li>Each binary's <code>DT_NEEDED</code> picks exactly one of the three: <code>libCoreFoundation.so.6</code>, <code>libgnustep-corebase.so.0</code>, or <code>libFoundation.so</code>.</li>
+  <li>Each CF runtime has its own <code>CFTypeID</code> registry, vtable, and refcount allocator. A <code>CFDictionaryRef</code> created in one is unrecognizable to the others &mdash; but CF objects never cross process boundaries (only byte-stream representations like plists and XPC messages do), so that's not a real cross-process problem.</li>
+  <li>The dynamic linker resolves each binary's <code>DT_NEEDED</code> by name, so even with all three libs on the system, no binary loads more than one.</li>
+</ul>
+
+<h3>13.4 Installing the Swift toolchain alongside our libCoreFoundation</h3>
+
+<p>Concrete picture for a future Swift-on-ISO sub-project:</p>
+
+<ul>
+  <li>Add <code>swift-lang</code> (or build it from <code>swiftlang/swift</code> source) to the pkgbase / pkglist. Installs <code>/usr/local/bin/swift</code> + <code>/usr/local/lib/swift/freebsd/libswiftCore.so</code> + <code>libFoundation.so</code> etc.</li>
+  <li>Per the no-/usr/local rule, the swift toolchain coming from a FreeBSD pkg lives at <code>/usr/local/</code> as pkgs do &mdash; we don't relocate. Swift programs that link Foundation pick up <code>libFoundation.so</code> from there via the toolchain's rpath.</li>
+  <li>Our <code>/usr/lib/libsystem/libCoreFoundation.so.6</code> is untouched. <code>launchctl</code> still resolves <code>CFArrayCreate</code> to our build; a hypothetical <code>my-tool.swift</code> resolves it to its toolchain's bundled Swift-mode CF (inside <code>libFoundation.so</code>) via Swift's import-resolution.</li>
+  <li><code>ldconfig</code> on a system with both installed is harmless &mdash; the libs have different file paths, different filenames, and the linker is name-driven.</li>
+</ul>
+
+<h3>13.5 The one combination that wouldn't work</h3>
+
+<p>A <strong>single binary</strong> that wants to be <em>both</em> an Apple-source-system-service (linking our libCoreFoundation) <em>and</em> a Swift program (linking Swift's libFoundation) is the one configuration that would break. Two CFs in one address space, two refcount conventions, two type registries &mdash; objects from one would crash when handed to the other.</p>
+
+<p>This is a contrived combination &mdash; we don't ship anything that mixes those worlds &mdash; but the rule is the same as &sect;<a href="#coexistence">10</a>: <strong>one CF per binary</strong>, generalized now to three lanes. If a future use case forces "Swift code that needs to talk to a system service", the right answer is an RPC boundary (xpc / launchd / mach IPC), not double-linking.</p>
+
+<h3>13.6 Could we later switch our libCoreFoundation to Swift mode?</h3>
+
+<p>Technically yes &mdash; the <code>DEPLOYMENT_RUNTIME_SWIFT</code> macro is a build-time choice, and the legacy code path being <code>#else</code>'d not <code>deleted</code> means we could flip it back. But:</p>
+
+<ul>
+  <li>Every binary linked against our libCoreFoundation would then transitively need <code>libswiftCore.so</code> at startup. That's dozens-of-MB of Swift runtime loaded into every <code>launchctl</code> / <code>configd</code> / <code>IPConfiguration</code> process. Defeats the original reason for picking non-Swift mode.</li>
+  <li>Swift-mode CFTypeRefs are ABI-incompatible with non-Swift-mode ones. Flipping the macro is a one-way SONAME break &mdash; we'd need to bump to <code>libCoreFoundation.so.7</code> and re-link every system service. Painful churn.</li>
+  <li>There's no plausible benefit: our system-services consumers (launchctl, configd, &hellip;) are pure C and don't gain anything from Swift refcount. The only beneficiary would be a Swift program wanting to use our libCoreFoundation directly &mdash; and that program could just use Swift's bundled Foundation instead, which is the same upstream code with the Swift mode pre-baked.</li>
+</ul>
+
+<p>So &mdash; flipping back is technically possible, practically pointless. The non-Swift choice is forward-compatible because Swift programs come with their own bundled CF anyway; we never need our build to be Swift-aware.</p>
+
+<div class="callout callout-good">
+<p><strong>Bottom line on Swift coexistence.</strong> Choosing <code>DEPLOYMENT_RUNTIME_SWIFT=0</code> does not close the door on Swift on the ISO. Swift lives in its own lane with its own bundled CF (statically linked inside <code>libFoundation.so</code>); our libCoreFoundation lives in the system-services lane; GNUstep lives in the desktop/app lane. Three lanes, no shared SONAMEs to collide, same one-CF-per-binary discipline. Adding Swift later is straightforward and changes nothing about the libCoreFoundation we're building today.</p>
+</div>
+
+<h2 id="impacts">14. Impacts of these decisions &mdash; full accounting</h2>
+
+<p>This section lays out, decision by decision, what we're committing to (and what we're <em>not</em>) so the tradeoffs are visible before any of it lands as code. Six decisions feed this spike's plan, plus a closing audit of cross-cutting risks and what stays reversible.</p>
+
+<h3>14.1 Decision: <strong>swift-corelibs-foundation</strong> as the CF source</h3>
+<p>Alternatives rejected: <code>libgnustep-corebase</code> (plist parser stubs &mdash; fatal); <code>libgnustep-base</code> (zero CF C surface); rewrite every Apple system service to NS (multi-month, per-daemon, permanent fork &mdash; see &sect;<a href="#no-rewrite">11</a>).</p>
+<table>
+<thead><tr><th>Dimension</th><th>Impact</th></tr></thead>
+<tbody>
+  <tr><td>License</td><td>Apache 2.0. We ship the <code>LICENSE</code> file alongside the vendored source. No commercial-use restrictions; the only obligation is preserving copyright notices.</td></tr>
+  <tr><td>Disk footprint on ISO</td><td><code>/usr/lib/libsystem/libCoreFoundation.so.6</code> &asymp; 2-4 MiB stripped (estimate &mdash; will measure during &sect;<a href="#porting-plan">8</a>). Headers at <code>/usr/include/CoreFoundation/</code> &asymp; 1 MiB. Total install &asymp; 3-5 MiB.</td></tr>
+  <tr><td>Source tree on disk</td><td><code>src/libCoreFoundation/</code> &asymp; 10 MiB (78 <code>.c</code> + headers + Unicode tables). One-time cost in the git history.</td></tr>
+  <tr><td>Maintenance burden</td><td>We carry a small patch series against upstream (Swift macro flip, BlockRuntime/ drop, Makefile addition). Re-vendoring a future upstream release is a recursive copy + patch re-apply.</td></tr>
+  <tr><td>Upstream drift risk</td><td>swift-corelibs CF is actively maintained (HEAD 2026-05-13). Upstream's primary code path is Swift mode; legacy non-Swift mode is <code>#else</code>'d but stays compileable. If upstream ever deletes the legacy branch, our patch-set grows.</td></tr>
+  <tr><td>Forward compatibility</td><td>Adding more CF coverage = drop fewer files. Removing CF coverage later = drop more files. Both are build-time toggles, not source rewrites.</td></tr>
+</tbody>
+</table>
+
+<h3>14.2 Decision: <strong>DEPLOYMENT_RUNTIME_SWIFT=0</strong> (no Swift refcount)</h3>
+<table>
+<thead><tr><th>Dimension</th><th>Impact</th></tr></thead>
+<tbody>
+  <tr><td>Per-process startup cost</td><td><strong>Major win.</strong> Every system service that links libCoreFoundation avoids loading <code>libswiftCore.so</code> (&gt;20 MiB) and the Swift runtime init. <code>launchctl</code> startup stays a small-binary <code>exec</code> + libxpc/libdispatch/liblaunch &mdash; no Swift in the address space.</td></tr>
+  <tr><td>RAM footprint per process</td><td>Saves ~30-40 MiB of Swift-runtime resident pages per CF-using daemon. Critical for the ISO's "boots in 256 MB" posture.</td></tr>
+  <tr><td>Build toolchain</td><td>No Swift compiler required. Build wrapper is plain clang + bsd.lib.mk.</td></tr>
+  <tr><td>ABI direction lock-in</td><td><strong>One-way SONAME break to flip later.</strong> Swift-mode <code>CFTypeRef</code>s are not binary-compatible with non-Swift-mode ones (different refcount layout, different type-table init). If we ever rebuild in Swift mode, we bump to <code>libCoreFoundation.so.7</code> and re-link every consumer. That's churn we can absorb if the need ever arises.</td></tr>
+  <tr><td>Risk: legacy refcount bugs</td><td>The bitfield-CAS refcount path is real code that ran on macOS for years pre-Swift, but upstream's CI today emphasizes the Swift path. We may hit edge cases the upstream doesn't notice. Mitigation: our smoke tests + the relatively narrow CF surface launchctl exercises catch most.</td></tr>
+  <tr><td>Reversibility</td><td>One-line revert of the prefix-header patch. Rebuild. Everything still compiles; we just gain a libswiftCore.so dep. So "flip back" is a build-system choice, not a code rewrite.</td></tr>
+  <tr><td>Effect on future Swift on ISO</td><td>None &mdash; Swift programs live in their own lane with their own bundled CF (see &sect;<a href="#future-swift">13</a>). Three lanes, three CFs, zero collision.</td></tr>
+</tbody>
+</table>
+
+<h3>14.3 Decision: install at <code>/usr/lib/libsystem/libCoreFoundation.so.6</code></h3>
+<table>
+<thead><tr><th>Dimension</th><th>Impact</th></tr></thead>
+<tbody>
+  <tr><td>Consistency</td><td>Matches the install-layout spike's Apple-libsystem-family path. Sits alongside <code>libsystem_kernel.so</code>, <code>libxpc.so</code>, <code>libdispatch.so</code>, <code>libBlocksRuntime.so</code>, <code>liblaunch.so.1</code>. Anything reaching for "the Apple system stack" finds them together.</td></tr>
+  <tr><td>Header path</td><td><code>/usr/include/CoreFoundation/</code>. Standard Apple-shape <code>&lt;CoreFoundation/CFFoo.h&gt;</code> resolves naturally.</td></tr>
+  <tr><td>ldconfig discovery</td><td>Already covered by <code>/etc/ld-elf.so.conf</code> (added in the 2026-05-15 ldconfig migration &mdash; <code>/usr/lib/libsystem</code> is on the list). No additional rc.conf surgery.</td></tr>
+  <tr><td>No /usr/local violation</td><td>Per project rule. Confirmed.</td></tr>
+  <tr><td>SOVERSION</td><td>Set <code>SHLIB_MAJOR=6</code> to match Apple's macOS <code>CoreFoundation.framework</code> versioning. Open question (see &sect;<a href="#open-questions">15</a>) on whether to match exactly or assign our own.</td></tr>
+</tbody>
+</table>
+
+<h3>14.4 Decision: install ICU rather than strip CF's ICU-using files</h3>
+<table>
+<thead><tr><th>Dimension</th><th>Impact</th></tr></thead>
+<tbody>
+  <tr><td>Disk footprint</td><td>Adds ~30 MiB of ICU libs (<code>libicuuc.so</code> + <code>libicui18n.so</code> + <code>libicudata.so</code>). Largest single chunk is <code>libicudata.so</code> &mdash; the Unicode tables.</td></tr>
+  <tr><td>Build deps</td><td>Adds <code>devel/icu</code> (or pkgbase equivalent) and its <code>-dev</code> headers to <code>buildpkgs.txt</code>.</td></tr>
+  <tr><td>CF feature coverage</td><td>Full upstream coverage: <code>CFLocale</code>, <code>CFCalendar</code>, <code>CFDateFormatter</code>, <code>CFNumberFormatter</code>, <code>CFStringTransform</code>, <code>CFRegularExpression</code>, the Unicode-aware <code>CFCharacterSet</code>, encoding converters. Future configd/IPConfiguration ports don't need to wait for us to un-strip.</td></tr>
+  <tr><td>gershwin alignment</td><td><code>libgnustep-base</code>'s build already requires ICU. Once gershwin lands, ICU is on the system unconditionally. Installing it for libCoreFoundation costs zero marginal disk in that world.</td></tr>
+  <tr><td>Maintenance</td><td>Less local divergence from upstream &mdash; we don't maintain a strip-list that needs re-evaluating each release. Smaller patch series.</td></tr>
+  <tr><td>Risk: ICU ABI breaks</td><td>ICU SOVERSION bumps about once every two years and is mildly disruptive. We re-link against the new ICU when FreeBSD's pkg updates. Same risk every ICU consumer carries.</td></tr>
+</tbody>
+</table>
+
+<h3>14.5 Decision: drop <code>src/libCoreFoundation/BlockRuntime/</code> subdir, use libdispatch's libBlocksRuntime</h3>
+<table>
+<thead><tr><th>Dimension</th><th>Impact</th></tr></thead>
+<tbody>
+  <tr><td>Why the upstream ships it</td><td>The <code>BlockRuntime/</code> subdir is upstream's fallback for systems without a system <code>libBlocksRuntime.so</code> &mdash; primarily WASI. Not for FreeBSD/Linux/Darwin, all of which have a real one.</td></tr>
+  <tr><td>What we use instead</td><td><code>/usr/lib/libsystem/libBlocksRuntime.so</code> built by our vendored swift-corelibs-libdispatch (per the 2026-05-13 "drop FreeBSD-libblocksruntime pkg, bundle via dispatch" decision). Same upstream Apple compiler-rt source as the CF subdir would have used &mdash; one canonical copy on the system.</td></tr>
+  <tr><td>Risk</td><td>If we ever swap the libdispatch source for a different upstream that doesn't bundle libBlocksRuntime, we lose our system-wide source. Mitigation: dispatch's libBlocksRuntime is small and stable; the source is in two places (our libdispatch vendor + this CF vendor we just dropped) and we could resurrect the CF subdir if needed.</td></tr>
+</tbody>
+</table>
+
+<h3>14.6 Decision: vendor at <code>src/libCoreFoundation/</code>, not as a submodule / external pkg</h3>
+<table>
+<thead><tr><th>Dimension</th><th>Impact</th></tr></thead>
+<tbody>
+  <tr><td>Consistency with prior precedent</td><td>Matches what we did with libdispatch, libxpc, launchd-842. Single repo, vendored sources, patches in-tree, no submodules.</td></tr>
+  <tr><td>Build hermeticity</td><td>CI doesn't need to fetch external repos. Build is reproducible from a single <code>git clone</code>.</td></tr>
+  <tr><td>Re-vendor cost</td><td>Periodic <code>cp -R</code> from a fresh upstream clone + patch re-application. Manual but small; the patch surface is intentionally tiny (one prefix-header line + one Makefile).</td></tr>
+  <tr><td>Provenance tracking</td><td><code>src/libCoreFoundation/VENDOR</code> file pins upstream SHA + date + license. Same shape as the existing libdispatch precedent.</td></tr>
+</tbody>
+</table>
+
+<h3>14.7 What we're NOT committing to</h3>
+<ul>
+  <li><strong>GNUstep is not blocked.</strong> libobjc2, tools-make, libs-base, libs-corebase remain on the roadmap for the desktop side, on a parallel track that's not gated by anything in this spike.</li>
+  <li><strong>Swift on the ISO is not blocked.</strong> Per &sect;<a href="#future-swift">13</a>, Swift can land as its own lane with its own bundled CF; no conflict with our build.</li>
+  <li><strong>PID-1 launchd is a separate decision.</strong> The CF we're building today supports launchctl, and launchctl is independent of whether <code>/sbin/launchd</code> is PID 1 or a user-started daemon.</li>
+  <li><strong>The full Apple userland is not in scope.</strong> Only the launchd-adjacent system services (launchctl, configd, IPConfiguration, mDNSResponder, asl, notifyd, DiskArbitration). Other Apple-source (Spotlight, Quick Look, Network Extension framework, AppKit, Carbon) is explicitly out of scope.</li>
+  <li><strong>We are not committing to ship Apple's Foundation NSXxx classes.</strong> NSXxx-using consumers go through GNUstep <code>libgnustep-base</code> per the scope_split memory. swift-corelibs Foundation's Swift NS layer is not adopted.</li>
+</ul>
+
+<h3>14.8 Cross-cutting risks and mitigations</h3>
+<table>
+<thead><tr><th>Risk</th><th>Likelihood</th><th>Mitigation</th></tr></thead>
+<tbody>
+  <tr><td>Legacy non-Swift refcount path has latent bugs (Apple's CI deprioritizes it)</td><td>Low &mdash; the path is tested by other downstreams using <code>DEPLOYMENT_RUNTIME_OBJC</code> on Linux</td><td>Our COREFOUNDATION-OK smoke marker exercises a real plist round-trip. Bug surfaces show up as test failures or daemon crashes early.</td></tr>
+  <tr><td>Upstream deletes the legacy refcount branch entirely</td><td>Low (would break their own Objective-C/Linux build target)</td><td>If it ever happens, fork the prior good version. Our patch series is small enough to maintain indefinitely.</td></tr>
+  <tr><td>libdispatch or libBlocksRuntime ABI breaks under our libCoreFoundation</td><td>Low &mdash; we build both from the same vendored source against the same toolchain</td><td>CI catches it the same day; we own all the moving pieces.</td></tr>
+  <tr><td>ICU SOVERSION bump invalidates our libCoreFoundation</td><td>Medium (every ~2 years)</td><td>Rebuild against new ICU. Standard FreeBSD-ports churn.</td></tr>
+  <tr><td>plist parser hits Apple-format edge cases we don't notice</td><td>Medium for binary plists with rare types (UID, custom date encoding)</td><td>We inherit Apple's own driver via swift-corelibs; same code Apple's plutil uses. Bug surface is upstream's bug surface.</td></tr>
+  <tr><td>SystemVersion.plist SPI symbol (<code>_kCFSystemVersionBuildVersionKey</code>)</td><td>Low &mdash; one constant, well-defined</td><td>Our libCoreFoundation's <code>CFPriv.h</code> already declares it (per the audit, 138 SPI decls including this one). No special handling needed.</td></tr>
+  <tr><td>A single binary accidentally links both <code>libCoreFoundation</code> and <code>libgnustep-corebase</code></td><td>Low &mdash; different SONAMEs, different install paths</td><td>The one-CF-per-binary rule in &sect;<a href="#coexistence">10</a>. CI <code>ldd</code> check could enforce it programmatically if we want extra paranoia.</td></tr>
+</tbody>
+</table>
+
+<h3>14.9 What's reversible vs. what's locked in</h3>
+<table>
+<thead><tr><th>Decision</th><th>Reversibility</th></tr></thead>
+<tbody>
+  <tr><td>swift-corelibs-foundation as the CF source</td><td><span class="pill pill-warn">expensive</span> Switching CF source forces re-linking every consumer (CFType registries differ). Doable but means revisiting launchctl + every downstream port.</td></tr>
+  <tr><td>DEPLOYMENT_RUNTIME_SWIFT=0</td><td><span class="pill pill-warn">SOVERSION bump</span> Rebuild + libCoreFoundation.so.7 + re-link consumers. Source patches stay tiny.</td></tr>
+  <tr><td>/usr/lib/libsystem install path</td><td><span class="pill pill-good">trivial</span> Move file + ldconfig refresh + re-link. Path is encoded in Makefile.</td></tr>
+  <tr><td>Install ICU vs strip</td><td><span class="pill pill-good">trivial</span> Build-time toggle. Strip later = drop files from SRCS. Install later = put them back.</td></tr>
+  <tr><td>Drop BlockRuntime/ subdir</td><td><span class="pill pill-good">trivial</span> Restore the subdir from upstream, add to SRCS if needed.</td></tr>
+  <tr><td>Vendor in tree vs submodule</td><td><span class="pill pill-good">trivial</span> History-rewrite or git-subtree split.</td></tr>
+  <tr><td>SOVERSION=6 (matching Apple)</td><td><span class="pill pill-warn">consumer-visible</span> Changing SOVERSION = every consumer re-link.</td></tr>
+</tbody>
+</table>
+
+<div class="callout callout-good">
+<p><strong>Big-picture honesty.</strong> The biggest decision in this spike &mdash; "use swift-corelibs CF as the CF source" &mdash; is expensive to undo, but is well-grounded by the audit evidence (only candidate with working plist support, only one with the SPI surface). The remaining decisions are tactical build-system choices that can flex without major code disruption. The plan optimizes for "small, surgical patches against upstream + ICU/Swift/GNUstep as independent lanes" so the project has room to maneuver as later requirements show up.</p>
+</div>
+
+<h2 id="open-questions">15. Open questions / follow-ups</h2>
+
+<ol>
+  <li><strong>Does gershwin-developer already provide libobjc2 / libs-base?</strong> If yes, the GNUstep work for later NS consumers reduces to "add to pkglist". One <code>pkg search</code> resolves it. (The <a href="../launchctl_blocked_on_gnustep.md">gershwin_provides memory</a> confirms it ships libdispatch; libobjc2/libs-base coverage is unconfirmed.)</li>
+  <li><strong>SOVERSION for our <code>libCoreFoundation.so</code></strong>: match Apple's <code>libsystem_corefoundation</code>? Or assign our own? Decide before consumers start linking against it.</li>
+  <li><strong>Install path for the SPI headers</strong>: <code>/usr/include/CoreFoundation/CFPriv.h</code> &mdash; do we expose the SPI surface to all consumers or hide it? The launchctl source needs it; nothing else does today.</li>
+  <li><strong>libCoreFoundation runtime deps</strong>: confirm at link time that the post-strip library actually only needs libdispatch + libBlocksRuntime + libpthread + libc. If any other transitive symbol surfaces, decide drop-the-file vs add-the-dep.</li>
+  <li><strong>What if a future Apple-source binary wants more of CF than launchctl does</strong> (e.g. needs the CFLocale or CFCalendar surface)? Plan today is "drop the source files we don't use"; if we later need them back, undo the drop &mdash; the upstream is preserved verbatim.</li>
+  <li><strong>Long-term: do we want both swift-corelibs CF and libs-corebase coexisting?</strong> The matrix shows they have non-overlapping strengths (libs-corebase covers CFBag/CFBitVector/CFTree/CFAttributedString that swift-corelibs doesn't carry as standalone). For launchctl, no. For project breadth, maybe. Side-by-side SOVERSION question similar to (2).</li>
+</ol>
+
+<h2 id="methodology">16. Methodology &amp; audit provenance</h2>
+
+<p>This spike is grounded in three pieces of audit work done 2026-05-15 against the cloned repos at <code>/Users/jmaloney/Documents/launchd/{libs-base,libs-corebase,swift-corelibs-foundation}</code>. Methodology was uniform across all three: identify every <code>CF*</code> function definition (function body, not header decl &mdash; the gold standard), enumerate CF SPI surface, audit PropertyList implementation specifically, identify build-system entanglements.</p>
+
+<p>Extraction patterns for the launchctl-side inventory (run against <code>launchd-842/src/support/launchctl.c</code>):</p>
+<pre><code>grep -oE 'CF[A-Z][A-Za-z0-9_]*' launchctl.c | sort -u    # CF identifiers
+grep -oE 'k(CF|cf)[A-Za-z0-9_]*' launchctl.c | sort -u   # kCF constants
+grep -oE '_CF[A-Za-z0-9_]*' launchctl.c | sort -u        # _CF SPI
+grep -oE '\b_k[A-Za-z0-9_]*' launchctl.c | sort -u       # _k SPI constants
+grep -oE 'IO[A-Z][A-Za-z0-9_]*' launchctl.c | sort -u    # IOKit
+grep -oE 'k(IO|io)[A-Za-z0-9_]*' launchctl.c | sort -u   # kIO constants
+grep -oE '\b(getsect[A-Za-z0-9_]*|getseg[A-Za-z0-9_]*)' launchctl.c | sort -u
+grep -oE '\bNS[A-Za-z0-9_]*' launchctl.c | sort -u       # NS*</code></pre>
+
+<p>Junk filter: the <code>IO[A-Z]</code> and <code>NS[A-Z]</code> sweeps caught false-positive prefixes (<code>IONARY</code>, <code>IORITY_REVISION</code> from <code>JETSAM_PRIORITY_REVISION</code>, <code>ION_AQUA</code>, etc.). Hand-filtered to keep only real IOKit / NSSystemDirectories identifiers.</p>
+
+<p>The 245-grep-count circulating earlier in the project's planning came from counting <em>raw substring matches</em> (every occurrence, including types and constants repeated across the file). The 49 number used in this spike is <em>distinct function-call symbols</em>, which is the meaningful unit for "does the CF source provide this?"</p>
+
+<p>Raw audit documents (full per-symbol enumeration) are in the working tree:</p>
+<ul>
+  <li><code>/Users/jmaloney/Documents/launchd/launchctl_api_audit.md</code></li>
+  <li><code>/Users/jmaloney/Documents/launchd/libs-base_audit.md</code></li>
+  <li><code>/Users/jmaloney/Documents/launchd/libs-corebase_audit.md</code></li>
+  <li><code>/Users/jmaloney/Documents/launchd/swift-corelibs-foundation_audit.md</code></li>
+</ul>
+
+<p class="footnote">Spike written 2026-05-15 against launchd-842 vendor drop in <code>freebsd-launchd-mach</code> at commit <code>0fae6a1</code> (LAUNCHD-BUILD-OK green). Audits performed against repo clones the same day; HEADs noted in each candidate section. Companion documents: the <a href="freebsd-libxpc-foundation-spike.html">libxpc Foundation spike</a> (project-level Foundation scoping), the <a href="freebsd-launchd-842-porting-plan.html">launchd-842 porting plan</a> (which scheduled launchctl as task I1e), and the <a href="freebsd-libxpc-install-layout-spike.html">install-layout spike</a> (which puts launchctl at <code>/bin/launchctl</code>).</p>
+
+</div>
+</body>
+</html>

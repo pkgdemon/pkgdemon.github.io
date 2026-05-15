@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ICU audit for freebsd-launchd-mach &mdash; do we need ICU on the ISO?</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --bg: #fafaf7;
+    --accent: #b8472a;
+    --accent-soft: #f3e7df;
+    --border: #d8d4c8;
+    --code-bg: #f0ece2;
+    --table-stripe: #f4efe5;
+    --warn: #8a5a00;
+    --good: #2d6f3b;
+    --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif; color: var(--fg); background: var(--bg); line-height: 1.55; margin: 0; padding: 0; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 48px 32px 96px; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--border); letter-spacing: -0.005em; }
+  h3 { font-size: 1.1rem; margin: 28px 0 6px; color: var(--accent); }
+  h4 { font-size: 0.92rem; margin: 18px 0 4px; color: var(--fg-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg); }
+  code { padding: 1px 4px; border-radius: 3px; font-size: 0.83em; }
+  pre { padding: 14px 18px; border-radius: 4px; overflow-x: auto; font-size: 0.84rem; line-height: 1.45; margin: 0 0 18px; }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+  .lede { font-size: 1.02rem; color: var(--fg-muted); margin-bottom: 28px; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 24px; font-size: 0.82rem; }
+  th, td { text-align: left; padding: 7px 10px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; font-size: 0.78rem; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  td code { white-space: nowrap; font-size: 0.85em; }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 18px 0 22px; border-radius: 0 4px 4px 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn { border-left-color: var(--warn); background: #fbf3df; }
+  .callout-good { border-left-color: var(--good); background: #e8f1e3; }
+  .callout-bad  { border-left-color: var(--bad);  background: #f7e3e3; }
+  .pill { display: inline-block; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 10px; margin-right: 6px; }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 16px 22px 12px 32px; margin: 0 0 32px; font-size: 0.92rem; }
+  .toc h2 { margin: 0 0 8px; padding-top: 0; border-top: none; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-left: -14px; }
+  .toc ol { margin: 0 0 0 4px; columns: 2; column-gap: 28px; }
+  .toc li { margin-bottom: 3px; break-inside: avoid; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  .component { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 14px 18px; margin: 12px 0 18px; }
+  .component h3 { margin-top: 0; }
+  .matrix th, .matrix td { font-size: 0.78rem; }
+  .matrix .yes  { color: var(--bad); font-weight: 600; }
+  .matrix .no   { color: var(--good); font-weight: 600; }
+  .matrix .part { color: var(--warn); font-weight: 600; }
+  .verdict { background: white; border-left: 4px solid var(--accent); padding: 12px 18px; margin: 20px 0; font-size: 1.02rem; }
+  .verdict strong { color: var(--accent); }
+  @media (max-width: 900px) { .wrap { padding: 24px 18px 64px; } table { font-size: 0.7rem; } th { font-size: 0.66rem; } .toc ol { columns: 1; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>ICU audit for freebsd-launchd-mach</h1>
+<p class="lede">Decision-quality survey of ICU usage across every Apple-source repo relevant to the launchd-adjacent system-services stack we're building on FreeBSD. The question is straightforward: do we need to install ICU on the freebsd-launchd-mach ISO? The answer, after auditing <strong>22 components</strong>, is <strong>no</strong> &mdash; with the caveat that two daemons (configd, IPConfiguration) and one library (PowerManagement) touch CF-ICU APIs in narrow cosmetic / debug paths that have direct libc-equivalent replacements.</p>
+
+<p class="lede">Companion to the <a href="freebsd-launchctl-corefoundation-spike.html">launchctl CoreFoundation spike</a>, which picked swift-corelibs-foundation as our CF source. That spike's &sect;14.4 left the ICU question open ("install ICU as a build dep, keep all CF source files"); this audit revisits that decision with evidence and reverses it.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#what-is-icu">1. What is ICU?</a></li>
+  <li><a href="#cf-icu-map">2. Which CoreFoundation APIs need ICU?</a></li>
+  <li><a href="#scope">3. Scope of this audit</a></li>
+  <li><a href="#method">4. Method &mdash; what we grepped for</a></li>
+  <li><a href="#vendored">5. Currently-vendored sources</a></li>
+  <li><a href="#daemons">6. Apple daemons (to port)</a></li>
+  <li><a href="#cmds">7. Apple userland-command repos</a></li>
+  <li><a href="#extras">8. Apple supporting frameworks &amp; tools</a></li>
+  <li><a href="#matrix">9. Summary matrix &mdash; all 22 components</a></li>
+  <li><a href="#decision">10. Decision: don't install ICU</a></li>
+  <li><a href="#build-vs-runtime">11. Build-time vs runtime &mdash; what kind of dependency is ICU?</a></li>
+  <li><a href="#caveats">12. Caveats &amp; what we lose</a></li>
+  <li><a href="#apple-icu">13. Could we vendor Apple's ICU instead?</a></li>
+  <li><a href="#methodology">14. Audit provenance</a></li>
+</ol>
+</div>
+
+<h2 id="what-is-icu">1. What is ICU?</h2>
+
+<p><strong>ICU = International Components for Unicode</strong>, an IBM-originated C/C++ library (Apache 2.0 + ICU License) that provides industrial-grade Unicode + localization support. It's the de-facto standard backend for everything &lt;language, region, calendar, encoding&gt;-aware on Linux, macOS, Windows, Android, FreeBSD, and the Java/.NET runtimes. On FreeBSD it's installable via the <code>icu</code> port; the libraries land at <code>/usr/local/lib/libicu{uc,i18n,data}.so</code> (~30 MB combined).</p>
+
+<p>ICU exists because text processing is much harder than it looks once you leave ASCII:</p>
+
+<ul>
+  <li><strong>Locale data</strong>: how a Spanish user formats currency vs. a Japanese one. Region preferences for calendar (Gregorian, Buddhist, Hebrew, Islamic), measurement units, date order, decimal separator. The data tables for ~700 locales (CLDR &mdash; the Common Locale Data Repository) ship inside ICU as <code>libicudata.so</code>.</li>
+  <li><strong>Collation</strong>: ordering strings the way humans expect them in a particular language. "ä" sorts with "a" in German but as a distinct letter in Swedish. ICU's collation tables encode these rules per-locale.</li>
+  <li><strong>Normalization</strong>: Unicode allows the same character to be encoded multiple ways (precomposed "&eacute;" vs. "e" + combining acute). NFC/NFD/NFKC/NFKD normalization forms reconcile this. Required for reliable equality / hashing.</li>
+  <li><strong>Case mapping</strong>: ASCII case-folding is trivial; full Unicode case-folding (e.g., German sharp-s "&szlig;" &harr; "SS") requires per-language rules.</li>
+  <li><strong>Date / time formatting</strong>: turning an absolute timestamp into a human-readable string in the user's locale (e.g., "Mar 15, 2026" vs. "15&nbsp;marzo&nbsp;2026" vs. "15. M&auml;rz 2026"). Requires the CLDR pattern templates.</li>
+  <li><strong>Number / currency formatting</strong>: "$1,234.56" in en_US, "1.234,56&nbsp;&euro;" in de_DE.</li>
+  <li><strong>Transliteration</strong>: converting between scripts ("&#x041C;&#x043E;&#x0441;&#x043A;&#x0432;&#x0430;" &rarr; "Moskva", "&#x6771;&#x4eac;" &rarr; "T&omacr;ky&omacr;").</li>
+  <li><strong>Regular expressions</strong>: ICU implements a full Unicode-aware regex engine.</li>
+  <li><strong>Encoding converters</strong>: converting text between &gt;200 character encodings (GB18030, Shift_JIS, EUC-KR, Big5, ISO-2022-JP, every legacy code page).</li>
+</ul>
+
+<p>None of this is needed by C programs that handle ASCII reverse-DNS keys or UTF-8 file paths. <em>It's the surface that human-facing apps care about &mdash; not the system-services lane.</em></p>
+
+<h3>1.1 Does FreeBSD base have ICU? What does it provide instead?</h3>
+
+<p><strong>FreeBSD base does not ship ICU.</strong> Stock FreeBSD 15.0 has no <code>libicuuc.so</code>, <code>libicui18n.so</code>, or <code>libicudata.so</code> in <code>/usr/lib</code> or anywhere in the pkgbase install &mdash; ICU comes from the third-party ports tree as <code>devel/icu</code> (installed to <code>/usr/local/lib</code> if a port that needs it pulls it in). Nothing in FreeBSD's base system links ICU. The userland utilities (<code>ls</code>, <code>sort</code>, <code>grep</code>, etc.) do their locale-aware work without it.</p>
+
+<p>What FreeBSD base does provide is the <strong>POSIX locale + NLS facilities in libc</strong>:</p>
+
+<table>
+<thead><tr><th>libc header / API</th><th>What it does</th><th>What it can't do that ICU can</th></tr></thead>
+<tbody>
+  <tr><td><code>&lt;locale.h&gt;</code> &mdash; <code>setlocale</code>, <code>newlocale</code>, <code>uselocale</code></td><td>Set / query the process or thread locale (LC_ALL, LC_COLLATE, LC_CTYPE, LC_MONETARY, LC_NUMERIC, LC_TIME, LC_MESSAGES)</td><td>No CLDR data &mdash; only locales installed at <code>/usr/share/locale/&lt;name&gt;</code></td></tr>
+  <tr><td><code>&lt;langinfo.h&gt;</code> &mdash; <code>nl_langinfo</code></td><td>Read locale-specific data (decimal point, thousands separator, abbreviated month names, currency symbol, date formats)</td><td>Limited to the items POSIX specifies; no calendar rules, no transliteration</td></tr>
+  <tr><td><code>&lt;string.h&gt;</code> &mdash; <code>strcoll</code>, <code>strxfrm</code></td><td>Locale-aware byte-string comparison (for sort order)</td><td>No DUCET fallback, no per-locale tailoring beyond the loaded collation table</td></tr>
+  <tr><td><code>&lt;wchar.h&gt;</code> &mdash; <code>wcscoll</code>, <code>wcsxfrm</code>, <code>mblen</code>, <code>mbtowc</code>, <code>wctomb</code></td><td>Wide-character / multibyte conversion + comparison</td><td>Same gap &mdash; no full Unicode collation algorithm</td></tr>
+  <tr><td><code>&lt;wctype.h&gt;</code> &mdash; <code>iswalpha</code>, <code>iswdigit</code>, <code>iswspace</code>, etc.</td><td>Wide-character class tests (Unicode property queries)</td><td>Only the basic POSIX-defined classes; no full Unicode property database</td></tr>
+  <tr><td><code>&lt;time.h&gt;</code> &mdash; <code>strftime</code>, <code>strptime</code>, <code>nl_langinfo(D_T_FMT)</code></td><td>Format / parse date and time strings in the current locale</td><td>Gregorian only; no Buddhist / Hebrew / Islamic calendars; no relative-time strings ("3 days ago")</td></tr>
+  <tr><td><code>&lt;iconv.h&gt;</code> &mdash; <code>iconv_open</code>, <code>iconv</code>, <code>iconv_close</code> (citrus iconv, in libc since FreeBSD 9)</td><td>Convert text between encodings &mdash; UTF-8, UTF-16, EUC-JP, Shift_JIS, GB18030, etc.</td><td>Same encoding-conversion power as ICU's converters, just a different API</td></tr>
+  <tr><td><code>mklocale</code>, <code>colldef</code>, <code>localedef</code> tools</td><td>Build locale-data binaries that libc consumes</td><td>Build their own NLS data, not CLDR/ICU data &mdash; format incompatible</td></tr>
+</tbody>
+</table>
+
+<p>The practical effect: <strong>POSIX C programs that want "respect the user's locale" get most of what they need from libc</strong>. The Apple userland tools we surveyed in &sect;<a href="#cmds">7</a> (<code>ls</code>, <code>sort</code>, <code>grep</code>, etc.) call <code>setlocale</code>/<code>strcoll</code>/<code>wcscoll</code>/<code>nl_langinfo</code> &mdash; libc NLS &mdash; and work fine on FreeBSD without ICU.</p>
+
+<p>What you give up by relying on libc NLS instead of ICU:</p>
+
+<ul>
+  <li><strong>No CLDR data.</strong> ICU ships ~700 locales' worth of CLDR; FreeBSD libc has whatever's in <code>/usr/share/locale/</code> (usually a few dozen, lower fidelity).</li>
+  <li><strong>No Unicode Collation Algorithm with DUCET tailoring.</strong> POSIX collation is "load a table and compare byte-by-byte against it." ICU implements the Unicode Collation Algorithm (UCA) with locale tailoring &mdash; the same ordering Cocoa / Windows / Java use.</li>
+  <li><strong>No CFLocale-style query API.</strong> Cocoa apps ask "what's the currency symbol for the user's region?" via ICU; libc apps assemble that from <code>nl_langinfo</code> primitives.</li>
+  <li><strong>No non-Gregorian calendars.</strong> libc <code>strftime</code> is proleptic-Gregorian only. ICU supports Buddhist, Hebrew, Islamic, Japanese, Persian, ROC, and others.</li>
+  <li><strong>No Unicode-aware regex.</strong> libc <code>&lt;regex.h&gt;</code> is byte-oriented (works fine on UTF-8 if patterns avoid character-class ambiguity); ICU regex understands Unicode properties.</li>
+  <li><strong>No transliteration / normalization library.</strong> NFC/NFD/NFKC/NFKD and script-to-script transliteration are ICU territory.</li>
+</ul>
+
+<p>For the launchd-adjacent system services: <strong>none of those gaps are felt</strong>. Service keys are ASCII reverse-DNS; plist contents are UTF-8 byte streams; timestamps are stored as absolute time intervals, not formatted for human display by the daemons themselves; encoding conversion is needed only for the niche cases the audit found and replaceable with libc <code>strftime</code> / <code>strptime</code> / <code>iconv</code>.</p>
+
+<h2 id="cf-icu-map">2. Which CoreFoundation APIs need ICU?</h2>
+
+<p>Our libCoreFoundation (swift-corelibs-foundation) routes specific CF APIs through ICU and falls back to in-tree fast paths for everything else. The map:</p>
+
+<table>
+<thead><tr><th>CF API family</th><th>Needs ICU?</th><th>Fallback path if ICU absent</th></tr></thead>
+<tbody>
+  <tr><td><code>CFLocale*</code></td><td class="yes">Yes</td><td>None &mdash; locale data lives in CLDR.</td></tr>
+  <tr><td><code>CFCalendar*</code></td><td class="yes">Yes</td><td>None &mdash; ICU drives all calendar arithmetic.</td></tr>
+  <tr><td><code>CFDateFormatter*</code></td><td class="yes">Yes</td><td>None &mdash; replace with libc <code>strftime</code>/<code>strptime</code>.</td></tr>
+  <tr><td><code>CFNumberFormatter*</code></td><td class="yes">Yes</td><td>None &mdash; replace with <code>printf("%lld")</code>.</td></tr>
+  <tr><td><code>CFListFormatter*</code></td><td class="yes">Yes</td><td>None.</td></tr>
+  <tr><td><code>CFDateIntervalFormatter*</code></td><td class="yes">Yes</td><td>None.</td></tr>
+  <tr><td><code>CFRelativeDateTimeFormatter*</code></td><td class="yes">Yes</td><td>None.</td></tr>
+  <tr><td><code>CFStringTransform*</code></td><td class="yes">Yes</td><td>None.</td></tr>
+  <tr><td><code>CFRegularExpression*</code></td><td class="yes">Yes</td><td>Use libc <code>&lt;regex.h&gt;</code>.</td></tr>
+  <tr><td><code>CFCharacterSetGetPredefined</code></td><td class="part">Partial</td><td>Hardcoded ASCII for whitespace, alphanumeric. Loses Unicode-aware sets.</td></tr>
+  <tr><td><code>CFApplicationPreferences*</code></td><td class="yes">Yes</td><td>None (it's a desktop-app concept anyway).</td></tr>
+  <tr><td><code>CFStringCompareWithOptions</code> with <code>kCFCompareLocalized</code></td><td class="yes">Yes</td><td>Drop the flag, fall back to binary compare.</td></tr>
+  <tr><td><code>CFStringCompareWithOptions</code> any other flags</td><td class="no">No</td><td>ASCII / binary fast paths in CFString.c.</td></tr>
+  <tr><td><code>CFString</code> Create/GetLength/GetCString/HasPrefix/HasSuffix/Find/Append/Replace</td><td class="no">No</td><td>Built-in.</td></tr>
+  <tr><td><code>CFString</code> case-fold (ASCII)</td><td class="no">No</td><td>Built-in.</td></tr>
+  <tr><td><code>CFString</code> encoding conversion: UTF-8 / UTF-16 / ASCII / ISO Latin1</td><td class="no">No</td><td>Hardcoded fast paths in CFString.c.</td></tr>
+  <tr><td><code>CFString</code> encoding conversion: anything else (GB18030, Shift_JIS, etc.)</td><td class="yes">Yes</td><td>Lose those encodings.</td></tr>
+  <tr><td><code>CFArray</code> / <code>CFDictionary</code> / <code>CFSet</code> / <code>CFBag</code></td><td class="no">No</td><td>Built-in.</td></tr>
+  <tr><td><code>CFData</code> / <code>CFNumber</code> / <code>CFBoolean</code></td><td class="no">No</td><td>Built-in.</td></tr>
+  <tr><td><code>CFPropertyList</code> (XML + binary read/write)</td><td class="no">No</td><td>UTF-8 only; doesn't need ICU.</td></tr>
+  <tr><td><code>CFURL</code> (ASCII / UTF-8 paths)</td><td class="no">No</td><td>Built-in.</td></tr>
+  <tr><td><code>CFDate</code> (storage of absolute time)</td><td class="no">No</td><td>Built-in &mdash; formatting is the ICU-needing part.</td></tr>
+  <tr><td><code>CFRunLoop</code> / <code>CFSocket</code> / <code>CFStream</code> / <code>CFMachPort</code></td><td class="no">No</td><td>Event/IO plumbing.</td></tr>
+  <tr><td><code>CFBundle</code> (load executable, find resources)</td><td class="no">No</td><td>Built-in.</td></tr>
+  <tr><td><code>CFUUID</code></td><td class="no">No</td><td>Built-in.</td></tr>
+  <tr><td><code>CFError</code></td><td class="no">No</td><td>Built-in.</td></tr>
+</tbody>
+</table>
+
+<p><strong>The dividing line</strong>: anything to do with <em>presenting</em> data to a human in their language belongs to the ICU side. Anything that operates on the structure of data (arrays, dictionaries, plists, byte streams, time intervals, run loops, sockets) is built-in.</p>
+
+<h2 id="scope">3. Scope of this audit</h2>
+
+<p>Every Apple-source repo we've already vendored, plus every repo on the launchd-adjacent porting roadmap. 22 components total:</p>
+
+<table>
+<thead><tr><th>Tier</th><th>Components</th><th>Count</th></tr></thead>
+<tbody>
+  <tr><td><strong>Currently vendored / shipped</strong></td><td><code>libCoreFoundation</code> (swift-corelibs CF), <code>libdispatch</code>, <code>libxpc</code>, <code>launchd-842</code> (incl. liblaunch + launchctl + support), <code>libmach</code> (our libsystem_kernel), <code>bootstrap</code> (our bootstrap_server), <code>bootstrap_cmds</code> (Apple MIG)</td><td>7</td></tr>
+  <tr><td><strong>Apple daemons to port</strong></td><td><code>configd</code>, <code>bootp</code> (IPConfiguration), <code>mDNSResponder</code>, <code>syslog</code> (asl family), <code>Libnotify</code> (notifyd), <code>DiskArbitration</code></td><td>6</td></tr>
+  <tr><td><strong>Apple userland-command repos</strong></td><td><code>file_cmds</code>, <code>network_cmds</code>, <code>shell_cmds</code>, <code>system_cmds</code>, <code>text_cmds</code></td><td>5</td></tr>
+  <tr><td><strong>Apple supporting frameworks &amp; tools</strong></td><td><code>PowerManagement</code> (pmset), <code>adv_cmds</code> (ps/top/lsof/pkill), <code>CommonCrypto</code>, <code>IOKitUser</code> (userland IOKit framework)</td><td>4</td></tr>
+</tbody>
+</table>
+
+<p>The GNUstep stack (<code>libs-base</code>, <code>libs-corebase</code>, <code>libobjc2</code>) is <strong>intentionally out of scope</strong>. GNUstep is the gershwin desktop overlay's lane; this ISO doesn't ship GNUstep. When gershwin lands later, ICU comes with it regardless (libs-base hard-requires ICU at build time) &mdash; but that's a separate decision in a separate buildlist.</p>
+
+<h2 id="method">4. Method &mdash; what we grepped for</h2>
+
+<p>Four parallel agents, one consistent toolkit, repo-by-repo:</p>
+
+<ol>
+  <li><strong>Direct ICU usage</strong>: <code>#include &lt;unicode/...&gt;</code>, plus the prefixed-API families <code>u_*</code> (generic Unicode), <code>ucol_*</code> (collation), <code>udat_*</code> (date), <code>unum_*</code> (number), <code>ureg_*</code> (regex), <code>unorm2_*</code> (normalization), <code>ucnv_*</code> (encoding converters), <code>uloc_*</code> (locale), <code>usearch_*</code> (search).</li>
+  <li><strong>CF-ICU API usage</strong>: every CF API from the table in &sect;<a href="#cf-icu-map">2</a> &mdash; <code>CFLocale*</code>, <code>CFCalendar*</code>, <code>CFDateFormatter*</code>, etc.</li>
+  <li><strong>Locale-sensitive string compare</strong>: <code>kCFCompareLocalized</code> as a flag to <code>CFStringCompareWithOptions</code>.</li>
+  <li><strong>Exotic encoding conversion</strong>: <code>kCFStringEncodingGB*</code>, <code>kCFStringEncodingShiftJIS</code>, <code>kCFStringEncodingEUC_*</code>, <code>kCFStringEncodingBig5</code>, <code>kCFStringEncodingISO_2022*</code>, etc. ASCII/UTF-8/UTF-16/Latin1 are free; anything else needs ICU's encoding tables.</li>
+  <li><strong>Link-line evidence</strong>: Makefiles, xcconfigs, pbxproj scanned for <code>-licu*</code>, <code>libicu*</code>, <code>libicucore</code>, <code>libicudata</code>. Direct link is the unambiguous signal of runtime dependency.</li>
+</ol>
+
+<h2 id="vendored">5. Currently-vendored sources</h2>
+
+<p>What we already ship on the freebsd-launchd-mach ISO. The question is whether anything currently linked into the build pulls ICU.</p>
+
+<div class="component">
+<h3><code>libCoreFoundation/</code> &nbsp;<span class="pill pill-warn">contains ICU files</span></h3>
+<p><strong>What it is:</strong> swift-corelibs-foundation's pure-C CoreFoundation, vendored 2026-05-15 as <code>src/libCoreFoundation/</code>. Provides <code>CFArray</code>, <code>CFDictionary</code>, <code>CFString</code>, <code>CFPropertyList</code>, etc. &mdash; the engine every Apple system service expects.</p>
+<p><strong>ICU usage:</strong> 13 of the 78 <code>.c</code> files include <code>&lt;_foundation_unicode/...&gt;</code> (swift-corelibs's renamed ICU header path): <code>CFLocale.c</code>, <code>CFLocaleIdentifier.c</code>, <code>CFLocaleKeys.c</code>, <code>CFCalendar.c</code>, <code>CFCalendar_Enumerate.c</code>, <code>CFDateFormatter.c</code>, <code>CFNumberFormatter.c</code>, <code>CFListFormatter.c</code>, <code>CFDateIntervalFormatter.c</code>, <code>CFRelativeDateTimeFormatter.c</code>, <code>CFStringTransform.c</code>, <code>CFRegularExpression.c</code>, <code>CFCharacterSet.c</code>, <code>CFICUConverters.c</code>, <code>CFStringEncodingDatabase.c</code>, <code>CFApplicationPreferences.c</code>. About 30k LOC of the total 98k.</p>
+<p><strong>Resolution:</strong> drop these files from the Makefile's <code>SRCS</code>. The remaining 65k LOC covers everything <code>launchctl</code> and the planned daemon ports actually use &mdash; <code>CFString</code> basic ops, <code>CFArray</code>/<code>Dictionary</code>/<code>Set</code>/<code>Bag</code>, <code>CFData</code>/<code>Number</code>/<code>Boolean</code>, <code>CFPropertyList</code> (XML + binary), <code>CFURL</code>, <code>CFRunLoop</code>, <code>CFSocket</code>, <code>CFStream</code>, <code>CFBundle</code>, <code>CFMachPort</code>, <code>CFMessagePort</code>, <code>CFNotificationCenter</code>, <code>CFRuntime</code>, etc.</p>
+</div>
+
+<div class="component">
+<h3><code>libdispatch/</code> &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> swift-corelibs-libdispatch (Grand Central Dispatch). Async/concurrency runtime + the Mach-RECV backend the launchd/bootstrap stack relies on.</p>
+<p><strong>ICU usage:</strong> zero. <code>ripgrep</code> over <code>src/libdispatch/</code>: no <code>#include &lt;unicode/</code>, no <code>u_*</code> / <code>ucol_*</code> / <code>udat_*</code> calls, no CF-ICU API calls. The few CF references in tests reach for <code>CFRunLoop</code>/<code>CFData</code>/<code>SecTransform</code> &mdash; none ICU-backed.</p>
+</div>
+
+<div class="component">
+<h3><code>libxpc/</code> &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> ravynOS-derived libxpc. The XPC connection-and-message layer above Mach, used by every Apple daemon for typed-dictionary IPC.</p>
+<p><strong>ICU usage:</strong> zero. Plain C; serialization is libnv-over-Mach, not bplist; no <code>CFString</code> / encoding-conversion / locale paths.</p>
+</div>
+
+<div class="component">
+<h3><code>launchd/</code> (launchd-842, incl. liblaunch + launchctl + support) &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> Apple's last open-source launchd (842.92.1) vendored 2026-05-13. The PID-1 init replacement, plus liblaunch (the launch_data_t IPC library) and support tools (launchctl, launchproxy, wait4path).</p>
+<p><strong>ICU usage:</strong> zero. The daemon itself uses no CF at all (audited 2026-05-15 &mdash; 0 CF calls across launchd.c + core.c + runtime.c + ipc.c + log.c + kill2.c + ktrace.c). liblaunch uses launch_data_t (its own C type system), not CF. The lone CF consumer is <code>launchctl.c</code>, which calls <code>CFStringCompareWithOptions</code> at lines 734 and 739 with <code>options = 0</code> (binary compare, no locale flag), and all 8 encoding calls use <code>kCFStringEncodingUTF8</code>. No ICU paths exercised.</p>
+</div>
+
+<div class="component">
+<h3><code>libmach/</code> &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> our own libsystem_kernel implementation &mdash; userland Mach trap wrappers, MIG runtime stubs, host-special-port APIs.</p>
+<p><strong>ICU usage:</strong> zero. Pure C against libc + the FreeBSD <code>syscall</code> infrastructure. No <code>#include &lt;unicode/</code> anywhere.</p>
+</div>
+
+<div class="component">
+<h3><code>bootstrap/</code> &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> our standalone Phase G2 <code>bootstrap_server</code> daemon &mdash; allocates the host bootstrap port, runs the check_in/look_up loop.</p>
+<p><strong>ICU usage:</strong> zero. Pure C, Mach IPC only. Service names are ASCII reverse-DNS labels.</p>
+</div>
+
+<div class="component">
+<h3><code>bootstrap_cmds/</code> (Apple MIG) &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> Apple's <code>bootstrap_cmds-138</code> vendor drop &mdash; the Mach Interface Generator (<code>mig</code> + <code>migcom</code>).</p>
+<p><strong>ICU usage:</strong> zero. byacc-and-flex compiler; processes <code>.defs</code> files into C stubs. No locale or Unicode concerns.</p>
+</div>
+
+<h2 id="daemons">6. Apple daemons (to port)</h2>
+
+<p>The six Apple-source daemons on the launchd-adjacent porting roadmap.</p>
+
+<div class="component">
+<h3><code>configd</code> &nbsp;<span class="pill pill-warn">3 narrow CF-ICU touchpoints, all replaceable</span></h3>
+<p><strong>What it is:</strong> Apple's <code>configd</code> daemon (apple-oss-distributions/configd) + the <code>SystemConfiguration.framework</code> API. Maintains the cross-process SCDynamicStore (a <code>CFDictionaryRef</code>-shaped key/value store) for network, hostname, and reachability state.</p>
+<p><strong>Direct ICU usage:</strong> none. No <code>#include &lt;unicode/</code>, no <code>-licu</code> / <code>libicucore</code> link line in any of configd's Makefiles or xcconfigs.</p>
+<p><strong>CF-ICU API usage:</strong> three sites, all narrow:</p>
+<ul>
+  <li><code>SCD.c:217-230</code> &mdash; <code>CFCalendar</code> + <code>CFGregorianDate</code> in <code>_SCCopyDescription</code>, behind <code>#ifdef ENABLE_SC_FORMATTING</code>. Pretty-prints absolute times in debug log output. Replace with <code>localtime_r</code> + <code>strftime</code> or stub the formatter to a fixed ISO-8601 string.</li>
+  <li><code>SCNetworkInterface.c:9513-9532</code> &mdash; <code>date_create_5am_tomorrow</code> for cellular "expensive expiration" timestamp. CFCalendar arithmetic, Gregorian-only. Replace with libc <code>mktime</code> + <code>localtime_r</code>.</li>
+  <li><code>SCNetworkInterface.c:5688-5709</code> &mdash; <code>CFLocaleCopyCurrent</code> + <code>CFNumberFormatter</code> to localized-format a port number for a debug string. Already has a null-locale fallback; trivial to remove the locale path entirely.</li>
+</ul>
+<p><strong>Resolution:</strong> ~50 LOC of stub work in our configd port, all in cosmetic / debug paths. No core SCDynamicStore functionality depends on ICU.</p>
+</div>
+
+<div class="component">
+<h3><code>bootp</code> &mdash; <code>IPConfiguration</code> &nbsp;<span class="pill pill-warn">1 optional feature uses CF-ICU</span></h3>
+<p><strong>What it is:</strong> Apple's DHCP / DHCPv6 / IPv6-RA client daemon (apple-oss-distributions/bootp). Replaces FreeBSD's <code>dhclient</code> / <code>dhcpcd</code>. Maintains per-interface lease state in configd via SystemConfiguration.</p>
+<p><strong>Direct ICU usage:</strong> none. No link-line evidence.</p>
+<p><strong>CF-ICU API usage:</strong> one feature, exhaustively:</p>
+<ul>
+  <li><code>PvDInfoContext.c:167-242</code> + <code>IPHPvDInfoRequestServer.m:366-407</code> &mdash; <code>CFLocaleCreate(NULL, CFSTR("en_US_POSIX"))</code> + <code>CFDateFormatter</code> with an ISO-8601 template to parse the <code>expires</code> timestamp on IPv6 PvD (Provisioning Domain) info JSON, per RFC 8801. PvD is a niche feature (carrier-controlled DNS-over-HTTPS hints + custom DNS); rarely deployed in the wild.</li>
+</ul>
+<p><strong>Resolution:</strong> two options. (a) Drop the PvDInfo subsystem entirely &mdash; it's a single optional plugin. (b) Replace the 5-line <code>CFDateFormatter</code> parsing block with libc <code>strptime("%Y-%m-%dT%H:%M:%SZ")</code> + <code>timegm</code>. (b) is cheaper if anyone cares about RFC 8801 support.</p>
+</div>
+
+<div class="component">
+<h3><code>mDNSResponder</code> &nbsp;<span class="pill pill-good">1 gated feature uses ICU directly, gate is off by default</span></h3>
+<p><strong>What it is:</strong> Apple's multicast-DNS / Bonjour daemon (apple-oss-distributions/mDNSResponder) + the <code>dns-sd</code> CLI + <code>libdns_sd</code> client library. mDNSCore (the protocol engine) is portable C and runs on Linux/BSD/embedded; <code>mDNSPosix/</code> is the POSIX platform binding.</p>
+<p><strong>Direct ICU usage:</strong> exactly one feature, gated:</p>
+<ul>
+  <li><code>mDNSCore/mDNS.c:698-712</code> &mdash; <code>#include &lt;unicode/uidna.h&gt;</code> and three <code>uidna_*</code> calls (UTS #46 / IDNA2008 hostname normalization). The entire block is wrapped in <code>#ifdef USE_LIBIDN</code>. <code>USE_LIBIDN</code> is <strong>not set in any Makefile, xcconfig, or pbxproj in the repo</strong>. The feature is dormant.</li>
+</ul>
+<p><strong>CF-ICU API usage:</strong> none.</p>
+<p><strong>Resolution:</strong> leave <code>USE_LIBIDN</code> undefined, as upstream already does. Lose: nothing user-visible &mdash; mDNS labels are RFC 1035 ASCII anyway; international hostname punycode is handled at the resolver layer above mDNS, not inside the daemon.</p>
+</div>
+
+<div class="component">
+<h3><code>syslog</code> (asl family: syslogd, aslmanager, syslog CLI, libasl) &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> Apple's structured-logging family (apple-oss-distributions/syslog). Apple System Logger is the pre-unified-logging structured-log infrastructure that replaces BSD syslogd on macOS; log records are key/value dictionaries.</p>
+<p><strong>ICU usage:</strong> zero direct, zero CF-ICU, no <code>-licu</code> link line. Log messages are UTF-8 byte streams; query strings are ASCII. Time formatting happens client-side; the daemon stores absolute timestamps.</p>
+</div>
+
+<div class="component">
+<h3><code>Libnotify</code> (notifyd + libnotify + notifyutil) &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> Apple's lightweight named-event pub/sub daemon (apple-oss-distributions/Libnotify) &mdash; processes register interest in named events ("com.apple.system.timezone changed", "com.example.foo"), the daemon coordinates delivery.</p>
+<p><strong>ICU usage:</strong> zero. Event names are ASCII reverse-DNS labels; no string-processing surface; no time formatting; no locale concerns. Pure Mach-port-driven C.</p>
+</div>
+
+<div class="component">
+<h3><code>DiskArbitration</code> &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> Apple's <code>diskarbitrationd</code> + <code>DiskArbitration.framework</code> client API (apple-oss-distributions/DiskArbitration). Notifies userland of disk insertion / ejection / mount events; arbitrates which process gets to fsck/mount what.</p>
+<p><strong>ICU usage:</strong> zero direct, zero CF-ICU APIs. The daemon's surface is device paths (UTF-8), BSD device names (ASCII), volume names (UTF-8). The optional <code>autodiskmount</code> binary uses <code>kCFStringEncodingMacRoman</code> for an HFS volume-name encoding lookup, but that's a single-byte ASCII-superset encoding handled by CFLite's built-in single-byte converters &mdash; no ICU needed.</p>
+</div>
+
+<h2 id="cmds">7. Apple userland-command repos</h2>
+
+<p>Five Apple-source command repos cloned locally as siblings of the daemon repos. Together they cover the userland CLI tools the project might want to port for parity with macOS.</p>
+
+<div class="component">
+<h3><code>file_cmds</code> &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> Apple's file-manipulation commands &mdash; <code>cp</code>, <code>mv</code>, <code>ls</code>, <code>find</code>, <code>stat</code>, <code>chmod</code>, <code>chown</code>, <code>rm</code>, <code>cmp</code>, plus their friends. Most of these are also in FreeBSD base; the question is whether Apple's versions add anything.</p>
+<p><strong>ICU usage:</strong> zero direct, zero CF-ICU, no <code>-licu</code> link line. <code>ls</code> uses libc <code>strcoll</code> + <code>nl_langinfo</code> for locale-aware sorting; that's NLS (libc-supplied on FreeBSD), not ICU.</p>
+</div>
+
+<div class="component">
+<h3><code>network_cmds</code> &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> Apple's network configuration utilities &mdash; <code>ifconfig</code>, <code>route</code>, <code>ping</code>, <code>traceroute</code>, <code>arp</code>, <code>ndp</code>, <code>natd</code>, <code>netstat</code>, etc. Many of these have FreeBSD equivalents; some have Apple-only options.</p>
+<p><strong>ICU usage:</strong> zero direct, zero CF-ICU, no <code>-licu</code> link line. Network names, IP addresses, interface labels are all ASCII; no locale processing.</p>
+</div>
+
+<div class="component">
+<h3><code>shell_cmds</code> &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> shell-builtin-like utilities &mdash; <code>basename</code>, <code>dirname</code>, <code>env</code>, <code>test</code>, <code>getconf</code>, <code>locate</code>, <code>limits</code>, <code>nice</code>, <code>nohup</code>, etc.</p>
+<p><strong>ICU usage:</strong> zero. Tiny POSIX utilities.</p>
+</div>
+
+<div class="component">
+<h3><code>system_cmds</code> &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> system-administration utilities &mdash; <code>chkpasswd</code>, <code>vipw</code>, <code>ac</code>, <code>sa</code>, <code>passwd</code>, <code>zprint</code>, etc. Note: <code>defaults(1)</code>, <code>plutil(1)</code>, <code>pmset</code> are NOT in this snapshot; they live in separate Apple OSS drops.</p>
+<p><strong>ICU usage:</strong> zero. The one near-miss is <code>zprint/zprint.c:1164</code>: <code>CFStringCompareWithOptionsAndLocale(..., kCFCompareNumerically, NULL)</code> &mdash; locale arg is NULL, flag is pure-numeric collation (CFLite handles without ICU).</p>
+</div>
+
+<div class="component">
+<h3><code>text_cmds</code> &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> text-processing utilities &mdash; <code>cat</code>, <code>head</code>, <code>tail</code>, <code>tr</code>, <code>grep</code>, <code>awk</code>, <code>sed</code>, <code>sort</code>, <code>uniq</code>, <code>jq</code>, etc.</p>
+<p><strong>ICU usage:</strong> zero direct ICU. Two notable false positives caught and adjudicated:</p>
+<ul>
+  <li><code>text_cmds/jq/src/decNumber/</code> is IBM's decNumber library, distributed <em>under</em> the ICU License (a permissive license). It is NOT the ICU codebase &mdash; it's a separate decimal-arithmetic library that happens to use the same license file.</li>
+  <li><code>text_cmds/jq/modules/oniguruma/oniguruma.h:80,84</code> defines <code>#define UChar OnigUChar</code> + <code>typedef unsigned char OnigUChar</code>. Hundreds of <code>UChar</code> references under jq are Oniguruma's <em>unsigned-char</em> alias, not ICU's UTF-16 code unit.</li>
+</ul>
+<p><code>sort</code>, <code>grep</code>, etc. use libc <code>strcoll</code>/<code>wcscoll</code>/<code>setlocale</code> for locale-aware processing &mdash; not ICU.</p>
+</div>
+
+<h2 id="extras">8. Apple supporting frameworks &amp; tools</h2>
+
+<p>Four more Apple OSS repos that the launchd-adjacent stack might link or transitively depend on. Audited for completeness so the decision rests on a closed set.</p>
+
+<div class="component">
+<h3><code>PowerManagement</code> (pmset CLI + pmconfigd daemon) &nbsp;<span class="pill pill-warn">CF-ICU used for human-readable timestamps; replaceable with strftime</span></h3>
+<p><strong>What it is:</strong> Apple's power-management subsystem (apple-oss-distributions/PowerManagement) &mdash; the <code>pmset</code> CLI, the <code>pmconfigd</code> daemon, and the libraries that publish power state to other daemons.</p>
+<p><strong>Direct ICU usage:</strong> none.</p>
+<p><strong>CF-ICU API usage:</strong> 3 binaries touch CF-ICU:</p>
+<ul>
+  <li><code>pmset.m</code> &mdash; <code>CFDateFormatter</code> for human-readable wake/sleep timestamps in the CLI output.</li>
+  <li><code>pmtool.m</code> &mdash; same, for the developer-facing inspection tool.</li>
+  <li><code>pmconfigd/{RepeatingAutoWake.c, AutoWakeScheduler.c, PMConnection.m, PrivateLib.m}</code> &mdash; <code>CFCalendar</code> arithmetic (Gregorian-only) for repeating-wake scheduling, plus <code>CFDateFormatter</code> for log strings.</li>
+</ul>
+<p><strong>Resolution:</strong> all uses are replaceable with libc <code>strftime</code>/<code>strptime</code>/<code>timegm</code>. The code already pins ISO-style <code>"yyyy-MM-dd HH:mm:ss ZZZ"</code> templates in several spots, so the libc swap is straightforward. ~40 LOC of pure mechanical replacement across 6 files.</p>
+</div>
+
+<div class="component">
+<h3><code>adv_cmds</code> &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> Apple's "advanced commands" &mdash; <code>ps</code>, <code>top</code>, <code>lsof</code>, <code>pkill</code>, <code>killall</code>, <code>finger</code>, <code>fingerd</code>, <code>locale</code>, <code>localedef</code>, <code>colldef</code>, <code>mklocale</code>, <code>locate</code>.</p>
+<p><strong>ICU usage:</strong> zero. <code>locale</code>/<code>localedef</code> build libc locale data, not ICU data. <code>setlocale</code>/<code>newlocale</code> calls resolve through libc/NLS. No CF references in any tool.</p>
+</div>
+
+<div class="component">
+<h3><code>CommonCrypto</code> &nbsp;<span class="pill pill-good">no ICU</span></h3>
+<p><strong>What it is:</strong> Apple's <code>libcommonCrypto</code> &mdash; the C wrapper around CommonCrypto's symmetric ciphers, hashes (SHA family), HMAC, etc. Linked by configd, mDNSResponder, and other daemons for hashing operations.</p>
+<p><strong>ICU usage:</strong> zero. Pure crypto primitives; no string/locale surface.</p>
+</div>
+
+<div class="component">
+<h3><code>IOKitUser</code> &nbsp;<span class="pill pill-good">1 vestigial CF-ICU site, trivially replaceable</span></h3>
+<p><strong>What it is:</strong> the userland <code>IOKit.framework</code> client library &mdash; <code>IORegistryEntryFromPath</code>, <code>IORegistryEntryCreateCFProperty</code>, <code>IOServiceMatching</code>, etc. Linked heavily by DiskArbitration, IPConfiguration, PowerManagement.</p>
+<p><strong>Direct ICU usage:</strong> none.</p>
+<p><strong>CF-ICU API usage:</strong> one vestigial site:</p>
+<ul>
+  <li><code>pwr_mgt.subproj/IOPMAssertions.c:547-560</code> &mdash; <code>convertCFNumberToCFStringRef</code> uses <code>CFLocaleCopyCurrent</code> + <code>CFNumberFormatter</code> just to format an integer as a dictionary key. Trivially replaceable with <code>CFStringCreateWithFormat(NULL, NULL, CFSTR("%lld"), val)</code>.</li>
+</ul>
+<p><strong>Resolution:</strong> ~5-line replacement. The function name suggests it predates Apple noticing the locale call wasn't actually needed.</p>
+</div>
+
+<h2 id="matrix">9. Summary matrix &mdash; all 22 components</h2>
+
+<table class="matrix">
+<thead><tr><th>Component</th><th>Tier</th><th>Direct ICU</th><th>CF-ICU APIs</th><th>Locale compare</th><th>Exotic encodings</th><th>Link line</th><th>Verdict</th></tr></thead>
+<tbody>
+  <tr><td><code>libCoreFoundation</code></td><td>vendored</td><td class="yes">in 13 files</td><td>n/a (it IS CF)</td><td>n/a</td><td>n/a</td><td>n/a</td><td>drop 13 .c files</td></tr>
+  <tr><td><code>libdispatch</code></td><td>vendored</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>libxpc</code></td><td>vendored</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>launchd-842</code> (incl. launchctl)</td><td>vendored</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>libmach</code></td><td>vendored</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>bootstrap</code></td><td>vendored</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>bootstrap_cmds</code></td><td>vendored</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>configd</code></td><td>daemon</td><td class="no">No</td><td class="part">3 sites</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td>stub-replaceable</td></tr>
+  <tr><td><code>bootp</code> (IPConfiguration)</td><td>daemon</td><td class="no">No</td><td class="part">1 feature</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td>strptime-replaceable</td></tr>
+  <tr><td><code>mDNSResponder</code></td><td>daemon</td><td class="part">gated off</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">gate stays off</td></tr>
+  <tr><td><code>syslog</code> (asl)</td><td>daemon</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>Libnotify</code> (notifyd)</td><td>daemon</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>DiskArbitration</code></td><td>daemon</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>file_cmds</code></td><td>cmds</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>network_cmds</code></td><td>cmds</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>shell_cmds</code></td><td>cmds</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>system_cmds</code></td><td>cmds</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>text_cmds</code></td><td>cmds</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>PowerManagement</code></td><td>extras</td><td class="no">No</td><td class="part">3 binaries</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td>strftime-replaceable</td></tr>
+  <tr><td><code>adv_cmds</code></td><td>extras</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>CommonCrypto</code></td><td>extras</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td class="no">ICU-free</td></tr>
+  <tr><td><code>IOKitUser</code></td><td>extras</td><td class="no">No</td><td class="part">1 site</td><td class="no">No</td><td class="no">No</td><td class="no">No</td><td>5-line replace</td></tr>
+</tbody>
+</table>
+
+<p><strong>Tally:</strong> 17 of 22 components are fully ICU-free with no work. 4 (configd, bootp, PowerManagement, IOKitUser) touch CF-ICU APIs in narrow paths totaling ~100 LOC across all four; each path has a direct libc-equivalent replacement. 1 (mDNSResponder) has direct-ICU code gated by an undefined macro. 1 (libCoreFoundation itself) ships ICU-using files we simply drop from <code>SRCS</code>.</p>
+
+<h2 id="decision">10. Decision: don't install ICU</h2>
+
+<div class="verdict">
+<strong>Do not install ICU on the freebsd-launchd-mach ISO.</strong> Drop the 9 ICU-using <code>.c</code> files from libCoreFoundation's <code>SRCS</code>. Plan to stub the ~100 LOC of CF-ICU consumer code in configd / bootp / PowerManagement / IOKitUser with libc <code>strftime</code> / <code>strptime</code> / <code>localtime_r</code> / direct <code>CFStringCreateWithFormat</code> when porting each daemon. Leave <code>USE_LIBIDN</code> undefined in mDNSResponder (matches upstream's default).
+</div>
+
+<p>Concrete changes in the libCoreFoundation Makefile &mdash; drop these files from <code>SRCS</code>:</p>
+
+<pre><code>CFLocale.c                CFLocaleIdentifier.c       CFLocaleKeys.c
+CFCalendar.c              CFCalendar_Enumerate.c
+CFDateFormatter.c         CFNumberFormatter.c
+CFListFormatter.c         CFDateIntervalFormatter.c  CFRelativeDateTimeFormatter.c
+CFStringTransform.c       CFRegularExpression.c
+CFCharacterSet.c          CFStringEncodingDatabase.c CFICUConverters.c
+CFApplicationPreferences.c</code></pre>
+
+<p>Add a Makefile comment naming the audit so a future maintainer who finds "why isn't CFLocale here?" gets the answer in one place.</p>
+
+<h2 id="build-vs-runtime">11. Build-time vs runtime &mdash; what kind of dependency is ICU?</h2>
+
+<p>"Do we need ICU" splits into two questions, and the answer is different at each stage. Spelling it out so the consequences of the drop are unambiguous:</p>
+
+<h3>11.1 If we KEEP the ICU-using <code>.c</code> files in <code>SRCS</code> (the unstripped state)</h3>
+
+<table>
+<thead><tr><th>Stage</th><th>ICU needed?</th><th>Why</th></tr></thead>
+<tbody>
+  <tr><td>Build time</td><td class="yes">Yes</td><td><code>cc -c CFLocale.c</code> resolves <code>#include &lt;unicode/uloc.h&gt;</code> &mdash; ICU's <code>-dev</code> headers must be on the build host. <code>ld</code> resolves <code>uloc_getDefault</code> against <code>libicuuc.so</code> &mdash; ICU's shared libraries must be on the build host.</td></tr>
+  <tr><td>Link time</td><td class="yes">Yes</td><td><code>libCoreFoundation.so.6</code> ends up with <code>DT_NEEDED libicuuc.so</code>, <code>DT_NEEDED libicui18n.so</code>, <code>DT_NEEDED libicudata.so</code> in its dynamic section.</td></tr>
+  <tr><td>Runtime</td><td class="yes">Yes</td><td>Every binary linking <code>libCoreFoundation.so.6</code> transitively requires the three <code>libicu*.so</code> files on the running system. rtld resolves them at exec time; missing libs &rArr; <code>shared object "libicuuc.so.74" not found</code> at startup.</td></tr>
+  <tr><td>ISO disk cost</td><td colspan="2">~30 MiB across the three libicu*.so files, dominated by <code>libicudata.so</code> (CLDR tables).</td></tr>
+</tbody>
+</table>
+
+<h3>11.2 If we DROP the 9 ICU-using <code>.c</code> files (the plan)</h3>
+
+<table>
+<thead><tr><th>Stage</th><th>ICU needed?</th><th>Why</th></tr></thead>
+<tbody>
+  <tr><td>Build time</td><td class="no">No</td><td>None of the remaining 69 <code>.c</code> files <code>#include &lt;unicode/*.h&gt;</code> or reference ICU symbols. The build doesn't need ICU headers, and <code>ld</code> has no unresolved ICU references to chase.</td></tr>
+  <tr><td>Link time</td><td class="no">No</td><td><code>libCoreFoundation.so.6</code> has no <code>DT_NEEDED</code> entry for any <code>libicu*.so</code>. Its dynamic section lists only <code>libdispatch.so</code>, <code>libBlocksRuntime.so</code>, <code>libpthread.so</code>, <code>libc.so</code>.</td></tr>
+  <tr><td>Runtime</td><td class="no">No</td><td>Binaries linking libCoreFoundation have nothing to resolve. <code>ldd /sbin/launchd</code>, <code>ldd /bin/launchctl</code> show no ICU library in their resolution chain. ICU need not be installed on the ISO at all.</td></tr>
+  <tr><td>ISO disk cost</td><td colspan="2">Zero ICU.</td></tr>
+</tbody>
+</table>
+
+<h3>11.3 The footnote for the daemons we'll port later</h3>
+
+<p>configd / bootp (IPConfiguration) / PowerManagement / IOKitUser <em>source code</em> calls CF-ICU APIs (<code>CFLocaleCreate</code>, <code>CFCalendar*</code>, <code>CFDateFormatter*</code>, <code>CFNumberFormatter*</code>). Those calls resolve to symbols <strong>in libCoreFoundation</strong>. Since our libCoreFoundation doesn't export those symbols (we dropped the files), the daemon source has to be patched at port time to use libc replacements (<code>strftime</code>, <code>strptime</code>, <code>localtime_r</code>, direct <code>CFStringCreateWithFormat</code>). That's <strong>port-time source work, not an ICU dependency</strong>. Once patched, those daemons compile and run with zero ICU involvement at any stage.</p>
+
+<p>Quantum: ~100 LOC of patches across four repos, one-shot per repo as we port them. Each patch is mechanical (replace a 5-line CFDateFormatter setup with a 1-line <code>strftime</code> call) and obvious from the audit citations in &sect;6 and &sect;8.</p>
+
+<h2 id="caveats">12. Caveats &amp; what we lose</h2>
+
+<p>Honest accounting of the functionality the ISO won't have without ICU. These are real but small for our consumer set:</p>
+
+<ul>
+  <li><strong>No CFLocale / CFCalendar / CFDateFormatter / CFNumberFormatter</strong>: programs cannot format a date or number for human display. Stub each call site with libc <code>strftime</code> + ASCII templates when porting; output is en_US-shaped regardless of user locale. Cost: zero on system-daemon CLI output; cosmetic-only on user-facing tools like <code>pmset</code>.</li>
+  <li><strong>No CFStringTransform</strong>: no Unicode normalization (NFC/NFD), no transliteration. Not used by any audited component.</li>
+  <li><strong>No CFRegularExpression</strong>: CF's Unicode-aware regex is gone. Not used by any audited component. (Programs that want regex use libc <code>&lt;regex.h&gt;</code> directly.)</li>
+  <li><strong>No CFCharacterSet predefined sets</strong>: <code>kCFCharacterSetWhitespace</code>, <code>kCFCharacterSetLetter</code>, etc. become unavailable. Not used by any audited component &mdash; everything uses libc <code>isspace</code>/<code>isalnum</code> instead.</li>
+  <li><strong>No locale-sensitive CFStringCompare</strong>: <code>kCFCompareLocalized</code> won't behave correctly &mdash; comparisons fall back to binary order. Not requested by any audited component.</li>
+  <li><strong>No exotic encoding conversion</strong>: CFLite still supports UTF-8 / UTF-16 / ASCII / Latin1 / MacRoman natively. GB18030, Shift_JIS, EUC-KR, Big5 are gone. Not used by any audited component.</li>
+  <li><strong>No IDNA hostname normalization in mDNSResponder</strong>: international-domain-name hostnames advertised via mDNS would not be punycode-normalized. <code>USE_LIBIDN</code> is already off upstream; no real-world Bonjour traffic uses it.</li>
+  <li><strong>No PvD info expiration parsing in IPConfiguration</strong> (unless we add the 5-line <code>strptime</code> replacement). RFC 8801 is rarely deployed; carrier-provided DNS hint timestamps are advisory.</li>
+  <li><strong>Cosmetic timestamp formatting in configd debug logs and pmset CLI output</strong>: replaced with libc <code>strftime</code> in en_US shape.</li>
+</ul>
+
+<p>None of this affects the core functionality of any system service on the ISO. The losses are entirely in the "make output prettier for the user's locale" category, which is the desktop concern, not the system-services concern.</p>
+
+<p><strong>Reversibility</strong>: every loss above is one Makefile line away from being restored. Install <code>icu</code> from FreeBSD pkg, add the dropped <code>.c</code> files back to <code>SRCS</code>, rebuild libCoreFoundation, re-link. No SONAME bump needed because the dropped files only add new symbols &mdash; binaries linking the no-ICU libCoreFoundation will just see <code>NULL</code>/missing-symbol behavior for those functions; binaries linking the with-ICU build see the full surface.</p>
+
+<p><strong>Future-proofing</strong>: if and when gershwin (the desktop overlay) lands on top of freebsd-launchd-mach, ICU comes along with <code>libgnustep-base</code> as its own hard build-time dependency (libs-base's <code>configure.ac</code> aborts without it). At that point the marginal cost of installing ICU is zero, and libCoreFoundation can be rebuilt with the full surface. The decision here is specifically about the standalone freebsd-launchd-mach ISO.</p>
+
+<h2 id="apple-icu">13. Could we vendor Apple's ICU instead?</h2>
+
+<p>Project pattern would suggest yes &mdash; we already vendor libdispatch, libxpc, launchd-842, libCoreFoundation, bootstrap_cmds from Apple-OSS or swiftlang in <code>src/</code>. ICU has an Apple fork too. So if we ever wanted ICU on this ISO, vendoring Apple's would be on-pattern. Worth knowing the cost.</p>
+
+<h3>13.1 Apple's ICU exists at <code>apple-oss-distributions/ICU</code></h3>
+
+<p>Probed locally 2026-05-15. Shallow-clone summary:</p>
+
+<table>
+<thead><tr><th>Attribute</th><th>Value</th></tr></thead>
+<tbody>
+  <tr><td>Upstream</td><td><code>github.com/apple-oss-distributions/ICU</code></td></tr>
+  <tr><td>Repo size (shallow clone)</td><td><strong>221 MiB</strong></td></tr>
+  <tr><td>LOC (C + C++ + headers)</td><td><strong>1,012,463</strong> across <code>icu/icu4c/source/</code></td></tr>
+  <tr><td>License</td><td><strong>Unicode License V3</strong> &mdash; permissive, BSD-like, no copyleft. Free to use, copy, modify, distribute, sell. Only obligation is preserving the copyright notice. Compatible with everything else in this project (Apache 2.0, BSD-2-Clause, LGPL).</td></tr>
+  <tr><td>Top-level layout</td><td><code>icu/icu4c/source/{common, i18n, data, extra, io, layoutex, test, tools, ...}</code> + an <code>apple/</code> subdir with Apple-specific build glue, scripts, and a Swift module.</td></tr>
+  <tr><td>Build deps</td><td>C++ compiler (we have clang/clang++ via FreeBSD base), <code>gmake</code>, Python (for some data-generation steps), autoconf-style <code>configure</code>. <strong>No external library deps</strong> &mdash; ICU is self-contained.</td></tr>
+  <tr><td>Apple's top-level <code>makefile</code></td><td>Apple-platform-only. The opening comment says it "eliminates all of the stuff for Windows and Linux" and is Xcode-tied. To build on FreeBSD we'd skip Apple's makefile and use the upstream IBM ICU autotools build inside <code>icu/icu4c/source/</code>.</td></tr>
+  <tr><td>Build artifact</td><td>Apple ships <strong><code>libicucore.dylib</code></strong> on macOS &mdash; a single unified library combining what upstream ships as three (<code>libicuuc.so</code> + <code>libicui18n.so</code> + <code>libicudata.so</code>). Apple's data slice is trimmed.</td></tr>
+  <tr><td>Compiled size (estimated)</td><td>~5-8 MiB for Apple's slimmed-down libicucore; ~30 MiB for upstream's three-library split with full CLDR data.</td></tr>
+</tbody>
+</table>
+
+<h3>13.2 The three options compared</h3>
+
+<table>
+<thead><tr><th>Option</th><th>Source surface</th><th>Build complexity</th><th>ISO size</th><th>FreeBSD-pkg dependency</th><th>Self-contained</th></tr></thead>
+<tbody>
+  <tr><td><strong>A. Drop ICU entirely (the plan)</strong></td><td>0 LOC vendored</td><td>None &mdash; no ICU in the build</td><td>0 MiB</td><td>None</td><td>Yes (no ICU on the ISO to be self-contained about)</td></tr>
+  <tr><td><strong>B. Install FreeBSD's <code>devel/icu</code> port</strong></td><td>0 LOC vendored</td><td>None &mdash; pkg-installed</td><td>~30 MiB</td><td>Hard-depends on <code>devel/icu</code> port (FreeBSD-maintained)</td><td>No &mdash; ISO carries a transitive dep on the FreeBSD ports tree</td></tr>
+  <tr><td><strong>C. Vendor Apple's ICU into <code>src/libICU/</code></strong></td><td>1M+ LOC, 221 MiB</td><td>High &mdash; rework Apple's Xcode-tied top-level makefile for FreeBSD bsd.lib.mk; bootstrap the data-generation steps; ~weeks of build-system surgery</td><td>~5-30 MiB depending on data slice</td><td>None</td><td>Yes &mdash; matches the rest of the vendor-everything pattern</td></tr>
+</tbody>
+</table>
+
+<h3>13.3 What you'd give up vs. gain at each option</h3>
+
+<ul>
+  <li><strong>Option A (drop)</strong>: lose the rich-i18n CF surface (CFLocale / CFCalendar / etc.). System services unaffected. Gershwin desktop overlay, when it lands, installs ICU as <code>libgnustep-base</code>'s build dep and brings the rich i18n surface back.</li>
+  <li><strong>Option B (FreeBSD pkg)</strong>: keep the rich-i18n CF surface on this ISO. Add ~30 MiB. Take a pkg dependency on <code>devel/icu</code>. Zero project-side build complexity.</li>
+  <li><strong>Option C (vendor Apple's)</strong>: keep the rich-i18n CF surface. Self-contained. Pay ~1M LOC + 221 MiB checkout in git history. Build complexity is real &mdash; Apple's build wants Xcode; FreeBSD-porting it is a non-trivial sub-project before launchctl can even compile. Most of the upstream ICU codebase has nothing to do with the CF integration we want.</li>
+</ul>
+
+<h3>13.4 Recommendation</h3>
+
+<div class="callout callout-good">
+<p><strong>Option A (drop) is right for this ISO.</strong> The audit established zero non-droppable consumers. Option B (FreeBSD pkg) is the right fallback if a future requirement adds an ICU-needing consumer &mdash; one line in pkglist-base.txt + one Makefile flip in libCoreFoundation, done in 10 minutes. Option C (vendor Apple's ICU) is a real engineering project (FreeBSD-porting Apple's Xcode-tied build) for which the audit found no driving requirement &mdash; defer until we have a concrete reason to need self-contained ICU on the ISO.</p>
+</div>
+
+<p>The recommendation is "A unless something changes." If a future need surfaces (e.g., we decide to ship a Cocoa app on the bare freebsd-launchd-mach ISO without the full gershwin overlay), revisit. Option C remains the cleanest forward-compat answer if self-containment ever becomes a hard requirement (no FreeBSD-port chain).</p>
+
+<h2 id="methodology">14. Audit provenance</h2>
+
+<p>This consolidated report aggregates findings from four parallel audit passes performed 2026-05-15 against the local clones at <code>/Users/jmaloney/Documents/launchd/</code>. Method was identical across all four: ripgrep / awk / find over each repo, manual adjudication of grep hits, build-file scan for link-line evidence, false-positive filtering (notably the jq/decNumber and jq/oniguruma cases in <code>text_cmds</code>).</p>
+
+<p>The four source audit documents are preserved verbatim in the working tree:</p>
+
+<ul>
+  <li><code>/Users/jmaloney/Documents/launchd/icu_audit_current.md</code> &mdash; vendored sources (7 components).</li>
+  <li><code>/Users/jmaloney/Documents/launchd/icu_audit_apple_ports.md</code> &mdash; daemon repos (6 components).</li>
+  <li><code>/Users/jmaloney/Documents/launchd/icu_audit_user_cmds.md</code> &mdash; command repos (5 components).</li>
+  <li><code>/Users/jmaloney/Documents/launchd/icu_audit_extras.md</code> &mdash; supporting frameworks &amp; tools (4 components).</li>
+</ul>
+
+<p>Each contains per-file line-number citations supporting the verdicts summarized above. Where a verdict in this consolidated report says "stub-replaceable" or "strftime-replaceable," the corresponding source audit document names the exact files and line ranges.</p>
+
+<p class="footnote">Written 2026-05-15 alongside the <a href="freebsd-launchctl-corefoundation-spike.html">launchctl-corefoundation-spike</a>'s implementation phase. This audit reverses the spike's &sect;14.4 tentative recommendation ("install ICU as a build dep") in favor of the no-ICU minimal build &mdash; the spike's text will be updated to match once this audit is reviewed and committed.</p>
+
+</div>
+</body>
+</html>

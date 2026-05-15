@@ -83,6 +83,87 @@
   </div>
 </header>
 
+<h2><span class="n">Status</span> Implementation outcome &amp; known unionfs copy issues</h2>
+<div class="card">
+  <p><strong>Both branches were implemented, tested on real hardware, and merged
+  (~May&nbsp;2026).</strong> The installed system now faithfully captures the running live
+  session — full metadata, hardlinks, in-session <code>pkg</code> installs. But getting there
+  surfaced three concrete defects in FreeBSD&nbsp;15's in-kernel <code>unionfs</code>: the first
+  forced a change to decision <strong>D2</strong>, and the second shipped as a
+  <strong>known unfixed defect</strong>. They are documented here so the next person doesn't
+  rediscover them from scratch. The plan body below is left as the original (pre-implementation)
+  plan; this section records where reality diverged.</p>
+
+  <h3>1 · Lower-layer symlink corruption — <span class="tag change">forced D2 change: bsdtar → cpio</span></h3>
+  <p>Reading a lower-layer (uzip) symlink through the union intermittently fails:
+  <code>readlink()</code> returns <code>EINVAL</code>; <code>lstat()</code> returns
+  <code>EBADF</code> or a garbage mode/size. It is a kernel bug — <em>every</em> userland tool
+  (<code>tar</code>, <code>cpio</code>, <code>cp</code>, <code>pax</code>, <code>rsync</code>,
+  <code>cpdup</code>) is handed the same garbage, because they all read via the same
+  <code>lstat</code>/<code>readlink</code> syscalls.</p>
+  <p>What differs is the <em>reaction</em>: <code>tar</code>/libarchive treats it as
+  <strong>fatal</strong> and aborts the whole archive — on the live ISO this consistently
+  truncated a 155k-file system to ~137 files, every run. <code>cpio</code> treats it as a
+  <strong>per-file warning</strong>: it skips that entry and continues. So D2's
+  <code>bsdtar</code> pipe was replaced with <code>find -x / &lt;prunes&gt; | cpio -pdmu</code>
+  (both base tools), plus a <strong>stage-2 symlink-repair sweep</strong> that re-walks
+  <code>find -type l</code> and recreates any symlink cpio dropped (a dedicated
+  <code>readlink</code> sweep with a short retry reliably reads links that are flaky under
+  cpio's own access pattern). <code>cpio -pdmu</code> was verified on hardware to preserve
+  hardlinks (<code>/rescue</code> stays 149-linked, ~19&nbsp;MB not ~2.9&nbsp;GB),
+  <code>schg</code> flags, setuid, ownership, perms and mtime. <em>Status: fixed and merged.</em></p>
+
+  <h3>2 · Directory copy-up corruption — <span class="tag delete">KNOWN UNFIXED DEFECT</span></h3>
+  <p><code>avahi-daemon</code>'s startup touches <code>/usr/local/etc/avahi</code>, which triggers
+  a buggy unionfs <strong>copy-up</strong>: a corrupt node is left in the tmpfs
+  <strong>upper</strong> layer, shadowing the intact directory in the uzip
+  <strong>lower</strong>. The corrupt node's <code>stat()</code> reads back inconsistently over
+  time — a garbage multi-KB regular file, a 19-byte symlink, or a zero-size directory, all with
+  garbage size/mtime. The installer faithfully copies whatever the union shows it, so an
+  installed system ends up with a corrupt <code>/usr/local/etc/avahi</code> (a garbage ~34&nbsp;KB
+  file instead of the config directory). avahi / mDNS is then misconfigured on installs;
+  everything else about the install is correct. Reproduced on a clean boot: avahi was a healthy
+  directory before the install and corrupt after.</p>
+  <div class="callout danger" style="margin:10px 0;"><strong>Shipped as a known defect.</strong>
+  The <code>cpio</code> pivot was the priority and avahi is one non-critical config directory, so
+  the branches were merged without the fix.</div>
+  <p><strong>Root cause is understood and the fix is identified</strong> (not yet implemented):
+  the corruption is 100% in the upper layer — <code>rm -rf /usr/local/etc/avahi</code> on the
+  live union removes the corrupt upper node and the clean uzip lower shows through (verified
+  in-session). The intended fix is a <strong>pre-copy repair step</strong> in
+  <code>installer.sh</code>: before the <code>find | cpio</code>, detect a corrupt upper node
+  (e.g. a <code>/usr/local/etc</code> child that exists but is not a directory) and
+  <code>rm -rf</code> it to expose the clean lower, then copy. This keeps full live-session
+  capture and needs no separate uzip read.</p>
+
+  <h3>3 · The <code>/usr/local/sbin</code> tmpfs shadow — <span class="tag change">fixed</span></h3>
+  <p>Not a unionfs bug, but it surfaced in the same work and is tool-agnostic.
+  <code>installer.sh</code> mounts an empty tmpfs over <code>/usr/local/sbin</code> at startup to
+  suppress devd automounting during partitioning. The normal-install copy walks the live
+  <code>/</code>, so <code>find</code> walked that <em>empty tmpfs</em> and the installed system
+  was missing all ~73 binaries there (<code>cupsd</code>, <code>avahi-daemon</code>,
+  <code>blkid</code>, <code>automount</code>, …). Fixed by unmounting the workaround tmpfs
+  immediately before the copy — partitioning is done and the target is mounted by then, so devd
+  is no longer a concern. <em>Status: fixed and merged.</em></p>
+
+  <h3>Why not read the uzip directly, or use a different tool?</h3>
+  <ul>
+    <li><strong>The uzip lower can't be read in isolation.</strong> <code>/dev/md0.uzip</code> is
+      already mounted as the union's lower layer; a second mount fails with FFS
+      <code>Device busy</code>, and re-mounting the cd9660 to fresh-<code>mdconfig</code> the
+      backing file was also unreliable. The only readable view of the live session is the union
+      itself — so the copy must go through it, bugs and all.</li>
+    <li><strong>The copy tool isn't the lever.</strong> <code>rsync</code> and <code>cpdup</code>
+      read via the same <code>lstat</code>/<code>readlink</code> syscalls and get the same kernel
+      garbage; they behave like <code>cpio</code> (tolerate &amp; continue), not like
+      <code>tar</code> (abort) — exactly where the <code>cpio</code> pivot already landed. Neither
+      is in base, so they would add a dependency for no benefit.</li>
+    <li><strong>The real long-term fix is upstream</strong> — the <code>unionfs</code> symlink
+      and copy-up behaviours are FreeBSD kernel defects. Failing that, an architecture that
+      doesn't layer a writable tmpfs over the uzip via <code>unionfs</code> would sidestep both.</li>
+  </ul>
+</div>
+
 <h2><span class="n">Why</span> Context &amp; root cause</h2>
 <div class="card">
   <p>The live ISO boots via <code>resources/overlays/boot/init_script</code>, which nullfs-mounts
@@ -445,9 +526,12 @@ kenv init_chroot=/sysroot ; kenv -u init_script init_shell ; exit 0</code></pre>
 </table>
 
 <footer>
-  Implementation plan — generated for review. No repo files have been modified yet. All decisions
-  (D1–D4) are locked; there are no live-vs-installed behavioral branches. Approve to proceed on the
-  <code>unionfs-full-readwrite</code> branches of both repos.
+  Implementation plan — both <code>unionfs-full-readwrite</code> branches were implemented, tested
+  on hardware, and merged (~May&nbsp;2026). See <strong>Status</strong> at the top for the three
+  unionfs copy issues found along the way: issue&nbsp;#1 changed decision D2 (<code>bsdtar</code> →
+  <code>find | cpio</code>), and issue&nbsp;#2 — the avahi copy-up corruption — shipped as a known
+  unfixed defect with the fix identified. Decisions D1, D3, D4 hold as written; D2's copy
+  <em>method</em> is the part that changed.
 </footer>
 
 </div>

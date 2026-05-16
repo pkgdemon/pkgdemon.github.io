@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeBSD hardware registry + IOKit userland — porting plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.plist { border-left-color: var(--accent); }
+  pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+          padding: 1rem 1.1rem; }
+  .card h4 { margin-top: 0; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .phase.done { border-left: 4px solid var(--ok); }
+  .phase.todo { border-left: 4px solid var(--accent2); }
+  .phase.skip { border-left: 4px solid var(--bad); opacity: 0.7; }
+  .phase.defer { border-left: 4px solid var(--warn); }
+  table { width: 100%; border-collapse: collapse; font-size: .92rem; margin: 1rem 0; }
+  th, td { text-align: left; padding: .55rem .7rem; vertical-align: top;
+           border-bottom: 1px solid var(--rule); }
+  th { background: var(--code-bg); font-weight: 600; }
+  td code { font-size: .85em; }
+  .verdict { font-weight: 600; padding: 4px 8px; border-radius: 4px; display: inline-block; font-size: .85rem; }
+  .verdict.skip  { background: #f5d0d6; color: var(--bad); }
+  .verdict.defer { background: #f6e4cb; color: var(--warn); }
+  .verdict.do    { background: #d8efd8; color: var(--ok); }
+  .src { color: var(--muted); font-size: .82rem; }
+  .footnote { font-size: .85rem; color: var(--muted); margin-top: .5rem; }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+  .toc { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+         padding: 1rem 1.2rem; margin: 1.5rem 0 2rem; }
+  .toc h3 { margin-top: 0; }
+  .toc ol { margin: 0; padding-left: 1.4rem; }
+  .toc li { margin: .25rem 0; }
+</style>
+</head>
+<body>
+
+<h1>FreeBSD hardware registry + IOKit userland — porting plan</h1>
+<p class="subtitle">Replace devd's text-parsing autoload + monolithic event fanout with a structured, queryable, Mach-RPC-driven hardware registry (<code>hwregd</code>) inspired by macOS IORegistry — and port Apple's IOKit userland framework as a thin facade on top. <strong>Status: draft</strong>; synthesized from five parallel research agents on 2026-05-16.</p>
+
+<div class="tldr">
+<h3>TL;DR</h3>
+<ul>
+<li><strong>Build <code>hwregd</code>, a native FreeBSD hardware-registry daemon</strong> with an IOKit-shaped Mach-RPC API. Inputs: <code>libdevinfo</code> (newbus tree), <code>/dev/devctl</code> (kernel event stream — same source devd reads), <code>/boot/kernel/linker.hints</code> (PCI/USB→module mapping), <code>/dev/pci</code> + <code>PCIOCGETCONF</code> (enrichment). Output: structured registry tree + Mach watch notifications + automatic <code>kldload</code>. ~9 weeks v1.</li>
+<li><strong>Port Apple's IOKitUser as a thin facade on top of <code>hwregd</code></strong>, NOT a literal port of the Mach RPC <code>device.defs</code> surface. The CF-flavored API (<code>IOServiceMatching</code>, <code>IORegistryEntryCreateCFProperty</code>, <code>IOServiceAddMatchingNotification</code>) is the cheap half; the kernel mock would be the expensive half. ~6-8 weeks for the "minimum useful" subset (<code>ioreg</code>, <code>system_profiler</code> work).</li>
+<li><strong>Extend launchd with a <code>HardwareMatch</code> plist key</strong> so device arrival can trigger jobs — replaces devd's text-rule actions with the native launchd dispatch model. ~1.5 weeks.</li>
+<li><strong>Kext + DriverKit verdicts</strong>: kernel-side kext support is a 3-5 engineer-year diversion — <span class="verdict skip">skip</span>. DriverKit binary compat is 8-18 months — <span class="verdict defer">defer</span>. A FreeBSD-native DriverKit-shape framework (cuse + netmap + IOKit-shape API) is 4-8 months, builds naturally on hwregd — <span class="verdict do">pursue after configd</span>.</li>
+<li><strong>Sequencing</strong>: configd first (already planned), then hwregd, then IOKitUser facade, then optionally the cuse-backed DriverKit-shape framework. <code>devd</code> coexists during transition, retires when <code>HardwareMatch</code> plists cover its functional buckets.</li>
+</ul>
+</div>
+
+<div class="toc">
+<h3>Contents</h3>
+<ol>
+<li><a href="#motivation">Motivation — why touch this at all</a></li>
+<li><a href="#strategy">Strategy: three converging tracks</a></li>
+<li><a href="#hwregd">Hardware registry daemon (<code>hwregd</code>) design</a></li>
+<li><a href="#launchd-integration">launchd integration: the <code>HardwareMatch</code> key</a></li>
+<li><a href="#iokituser">IOKit userland port — phased</a></li>
+<li><a href="#kext-dext">Kext + DriverKit verdicts</a></li>
+<li><a href="#native-dext">FreeBSD-native DriverKit-shape framework</a></li>
+<li><a href="#coexistence">Coexistence with devd, devmatch, newbus</a></li>
+<li><a href="#sequencing">Sequencing relative to configd / IPConfiguration</a></li>
+<li><a href="#effort">Effort estimates</a></li>
+<li><a href="#open-questions">Open questions</a></li>
+<li><a href="#decision-matrix">Decision matrix</a></li>
+<li><a href="#sources">Source citations</a></li>
+</ol>
+</div>
+
+<h2 id="motivation">1. Motivation — why touch this at all</h2>
+
+<p>FreeBSD ships two device-management components:</p>
+
+<ul>
+<li><strong><code>devd(8)</code></strong> — text-rule daemon that reads <code>/dev/devctl</code>, parses line-format events (<code>+em0 at ...</code>, <code>?</code>, <code>!system=ACPI subsystem=...</code>), and matches them against regex rules in <code>/etc/devd/*.conf</code> to fire shell actions.</li>
+<li><strong><code>devmatch(8)</code></strong> — structured matcher that walks <code>libdevinfo</code> + parses <code>/boot/kernel/linker.hints</code>'s <code>MDT_PNP_INFO</code> records to determine which <code>.ko</code> to <code>kldload</code> for a given device.</li>
+</ul>
+
+<p>devmatch is fine — it's already structured-data-driven, MIT-class licensed, and easy to lift. devd is the weak link:</p>
+
+<ul>
+<li><strong>Text rules</strong> instead of structured queries. ZFS event-format drift silently broke <code>zfs.conf</code> rules (<a href="https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=183335">PR 183335</a>).</li>
+<li><strong>Single-process action runner</strong> — slow shell actions block subsequent events.</li>
+<li><strong>Queue-overflow silent drops</strong> if <code>hw.bus.devctl_queue</code> fills before devd connects.</li>
+<li><strong>No first-class watch API</strong> for arbitrary clients. Third-party consumers (libudev-devd, libinput, Xorg input hot-plug) re-parse <code>/var/run/devd.pipe</code>'s line format and inherit every drift bug.</li>
+<li><strong>Race against rc ordering</strong> (<a href="https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=153594">PR 153594</a>) — wlan/netif attach happens before devd is up.</li>
+</ul>
+
+<p>Apple's IOKit/IORegistry solves these by exposing a <strong>structured in-memory tree of device objects</strong>, each with a typed property bag, with a Mach-RPC API for query (<code>IOServiceGetMatchingServices</code>) and watch (<code>IOServiceAddMatchingNotification</code>). Multiple clients subscribe independently. Predicates are dictionary-shaped, not regex-shaped. Events deliver as Mach messages with payload, not as text lines to be re-parsed.</p>
+
+<p>Crucially, <strong>none of this requires the IOKit kernel</strong>. The structure can be synthesized in userland from FreeBSD's existing kernel facilities (<code>libdevinfo</code> for tree, <code>/dev/devctl</code> for events, <code>/dev/pci</code> for enrichment, <code>linker.hints</code> for module matching). What's missing is the userland daemon that maintains the structure and serves the queries — that's <code>hwregd</code>.</p>
+
+<h2 id="strategy">2. Strategy: three converging tracks</h2>
+
+<div class="grid">
+<div class="card">
+<h4>Track 1: hwregd (native daemon)</h4>
+<p>A new FreeBSD daemon. IOKit-<em>shaped</em> Mach-RPC API, but the implementation talks to <code>libdevinfo</code> / <code>/dev/devctl</code> / <code>linker.hints</code> / <code>kldload(2)</code> directly. No Apple-source code in the implementation.</p>
+<p><strong>Effort:</strong> ~9 weeks v1.</p>
+</div>
+<div class="card">
+<h4>Track 2: IOKitUser facade</h4>
+<p>Port Apple's <code>IOKitUser</code> (~32k LoC, already at <code>/Users/jmaloney/Documents/launchd/IOKitUser/</code>) as a thin CF wrapper over hwregd's Mach-RPC. <code>IOServiceMatching</code> calls translate to <code>hwreg_lookup</code>. The 27 <code>io_*</code> MIG ops re-bind to our daemon, not to a kernel-resident IOService graph.</p>
+<p><strong>Effort:</strong> 6-8 weeks for minimum-useful subset.</p>
+</div>
+<div class="card">
+<h4>Track 3: launchd HardwareMatch</h4>
+<p>Add a <code>HardwareMatch</code> plist key. launchd subscribes to hwregd; on device arrival matching the criteria, fires the job. Replaces devd's text-rule actions for the cases that matter (dhclient on link-up, etc.).</p>
+<p><strong>Effort:</strong> ~1.5 weeks.</p>
+</div>
+<div class="card">
+<h4>Convergence</h4>
+<p>Track 1 is the load-bearing piece. Track 2 makes it Apple-API-compatible. Track 3 gives it teeth via launchd. Together they replace devd's role in our stack with a queryable structured registry.</p>
+</div>
+</div>
+
+<h2 id="hwregd">3. Hardware registry daemon (<code>hwregd</code>)</h2>
+
+<h3>3.1 Inputs</h3>
+
+<table>
+<thead><tr><th>Source</th><th>Purpose</th><th>FreeBSD mechanism</th></tr></thead>
+<tbody>
+<tr><td><code>libdevinfo</code></td><td>Initial newbus snapshot + per-device pnpinfo, driver name, location, flags</td><td><code>devinfo_init()</code>, <code>devinfo_foreach_device_child()</code>; backed by sysctl <code>hw.bus.info</code> + <code>hw.bus.devices.&lt;idx&gt;</code></td></tr>
+<tr><td><code>/dev/devctl</code></td><td>Hot-plug events (<code>+attach</code>, <code>-detach</code>, <code>?nomatch</code>, <code>!notify</code>)</td><td>Single-reader cdev exposed by <code>sys/kern/kern_devctl.c</code>; line-format <code>!system=X subsystem=Y type=Z key=value\n</code></td></tr>
+<tr><td><code>/boot/kernel/linker.hints</code></td><td>PCI/USB/ACPI ID → module mapping for auto-load</td><td>Binary file written by <code>kldxref(8)</code>; record types <code>MDT_MODULE</code>, <code>MDT_VERSION</code>, <code>MDT_PNP_INFO</code> per <code>sys/sys/module.h</code></td></tr>
+<tr><td><code>/dev/pci</code> + <code>PCIOCGETCONF</code></td><td>PCI enrichment (BARs, class code, subvendor)</td><td><code>struct pci_conf</code> per <code>sys/sys/pciio.h</code>; same path <code>pciconf -lv</code> uses</td></tr>
+<tr><td>USB ioctls</td><td>USB port/speed enrichment</td><td><code>USB_DEVICEINFO</code>, <code>libusb20</code></td></tr>
+<tr><td>sysctl <code>hw.acpi.thermal.*</code>, <code>dev.cpu.N.*</code>, <code>hw.acpi.battery.*</code></td><td>Power/thermal property enrichment</td><td>Poll @ 5s, push <code>CHANGED</code> events to watchers</td></tr>
+</tbody>
+</table>
+
+<h3>3.2 Data model</h3>
+
+<p>Tree of <code>HWNode</code> records with parent/child edges. Each node carries a typed property bag implemented as <code>xpc_object_t</code> (we already ship libxpc; this keeps the daemon CF-free — an IOKitUser facade adds the CF flavor at the API boundary).</p>
+
+<pre><code>struct hw_node {
+    uint64_t       id;              /* registry-unique, monotonic */
+    uint64_t       parent_id;       /* 0 = root */
+    char           path[128];       /* e.g. "/pci0/pci0:0:25:0/em0" */
+    char           class_name[64];  /* "PCIDevice", "USBDevice", "CPU", "Disk" */
+    char           bsd_name[32];    /* "em0", "da0", "ugen0.3" or "" */
+    xpc_object_t   props;           /* typed property bag */
+    uint32_t       state;           /* PROBED|ATTACHED|DETACHED|FAILED */
+    uint32_t       refcnt;          /* for stale-handle detection */
+};
+</code></pre>
+
+<p>Example records (props shown as JSON for brevity):</p>
+
+<pre><code>// Intel Gigabit NIC
+{ "class":"PCIDevice", "path":"/pci0/pci0:0:25:0/em0",
+  "vendor_id":0x8086, "device_id":0x153a, "subsystem":"0x20708086",
+  "class_code":0x020000, "driver":"em", "bsd_name":"em0",
+  "irq":20, "bars":[{"type":"mem","base":0xf7c00000,"size":0x20000}],
+  "link_state":"up", "mac":"a4:5e:60:..." }
+
+// USB mass-storage stick
+{ "class":"USBDevice", "path":"/pci0/.../uhub0/umass0",
+  "vendor_id":0x0951, "product_id":0x1666, "speed":"high",
+  "vendor_str":"Kingston", "product_str":"DataTraveler",
+  "driver":"umass", "bsd_name":"da1", "serial":"..." }
+
+// CPU
+{ "class":"CPU", "path":"/cpus/cpu0",
+  "vendor":"GenuineIntel", "model":"Core i7-8650U", "core_id":0,
+  "freq_mhz":1900, "thermal_c":48.5, "p_state":"P0" }
+</code></pre>
+
+<h3>3.3 Mach-RPC API</h3>
+
+<p>MIG-generated. Subset mirrors IOKitLib's surface so the Track 2 facade is mechanical:</p>
+
+<pre><code>kern_return_t hwreg_get_root(mach_port_t srv, uint64_t *root_id);
+
+kern_return_t hwreg_lookup(mach_port_t srv,
+    xpc_object_t criteria,              /* {"vendor_id":0x8086,...} or {"class":"USBDevice"} */
+    uint64_t **ids, mach_msg_type_number_t *cnt);
+
+kern_return_t hwreg_get_properties(mach_port_t srv,
+    uint64_t id, xpc_object_t *props_out);
+
+kern_return_t hwreg_get_children(mach_port_t srv,
+    uint64_t id, uint64_t **ids, mach_msg_type_number_t *cnt);
+
+kern_return_t hwreg_watch(mach_port_t srv,
+    xpc_object_t criteria,
+    uint32_t event_mask,                /* ARRIVED|DEPARTED|CHANGED */
+    mach_port_t notify_port,            /* client-supplied send right */
+    uint64_t *watcher_id);
+
+kern_return_t hwreg_unwatch(mach_port_t srv, uint64_t watcher_id);
+
+kern_return_t hwreg_load_driver(mach_port_t srv,
+    uint64_t id,
+    char loaded_module[64],
+    int32_t *error_code);
+
+kern_return_t hwreg_retain(mach_port_t srv, uint64_t id);
+kern_return_t hwreg_release(mach_port_t srv, uint64_t id);
+</code></pre>
+
+<p>Watch notifications arrive as Mach messages of:</p>
+
+<pre><code>struct hwreg_event {
+    mach_msg_header_t  header;
+    uint64_t           watcher_id;
+    uint64_t           node_id;
+    uint32_t           event;          /* ARRIVED|DEPARTED|CHANGED */
+};
+</code></pre>
+
+<p>Clients run a libdispatch <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, ...)</code> on the notify port — our Phase E libdispatch Mach RECV backend already supports this.</p>
+
+<h3>3.4 Direct mapping to IOKit's API</h3>
+
+<table>
+<thead><tr><th>IOKitLib call</th><th><code>hwregd</code> equivalent</th></tr></thead>
+<tbody>
+<tr><td><code>IOServiceMatching("IOPCIDevice")</code></td><td><code>xpc_dict {"class":"PCIDevice"}</code></td></tr>
+<tr><td><code>IOServiceGetMatchingServices()</code></td><td><code>hwreg_lookup()</code></td></tr>
+<tr><td><code>IOServiceAddMatchingNotification()</code></td><td><code>hwreg_watch(criteria, ARRIVED, port)</code></td></tr>
+<tr><td><code>IORegistryEntryCreateCFProperties()</code></td><td><code>hwreg_get_properties()</code></td></tr>
+<tr><td><code>IOObjectRetain/Release()</code></td><td><code>hwreg_retain/release()</code></td></tr>
+<tr><td><code>IOIteratorNext()</code></td><td>Iterate returned id array client-side</td></tr>
+<tr><td><code>IORegistryGetRootEntry()</code></td><td><code>hwreg_get_root()</code></td></tr>
+<tr><td><code>IORegistryEntryGetChildIterator()</code></td><td><code>hwreg_get_children()</code></td></tr>
+</tbody>
+</table>
+
+<h3>3.5 Module auto-load flow</h3>
+
+<pre><code>                       +-----------------------------+
+   boot / hot-plug      | hwregd                      |
+   ----------------     |                             |
+   1. /dev/devctl       |                             |
+      arrival event --> | 2. parse event, build node  |
+                        |    state=PROBED             |
+                        |                             |
+                        | 3. props.driver == ""?      |
+                        |    yes -> lookup            |
+                        |    (vendor:device) in       |
+                        |    linker.hints cache       |
+                        |                             |
+                        | 4. kldload(&lt;module&gt;)   ----+--&gt; kernel
+                        |                             |
+                        | 5. kernel attaches driver,  |
+   ATTACH event &lt;------ |    emits ATTACH on devctl   |
+                        |                             |
+                        | 6. enrich node from         |
+                        |    libdevinfo + sysctls;    |
+                        |    state=ATTACHED           |
+                        |                             |
+                        | 7. fire matching watchers   |
+                        |    (incl. launchd's         |
+                        |    HardwareMatch jobs)      |
+                        +-----------------------------+
+</code></pre>
+
+<p>The matching logic in step 3 is lifted from <code>sbin/devmatch/devmatch.c</code>'s <code>search_hints()</code> (~200 LoC), with the <code>printf("kldload %s\n", mod)</code> shellout replaced by a direct <code>kldload(2)</code> syscall. Dependency closure happens kernel-side at <code>linker_load_dependencies()</code> (<code>sys/kern/kern_linker.c:2316-2389</code>), so the daemon emits one syscall per device, not N.</p>
+
+<h3>3.6 Failure modes</h3>
+
+<ul>
+<li><strong>Missing <code>.ko</code> / dep mismatch</strong>: <code>kldload</code> returns <code>-1</code>, node moves to <code>state=FAILED</code>, <code>props.load_error="ENOENT"</code>; <code>CHANGED</code> event fires so a UI can surface it. Retried on next <code>kldxref</code> change (we watch the file via <code>kqueue EVFILT_VNODE</code>).</li>
+<li><strong>Multiple modules match same device</strong>: linker.hints can map a single ID to multiple modules. Resolution order: explicit overlay <code>/etc/hwregd/priority.conf</code> first, then newbus probe score, then alphabetical.</li>
+<li><strong>Hot-unplug while client has handle</strong>: on DETACH the node moves to <code>state=DETACHED</code> but stays in the tree until <code>refcnt==0</code>. RPCs against detached nodes return <code>KERN_INVALID_OBJECT</code> (mirrors IOKit's <code>kIOReturnNoDevice</code>). One final <code>DEPARTED</code> event fires for watchers.</li>
+<li><strong>Daemon crash</strong>: launchd restarts hwregd; clients reconnect via bootstrap. Registry rebuilt from libdevinfo + linker.hints. Watcher state is in-memory only — clients must re-register (same constraint as IOKit notification ports across daemon restart).</li>
+<li><strong>Queue overflow on <code>/dev/devctl</code></strong>: set <code>hw.bus.devctl_queue=4096</code> at daemon startup (kernel default is 1000); buffered events drain on connect. Comment in <code>devaddq()</code>: <em>"We do send data, even when we have no listeners, because we wish to avoid races relating to startup and restart of listening applications."</em></li>
+</ul>
+
+<h2 id="launchd-integration">4. launchd integration — the <code>HardwareMatch</code> plist key</h2>
+
+<p>New plist keys for jobs that should fire on hardware events:</p>
+
+<pre class="plist"><code>&lt;key&gt;HardwareMatch&lt;/key&gt;
+&lt;array&gt;
+  &lt;dict&gt;
+    &lt;key&gt;class&lt;/key&gt;&lt;string&gt;NetworkInterface&lt;/string&gt;
+    &lt;key&gt;media_type&lt;/key&gt;&lt;string&gt;ethernet&lt;/string&gt;
+  &lt;/dict&gt;
+&lt;/array&gt;
+&lt;key&gt;HardwareMatchAction&lt;/key&gt;
+&lt;string&gt;StartOnArrival&lt;/string&gt;  &lt;!-- or KeepAlive, OneShot --&gt;
+</code></pre>
+
+<p>At boot, launchd opens a Mach connection to <code>hwregd</code>'s bootstrap-registered port (<code>com.apple.hwregd</code>), registers <code>hwreg_watch</code> for the union of all <code>HardwareMatch</code> criteria across its plist set. On <code>ARRIVED</code>, launchd treats the event like an <code>OtherJobActive</code> keepalive trigger and spawns the job, exposing <code>HWREG_NODE_ID</code>, <code>HWREG_BSD_NAME</code>, <code>HWREG_DRIVER</code> in the job's environment. On <code>DEPARTED</code> with <code>HardwareMatchAction=KeepAlive</code>, launchd SIGTERMs the job.</p>
+
+<p><strong>Example replacement plist</strong> for the devd <code>dhclient.conf</code> rule (<code>notify 0</code> on IFNET LINK_UP):</p>
+
+<pre class="plist"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;&lt;string&gt;org.freebsd.dhclient.ethernet&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt;
+    &lt;array&gt;
+        &lt;string&gt;/sbin/dhclient&lt;/string&gt;
+        &lt;string&gt;$HWREG_BSD_NAME&lt;/string&gt;
+    &lt;/array&gt;
+    &lt;key&gt;HardwareMatch&lt;/key&gt;
+    &lt;array&gt;
+        &lt;dict&gt;
+            &lt;key&gt;class&lt;/key&gt;&lt;string&gt;NetworkInterface&lt;/string&gt;
+            &lt;key&gt;media_type&lt;/key&gt;&lt;string&gt;ethernet&lt;/string&gt;
+        &lt;/dict&gt;
+    &lt;/array&gt;
+    &lt;key&gt;HardwareMatchAction&lt;/key&gt;&lt;string&gt;StartOnArrival&lt;/string&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;
+</code></pre>
+
+<p>(In practice we'd use the configd/IPConfiguration stack rather than shelling out to FreeBSD's dhclient — this is the illustrative shape.)</p>
+
+<h2 id="iokituser">5. IOKit userland port — phased</h2>
+
+<p>Apple's <code>IOKitUser</code> repo (<a href="https://github.com/apple-oss-distributions/IOKitUser">apple-oss-distributions/IOKitUser</a>, already vendored at <code>/Users/jmaloney/Documents/launchd/IOKitUser/</code>) is ~32k LoC of CF-flavored facade over Mach RPC routines defined in <code>osfmk/device/device.defs</code>. Every <code>IOKitLib.h</code> call decomposes to 1-2 MIG round-trips to a kernel-resident IOService graph.</p>
+
+<p>Direct port is infeasible because <strong>the kernel side doesn't exist</strong> for us — we'd have to mock the entire MIG surface anyway. The leverage is instead to <strong>re-aim IOKitUser's MIG client at <code>hwregd</code></strong>:</p>
+
+<div class="phase todo">
+<h3>K1 — read-only registry <span class="pill info">~4 weeks</span></h3>
+<p><code>hwregd</code> binary + IOKit-shape Mach API. <code>IORegistryEntry*</code> walk, <code>IOServiceMatching</code> (class match), <code>IOServiceGetMatchingService(s)</code>, <code>IORegistryEntryCreateCFProperty/ies</code>. Marker: <strong><code>ioreg -l</code> works against libdevinfo-backed tree</strong>. Smoke test asserts <code>ioreg -p IOService -k IOClass</code> returns sensible output.</p>
+</div>
+
+<div class="phase todo">
+<h3>K2 — notifications <span class="pill info">~2 weeks</span></h3>
+<p><code>IOServiceAddMatchingNotification</code>, <code>IOServiceAddInterestNotification</code>, <code>IONotificationPortCreate</code>, <code>IODispatchCalloutFromMessage</code>. Backing: <code>hwreg_watch()</code> + Mach message delivery via libdispatch <code>MACH_RECV</code> source. Marker: <strong><code>ioreg -w 0 -f</code> follow-mode works</strong>, prints arrivals as devices appear.</p>
+</div>
+
+<div class="phase todo">
+<h3>K3 — power management <span class="pill info">~4 weeks</span></h3>
+<p>Port <code>IOPMAssertion*</code>, <code>IOPSCopyPowerSourcesInfo/List</code>. Requires a small <code>powerd</code> daemon backing the assertion broker (idle-sleep prevention) and ACPI-backed power source enumeration. Marker: <strong><code>pmset -g</code> prints sensible output</strong>.</p>
+</div>
+
+<div class="phase defer">
+<h3>K4 — HID, USB, audio facades <span class="pill warn">deferred</span></h3>
+<p><code>IOHIDManagerCreate</code>, <code>IOUSBHostInterfaceCreate</code>, audio HAL plumbing. Port only when a consumer (GNUstep app, CoreAudio shim) actually needs it. Each facade gets its own backing FreeBSD subsystem (evdev, libusb, sndio/cuse).</p>
+</div>
+
+<div class="phase skip">
+<h3>SKIP — <code>IOServiceOpen</code> / <code>IOConnectCallMethod</code></h3>
+<p>The kernel-driver user-client RPC. No clean mapping to FreeBSD without per-driver bridge code. Consumers (GPU drivers, CoreAudio HALs, Bluetooth controllers) would each need a custom per-driver ioctl bridge. Out of scope.</p>
+</div>
+
+<p>Code-shape example for K1's matching path:</p>
+
+<pre><code>// On the IOKitUser facade side:
+io_iterator_t it;
+CFDictionaryRef m = IOServiceMatching("IONetworkInterface");
+IOServiceGetMatchingServices(kIOMainPortDefault, m, &amp;it);
+
+// Translates to Mach RPC:
+//   hwreg_lookup(srv,
+//                xpc_dict_create_with_kv("class", "NetworkInterface"),
+//                &amp;ids, &amp;cnt);
+
+// hwregd walks libdevinfo for nodes whose dd_drivername matches
+// the ifnet driver list (em, igb, re, virtio_net, ...) and returns
+// the synthesized node ids.
+</code></pre>
+
+<h2 id="kext-dext">6. Kext + DriverKit verdicts</h2>
+
+<h3>6.1 Kernel-side kext support <span class="verdict skip">SKIP</span></h3>
+
+<p>Loading unmodified Apple kexts on a FreeBSD kernel would require three pillars, each large:</p>
+
+<ol>
+<li><strong>Mach-O kernel image activator.</strong> FreeBSD's <code>linker_class</code> is pluggable (<code>sys/kern/kern_linker.c</code>) so a <code>link_macho_class</code> can be added without kernel patches in principle — but it must port <code>kxld</code> (Apple's Mach-O kernel linker, ~30k LoC in <code>xnu/libkern/kxld/</code>) and the split-segment relocation model.</li>
+<li><strong>IOKit C++ class hierarchy in-kernel.</strong> <code>IOService</code>, <code>IORegistryEntry</code>, <code>IOPCIDevice</code>, <code>IOWorkLoop</code>, <code>IOMemoryDescriptor</code>, plus the full <code>OSMetaClass</code>/<code>OSObject</code> RTTI runtime that drives Apple's <code>OSDynamicCast</code> and IOService matching. Several hundred classes. Even a minimal IOPCIFamily + IONetworkingFamily subset is ~50k LoC of C++ that must compile against FreeBSD's C kernel.</li>
+<li><strong>Apple kernel ABI shim.</strong> <code>IOMalloc</code>/<code>IOFree</code>, <code>IOLockAlloc</code>, <code>IOSleep</code>/<code>IODelay</code>, <code>current_task()</code>, <code>thread_call</code>, Mach VM (<code>vm_map_t</code> is named the same on both kernels but the struct is incompatible). Plus in-kernel Block.h closures — FreeBSD base ships <code>Block.h</code> userland but no in-kernel BlocksRuntime.</li>
+</ol>
+
+<p><strong>Effort:</strong> 3-5 engineer-years for a credible subset. Reference point: FreeBSD's <code>linuxkpi</code> (<code>sys/compat/linuxkpi/common/</code>) is 30,660 LoC across 47 .c files + 407 headers and has been actively developed for ~10 years to cover a comparable foreign in-kernel ABI; IOKit is arguably wider (C++ RTTI + Mach VM model on top of everything Linux had).</p>
+
+<p>Plus Apple's kernel ABI is unstable across point releases — kexts compiled for 10.15 break on 11.0; we'd have to pin a Darwin version. License: APSL 2.0 (usable, viral within the loader module).</p>
+
+<h3>6.2 DriverKit / DEXTs (Apple-binary userspace drivers) <span class="verdict defer">DEFER</span></h3>
+
+<p>A DEXT is a launchd-managed process that registers as <code>IOUserService</code>, communicates with a kernel-side <code>IOUserServer</code> shim via Mach over an <code>IOUserClient</code> port, and exposes <code>IOServiceDispatchSource</code>/<code>IODispatchQueue</code> on top of libdispatch.</p>
+
+<p>The bottom half is already there: Mach IPC (mach.ko), libxpc, libdispatch's MACH_RECV backend. The top half:</p>
+
+<ol>
+<li><strong>Kernel-side <code>IOUserServer</code> shim</strong> — small mach.ko module proxying between an in-kernel newbus <code>device_t</code> and a userspace Mach port. ~3-5k LoC.</li>
+<li><strong>Userspace IOKit substrate</strong> — build <code>IOKitUser</code> + a <code>DriverKit.framework</code>-shape API (<code>IOService</code>, <code>IOUserClient</code>, <code>OSAction</code>, <code>IODispatchQueue</code>) on top of libCoreFoundation. ~20-40k LoC, much in <code>IOKitUser</code> already.</li>
+<li><strong>MIG <code>io_*</code> op table</strong> — kernel side needs to implement the 27 MIG ops <code>IOKitLib.c</code> calls. Reconstructible from headers; not vendored locally.</li>
+</ol>
+
+<p><strong>Effort:</strong> 8-18 months for a working subset that runs a vendor-supplied USB-class DEXT.</p>
+
+<p>Risks: DEXT entitlement/sandbox model intricate (we'd no-op all entitlements); DriverKit framework headers public but no open-source implementation exists (reverse-engineer from headers + libIOKit traffic).</p>
+
+<p>Defer until configd + hwregd + IOKitUser facade are green. At that point, the marginal cost of adding DriverKit is much lower because the substrate exists.</p>
+
+<h3>6.3 FreeBSD-native DriverKit-shape framework <span class="verdict do">PURSUE (post-configd)</span></h3>
+
+<p>See <a href="#native-dext">section 7</a>.</p>
+
+<h2 id="native-dext">7. FreeBSD-native DriverKit-shape framework</h2>
+
+<p>Most of the substrate already exists:</p>
+
+<ul>
+<li><strong><code>cuse(3)</code></strong> (<code>sys/fs/cuse/cuse.c</code>, 2036 LoC; <code>lib/libcuse/cuse_lib.c</code>, 794 LoC) — userland char devices, today.</li>
+<li><strong><code>netmap</code></strong> — userspace networking.</li>
+<li><strong>libxpc + libdispatch</strong> — IPC and event-loop substrate we already ship.</li>
+</ul>
+
+<p>The plan: wrap these in IOKit-shape classes. An <code>IOService</code>/<code>IOUserClient</code> userland API that internally calls <code>cuse_alloc_dev</code>/<code>cuse_wait_and_process</code> instead of <code>IOConnectCallMethod</code>. Use the same <code>IOKitPersonalities</code> Info.plist format and <code>IOServiceMatching</code> predicate engine (we already have <code>OSKext.c</code>'s plist parser in IOKitUser).</p>
+
+<p><strong>Effort:</strong> 4-8 months. Most work is the matching/personality engine + the userland class hierarchy; the kernel substrate exists.</p>
+
+<p><strong>Coexistence with newbus:</strong> native — <code>cuse</code> is already a first-class newbus citizen. No conflict possible.</p>
+
+<p><strong>Trade-off:</strong> we get the DriverKit <em>API shape</em> but not binary compatibility with Apple's DEXTs. For our user goal ("FreeBSD modernization first, macOS compat second"), this is the right trade-off.</p>
+
+<p>Walkthrough — Realtek USB Ethernet "looks like a DEXT":</p>
+
+<ol>
+<li>Adapter plugged in → FreeBSD <code>usbus0</code> enumerates → <code>hwregd</code> sees ARRIVAL event.</li>
+<li>hwregd matches <code>vendor=0x0bda,product=0x8153</code> against linker.hints → no kernel driver, but matches an <code>IOKitPersonalities</code> entry in <code>com.realtek.AppleRTL8153.driver/Contents/Info.plist</code>.</li>
+<li>hwregd fires a <code>HardwareMatch</code> event; launchd matches the personality and spawns the driver process under a sandboxed UID.</li>
+<li>Driver process calls <code>cuse_alloc_unit_number()</code> + <code>cuse_dev_create()</code> to expose <code>/dev/cuse0</code>, runs a userland USB transfer loop via libusb, wraps a userland <code>tun(4)</code>/<code>tap(4)</code> for the IP side.</li>
+<li>From an application's API perspective: indistinguishable from a DEXT on macOS. From the kernel's perspective: just another cuse client + tun client.</li>
+</ol>
+
+<h2 id="coexistence">8. Coexistence with devd, devmatch, newbus</h2>
+
+<h3>8.1 Two-phase devd transition</h3>
+
+<div class="phase todo">
+<h3>Phase 1 — additive (devd stays)</h3>
+<p>devd keeps <code>/dev/devctl</code> (single-reader cdev). <code>hwregd</code> reads <code>/var/run/devd.pipe</code> (devd's multi-reader broadcast UNIX socket — same wire format). devd continues to fire its <code>/etc/devd/*.conf</code> rules; hwregd fires <code>HardwareMatch</code> plists. They're additive.</p>
+<p><strong>Risk:</strong> dhclient could be started twice. Mitigation: remove the <code>dhclient</code> block from <code>/etc/devd/dhclient.conf</code> as soon as the launchd plist is in place.</p>
+</div>
+
+<div class="phase todo">
+<h3>Phase 2 — hwregd-only</h3>
+<p>hwregd becomes the sole <code>/dev/devctl</code> reader; devd is retired. Optional: reproduce <code>/var/run/devd.pipe</code>'s format from hwregd for back-compat with libudev-devd consumers (notably libinput, Xorg input hot-plug). Or push libudev-devd upstream toward an hwregd backend.</p>
+</div>
+
+<h3>8.2 What we don't replace</h3>
+
+<table>
+<thead><tr><th>Capability</th><th>FreeBSD provider</th><th>Status in plan</th></tr></thead>
+<tbody>
+<tr><td>Auto-load kld for unmatched buses</td><td><code>devmatch</code>'s matching algorithm</td><td>Lift verbatim into hwregd</td></tr>
+<tr><td>newbus probe/attach</td><td>Kernel <code>device_attach()</code> in <code>subr_bus.c</code></td><td>Unchanged — hwregd consumes events, doesn't probe</td></tr>
+<tr><td>Module dep resolution</td><td><code>linker_load_dependencies()</code> in <code>kern_linker.c</code></td><td>Unchanged — single <code>kldload</code> pulls deps</td></tr>
+<tr><td>ZFS event logging</td><td>devd's <code>zfs.conf</code> regex rules</td><td>Replace with zfsd / native ZFS event hook</td></tr>
+<tr><td>Xorg input hot-plug</td><td>libudev-devd reading <code>/var/run/devd.pipe</code></td><td>Phase 2: hwregd reproduces pipe format, or push libudev-devd upstream</td></tr>
+<tr><td>ACPI lid / power events</td><td>devd's <code>acpiconf.conf</code> notify rules</td><td>HardwareMatch plists for <code>{class:"ACPIEvent"}</code></td></tr>
+</tbody>
+</table>
+
+<h2 id="sequencing">9. Sequencing relative to configd / IPConfiguration</h2>
+
+<p>The plans interact but are mostly independent. Recommended order:</p>
+
+<ol>
+<li><strong>configd</strong> — port first per <a href="freebsd-configd-plan.html">existing plan</a>. SCDynamicStore + SCPreferences. Network state policy lives here; hwregd has no business knowing about DNS preferences.</li>
+<li><strong>IPConfiguration</strong> — port second; talks to configd via Mach. Replaces dhclient role. At this point we have a working network management stack but no auto-trigger when interfaces appear.</li>
+<li><strong>hwregd (K1) + launchd HardwareMatch</strong> — port third. Now IPConfiguration can be wired to fire automatically when <code>{class:"NetworkInterface"}</code> arrives, instead of needing a devd rule.</li>
+<li><strong>IOKitUser facade (K1+K2)</strong> — port fourth. <code>ioreg</code> works, <code>IOServiceAddMatchingNotification</code> works. Unlocks Apple-source userland that queries hardware (system_profiler equivalents).</li>
+<li><strong>powerd / K3</strong> — port fifth. <code>pmset</code>, <code>IOPMAssertion</code>.</li>
+<li><strong>Native DriverKit-shape framework</strong> — start sixth, after all the above is stable. Enables porting Apple-source DEXTs (with patches) or writing new FreeBSD-native userspace drivers in the IOKit shape.</li>
+</ol>
+
+<p>Why this order: configd is independent of hwregd (configd talks to network state, hwregd talks to hardware). IPConfiguration depends on configd. hwregd depends on neither but its <em>value</em> compounds when launchd HardwareMatch can dispatch to configd/IPConfiguration. IOKitUser depends on hwregd. powerd depends on IOKitUser (for the assertion API surface). Native DriverKit depends on hwregd + IOKitUser.</p>
+
+<h2 id="effort">10. Effort estimates</h2>
+
+<table>
+<thead><tr><th>Milestone</th><th>Single-engineer effort</th><th>Critical dependency</th></tr></thead>
+<tbody>
+<tr><td>configd v1 (SCDynamicStore + SCPreferences)</td><td>~6 weeks</td><td>—</td></tr>
+<tr><td>IPConfiguration port</td><td>~1 week</td><td>configd</td></tr>
+<tr><td>hwregd v1 (Mach API, devd.pipe parser, libdevinfo walk, kldload)</td><td>~9 weeks</td><td>—</td></tr>
+<tr><td>launchd <code>HardwareMatch</code> key</td><td>~1.5 weeks</td><td>hwregd</td></tr>
+<tr><td>IOKitUser K1 (registry + matching)</td><td>~4 weeks</td><td>hwregd</td></tr>
+<tr><td>IOKitUser K2 (notifications)</td><td>~2 weeks</td><td>K1</td></tr>
+<tr><td>IOKitUser K3 (powerd, IOPMAssertion, IOPSCopyPowerSourcesInfo)</td><td>~4 weeks</td><td>K1, K2</td></tr>
+<tr><td>Native DriverKit-shape framework</td><td>~4-8 months</td><td>hwregd, IOKitUser K1+K2</td></tr>
+</tbody>
+</table>
+
+<p>Cumulative critical path to "hwregd + IOKit facade green": ~6 + 1 + 9 + 1.5 + 4 + 2 ≈ <strong>5-6 months</strong> with steady single-engineer pace. The native DriverKit framework adds another 4-8 months on top.</p>
+
+<h2 id="open-questions">11. Open questions</h2>
+
+<ol>
+<li><strong>Property freshness vs. cost.</strong> Re-poll thermal/link-state on every <code>get_properties</code>, or only via timer + push <code>CHANGED</code> events? Trade-off: Mach round-trip count vs. staleness window.</li>
+<li><strong>Persistent ids.</strong> macOS IORegistry ids are not stable across boots. Do we need stable ids for <code>HardwareMatch</code> to target "this specific disk" via hashed location + serial?</li>
+<li><strong>User clients.</strong> IOKit's <code>IOServiceOpen</code>/<code>IOConnectCallMethod</code> exposes per-driver IPC channels. Do we want hwregd to broker these (proxying to per-driver Mach ports)? Or do FreeBSD drivers stay pure cdevs and hwregd is read-only metadata?</li>
+<li><strong>kld dependency probing.</strong> <code>kldload</code> is all-or-nothing. Pre-probe with <code>kldxref -d</code> to detect dep mismatch before attempting load and present a clean error?</li>
+<li><strong>Authorization.</strong> Who can call <code>hwreg_load_driver</code>? Root only? Capsicum-style entitlements via XPC peer credentials?</li>
+<li><strong>devd compat shim.</strong> Phase 2: do we reproduce <code>/var/run/devd.pipe</code>'s line format from hwregd, or push libudev-devd upstream toward a structured hwregd backend? Affects ports tree compat surface.</li>
+<li><strong>Tracking newbus probe scores.</strong> When multiple modules match the same device, newbus has a probe-priority system. Do we surface that to hwregd for tiebreaking, or use our own priority overlay?</li>
+</ol>
+
+<h2 id="decision-matrix">12. Decision matrix</h2>
+
+<table>
+<thead><tr><th>Path</th><th>Verdict</th><th>Effort</th><th>When</th></tr></thead>
+<tbody>
+<tr><td><strong>hwregd</strong> daemon + launchd HardwareMatch</td><td><span class="verdict do">PURSUE</span></td><td>~10 wks</td><td>After configd + IPConfiguration land</td></tr>
+<tr><td><strong>IOKitUser</strong> facade on hwregd (K1+K2)</td><td><span class="verdict do">PURSUE</span></td><td>~6 wks</td><td>After hwregd v1</td></tr>
+<tr><td><strong>powerd</strong> + IOKitUser K3 (IOPMAssertion, IOPSCopyPowerSourcesInfo)</td><td><span class="verdict do">PURSUE</span></td><td>~4 wks</td><td>After K1+K2</td></tr>
+<tr><td><strong>FreeBSD-native DriverKit-shape</strong> framework (cuse + IOKit personalities)</td><td><span class="verdict do">PURSUE</span></td><td>~4-8 mo</td><td>After IOKitUser K2</td></tr>
+<tr><td><strong>Apple DriverKit / DEXT</strong> binary compat</td><td><span class="verdict defer">DEFER</span></td><td>~8-18 mo</td><td>Research now, build later if real demand surfaces</td></tr>
+<tr><td><strong>Kernel-side kext</strong> support (Mach-O kexts on FreeBSD kernel)</td><td><span class="verdict skip">SKIP</span></td><td>~3-5 yrs</td><td>Apple's kernel ABI is unstable across point releases anyway</td></tr>
+<tr><td><strong>Extend configd to do hardware</strong></td><td><span class="verdict skip">SKIP</span></td><td>—</td><td>Mixes concerns; macOS keeps them separate too. configd does network/system policy; hardware discovery deserves its own daemon</td></tr>
+<tr><td><strong>Just keep devd as-is</strong></td><td><span class="verdict skip">SKIP</span></td><td>0</td><td>Forfeits the structured-data win; doesn't unblock IOKitUser-shaped consumers</td></tr>
+</tbody>
+</table>
+
+<h2 id="sources">13. Source citations</h2>
+
+<h3>FreeBSD source (<code>cgit.freebsd.org/src/tree/</code>)</h3>
+<ul>
+<li><code>sys/kern/kern_devctl.c</code> — <code>devctl_notify()</code>, <code>devaddq()</code>, <code>dev_cdevsw</code>, <code>devsoftc.devq</code>, sysctls <code>hw.bus.devctl_queue</code> + <code>hw.bus.devctl_nomatch_enabled</code></li>
+<li><code>sys/kern/subr_bus.c</code> — newbus core, <code>device_handle_nomatch</code> (eventhandler), kernel power-event <code>devctl_notify</code> caller</li>
+<li><code>sys/kern/kern_linker.c</code> — <code>linker_hints_lookup()</code>, <code>kern_kldload()</code>, <code>linker_load_dependencies()</code> (auto-dep at line ~2316-2389)</li>
+<li><code>sys/sys/module.h</code> — <code>MDT_DEPEND/MODULE/VERSION/PNP_INFO</code> constants</li>
+<li><code>sys/sys/linker.h</code> — <code>LINKER_HINTS_VERSION</code></li>
+<li><code>sys/sys/pciio.h</code> — <code>struct pci_conf</code>, <code>struct pci_conf_io</code>, <code>PCIOCGETCONF</code></li>
+<li><code>lib/libdevinfo/devinfo.h</code> + <code>lib/libdevinfo/devinfo.c</code> — newbus tree API, <code>hw.bus.*</code> sysctls</li>
+<li><code>usr.sbin/kldxref/kldxref.c</code> — record writer, PNP DSL parser</li>
+<li><code>sbin/devmatch/devmatch.c</code> — reference structured matcher (lift <code>search_hints()</code>)</li>
+<li><code>sbin/devmatch/devmatch.8</code> — match algorithm man page</li>
+<li><code>usr.sbin/pciconf/pciconf.c</code> — <code>PCIOCGETCONF</code> flow</li>
+<li><code>sbin/devd/devd.cc</code> — <code>/dev/devctl</code> reader pattern, <code>/var/run/devd.pipe</code> broadcaster</li>
+<li><code>sbin/devd/devd.conf</code> + <code>sbin/devd/*.conf</code> — default rule set (devmatch, dhclient, snd, bluetooth, autofs, hyperv, zfs, moused, power_profile, nvmf, syscons, apple, asus, uath)</li>
+<li><code>sbin/devd/devd.conf.5</code> — rule grammar (<code>attach</code>, <code>detach</code>, <code>nomatch</code>, <code>notify</code>)</li>
+<li><code>libexec/rc/rc.d/devd</code>, <code>libexec/rc/rc.d/devmatch</code> — rc.d boot ordering</li>
+<li><code>sys/fs/cuse/cuse.c</code>, <code>lib/libcuse/cuse_lib.c</code> — userland char-device substrate for native DriverKit-shape framework</li>
+<li><code>sys/compat/linuxkpi/common/</code> — 30,660 LoC precedent for foreign in-kernel ABI emulation effort estimate</li>
+</ul>
+
+<h3>Apple source (locally vendored)</h3>
+<ul>
+<li><code>/Users/jmaloney/Documents/launchd/IOKitUser/IOKitLib.h</code> — ~90 user-facing IOKit functions</li>
+<li><code>/Users/jmaloney/Documents/launchd/IOKitUser/IOKitLib.c</code> — 27 distinct <code>io_*</code> MIG ops we'd re-aim at hwregd</li>
+<li><code>/Users/jmaloney/Documents/launchd/IOKitUser/kext.subproj/OSKext.c</code> — kext_request MIG, 20,988 LoC; <code>IOKitPersonalities</code> plist parser we'd lift for the native DriverKit framework</li>
+<li><code>/Users/jmaloney/Documents/launchd/IOKitUser/kext.subproj/MachOFileAbstraction.hpp</code> + <code>AdjustForNewSegmentLocation.cpp</code> — kxld glue (skip path, retained for reference)</li>
+<li><code>/Users/jmaloney/Documents/launchd/IOKitUser/pwr_mgt.subproj/IOPMLib.h</code> — IOPMAssertion API surface for K3</li>
+<li><code>/Users/jmaloney/Documents/launchd/IOKitUser/ps.subproj/IOPowerSources.h</code> — IOPS API surface for K3</li>
+<li><code>/Users/jmaloney/Documents/launchd/configd/</code> — reference for why hardware discovery should be a separate daemon</li>
+<li><code>/Users/jmaloney/Documents/launchd/bootp/IPConfiguration.bproj/</code> — IPConfiguration daemon for the network-bringup integration story</li>
+<li><code>/Users/jmaloney/Documents/launchd/ravynos/sbin/devd/devd.cc</code> — devd.pipe wire format reference for Phase 1 coexistence</li>
+</ul>
+
+<h3>Related project memory</h3>
+<ul>
+<li><code>phase_e_libdispatch_mach_recv</code> — Mach RECV libdispatch source backend; hwregd watch notifications dispatch through this</li>
+<li><code>phase_g2_complete</code> — bootstrap server cross-process discovery; hwregd registers as <code>com.apple.hwregd</code> via this</li>
+<li><code>phase_i3_pid1_launchd_boot</code> — PID-1 launchd working; HardwareMatch integration extends this</li>
+<li><code>install_layout_policies</code> — <code>/usr/lib/system/</code> install path; daemons install at <code>/usr/sbin/hwregd</code> per Apple-Unix convention</li>
+</ul>
+
+<h3>FreeBSD bugzilla — failure modes referenced</h3>
+<ul>
+<li><a href="https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=153594">PR 153594</a> — wlan netif/devd race</li>
+<li><a href="https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=183335">PR 183335</a> — devd no longer matches ZFS events (text-rule drift)</li>
+<li><a href="https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=183478">PR 183478</a> — Xorg DEVD backend break</li>
+<li><a href="https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=120406">PR 120406</a> — devd handling of pcm devices</li>
+</ul>
+
+<hr>
+
+<p class="footnote">Draft synthesized from five parallel research-agent reports on 2026-05-16:
+(1) IOKit userland port scope, (2) linker.hints + newbus + PCI exploitation, (3) devmatch/devd functional audit, (4) hardware-registry daemon design, (5) kext + DriverKit feasibility. Please flag anything that should change before this becomes a committed plan.</p>
+
+</body>
+</html>

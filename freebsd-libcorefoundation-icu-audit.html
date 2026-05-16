@@ -72,10 +72,19 @@
 <body>
 <div class="wrap">
 
-<h1>ICU audit for freebsd-launchd-mach</h1>
-<p class="lede">Decision-quality survey of ICU usage across every Apple-source repo relevant to the launchd-adjacent system-services stack we're building on FreeBSD. The question is straightforward: do we need to install ICU on the freebsd-launchd-mach ISO? The answer, after auditing <strong>22 components</strong>, is <strong>no</strong> &mdash; with the caveat that two daemons (configd, IPConfiguration) and one library (PowerManagement) touch CF-ICU APIs in narrow cosmetic / debug paths that have direct libc-equivalent replacements.</p>
+<h1>ICU audit for freebsd-launchd-mach <span class="pill pill-bad">superseded</span></h1>
+<p class="lede">Decision-quality survey of ICU usage across every Apple-source repo relevant to the launchd-adjacent system-services stack we're building on FreeBSD. The question was: do we need to install ICU on the freebsd-launchd-mach ISO? The audit recommended <strong>no</strong> (Option A &mdash; drop ICU, patch the handful of CF files that use it). <strong>Execution proved the recommendation wrong</strong>; see the callout below and the <a href="freebsd-libicu-port-plan.html">libicu port plan</a> for the actual outcome.</p>
 
-<p class="lede">Companion to the <a href="freebsd-launchctl-corefoundation-spike.html">launchctl CoreFoundation spike</a>, which picked swift-corelibs-foundation as our CF source. That spike's &sect;14.4 left the ICU question open ("install ICU as a build dep, keep all CF source files"); this audit revisits that decision with evidence and reverses it.</p>
+<div class="callout callout-bad">
+<p><strong>This audit's recommendation was wrong. Decision flipped 2026-05-15.</strong></p>
+<p>While executing Option A (drop ICU + patch CF), three additional CF source files turned up with hard ICU includes the audit missed: <code>CFString.c</code> (4 ICU calls in Unicode grapheme/emoji boundary detection), <code>CFTimeZone.c</code> (25 ICU calls for localized time zone names), and <code>CFBundle_Locale.c</code> (4 ICU calls including the Apple-only <code>ualoc_localizationsToUse</code> &mdash; a symbol that exists only in Apple's ICU fork). The audit's "16-file drop list" missed these because the grep used to compile the list didn't catch every <code>&lt;_foundation_unicode/...&gt;</code> include shape. The three additional files are cross-referenced too heavily to drop, and one symbol (<code>ualoc_*</code>) doesn't exist in any non-Apple ICU.</p>
+<p>With the audit's "~50&ndash;80 LOC patch" budget broken and a confirmed Apple-only symbol dependency, the project flipped to <strong>Option C: vendor Apple's ICU fork</strong>. The vendoring target became <code>apple/swift-foundation-icu</code> (not <code>apple-oss-distributions/ICU</code>) because the former ships headers natively under the <code>_foundation_unicode/</code> namespace that swift-corelibs CF expects.</p>
+<p>The libCoreFoundation library + libicu library now build and install green at <code>freebsd-launchd-mach</code> commit <code>416a5c9</code>; <code>COREFOUNDATION-OK</code> boot smoke marker fires. The full empirical port plan + post-mortem of this audit's miss live at <a href="freebsd-libicu-port-plan.html">freebsd-libicu-port-plan.html</a>.</p>
+</div>
+
+<p class="lede">Companion to the <a href="freebsd-launchctl-corefoundation-spike.html">launchctl CoreFoundation spike</a>, which picked swift-corelibs-foundation as our CF source. That spike's &sect;14.4 left the ICU question open ("install ICU as a build dep, keep all CF source files"); this audit was meant to revisit that decision with evidence and reverse it &mdash; but the evidence turned out to be incomplete.</p>
+
+<p class="lede">The body below is preserved as the original audit, both as a record of how the wrong decision was reached and because the per-component inventory of CF-ICU usage (&sect;5&ndash;&sect;9) remains accurate and useful for future porting work. The "what we lose" caveats (&sect;12) and "could we vendor Apple's ICU instead?" (&sect;13) are the most relevant sections post-flip; everything before that was reasoning toward an answer that didn't survive contact with reality.</p>
 
 <div class="toc">
 <h2>Contents</h2>
@@ -433,7 +442,11 @@
 
 <p><strong>Tally:</strong> 17 of 22 components are fully ICU-free with no work. 4 (configd, bootp, PowerManagement, IOKitUser) touch CF-ICU APIs in narrow paths totaling ~100 LOC across all four; each path has a direct libc-equivalent replacement. 1 (mDNSResponder) has direct-ICU code gated by an undefined macro. 1 (libCoreFoundation itself) ships ICU-using files we simply drop from <code>SRCS</code>.</p>
 
-<h2 id="decision">10. Decision: don't install ICU</h2>
+<h2 id="decision">10. Decision: don't install ICU <span class="pill pill-bad">superseded</span></h2>
+
+<div class="callout callout-bad">
+<p><strong>This decision was wrong. See the top-of-page callout and the <a href="freebsd-libicu-port-plan.html">libicu port plan</a>.</strong> The 16-file drop list below missed three additional CF source files with hard ICU includes; the partial drop wouldn't have linked. <code>apple/swift-foundation-icu</code> was vendored at <code>src/swift-foundation-icu/</code> instead. Verdict block preserved verbatim below for record-keeping.</p>
+</div>
 
 <div class="verdict">
 <strong>Do not install ICU on the freebsd-launchd-mach ISO.</strong> Drop the 9 ICU-using <code>.c</code> files from libCoreFoundation's <code>SRCS</code>. Plan to stub the ~100 LOC of CF-ICU consumer code in configd / bootp / PowerManagement / IOKitUser with libc <code>strftime</code> / <code>strptime</code> / <code>localtime_r</code> / direct <code>CFStringCreateWithFormat</code> when porting each daemon. Leave <code>USE_LIBIDN</code> undefined in mDNSResponder (matches upstream's default).
@@ -507,7 +520,11 @@ CFApplicationPreferences.c</code></pre>
 
 <p><strong>Future-proofing</strong>: if and when gershwin (the desktop overlay) lands on top of freebsd-launchd-mach, ICU comes along with <code>libgnustep-base</code> as its own hard build-time dependency (libs-base's <code>configure.ac</code> aborts without it). At that point the marginal cost of installing ICU is zero, and libCoreFoundation can be rebuilt with the full surface. The decision here is specifically about the standalone freebsd-launchd-mach ISO.</p>
 
-<h2 id="apple-icu">13. Could we vendor Apple's ICU instead?</h2>
+<h2 id="apple-icu">13. Could we vendor Apple's ICU instead? <span class="pill pill-good">we did</span></h2>
+
+<div class="callout callout-good">
+<p><strong>Yes &mdash; this is what actually happened.</strong> See &sect;0 callout above. We pivoted from <code>apple-oss-distributions/ICU</code> (the repo discussed in this section) to <code>apple/swift-foundation-icu</code> (a smaller, swift-corelibs-CF-targeted fork) because the latter ships headers under the <code>_foundation_unicode/</code> namespace CF expects natively. The original <code>apple-oss-distributions/ICU</code> vendor was stripped from history via <code>git filter-repo</code> after the pivot. Full empirical port plan: <a href="freebsd-libicu-port-plan.html">freebsd-libicu-port-plan.html</a>. Section content below is preserved as the original analysis of the (correct in spirit) Option C path.</p>
+</div>
 
 <p>Project pattern would suggest yes &mdash; we already vendor libdispatch, libxpc, launchd-842, libCoreFoundation, bootstrap_cmds from Apple-OSS or swiftlang in <code>src/</code>. ICU has an Apple fork too. So if we ever wanted ICU on this ISO, vendoring Apple's would be on-pattern. Worth knowing the cost.</p>
 

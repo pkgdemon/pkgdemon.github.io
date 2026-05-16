@@ -91,7 +91,7 @@
 <li><strong>Port Apple's IOKitUser as a thin facade on top of <code>hwregd</code></strong>, NOT a literal port of the Mach RPC <code>device.defs</code> surface. The CF-flavored API (<code>IOServiceMatching</code>, <code>IORegistryEntryCreateCFProperty</code>, <code>IOServiceAddMatchingNotification</code>) is the cheap half; the kernel mock would be the expensive half. ~6-8 weeks for the "minimum useful" subset (<code>ioreg</code>, <code>system_profiler</code> work).</li>
 <li><strong>Extend launchd with a <code>HardwareMatch</code> plist key</strong> so device arrival can trigger jobs — replaces devd's text-rule actions with the native launchd dispatch model. ~1.5 weeks.</li>
 <li><strong>Kext + DriverKit verdicts</strong>: kernel-side kext support is a 3-5 engineer-year diversion — <span class="verdict skip">skip</span>. DriverKit binary compat is 8-18 months — <span class="verdict defer">defer</span>. A FreeBSD-native DriverKit-shape framework (cuse + netmap + IOKit-shape API) is 4-8 months, builds naturally on hwregd — <span class="verdict do">pursue after configd</span>.</li>
-<li><strong>Sequencing</strong>: configd first (already planned), then hwregd, then IOKitUser facade, then optionally the cuse-backed DriverKit-shape framework. <code>devd</code> coexists during transition, retires when <code>HardwareMatch</code> plists cover its functional buckets.</li>
+<li><strong>Sequencing</strong>: <strong>hwregd Phase 0 first</strong> (~3-4 weeks; just kldload-on-nomatch + interface/link Mach events) &mdash; <em>FreeBSD-devd was already removed at commit <code>88694f0</code> so this is a current gap, not a future improvement</em>. Then configd, IPConfiguration (which depends on hwregd's events), hwregd Phase 1 (full IORegistry + IOKit-shape Mach-RPC API), launchd <code>HardwareMatch</code> key, IOKitUser facade, powerd, and finally the optional cuse-backed DriverKit-shape framework.</li>
 </ul>
 </div>
 
@@ -474,17 +474,29 @@ IOServiceGetMatchingServices(kIOMainPortDefault, m, &amp;it);
 
 <h2 id="coexistence">8. Coexistence with devd, devmatch, newbus</h2>
 
-<h3>8.1 Two-phase devd transition</h3>
-
-<div class="phase todo">
-<h3>Phase 1 — additive (devd stays)</h3>
-<p>devd keeps <code>/dev/devctl</code> (single-reader cdev). <code>hwregd</code> reads <code>/var/run/devd.pipe</code> (devd's multi-reader broadcast UNIX socket — same wire format). devd continues to fire its <code>/etc/devd/*.conf</code> rules; hwregd fires <code>HardwareMatch</code> plists. They're additive.</p>
-<p><strong>Risk:</strong> dhclient could be started twice. Mitigation: remove the <code>dhclient</code> block from <code>/etc/devd/dhclient.conf</code> as soon as the launchd plist is in place.</p>
+<div class="tldr" style="border-left-color: var(--warn);">
+<h3>Note: devd is already gone</h3>
+<p>This section originally described a two-phase devd→hwregd transition. As of commit <code>88694f0</code> (2026-05-16), FreeBSD-devd + FreeBSD-devmatch are <strong>not in the runtime rootfs at all</strong>. hwregd becomes the sole <code>/dev/devctl</code> reader from day one — no coexistence required, no <code>/var/run/devd.pipe</code> intermediary, no rule-duplication risk. The retained coexistence concern is third-party FreeBSD ports (libudev-devd, libinput, Xorg) that historically consumed <code>/var/run/devd.pipe</code>; hwregd can optionally reproduce that pipe format for back-compat or those consumers can be pushed upstream toward an hwregd backend.</p>
 </div>
 
+<h3>8.1 Day-one direct ownership</h3>
+
 <div class="phase todo">
-<h3>Phase 2 — hwregd-only</h3>
-<p>hwregd becomes the sole <code>/dev/devctl</code> reader; devd is retired. Optional: reproduce <code>/var/run/devd.pipe</code>'s format from hwregd for back-compat with libudev-devd consumers (notably libinput, Xorg input hot-plug). Or push libudev-devd upstream toward an hwregd backend.</p>
+<h3>hwregd reads <code>/dev/devctl</code> directly</h3>
+<p>Single-reader cdev, no contention since devd is absent. Same line-format the kernel has always emitted (<code>+attach</code>, <code>-detach</code>, <code>?nomatch</code>, <code>!notify system=X subsystem=Y type=Z key=value</code>). Parse byte-by-byte, dispatch to the matching/event-fanout pipeline.</p>
+<p><strong>Risk avoided:</strong> the original "dhclient started twice" risk doesn't exist because there's no devd <code>dhclient.conf</code> rule firing in parallel.</p>
+</div>
+
+<h3>8.2 Third-party <code>/var/run/devd.pipe</code> consumers</h3>
+
+<div class="phase defer">
+<h3>libudev-devd / libinput / Xorg back-compat</h3>
+<p>libudev-devd (used by libinput, used by Xorg) historically reads <code>/var/run/devd.pipe</code>. We don't have those packages installed in the current rootfs, so this is a deferred concern. Two options for when it becomes relevant:</p>
+<ol>
+<li>hwregd reproduces <code>/var/run/devd.pipe</code>'s exact line format as a compat output. Cheap, ~50 LoC.</li>
+<li>Push libudev-devd upstream toward a structured hwregd backend. Better long-term, more work.</li>
+</ol>
+<p>Defer until a real consumer (likely Xorg or Wayland-on-FreeBSD when we add graphics) needs it.</p>
 </div>
 
 <h3>8.2 What we don't replace</h3>
@@ -503,36 +515,53 @@ IOServiceGetMatchingServices(kIOMainPortDefault, m, &amp;it);
 
 <h2 id="sequencing">9. Sequencing relative to configd / IPConfiguration</h2>
 
-<p>The plans interact but are mostly independent. Recommended order:</p>
+<div class="tldr" style="border-left-color: var(--warn);">
+<h3>Important: there's no devd to coexist with</h3>
+<p>The original draft of this plan assumed devd remained in place during the transition. As of commit <code>88694f0</code> (2026-05-16), <strong>FreeBSD-devd and FreeBSD-devmatch were removed from <code>pkglist-base.txt</code></strong> alongside FreeBSD-rc, FreeBSD-syslogd, etc. The system currently boots to login because the kernel's own newbus probe attaches drivers for hardware present at boot (em/virtio drivers in <code>BOOT_MODULES</code>), but several capabilities are now gone:</p>
+<ul>
+<li><strong>Hot-plug <code>kldload</code></strong> — a PCI/USB device that needs a not-yet-loaded driver silently fails to attach. devmatch's role.</li>
+<li><strong>Interface-arrival notifications</strong> — nothing tells a network-management daemon "em0 just appeared." IPConfiguration has no trigger.</li>
+<li><strong>Link-state events</strong> — IPConfiguration can't react to cable plug/unplug.</li>
+<li><strong>ACPI events</strong> — lid, AC, thermal events have no fanout mechanism.</li>
+</ul>
+<p>This makes <strong>hwregd a current gap, not a future improvement</strong>. The sequencing below has been revised: <code>hwregd Phase 0</code> (minimum viable, ~3-4 weeks) comes first, <em>before</em> configd + IPConfiguration, because IPConfiguration needs the interface-arrival and link-state events that hwregd provides.</p>
+</div>
+
+<p>Recommended order:</p>
 
 <ol>
-<li><strong>configd</strong> — port first per <a href="freebsd-configd-plan.html">existing plan</a>. SCDynamicStore + SCPreferences. Network state policy lives here; hwregd has no business knowing about DNS preferences.</li>
-<li><strong>IPConfiguration</strong> — port second; talks to configd via Mach. Replaces dhclient role. At this point we have a working network management stack but no auto-trigger when interfaces appear.</li>
-<li><strong>hwregd (K1) + launchd HardwareMatch</strong> — port third. Now IPConfiguration can be wired to fire automatically when <code>{class:"NetworkInterface"}</code> arrives, instead of needing a devd rule.</li>
-<li><strong>IOKitUser facade (K1+K2)</strong> — port fourth. <code>ioreg</code> works, <code>IOServiceAddMatchingNotification</code> works. Unlocks Apple-source userland that queries hardware (system_profiler equivalents).</li>
-<li><strong>powerd / K3</strong> — port fifth. <code>pmset</code>, <code>IOPMAssertion</code>.</li>
-<li><strong>Native DriverKit-shape framework</strong> — start sixth, after all the above is stable. Enables porting Apple-source DEXTs (with patches) or writing new FreeBSD-native userspace drivers in the IOKit shape.</li>
+<li><strong>hwregd Phase 0 (minimum viable)</strong> &mdash; ~3-4 weeks. Lift <code>sbin/devmatch/devmatch.c</code>'s <code>search_hints()</code> parser into a daemon. Open <code>/dev/devctl</code> directly. <code>kldload(2)</code> on every <code>?nomatch</code> event. Parse <code>+attach</code>/<code>-detach</code>/<code>!notify system=IFNET</code> events; expose them via a simple Mach-RPC publish/subscribe (no full IORegistry yet — just an event bus). Closes the devd-removed gap so IPConfiguration has something to react to.</li>
+<li><strong>configd</strong> &mdash; ~6 weeks. SCDynamicStore + SCPreferences. Network state policy lives here. Independent of hwregd.</li>
+<li><strong>IPConfiguration</strong> &mdash; ~1 week. Talks to configd (state) and hwregd Phase 0 (events). On <code>HWREG_EVENT_LINK_UP em0</code>, IPConfiguration starts DHCP on em0; writes lease + DNS into SCDynamicStore; configd's IPMonitor writes <code>/etc/resolv.conf</code>.</li>
+<li><strong>hwregd Phase 1 (full IORegistry)</strong> &mdash; ~5-6 weeks. Build the in-memory tree, property bags, IOKit-shape Mach-RPC API (<code>hwreg_lookup</code>, <code>hwreg_get_properties</code>, <code>hwreg_watch</code> with criteria dicts). Phase 0's simple event bus becomes a special case of Phase 1's <code>hwreg_watch</code>. Existing Phase 0 clients (IPConfiguration) keep working unchanged.</li>
+<li><strong>launchd <code>HardwareMatch</code> plist key</strong> &mdash; ~1.5 weeks. Builds on hwregd Phase 1's watch criteria. Enables third-party services to declare hardware dependencies in their plists instead of needing custom event-bus client code.</li>
+<li><strong>IOKitUser facade (K1+K2)</strong> &mdash; ~6 weeks. <code>ioreg</code> works, <code>IOServiceAddMatchingNotification</code> works. Unlocks Apple-source userland that queries hardware (system_profiler equivalents).</li>
+<li><strong>powerd / K3</strong> &mdash; ~4 weeks. <code>pmset</code>, <code>IOPMAssertion</code>.</li>
+<li><strong>Native DriverKit-shape framework</strong> &mdash; ~4-8 months. Starts after all the above is stable. Enables porting Apple-source DEXTs (with patches) or writing FreeBSD-native userspace drivers in the IOKit shape.</li>
 </ol>
 
-<p>Why this order: configd is independent of hwregd (configd talks to network state, hwregd talks to hardware). IPConfiguration depends on configd. hwregd depends on neither but its <em>value</em> compounds when launchd HardwareMatch can dispatch to configd/IPConfiguration. IOKitUser depends on hwregd. powerd depends on IOKitUser (for the assertion API surface). Native DriverKit depends on hwregd + IOKitUser.</p>
+<p>Why this order: hwregd Phase 0 is the cheapest closure of the current hole (we need event notifications and kldload-on-nomatch right now, not later). configd is independent of hwregd. IPConfiguration depends on both. Phase 1 expands hwregd's API but doesn't change its role. IOKitUser depends on Phase 1's IORegistry shape. powerd depends on IOKitUser (for the assertion API surface). Native DriverKit depends on hwregd + IOKitUser.</p>
 
 <h2 id="effort">10. Effort estimates</h2>
 
 <table>
 <thead><tr><th>Milestone</th><th>Single-engineer effort</th><th>Critical dependency</th></tr></thead>
 <tbody>
+<tr><td><strong>hwregd Phase 0</strong> (kldload-on-nomatch + interface/link Mach events)</td><td>~3-4 weeks</td><td>—</td></tr>
 <tr><td>configd v1 (SCDynamicStore + SCPreferences)</td><td>~6 weeks</td><td>—</td></tr>
-<tr><td>IPConfiguration port</td><td>~1 week</td><td>configd</td></tr>
-<tr><td>hwregd v1 (Mach API, devd.pipe parser, libdevinfo walk, kldload)</td><td>~9 weeks</td><td>—</td></tr>
-<tr><td>launchd <code>HardwareMatch</code> key</td><td>~1.5 weeks</td><td>hwregd</td></tr>
-<tr><td>IOKitUser K1 (registry + matching)</td><td>~4 weeks</td><td>hwregd</td></tr>
+<tr><td>IPConfiguration port</td><td>~1 week</td><td>configd + hwregd Phase 0</td></tr>
+<tr><td><strong>hwregd Phase 1</strong> (full IORegistry, IOKit-shape Mach API)</td><td>~5-6 weeks</td><td>Phase 0</td></tr>
+<tr><td>launchd <code>HardwareMatch</code> key</td><td>~1.5 weeks</td><td>hwregd Phase 1</td></tr>
+<tr><td>IOKitUser K1 (registry + matching)</td><td>~4 weeks</td><td>hwregd Phase 1</td></tr>
 <tr><td>IOKitUser K2 (notifications)</td><td>~2 weeks</td><td>K1</td></tr>
 <tr><td>IOKitUser K3 (powerd, IOPMAssertion, IOPSCopyPowerSourcesInfo)</td><td>~4 weeks</td><td>K1, K2</td></tr>
-<tr><td>Native DriverKit-shape framework</td><td>~4-8 months</td><td>hwregd, IOKitUser K1+K2</td></tr>
+<tr><td>Native DriverKit-shape framework</td><td>~4-8 months</td><td>hwregd Phase 1, IOKitUser K1+K2</td></tr>
 </tbody>
 </table>
 
-<p>Cumulative critical path to "hwregd + IOKit facade green": ~6 + 1 + 9 + 1.5 + 4 + 2 ≈ <strong>5-6 months</strong> with steady single-engineer pace. The native DriverKit framework adds another 4-8 months on top.</p>
+<p>Cumulative critical path to <strong>"basic network working under launchd"</strong> (Phase 0 → configd → IPConfiguration): ~3.5 + 6 + 1 ≈ <strong>2.5 months</strong>.</p>
+<p>Cumulative critical path to <strong>"hwregd Phase 1 + IOKit facade + powerd green"</strong>: ~3.5 + 6 + 1 + 5.5 + 1.5 + 4 + 2 + 4 ≈ <strong>6-7 months</strong> with steady single-engineer pace. The native DriverKit framework adds another 4-8 months on top of that.</p>
+<p><strong>Note on parallelism</strong>: configd and hwregd Phase 0 are independent. If two engineers are available they can run in parallel and cut the critical path to "network working" to about 6-7 weeks.</p>
 
 <h2 id="open-questions">11. Open questions</h2>
 
@@ -551,8 +580,10 @@ IOServiceGetMatchingServices(kIOMainPortDefault, m, &amp;it);
 <table>
 <thead><tr><th>Path</th><th>Verdict</th><th>Effort</th><th>When</th></tr></thead>
 <tbody>
-<tr><td><strong>hwregd</strong> daemon + launchd HardwareMatch</td><td><span class="verdict do">PURSUE</span></td><td>~10 wks</td><td>After configd + IPConfiguration land</td></tr>
-<tr><td><strong>IOKitUser</strong> facade on hwregd (K1+K2)</td><td><span class="verdict do">PURSUE</span></td><td>~6 wks</td><td>After hwregd v1</td></tr>
+<tr><td><strong>hwregd Phase 0</strong> (kldload-on-nomatch + interface events)</td><td><span class="verdict do">PURSUE FIRST</span></td><td>~3-4 wks</td><td>Now &mdash; closes the devd-removed gap; IPConfiguration depends on this</td></tr>
+<tr><td><strong>hwregd Phase 1</strong> (full IORegistry + IOKit-shape API)</td><td><span class="verdict do">PURSUE</span></td><td>~5-6 wks</td><td>After Phase 0 + configd + IPConfiguration land</td></tr>
+<tr><td>launchd <strong><code>HardwareMatch</code></strong> plist key</td><td><span class="verdict do">PURSUE</span></td><td>~1.5 wks</td><td>After hwregd Phase 1</td></tr>
+<tr><td><strong>IOKitUser</strong> facade on hwregd (K1+K2)</td><td><span class="verdict do">PURSUE</span></td><td>~6 wks</td><td>After hwregd Phase 1</td></tr>
 <tr><td><strong>powerd</strong> + IOKitUser K3 (IOPMAssertion, IOPSCopyPowerSourcesInfo)</td><td><span class="verdict do">PURSUE</span></td><td>~4 wks</td><td>After K1+K2</td></tr>
 <tr><td><strong>FreeBSD-native DriverKit-shape</strong> framework (cuse + IOKit personalities)</td><td><span class="verdict do">PURSUE</span></td><td>~4-8 mo</td><td>After IOKitUser K2</td></tr>
 <tr><td><strong>Apple DriverKit / DEXT</strong> binary compat</td><td><span class="verdict defer">DEFER</span></td><td>~8-18 mo</td><td>Research now, build later if real demand surfaces</td></tr>

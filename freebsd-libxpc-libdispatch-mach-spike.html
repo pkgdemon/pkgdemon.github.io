@@ -500,10 +500,10 @@ void mach_dispatch_source_release(mach_dispatch_source_t src);</code></pre>
 <h2 id="install-path">6. Install path, vendoring, and build integration</h2>
 
 <div class="callout callout-good">
-<p><strong>Decided</strong> (per <a href="freebsd-libxpc-install-layout-spike.html#libdispatch">install layout spike &sect;4</a>): libdispatch installs as <code>/usr/lib/libsystem/libsystem_dispatch.so</code> with Apple-canonical naming, alongside <code>libsystem_kernel</code>, <code>libsystem_xpc</code>, <code>libsystem_launch</code>, and <code>libsystem_blocks</code>. Headers at the standard <code>/usr/include/{dispatch,os}/*.h</code>. Build pipeline: vendored under <code>freebsd-launchd-mach/src/libdispatch/</code> and built in our <code>build.sh</code> chroot, not via gershwin-developer.</p>
+<p><strong>Decided</strong> (per <a href="freebsd-libxpc-install-layout-spike.html#libdispatch">install layout spike &sect;4</a>): libdispatch installs as <code>/usr/lib/system/libsystem_dispatch.so</code> with Apple-canonical naming, alongside <code>libsystem_kernel</code>, <code>libsystem_xpc</code>, <code>libsystem_launch</code>, and <code>libsystem_blocks</code>. Headers at the standard <code>/usr/include/{dispatch,os}/*.h</code>. Build pipeline: vendored under <code>freebsd-launchd-mach/src/libdispatch/</code> and built in our <code>build.sh</code> chroot, not via gershwin-developer.</p>
 </div>
 
-<p>Earlier revisions of this spike weighed four candidate paths (<code>/System/Library/Libraries/</code>, <code>/usr/lib/</code>, <code>/usr/local/lib/</code>, and the layout-spike's later addition of <code>/usr/lib/libsystem/</code>). The Libsystem-prefix path won on all the criteria that mattered: Apple-canonical naming, coherent grouping with the rest of the libsystem_* family, isolated namespace away from FreeBSD base proper, no pkgbase-collision risk for the already-shipped libBlocksRuntime, and clean ldconfig setup via a single drop-in.</p>
+<p>Earlier revisions of this spike weighed four candidate paths (<code>/System/Library/Libraries/</code>, <code>/usr/lib/</code>, <code>/usr/local/lib/</code>, and the layout-spike's later addition of <code>/usr/lib/system/</code>). The Libsystem-prefix path won on all the criteria that mattered: Apple-canonical naming, coherent grouping with the rest of the libsystem_* family, isolated namespace away from FreeBSD base proper, no pkgbase-collision risk for the already-shipped libBlocksRuntime, and clean ldconfig setup via a single drop-in.</p>
 
 <h3>6.1. Source vendoring</h3>
 
@@ -523,7 +523,7 @@ void mach_dispatch_source_release(mach_dispatch_source_t src);</code></pre>
 <ul>
   <li><strong>Drop <code>FreeBSD-libblocksruntime</code></strong> from <code>pkglist-base.txt</code>. We don't depend on pkgbase shipping it.</li>
   <li><strong>Ship <code>Block.h</code> from libdispatch's bundled BlocksRuntime sources</strong> (which is upstream Apple compiler-rt &mdash; the same code FreeBSD-libblocksruntime is built from). Install to <code>/usr/include/Block.h</code> as part of the libdispatch install (<code>INSTALL_BLOCK_HEADERS_DIR=/usr/include</code>).</li>
-  <li><strong>libBlocksRuntime semantics:</strong> the libdispatch CMake build already knows how to embed BlocksRuntime (<code>EMBEDDED_BLOCKS_RUNTIME=ON</code>) so <code>libsystem_dispatch.so</code> contains the symbols and self-links cleanly. Optionally also install a separate <code>/usr/lib/libsystem/libsystem_blocks.so</code> for non-libdispatch consumers; if needed, add a compatibility symlink at <code>/usr/lib/libBlocksRuntime.so</code> for clang's implicit <code>-fblocks</code> link line.</li>
+  <li><strong>libBlocksRuntime semantics:</strong> the libdispatch CMake build already knows how to embed BlocksRuntime (<code>EMBEDDED_BLOCKS_RUNTIME=ON</code>) so <code>libsystem_dispatch.so</code> contains the symbols and self-links cleanly. Optionally also install a separate <code>/usr/lib/system/libsystem_blocks.so</code> for non-libdispatch consumers; if needed, add a compatibility symlink at <code>/usr/lib/libBlocksRuntime.so</code> for clang's implicit <code>-fblocks</code> link line.</li>
 </ul>
 
 <p>Net effect: Block.h on the system comes from <em>our</em> build, not pkgbase. Single source of truth. No collision because pkgbase isn't installed. The "single Block.h on the system" property the prior recommendation valued is preserved &mdash; we just own the source rather than borrowing from pkgbase.</p>
@@ -534,12 +534,12 @@ void mach_dispatch_source_release(mach_dispatch_source_t src);</code></pre>
 
 <ol>
   <li><code>rsync src/libdispatch -&gt; chroot:/tmp/libdispatch</code> (chroot stays git-free).</li>
-  <li><code>chroot $WORK/rootfs cmake</code> with <code>-DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib/libsystem -DINSTALL_BLOCK_HEADERS_DIR=/usr/include -DINSTALL_DISPATCH_HEADERS_DIR=/usr/include/dispatch -DINSTALL_OS_HEADERS_DIR=/usr/include/os -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release</code> &mdash; uses cmake/ninja already in <code>buildpkgs.txt</code> and clang already in <code>buildpkgs-base.txt</code>.</li>
-  <li>Built artifacts land at <code>/usr/lib/libsystem/libsystem_dispatch.so</code> + sonname symlink, <code>/usr/include/dispatch/*.h</code>, <code>/usr/include/os/*.h</code>, <code>/usr/include/Block.h</code>.</li>
-  <li>Verification asserts (mirroring libmach's): file existence, sonname symlink correct, ldd of the test binary resolves <code>libsystem_dispatch.so.0</code> into <code>/usr/lib/libsystem/</code>.</li>
+  <li><code>chroot $WORK/rootfs cmake</code> with <code>-DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib/system -DINSTALL_BLOCK_HEADERS_DIR=/usr/include -DINSTALL_DISPATCH_HEADERS_DIR=/usr/include/dispatch -DINSTALL_OS_HEADERS_DIR=/usr/include/os -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release</code> &mdash; uses cmake/ninja already in <code>buildpkgs.txt</code> and clang already in <code>buildpkgs-base.txt</code>.</li>
+  <li>Built artifacts land at <code>/usr/lib/system/libsystem_dispatch.so</code> + sonname symlink, <code>/usr/include/dispatch/*.h</code>, <code>/usr/include/os/*.h</code>, <code>/usr/include/Block.h</code>.</li>
+  <li>Verification asserts (mirroring libmach's): file existence, sonname symlink correct, ldd of the test binary resolves <code>libsystem_dispatch.so.0</code> into <code>/usr/lib/system/</code>.</li>
 </ol>
 
-<p><strong>ldconfig hint reuses the existing drop-in</strong> at <code>/usr/local/libdata/ldconfig/freebsd-launchd-mach</code> (added for libmach &mdash; it lists <code>/usr/lib/libsystem</code>). No new ldconfig setup needed; the runtime linker already finds the directory.</p>
+<p><strong>ldconfig hint reuses the existing drop-in</strong> at <code>/usr/local/libdata/ldconfig/freebsd-launchd-mach</code> (added for libmach &mdash; it lists <code>/usr/lib/system</code>). No new ldconfig setup needed; the runtime linker already finds the directory.</p>
 
 <h3>6.4. Required FreeBSD performance / correctness patch</h3>
 
@@ -581,14 +581,14 @@ void mach_dispatch_source_release(mach_dispatch_source_t src);</code></pre>
 
 <p>The earlier "<code>/System</code> live-reinstall fragility" discussion is no longer load-bearing because libdispatch ships inside the rootfs.uzip on the live ISO &mdash; consumers see the file via the in-kernel unionfs, and it's installed once at build time, not interactively. Wholesale-replace concerns from the gershwin <code>/System</code> path don't apply.</p>
 
-<p>For an installed (non-live) FreeBSD where freebsd-launchd-mach is the system source: <code>pkg upgrade</code> handles <code>/usr/lib/libsystem/libsystem_dispatch.so</code> atomically (pkg replaces files via a temp-then-rename pattern). Already-running processes keep their mapped libdispatch; new processes pick up the upgraded version. Standard FreeBSD pkg semantics, no atomic-rename ceremony needed.</p>
+<p>For an installed (non-live) FreeBSD where freebsd-launchd-mach is the system source: <code>pkg upgrade</code> handles <code>/usr/lib/system/libsystem_dispatch.so</code> atomically (pkg replaces files via a temp-then-rename pattern). Already-running processes keep their mapped libdispatch; new processes pick up the upgraded version. Standard FreeBSD pkg semantics, no atomic-rename ceremony needed.</p>
 
 <h3>6.6. Recommendation</h3>
 
 <div class="callout callout-good">
 <p><strong>Recommended (and decided):</strong></p>
 <ul>
-  <li><strong>Install path:</strong> <code>/usr/lib/libsystem/libsystem_dispatch.so</code> &mdash; canonical Apple Libsystem naming, isolated namespace, ldconfig already wired.</li>
+  <li><strong>Install path:</strong> <code>/usr/lib/system/libsystem_dispatch.so</code> &mdash; canonical Apple Libsystem naming, isolated namespace, ldconfig already wired.</li>
   <li><strong>Vendoring:</strong> commit swift-corelibs-libdispatch under <code>freebsd-launchd-mach/src/libdispatch/</code>; apply gershwin's FreeBSD perf patch as a commit; add Mach backend as a commit.</li>
   <li><strong>Block.h:</strong> ship from libdispatch's bundled BlocksRuntime (Apple compiler-rt source); drop <code>FreeBSD-libblocksruntime</code> from <code>pkglist-base.txt</code>.</li>
   <li><strong>Build:</strong> cmake/ninja in chroot as build.sh step 3d, after libmach.</li>

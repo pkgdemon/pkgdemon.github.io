@@ -362,7 +362,7 @@ CFURLWriteDataAndPropertiesToResource</code></pre>
   <li>Less local divergence from upstream &mdash; future re-vendor drops are easier when our patch surface is small.</li>
 </ul>
 <p>Build dep added: <code>libicuuc</code> + <code>libicui18n</code> + <code>libicudata</code> + their <code>-dev</code> headers (via FreeBSD <code>devel/icu</code> port or pkgbase if available). Add to <code>buildpkgs.txt</code> / <code>pkglist.txt</code>. Runtime cost on the ISO: ~30 MiB across the three libs.</p>
-<p>The only subdir we still drop is <code>src/libCoreFoundation/BlockRuntime/</code> &mdash; that's the WASI fallback for systems without a real libBlocksRuntime. We already ship <code>/usr/lib/libsystem/libBlocksRuntime.so</code> via the libdispatch build (per the post-2026-05-13 bundling decision), so the upstream fallback is redundant.</p>
+<p>The only subdir we still drop is <code>src/libCoreFoundation/BlockRuntime/</code> &mdash; that's the WASI fallback for systems without a real libBlocksRuntime. We already ship <code>/usr/lib/system/libBlocksRuntime.so</code> via the libdispatch build (per the post-2026-05-13 bundling decision), so the upstream fallback is redundant.</p>
 
 <h3>8.3 Disable the Swift RC path</h3>
 <p>Patch <code>internalInclude/CoreFoundation_Prefix.h:11</code> to set <code>DEPLOYMENT_RUNTIME_SWIFT 0</code>, or <code>#undef</code> + <code>#define</code> it explicitly. Confirm by inspection that <code>CFRuntime.c</code>'s legacy bitfield-CAS path is now active and <code>swift_retain</code>/<code>swift_release</code>/<code>__CFInitializeSwift</code>/<code>__CFSwiftGetBaseClass</code> references are <code>#else</code>'d out.</p>
@@ -375,11 +375,11 @@ CFURLWriteDataAndPropertiesToResource</code></pre>
   <li><code>SRCS=</code> the post-strip <code>.c</code> file list</li>
   <li><code>CFLAGS+= -DDEPLOYMENT_RUNTIME_C=1 -DDEPLOYMENT_TARGET_FREEBSD=1 -DCF_BUILDING_CF -fblocks -fconstant-cfstrings -I${.CURDIR}/include -I${.CURDIR}/internalInclude</code></li>
   <li><code>LDADD+= -ldispatch -lBlocksRuntime -lpthread</code></li>
-  <li>Install to <code>/usr/lib/libsystem/libCoreFoundation.so.6</code> per the install-layout spike. Headers to <code>/usr/include/CoreFoundation/</code>.</li>
+  <li>Install to <code>/usr/lib/system/libCoreFoundation.so.6</code> per the install-layout spike. Headers to <code>/usr/include/CoreFoundation/</code>.</li>
 </ul>
 
 <h3>8.5 Add build.sh step + smoke marker</h3>
-<p>Following the precedent of step 3i (libxpc) and 3m (liblaunch): a new <code>build.sh</code> step (call it 3p or wherever) that <code>make -C src/libCoreFoundation</code>'s the lib, ldconfig-hints it (already covered by <code>/etc/ld-elf.so.conf</code> &mdash; <code>/usr/lib/libsystem</code> is on it), and builds a tiny <code>test_corefoundation.c</code> at <code>/usr/tests/freebsd-launchd-mach/test_corefoundation</code> that round-trips a small dict through <code>CFPropertyListCreateData</code> + <code>CFPropertyListCreateWithData</code> in both XML and binary modes. Marker: <code>COREFOUNDATION-OK</code>. Expect grammar entry in <code>tests/boot-test.sh</code>.</p>
+<p>Following the precedent of step 3i (libxpc) and 3m (liblaunch): a new <code>build.sh</code> step (call it 3p or wherever) that <code>make -C src/libCoreFoundation</code>'s the lib, ldconfig-hints it (already covered by <code>/etc/ld-elf.so.conf</code> &mdash; <code>/usr/lib/system</code> is on it), and builds a tiny <code>test_corefoundation.c</code> at <code>/usr/tests/freebsd-launchd-mach/test_corefoundation</code> that round-trips a small dict through <code>CFPropertyListCreateData</code> + <code>CFPropertyListCreateWithData</code> in both XML and binary modes. Marker: <code>COREFOUNDATION-OK</code>. Expect grammar entry in <code>tests/boot-test.sh</code>.</p>
 
 <h3>8.6 Patch <code>launchctl.c</code> for the one missing symbol</h3>
 <p>Replace the single <code>CFPropertyListCreateFromFile</code> call (line ~526 vicinity per earlier audit) with a two-liner: <code>CFReadStreamCreateWithFile</code> + <code>CFPropertyListCreateFromStream</code>. Delete the unused <code>#include &lt;CoreFoundation/CFLogUtilities.h&gt;</code>.</p>
@@ -438,7 +438,7 @@ CFURLWriteDataAndPropertiesToResource</code></pre>
 <table>
 <thead><tr><th>Property</th><th>swift-corelibs CF</th><th>gnustep-corebase</th></tr></thead>
 <tbody>
-  <tr><td>Install path</td><td><code>/usr/lib/libsystem/libCoreFoundation.so.6</code></td><td><code>/System/Library/Libraries/libgnustep-corebase.so.0</code> (gershwin convention)</td></tr>
+  <tr><td>Install path</td><td><code>/usr/lib/system/libCoreFoundation.so.6</code></td><td><code>/System/Library/Libraries/libgnustep-corebase.so.0</code> (gershwin convention)</td></tr>
   <tr><td>SONAME</td><td><code>libCoreFoundation.so.6</code></td><td><code>libgnustep-corebase.so.0</code></td></tr>
   <tr><td>Consumers</td><td>Apple-source: <code>launchctl</code>, future <code>configd</code>, <code>asl</code>, <code>notifyd</code>, &hellip;</td><td>GNUstep apps + frameworks (toll-free with libgnustep-base)</td></tr>
   <tr><td>Header root</td><td><code>/usr/include/CoreFoundation/</code></td><td>gershwin's GNUstep tree (<code>/System/Library/Headers/CoreFoundation/</code> or similar &mdash; gershwin's call)</td></tr>
@@ -446,7 +446,7 @@ CFURLWriteDataAndPropertiesToResource</code></pre>
 </tbody>
 </table>
 
-<p>Each binary's <code>DT_NEEDED</code> records exactly one of the two library names. <code>ldconfig</code> finding both shared objects in different directories is harmless &mdash; the dynamic linker resolves <code>DT_NEEDED libCoreFoundation.so.6</code> by name and goes to <code>/usr/lib/libsystem/</code>; it doesn't see <code>libgnustep-corebase.so.0</code> at all. The two libraries can sit on the same disk indefinitely without anything bridging them.</p>
+<p>Each binary's <code>DT_NEEDED</code> records exactly one of the two library names. <code>ldconfig</code> finding both shared objects in different directories is harmless &mdash; the dynamic linker resolves <code>DT_NEEDED libCoreFoundation.so.6</code> by name and goes to <code>/usr/lib/system/</code>; it doesn't see <code>libgnustep-corebase.so.0</code> at all. The two libraries can sit on the same disk indefinitely without anything bridging them.</p>
 
 <h3>10.2 Where the conflict WOULD happen (the rule)</h3>
 
@@ -476,9 +476,9 @@ CFURLWriteDataAndPropertiesToResource</code></pre>
 
 <h3>10.4 What this means in practice for the launchctl port</h3>
 
-<p>The port is unaffected by the question of whether gershwin's CF stack is installed. <code>launchctl</code> links <code>-lCoreFoundation</code> from <code>/usr/lib/libsystem/</code> and compiles against headers from <code>/usr/include/CoreFoundation/</code>. It has no knowledge of gershwin's GNUstep stack and doesn't need to. Installing gershwin on the same system puts <code>libgnustep-corebase.so.0</code> on disk in a different directory; the two CoreFoundations coexist without colliding at link time or at runtime.</p>
+<p>The port is unaffected by the question of whether gershwin's CF stack is installed. <code>launchctl</code> links <code>-lCoreFoundation</code> from <code>/usr/lib/system/</code> and compiles against headers from <code>/usr/include/CoreFoundation/</code>. It has no knowledge of gershwin's GNUstep stack and doesn't need to. Installing gershwin on the same system puts <code>libgnustep-corebase.so.0</code> on disk in a different directory; the two CoreFoundations coexist without colliding at link time or at runtime.</p>
 
-<p>This is the same posture gershwin already takes with <code>libdispatch</code>: gershwin ships libdispatch through its own pkg, and we ship our own libdispatch via <code>/usr/lib/libsystem/libdispatch.so</code>. The two installations don't fight because each binary's link line picks one and the other is invisible to it.</p>
+<p>This is the same posture gershwin already takes with <code>libdispatch</code>: gershwin ships libdispatch through its own pkg, and we ship our own libdispatch via <code>/usr/lib/system/libdispatch.so</code>. The two installations don't fight because each binary's link line picks one and the other is invisible to it.</p>
 
 <h2 id="no-rewrite">11. Why not rewrite to GNUstep instead?</h2>
 
@@ -614,7 +614,7 @@ GNUstep / gershwin desktop:    libobjc2 → tools-make → libs-base → libs-co
 <table>
 <thead><tr><th>Lane</th><th>CF artifact on disk</th><th>SONAME</th><th>RC mode</th><th>Consumers</th></tr></thead>
 <tbody>
-  <tr><td><strong>Apple-source system services</strong></td><td><code>/usr/lib/libsystem/libCoreFoundation.so.6</code> (ours)</td><td><code>libCoreFoundation.so.6</code></td><td>legacy bitfield-CAS</td><td>launchctl, configd, IPConfiguration, mDNSResponder, asl, notifyd, DiskArbitration</td></tr>
+  <tr><td><strong>Apple-source system services</strong></td><td><code>/usr/lib/system/libCoreFoundation.so.6</code> (ours)</td><td><code>libCoreFoundation.so.6</code></td><td>legacy bitfield-CAS</td><td>launchctl, configd, IPConfiguration, mDNSResponder, asl, notifyd, DiskArbitration</td></tr>
   <tr><td><strong>GNUstep / gershwin desktop</strong></td><td><code>/System/Library/Libraries/libgnustep-corebase.so.0</code> (gershwin)</td><td><code>libgnustep-corebase.so.0</code></td><td>GNUstep refcount (toll-free with libgnustep-base NSObject)</td><td>GNUstep apps + frameworks</td></tr>
   <tr><td><strong>Swift runtime</strong></td><td>statically embedded inside <code>libFoundation.so</code> (Swift); no standalone shared lib</td><td>n/a (private to libFoundation)</td><td>Swift ARC (<code>swift_retain</code>/<code>swift_release</code>)</td><td>Swift programs that <code>import Foundation</code></td></tr>
 </tbody>
@@ -640,7 +640,7 @@ GNUstep / gershwin desktop:    libobjc2 → tools-make → libs-base → libs-co
 <ul>
   <li>Add <code>swift-lang</code> (or build it from <code>swiftlang/swift</code> source) to the pkgbase / pkglist. Installs <code>/usr/local/bin/swift</code> + <code>/usr/local/lib/swift/freebsd/libswiftCore.so</code> + <code>libFoundation.so</code> etc.</li>
   <li>Per the no-/usr/local rule, the swift toolchain coming from a FreeBSD pkg lives at <code>/usr/local/</code> as pkgs do &mdash; we don't relocate. Swift programs that link Foundation pick up <code>libFoundation.so</code> from there via the toolchain's rpath.</li>
-  <li>Our <code>/usr/lib/libsystem/libCoreFoundation.so.6</code> is untouched. <code>launchctl</code> still resolves <code>CFArrayCreate</code> to our build; a hypothetical <code>my-tool.swift</code> resolves it to its toolchain's bundled Swift-mode CF (inside <code>libFoundation.so</code>) via Swift's import-resolution.</li>
+  <li>Our <code>/usr/lib/system/libCoreFoundation.so.6</code> is untouched. <code>launchctl</code> still resolves <code>CFArrayCreate</code> to our build; a hypothetical <code>my-tool.swift</code> resolves it to its toolchain's bundled Swift-mode CF (inside <code>libFoundation.so</code>) via Swift's import-resolution.</li>
   <li><code>ldconfig</code> on a system with both installed is harmless &mdash; the libs have different file paths, different filenames, and the linker is name-driven.</li>
 </ul>
 
@@ -676,7 +676,7 @@ GNUstep / gershwin desktop:    libobjc2 → tools-make → libs-base → libs-co
 <thead><tr><th>Dimension</th><th>Impact</th></tr></thead>
 <tbody>
   <tr><td>License</td><td>Apache 2.0. We ship the <code>LICENSE</code> file alongside the vendored source. No commercial-use restrictions; the only obligation is preserving copyright notices.</td></tr>
-  <tr><td>Disk footprint on ISO</td><td><code>/usr/lib/libsystem/libCoreFoundation.so.6</code> &asymp; 2-4 MiB stripped (estimate &mdash; will measure during &sect;<a href="#porting-plan">8</a>). Headers at <code>/usr/include/CoreFoundation/</code> &asymp; 1 MiB. Total install &asymp; 3-5 MiB.</td></tr>
+  <tr><td>Disk footprint on ISO</td><td><code>/usr/lib/system/libCoreFoundation.so.6</code> &asymp; 2-4 MiB stripped (estimate &mdash; will measure during &sect;<a href="#porting-plan">8</a>). Headers at <code>/usr/include/CoreFoundation/</code> &asymp; 1 MiB. Total install &asymp; 3-5 MiB.</td></tr>
   <tr><td>Source tree on disk</td><td><code>src/libCoreFoundation/</code> &asymp; 10 MiB (78 <code>.c</code> + headers + Unicode tables). One-time cost in the git history.</td></tr>
   <tr><td>Maintenance burden</td><td>We carry a small patch series against upstream (Swift macro flip, BlockRuntime/ drop, Makefile addition). Re-vendoring a future upstream release is a recursive copy + patch re-apply.</td></tr>
   <tr><td>Upstream drift risk</td><td>swift-corelibs CF is actively maintained (HEAD 2026-05-13). Upstream's primary code path is Swift mode; legacy non-Swift mode is <code>#else</code>'d but stays compileable. If upstream ever deletes the legacy branch, our patch-set grows.</td></tr>
@@ -698,13 +698,13 @@ GNUstep / gershwin desktop:    libobjc2 → tools-make → libs-base → libs-co
 </tbody>
 </table>
 
-<h3>14.3 Decision: install at <code>/usr/lib/libsystem/libCoreFoundation.so.6</code></h3>
+<h3>14.3 Decision: install at <code>/usr/lib/system/libCoreFoundation.so.6</code></h3>
 <table>
 <thead><tr><th>Dimension</th><th>Impact</th></tr></thead>
 <tbody>
   <tr><td>Consistency</td><td>Matches the install-layout spike's Apple-libsystem-family path. Sits alongside <code>libsystem_kernel.so</code>, <code>libxpc.so</code>, <code>libdispatch.so</code>, <code>libBlocksRuntime.so</code>, <code>liblaunch.so.1</code>. Anything reaching for "the Apple system stack" finds them together.</td></tr>
   <tr><td>Header path</td><td><code>/usr/include/CoreFoundation/</code>. Standard Apple-shape <code>&lt;CoreFoundation/CFFoo.h&gt;</code> resolves naturally.</td></tr>
-  <tr><td>ldconfig discovery</td><td>Already covered by <code>/etc/ld-elf.so.conf</code> (added in the 2026-05-15 ldconfig migration &mdash; <code>/usr/lib/libsystem</code> is on the list). No additional rc.conf surgery.</td></tr>
+  <tr><td>ldconfig discovery</td><td>Already covered by <code>/etc/ld-elf.so.conf</code> (added in the 2026-05-15 ldconfig migration &mdash; <code>/usr/lib/system</code> is on the list). No additional rc.conf surgery.</td></tr>
   <tr><td>No /usr/local violation</td><td>Per project rule. Confirmed.</td></tr>
   <tr><td>SOVERSION</td><td>Set <code>SHLIB_MAJOR=6</code> to match Apple's macOS <code>CoreFoundation.framework</code> versioning. Open question (see &sect;<a href="#open-questions">15</a>) on whether to match exactly or assign our own.</td></tr>
 </tbody>
@@ -728,7 +728,7 @@ GNUstep / gershwin desktop:    libobjc2 → tools-make → libs-base → libs-co
 <thead><tr><th>Dimension</th><th>Impact</th></tr></thead>
 <tbody>
   <tr><td>Why the upstream ships it</td><td>The <code>BlockRuntime/</code> subdir is upstream's fallback for systems without a system <code>libBlocksRuntime.so</code> &mdash; primarily WASI. Not for FreeBSD/Linux/Darwin, all of which have a real one.</td></tr>
-  <tr><td>What we use instead</td><td><code>/usr/lib/libsystem/libBlocksRuntime.so</code> built by our vendored swift-corelibs-libdispatch (per the 2026-05-13 "drop FreeBSD-libblocksruntime pkg, bundle via dispatch" decision). Same upstream Apple compiler-rt source as the CF subdir would have used &mdash; one canonical copy on the system.</td></tr>
+  <tr><td>What we use instead</td><td><code>/usr/lib/system/libBlocksRuntime.so</code> built by our vendored swift-corelibs-libdispatch (per the 2026-05-13 "drop FreeBSD-libblocksruntime pkg, bundle via dispatch" decision). Same upstream Apple compiler-rt source as the CF subdir would have used &mdash; one canonical copy on the system.</td></tr>
   <tr><td>Risk</td><td>If we ever swap the libdispatch source for a different upstream that doesn't bundle libBlocksRuntime, we lose our system-wide source. Mitigation: dispatch's libBlocksRuntime is small and stable; the source is in two places (our libdispatch vendor + this CF vendor we just dropped) and we could resurrect the CF subdir if needed.</td></tr>
 </tbody>
 </table>
@@ -773,7 +773,7 @@ GNUstep / gershwin desktop:    libobjc2 → tools-make → libs-base → libs-co
 <tbody>
   <tr><td>swift-corelibs-foundation as the CF source</td><td><span class="pill pill-warn">expensive</span> Switching CF source forces re-linking every consumer (CFType registries differ). Doable but means revisiting launchctl + every downstream port.</td></tr>
   <tr><td>DEPLOYMENT_RUNTIME_SWIFT=0</td><td><span class="pill pill-warn">SOVERSION bump</span> Rebuild + libCoreFoundation.so.7 + re-link consumers. Source patches stay tiny.</td></tr>
-  <tr><td>/usr/lib/libsystem install path</td><td><span class="pill pill-good">trivial</span> Move file + ldconfig refresh + re-link. Path is encoded in Makefile.</td></tr>
+  <tr><td>/usr/lib/system install path</td><td><span class="pill pill-good">trivial</span> Move file + ldconfig refresh + re-link. Path is encoded in Makefile.</td></tr>
   <tr><td>Install ICU vs strip</td><td><span class="pill pill-good">trivial</span> Build-time toggle. Strip later = drop files from SRCS. Install later = put them back.</td></tr>
   <tr><td>Drop BlockRuntime/ subdir</td><td><span class="pill pill-good">trivial</span> Restore the subdir from upstream, add to SRCS if needed.</td></tr>
   <tr><td>Vendor in tree vs submodule</td><td><span class="pill pill-good">trivial</span> History-rewrite or git-subtree split.</td></tr>

@@ -67,7 +67,7 @@
 <div class="wrap">
 
 <h1>libicu port plan</h1>
-<p class="lede">Concrete plan for vendoring Apple's swift-foundation-icu into <code>freebsd-launchd-mach/src/libicu/</code> and shipping it as a system library at <code>/usr/lib/libsystem/</code>. Replaces the guess-based "Option C is a multi-day sub-project" framing in &sect;13 of the <a href="freebsd-libcorefoundation-icu-audit.html">ICU audit</a> with empirical findings from four parallel research agents and one major mid-plan correction (see &sect;0).</p>
+<p class="lede">Concrete plan for vendoring Apple's swift-foundation-icu into <code>freebsd-launchd-mach/src/libicu/</code> and shipping it as a system library at <code>/usr/lib/system/</code>. Replaces the guess-based "Option C is a multi-day sub-project" framing in &sect;13 of the <a href="freebsd-libcorefoundation-icu-audit.html">ICU audit</a> with empirical findings from four parallel research agents and one major mid-plan correction (see &sect;0).</p>
 
 <div class="callout callout-warn">
 <p><strong>Why this exists.</strong> The audit at <a href="freebsd-libcorefoundation-icu-audit.html">freebsd-libcorefoundation-icu-audit.html</a> recommended Option A (drop ICU). Mid-execution, CI surfaced three additional CF source files with hard ICU includes the audit missed: <code>CFString.c</code> (4 calls), <code>CFTimeZone.c</code> (25 calls), <code>CFBundle_Locale.c</code> (4 calls including the Apple-only <code>ualoc_localizationsToUse</code>). These files are cross-referenced too heavily to drop. With the "~50&ndash;80 LOC patch" budget broken and a confirmed Apple-only symbol dependency, the decision flipped to Option C. This doc captures the new plan.</p>
@@ -102,7 +102,7 @@
 
 <p>Apple ships <strong><code>/usr/lib/libicucore.dylib</code></strong> on macOS &mdash; a single unified library, not in <code>/usr/local/</code>. It's invisible to <code>ls /usr/lib/</code> on Big Sur and later because modern macOS hides system libraries inside the dyld shared cache, but <code>dlopen("/usr/lib/libicucore.dylib", RTLD_NOW)</code> succeeds. This confirms two things: (a) ICU is a <em>system</em> library on macOS, not a third-party port; (b) Apple uses the unified <code>libicucore</code> shape, validating our choice in &sect;3 to skip the upstream 3-lib split.</p>
 
-<p>Our install layout differs from Apple's on one axis: we land it at <code>/usr/lib/libsystem/lib_FoundationICU.so</code> rather than <code>/usr/lib/lib_FoundationICU.so</code>. This is per the <a href="freebsd-libxpc-install-layout-spike.html">install-layout spike</a>: the <code>libsystem/</code> subdir is the project's deliberate separation between self-built Apple-source libraries (libdispatch, libxpc, libCoreFoundation, libicu, etc.) and stock FreeBSD base under <code>/usr/lib/</code>. It also keeps <code>/usr/local/lib/</code> free for any future pkg-installed parallel (e.g. <code>devel/icu</code> if the gershwin overlay ever needs a separate ICU for GNUstep), with zero risk of collision.</p>
+<p>Our install layout differs from Apple's on one axis: we land it at <code>/usr/lib/system/lib_FoundationICU.so</code> rather than <code>/usr/lib/lib_FoundationICU.so</code>. This is per the <a href="freebsd-libxpc-install-layout-spike.html">install-layout spike</a>: the <code>system/</code> subdir is the project's deliberate separation between self-built Apple-source libraries (libdispatch, libxpc, libCoreFoundation, libicu, etc.) and stock FreeBSD base under <code>/usr/lib/</code>. It also keeps <code>/usr/local/lib/</code> free for any future pkg-installed parallel (e.g. <code>devel/icu</code> if the gershwin overlay ever needs a separate ICU for GNUstep), with zero risk of collision.</p>
 
 <h3>0.3 Comparison: which upstream to vendor?</h3>
 
@@ -201,14 +201,14 @@
 
 <pre><code>cmake -G Ninja /tmp/libicu/icuSources \
     -DCMAKE_INSTALL_PREFIX=/usr \
-    -DCMAKE_INSTALL_LIBDIR=lib/libsystem \
+    -DCMAKE_INSTALL_LIBDIR=lib/system \
     -DCMAKE_BUILD_TYPE=Release
 ninja
 ninja install</code></pre>
 
-<p>This matches the existing libdispatch build pattern in <code>build.sh</code> exactly &mdash; same <code>cmake -G Ninja</code> invocation shape, same <code>CMAKE_INSTALL_LIBDIR</code> override to land libs at <code>/usr/lib/libsystem/</code>.</p>
+<p>This matches the existing libdispatch build pattern in <code>build.sh</code> exactly &mdash; same <code>cmake -G Ninja</code> invocation shape, same <code>CMAKE_INSTALL_LIBDIR</code> override to land libs at <code>/usr/lib/system/</code>.</p>
 
-<p><strong>Lib output: unified <code>libicucore</code>-style.</strong> The CMakeLists sets <code>U_COMBINED_IMPLEMENTATION</code>, <code>U_COMMON_IMPLEMENTATION</code>, <code>U_I18N_IMPLEMENTATION</code>, <code>U_IO_IMPLEMENTATION</code>, and <code>U_TOOLUTIL_IMPLEMENTATION</code>; the produced library matches Apple's macOS <code>libicucore.dylib</code> shape. CF's link line becomes <code>-l_FoundationICU</code> (or whatever target name we settle on) instead of <code>-licuuc -licui18n</code>. This is the same shape Apple ships on macOS &mdash; one library file at <code>/usr/lib/libsystem/</code>.</p>
+<p><strong>Lib output: unified <code>libicucore</code>-style.</strong> The CMakeLists sets <code>U_COMBINED_IMPLEMENTATION</code>, <code>U_COMMON_IMPLEMENTATION</code>, <code>U_I18N_IMPLEMENTATION</code>, <code>U_IO_IMPLEMENTATION</code>, and <code>U_TOOLUTIL_IMPLEMENTATION</code>; the produced library matches Apple's macOS <code>libicucore.dylib</code> shape. CF's link line becomes <code>-l_FoundationICU</code> (or whatever target name we settle on) instead of <code>-licuuc -licui18n</code>. This is the same shape Apple ships on macOS &mdash; one library file at <code>/usr/lib/system/</code>.</p>
 
 <p>Toolchain (all already in <code>buildpkgs.txt</code>):</p>
 
@@ -249,7 +249,7 @@ ninja install</code></pre>
 <pre><code>mkdir -p /tmp/libicu-build &amp;&amp; cd /tmp/libicu-build &amp;&amp; \
 cmake -G Ninja /tmp/libicu/icuSources \
     -DCMAKE_INSTALL_PREFIX=/usr \
-    -DCMAKE_INSTALL_LIBDIR=lib/libsystem \
+    -DCMAKE_INSTALL_LIBDIR=lib/system \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
@@ -261,7 +261,7 @@ ninja install</code></pre>
 <p>Key shape:</p>
 
 <ul>
-  <li><code>CMAKE_INSTALL_PREFIX=/usr</code> + <code>CMAKE_INSTALL_LIBDIR=lib/libsystem</code> &mdash; matches the install-layout spike. Library lands at <code>/usr/lib/libsystem/lib_FoundationICU.so</code> (or whatever the upstream CMake target produces; will confirm post-build).</li>
+  <li><code>CMAKE_INSTALL_PREFIX=/usr</code> + <code>CMAKE_INSTALL_LIBDIR=lib/system</code> &mdash; matches the install-layout spike. Library lands at <code>/usr/lib/system/lib_FoundationICU.so</code> (or whatever the upstream CMake target produces; will confirm post-build).</li>
   <li><code>-DU_DISABLE_RENAMING=1</code> via CMake C/CXX flags overrides the Darwin-only conditional in the upstream CMakeLists.</li>
   <li><strong>No <code>--disable-tests</code>-equivalent needed</strong> &mdash; swift-foundation-icu has no test/samples/layoutex subdirs; it's already trimmed.</li>
 </ul>
@@ -290,7 +290,7 @@ ninja install</code></pre>
 <tbody>
   <tr><td>Repo (vendored hex source)</td><td>~224 MB raw / ~60&ndash;100 MB git-packed</td><td>Build-time only; never ships on the ISO</td></tr>
   <tr><td>Build-tree intermediate (.o files)</td><td>~40 MB raw bytes</td><td>Hex decodes ~5:1 to binary</td></tr>
-  <tr><td><strong>Installed <code>libicucore.so</code></strong></td><td><strong>~40&ndash;50 MB total</strong></td><td>Per-byte data + ~3&ndash;5 MB of compiled C/C++; lands at <code>/usr/lib/libsystem/</code></td></tr>
+  <tr><td><strong>Installed <code>libicucore.so</code></strong></td><td><strong>~40&ndash;50 MB total</strong></td><td>Per-byte data + ~3&ndash;5 MB of compiled C/C++; lands at <code>/usr/lib/system/</code></td></tr>
   <tr><td>Headers</td><td>~5.5 MB</td><td>Lands at <code>/usr/include/_foundation_unicode/</code> &mdash; build-tools only, runtime cost zero</td></tr>
 </tbody>
 </table>
@@ -396,7 +396,7 @@ LDADD+=     -l_FoundationICU         # placeholder; confirm post-build</code></p
 <tbody>
   <tr><td>27 (superseded)</td><td>libicu: vendor Apple ICU into src/libicu/ (apple-oss-distributions)</td><td>6,853 vendored files + README</td><td>none</td></tr>
   <tr><td>33</td><td>libicu: replace src/libicu with apple/swift-foundation-icu</td><td>vendor swap + README rewrite</td><td>none</td></tr>
-  <tr><td>28</td><td>build.sh: cmake/ninja libicu in chroot, install to /usr/lib/libsystem/</td><td><code>build.sh</code></td><td>none</td></tr>
+  <tr><td>28</td><td>build.sh: cmake/ninja libicu in chroot, install to /usr/lib/system/</td><td><code>build.sh</code></td><td>none</td></tr>
   <tr><td>28</td><td>libicu: any FreeBSD-specific CMakeLists patches (xlocale, MAC_OS_X_VERSION_MIN_REQUIRED) discovered in CI</td><td><code>src/libicu/icuSources/CMakeLists.txt</code></td><td>none</td></tr>
   <tr><td>31</td><td>tests: test_libicu.c (u_init + u_getVersion + ucal_open) and ICU-OK marker</td><td><code>src/libicu-tests/</code>, <code>overlays/usr/tests/.../run.sh</code>, <code>tests/boot-test.sh</code></td><td><strong>ICU-OK</strong></td></tr>
   <tr><td>29</td><td>libCoreFoundation: -l_FoundationICU, -D__HAS_APPLE_ICU__=1, restore 7 SRCS files (the safe-now set)</td><td><code>src/libCoreFoundation/Makefile</code></td><td>none</td></tr>
@@ -418,7 +418,7 @@ LDADD+=     -l_FoundationICU         # placeholder; confirm post-build</code></p
 </ol>
 
 <div class="callout callout-good">
-<p><strong>Net effect:</strong> ~30 MB added to the ISO (libicuuc + libicui18n + libicudata under <code>/usr/lib/libsystem/</code>), all 16 dropped CF files come back, CF surface is at parity with macOS for the launchctl needs. The original "no <code>/usr/local</code> ever" rule holds &mdash; libicu lives at <code>/usr/lib/libsystem/</code>, headers under <code>/usr/include/unicode/</code> with <code>/usr/include/_foundation_unicode</code> as a symlink alias. Apple-only <code>ualoc_*</code> works because we're shipping Apple's ICU.</p>
+<p><strong>Net effect:</strong> ~30 MB added to the ISO (libicuuc + libicui18n + libicudata under <code>/usr/lib/system/</code>), all 16 dropped CF files come back, CF surface is at parity with macOS for the launchctl needs. The original "no <code>/usr/local</code> ever" rule holds &mdash; libicu lives at <code>/usr/lib/system/</code>, headers under <code>/usr/include/unicode/</code> with <code>/usr/include/_foundation_unicode</code> as a symlink alias. Apple-only <code>ualoc_*</code> works because we're shipping Apple's ICU.</p>
 </div>
 
 <div class="footnote">

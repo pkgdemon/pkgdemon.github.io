@@ -82,7 +82,7 @@
 <li><strong>Kernel messages</strong> already flow naturally: kernel <code>printf(9)</code> / <code>log(9)</code> → kernel msgbuf → <code>/dev/klog</code> → Apple syslogd's <code>klog_in.c</code> module (works on FreeBSD unmodified) → ASL store. Same path covers FreeBSD core + mach.ko + every other kld.</li>
 <li><strong>Cross-cutting stubs</strong> needed alongside: <code>os/log.h</code> + <code>os/log_private.h</code> + <code>os/assumes.h</code> + <code>os/activity.h</code> + <code>os/transaction_private.h</code> header pack (~700 lines, required to compile both ASL and IOKitUser later); <code>membership.h</code> stub (~20 lines, ASL only); <code>configuration_profile.h</code> stub (~10 lines, ASL only).</li>
 <li><strong>Use FreeBSD's <code>libbsm</code></strong> as-is — FreeBSD base ships <code>&lt;bsm/libbsm.h&gt;</code> with identical <code>audit_token_to_au32</code>/<code>audit_token_to_pid</code> signatures (<code>contrib/openbsm/bsm/libbsm.h:1257-1294</code>).</li>
-<li><strong>Total scope: ~5-7 weeks</strong> for "ASL + libnotify+notifyd ready, downstream daemons unblocked." Breakdown: J1 libsystem_asl + libnotify (1-1.5 wk), J2 syslogd + notifyd Mach RX (1.5-2 wk), J3 bsd_in.c + /dev/klog + /etc/syslog.conf (1 wk), J4 validation + smoke (1 wk).</li>
+<li><strong>Total scope: ~7-9 weeks</strong> for the complete ASL stack (libasl + libnotify + notifyd + syslogd + aslmanager + syslog(1) CLI). Breakdown: J1 libsystem_asl + libnotify (1-1.5 wk), J2 syslogd + notifyd Mach RX + mach.ko fileport ops (2.5-3 wk), J3 bsd_in.c + /dev/klog + /etc/syslog.conf (1 wk), J4 aslmanager + validation + hwregd handoff (2-3 wk), J5 syslog(1) CLI (1-2 wk).</li>
 </ul>
 </div>
 
@@ -135,7 +135,7 @@
 <tr><td><code>membership.h</code> stub</td><td>NEW under <code>freebsd-shims/</code></td><td>J1</td><td>~20 lines. <code>mbr_uid_to_uuid</code> → KERN_FAILURE. ASL store ACL groups degrade to uid/gid.</td></tr>
 <tr><td><code>configuration_profile.h</code> stub</td><td>NEW under <code>freebsd-shims/</code></td><td>J1</td><td>~10 lines. MDM profile overrides — irrelevant on FreeBSD; returns NULL.</td></tr>
 <tr><td><code>aslmanager</code> log-rotation daemon</td><td><code>syslog/aslmanager.tproj/</code></td><td>J4</td><td>~2k LoC. Without it <code>/var/log/asl/</code> grows unbounded (syslogd self-rotates current files but never archives or deletes). Real disk-fillup consequence — not optional for a shipping system.</td></tr>
-<tr><td><code>syslog(1)</code> CLI</td><td><code>syslog/util.tproj/</code></td><td>J5 (defer)</td><td>~2.9k LoC. Operator convenience: query ASL DB, send messages from shell, runtime filter control. <code>tail /var/log/messages</code> works via the BSD output route, so basic admin access doesn't depend on it.</td></tr>
+<tr><td><code>syslog(1)</code> CLI</td><td><code>syslog/util.tproj/</code></td><td>J5</td><td>~2.9k LoC. Required for structured queries against the binary <code>/var/log/asl/*.asl</code> database (operators have no shell-side ASL read access without it). Send-side covered by FreeBSD's existing <code>logger(1)</code> + our bsd_in.c, but read-side is syslog(1)-only.</td></tr>
 <tr><td><code>newsyslog</code></td><td><code>syslog/newsyslog/</code></td><td>SKIP</td><td>FreeBSD base already has working <code>newsyslog</code>; no need to port Apple's variant.</td></tr>
 </tbody>
 </table>
@@ -475,9 +475,11 @@ tail -f /var/log/messages
 <p><strong>Smoke markers</strong>: <code>ASLMANAGER-OK</code>, <code>ASL-FROM-HWREGD-OK</code>, <code>BOOT-WITH-ASL-OK</code>.</p>
 </div>
 
-<div class="phase defer">
-<h3>J5 — syslog(1) CLI <span class="pill warn">~1-2 wk, deferred</span></h3>
-<p>Operator-convenience query / runtime-filter-control CLI. <code>tail /var/log/messages</code> works via the BSD output route, so basic admin access doesn't depend on this. Defer until operator demand surfaces.</p>
+<div class="phase todo">
+<h3>J5 — syslog(1) CLI <span class="pill info">~1-2 wk</span></h3>
+<p>Final phase of the ASL port. ~2.9k LoC operator CLI. Required for structured queries against the binary <code>/var/log/asl/*.asl</code> database — without it operators have no shell-side ASL read access (only <code>tail /var/log/messages</code> via the BSD-text output route, which flattens structured fields). Also handles runtime daemon filter control (<code>syslog -c &lt;pid&gt; &lt;mask&gt;</code>) and live-tail with structured filtering (<code>syslog -w 0 -k Sender hwregd</code>).</p>
+<p>Send-side from shell is already covered by FreeBSD's existing <code>logger(1)</code> + our bsd_in.c socket compat, so syslog(1)'s send mode is redundant but harmless.</p>
+<p><strong>Smoke marker</strong>: <code>SYSLOG-CLI-OK</code> — query roundtrip writes a message via libsystem_asl then reads it back via <code>syslog -k Sender hwregd</code>.</p>
 </div>
 
 <h2 id="smoke">11. CI smoke markers (full set)</h2>
@@ -495,6 +497,7 @@ tail -f /var/log/messages
 <tr><td><code>KLOG-OK</code></td><td>J3</td><td>Kernel <code>printf</code> appears in ASL</td></tr>
 <tr><td><code>ASL-FROM-HWREGD-OK</code></td><td>J4</td><td>hwregd's <code>asl_log()</code> calls appear in <code>/var/log/asl/</code></td></tr>
 <tr><td><code>BOOT-WITH-ASL-OK</code></td><td>J4</td><td>Full PID-1 boot to login with all daemons running</td></tr>
+<tr><td><code>SYSLOG-CLI-OK</code></td><td>J5</td><td>syslog(1) query roundtrip: write via libsystem_asl, read back via <code>syslog -k Sender hwregd</code></td></tr>
 </tbody>
 </table>
 

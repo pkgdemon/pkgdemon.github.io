@@ -95,6 +95,7 @@
 <li><a href="#architecture">syslogd architecture (input modules, output modules, ASL DB)</a></li>
 <li><a href="#notify">Why libnotify+notifyd ship alongside ASL</a></li>
 <li><a href="#interop">FreeBSD <code>syslog(3)</code> interop strategy</a></li>
+<li><a href="#apple-alternatives">6.5 Would switching to Apple utilities drop the bsd_in.c workaround?</a></li>
 <li><a href="#install">Install layout</a></li>
 <li><a href="#stubs">Stubs needed</a></li>
 <li><a href="#consumer-guide">Consumer guide — how to use ASL from C / Objective-C</a></li>
@@ -250,6 +251,154 @@ newsyslog          (tool)         skip — FreeBSD base has its own
 </ol>
 
 <p>Kernel log ingest works as-is: <code>klog_in.c</code> opens <code>/dev/klog</code> via plain <code>open(O_RDONLY|O_NONBLOCK)</code>, FreeBSD's <code>/dev/klog</code> from <code>sys/kern/subr_log.c</code> has the same single-reader semantic. <strong>No patches needed</strong>. <code>/etc/syslog.conf</code> compat is already in Apple syslogd via <code>bsd_out_init()</code> at <code>bsd_out.c:732</code> — also no patches.</p>
+
+<h3 id="apple-alternatives">6.5 Would switching to Apple's utilities drop the bsd_in.c workaround?</h3>
+
+<p>Short answer: <strong>partially, and not worth chasing</strong>. Below is the explicit matrix.</p>
+
+<p>Two paths a userland program can reach ASL:</p>
+
+<ol>
+<li><strong>Apple-utility path</strong>: program links <code>libsystem_asl.so</code>, calls <code>asl_log()</code> directly OR calls <code>syslog(3)</code> which is intercepted by the libsystem_asl shim (<code>libsystem_asl.tproj/src/syslog.c</code>, 288 lines) and routed to syslogd over Mach IPC. <strong>No bsd_in.c involved.</strong></li>
+<li><strong>FreeBSD-utility path</strong>: program links FreeBSD libc only, calls <code>syslog(3)</code> which writes RFC 5424 to <code>/var/run/log</code> AF_UNIX SOCK_DGRAM. <strong>bsd_in.c required</strong> to listen on that socket and route into ASL.</li>
+</ol>
+
+<p>So bsd_in.c is the catch-all for path 2. Porting an Apple utility moves <em>that one binary</em> to path 1, but bsd_in.c stays mandatory for every other FreeBSD-base utility still on path 2.</p>
+
+<h4>Per-utility matrix</h4>
+
+<table>
+<thead>
+<tr>
+<th>FreeBSD-base utility</th>
+<th>In our rootfs?</th>
+<th>Apple equivalent</th>
+<th>Apple version uses asl directly?</th>
+<th>Porting drops bsd_in.c for this consumer?</th>
+<th>Worth porting?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/usr/libexec/getty</code></td>
+<td>Yes (FreeBSD-runtime)</td>
+<td><code>system_cmds/getty.tproj/</code></td>
+<td>Yes (via libsystem_asl syslog shim + native asl calls)</td>
+<td>Yes (for getty)</td>
+<td><span class="pill bad">No</span> — Apple version has Darwin audit hooks + asl-direct integration we'd strip; result functionally equivalent to FreeBSD's. bsd_in.c covers transparently.</td>
+</tr>
+<tr>
+<td><code>/usr/bin/login</code></td>
+<td>Yes (FreeBSD-runtime)</td>
+<td><code>system_cmds/login.tproj/</code></td>
+<td>Yes (asl + audit session)</td>
+<td>Yes (for login)</td>
+<td><span class="pill bad">No</span> — Same logic as getty. Apple's adds OpenDirectory hooks we don't have; strip-and-port gives near-identical behavior.</td>
+</tr>
+<tr>
+<td><code>/usr/bin/su</code></td>
+<td>Yes (FreeBSD-runtime)</td>
+<td><code>system_cmds/su.tproj/</code></td>
+<td>Yes (asl + audit)</td>
+<td>Yes (for su)</td>
+<td><span class="pill bad">No</span> — Same reasoning.</td>
+</tr>
+<tr>
+<td><code>/usr/bin/passwd</code></td>
+<td>Yes (FreeBSD-runtime)</td>
+<td><code>system_cmds/passwd.tproj/</code></td>
+<td>Yes</td>
+<td>Yes (for passwd)</td>
+<td><span class="pill bad">No</span> — Same reasoning.</td>
+</tr>
+<tr>
+<td><code>/usr/sbin/cron</code></td>
+<td>Optional (not in minimal rootfs)</td>
+<td><code>cron</code> (Apple ships BSD cron with patches)</td>
+<td>Partial — calls syslog(3), not asl directly</td>
+<td>No real win — even Apple cron uses syslog(3)</td>
+<td><span class="pill bad">No</span> — Both versions go through bsd_in.c anyway.</td>
+</tr>
+<tr>
+<td><code>/usr/libexec/atrun</code></td>
+<td>Optional</td>
+<td>Same as cron — BSD inheritance</td>
+<td>No</td>
+<td>No</td>
+<td><span class="pill bad">No</span></td>
+</tr>
+<tr>
+<td><code>/usr/sbin/sshd</code></td>
+<td>No (FreeBSD-ssh removed at 88694f0)</td>
+<td>Apple openssh-portable fork (heavily patched)</td>
+<td>Yes (asl + audit)</td>
+<td>Yes (for sshd when it returns)</td>
+<td><span class="pill warn">Maybe later</span> — when sshd comes back, the Apple version brings session-context logging worth having. Independent of this plan.</td>
+</tr>
+<tr>
+<td><code>/sbin/dhclient</code></td>
+<td>No (removed at 88694f0; will be replaced by IPConfiguration)</td>
+<td>N/A — IPConfiguration is the Apple equivalent</td>
+<td>Yes (asl direct)</td>
+<td>Yes (IPConfiguration won't use syslog(3))</td>
+<td><span class="pill ok">Yes — separate plan</span></td>
+</tr>
+<tr>
+<td><code>/usr/sbin/newsyslog</code></td>
+<td>Yes (FreeBSD-runtime)</td>
+<td><code>syslog/newsyslog/</code> (Apple variant)</td>
+<td>No (BSD-style)</td>
+<td>No</td>
+<td><span class="pill bad">No</span> — FreeBSD's works; Apple's variant in our vendored syslog repo is intentionally skipped per the J0 plan.</td>
+</tr>
+<tr>
+<td><code>/usr/sbin/syslogd</code></td>
+<td>No (removed at 88694f0)</td>
+<td>This plan</td>
+<td>N/A — IS the daemon</td>
+<td>N/A</td>
+<td><span class="pill ok">Yes — this plan</span></td>
+</tr>
+<tr>
+<td><code>/usr/sbin/powerd</code></td>
+<td>Not in our build path</td>
+<td><code>PowerManagement/pmconfigd/</code></td>
+<td>Yes (asl + notify)</td>
+<td>Yes (when pmconfigd lands)</td>
+<td><span class="pill warn">Eventually</span> — covered by IOKit/PowerManagement plan downstream.</td>
+</tr>
+<tr>
+<td><code>/usr/sbin/ntpd</code></td>
+<td>Not in our build path</td>
+<td>Apple ntp fork (deprecated on macOS in favor of timed)</td>
+<td>Some — calls asl in patches</td>
+<td>Partial</td>
+<td><span class="pill bad">No</span> — Apple themselves abandoned ntpd; if time sync becomes a need, port Apple's timed or ship freebsd-base ntpd through bsd_in.c.</td>
+</tr>
+<tr>
+<td>Future ports-tree apps using syslog(3)</td>
+<td>Whatever the user installs</td>
+<td>N/A — third-party</td>
+<td>No</td>
+<td>No (can't patch user-installed pkgs)</td>
+<td><span class="pill ok">bsd_in.c is the only answer</span></td>
+</tr>
+</tbody>
+</table>
+
+<h4>Conclusion</h4>
+
+<p>Even if we ported every Apple system_cmds utility that has a syslog-using counterpart (getty / login / su / passwd / atrun), <strong>bsd_in.c would still be required</strong> for:</p>
+
+<ul>
+<li>Any future ports-tree pkg the user installs (postgres, nginx, postfix, etc.) — third-party C/C++ code calling libc <code>syslog(3)</code> universally</li>
+<li>FreeBSD utilities we keep because their Apple equivalent isn't worth porting (cron, atrun, newsyslog, ntpd)</li>
+<li>FreeBSD utilities we haven't yet replaced (because there are always more)</li>
+</ul>
+
+<p>And per the earlier audit (<a href="freebsd-apple-userland-cmds-plan.html">apple-userland-cmds plan</a> and the IOKit-plan synthesis), <strong>Apple's userland utilities that talk to the kernel (getty/login/ifconfig/route/netstat/ping/ps/top/mount/etc.) aren't worth porting</strong>: their value over FreeBSD's is near-zero after stripping Darwin-specific kernel-ABI ties (audit sessions, asl-direct integration, OpenDirectory hooks), all of which we don't have anyway. <strong>bsd_in.c is the leverage move</strong>: ~200 LoC covers every present and future FreeBSD <code>syslog(3)</code> consumer transparently.</p>
+
+<p>The only Apple utilities worth porting from a logging-perspective alone are those that talk to <em>Apple services</em> (launchctl, scutil, networksetup, defaults, log, syslog(1) itself) — they have no FreeBSD equivalent and their value compounds beyond just logging.</p>
 
 <h2 id="install">7. Install layout</h2>
 

@@ -134,8 +134,8 @@
 <tr><td><code>os/*</code> header stubs</td><td>NEW under <code>freebsd-shims/</code></td><td>J1</td><td>~700 lines. <code>os_log</code>/<code>os_assumes</code>/<code>os_activity</code>/<code>os_transaction_private</code> macro to printf/syslog/no-op. Required to compile.</td></tr>
 <tr><td><code>membership.h</code> stub</td><td>NEW under <code>freebsd-shims/</code></td><td>J1</td><td>~20 lines. <code>mbr_uid_to_uuid</code> → KERN_FAILURE. ASL store ACL groups degrade to uid/gid.</td></tr>
 <tr><td><code>configuration_profile.h</code> stub</td><td>NEW under <code>freebsd-shims/</code></td><td>J1</td><td>~10 lines. MDM profile overrides — irrelevant on FreeBSD; returns NULL.</td></tr>
-<tr><td><code>aslmanager</code> log-rotation daemon</td><td><code>syslog/aslmanager.tproj/</code></td><td>J5 (defer)</td><td>~2k LoC. Optional: syslogd self-rotates current files; without aslmanager <code>/var/log/asl/</code> grows but system stays functional.</td></tr>
-<tr><td><code>syslog(1)</code> CLI</td><td><code>syslog/util.tproj/</code></td><td>J5 (defer)</td><td>~2.9k LoC. Operator convenience: query ASL DB, send messages from shell, runtime filter control. Daemons don't need it.</td></tr>
+<tr><td><code>aslmanager</code> log-rotation daemon</td><td><code>syslog/aslmanager.tproj/</code></td><td>J4</td><td>~2k LoC. Without it <code>/var/log/asl/</code> grows unbounded (syslogd self-rotates current files but never archives or deletes). Real disk-fillup consequence — not optional for a shipping system.</td></tr>
+<tr><td><code>syslog(1)</code> CLI</td><td><code>syslog/util.tproj/</code></td><td>J5 (defer)</td><td>~2.9k LoC. Operator convenience: query ASL DB, send messages from shell, runtime filter control. <code>tail /var/log/messages</code> works via the BSD output route, so basic admin access doesn't depend on it.</td></tr>
 <tr><td><code>newsyslog</code></td><td><code>syslog/newsyslog/</code></td><td>SKIP</td><td>FreeBSD base already has working <code>newsyslog</code>; no need to port Apple's variant.</td></tr>
 </tbody>
 </table>
@@ -469,14 +469,15 @@ tail -f /var/log/messages
 </div>
 
 <div class="phase todo">
-<h3>J4 — validation + smoke + hwregd handoff <span class="pill info">~1 wk</span></h3>
-<p>Full-boot CI assertion. Update <code>hwregd</code>'s <code>xlog()</code> to call <code>asl_log()</code> — ~5-line additive patch, no plist change.</p>
-<p><strong>Smoke markers</strong>: <code>ASL-FROM-HWREGD-OK</code>, <code>BOOT-WITH-ASL-OK</code>.</p>
+<h3>J4 — aslmanager + validation + smoke + hwregd handoff <span class="pill info">~2-3 wk</span></h3>
+<p>Build aslmanager daemon (~2k LoC). Install at <code>/usr/libexec/aslmanager</code>. Wire launchd plist for periodic activation (Apple ships it as on-demand via XPC from syslogd; we can match). Without aslmanager <code>/var/log/asl/</code> grows unbounded — real disk-fillup consequence, not optional.</p>
+<p>Full-boot CI assertion: PID-1 launchd boots; getty + hwregd + syslogd + notifyd + aslmanager all up; login: prompt appears; <code>tail /var/log/messages</code> shows getty/login session creation. Update <code>hwregd</code>'s <code>xlog()</code> to call <code>asl_log()</code> instead of <code>fprintf(stderr, ...)</code> — single ~5-line additive patch, no plist change needed.</p>
+<p><strong>Smoke markers</strong>: <code>ASLMANAGER-OK</code>, <code>ASL-FROM-HWREGD-OK</code>, <code>BOOT-WITH-ASL-OK</code>.</p>
 </div>
 
 <div class="phase defer">
-<h3>J5 — aslmanager + syslog(1) CLI <span class="pill warn">~1-2 wk, deferred</span></h3>
-<p>Log-rotation + query CLI. Not blocking; safe to defer until disk pressure or operator demand surfaces.</p>
+<h3>J5 — syslog(1) CLI <span class="pill warn">~1-2 wk, deferred</span></h3>
+<p>Operator-convenience query / runtime-filter-control CLI. <code>tail /var/log/messages</code> works via the BSD output route, so basic admin access doesn't depend on this. Defer until operator demand surfaces.</p>
 </div>
 
 <h2 id="smoke">11. CI smoke markers (full set)</h2>
@@ -506,11 +507,11 @@ tail -f /var/log/messages
 <h2 id="open-questions">13. Open questions</h2>
 
 <ol>
-<li><strong>asl.conf merge policy</strong>: ship freebsd-specific variant blending <code>asl.conf.osx</code> + <code>asl.conf.ios</code>, or use iOS variant as-is?</li>
-<li><strong>notifyd PID-1 ordering</strong>: explicit launchd ordering between syslogd and notifyd, or rely on Mach-port lookup retry?</li>
-<li><strong>fileport syscall surface</strong>: notifyd + ASL need <code>sys/fileport.h</code>'s <code>fileport_makefd</code> / <code>fileport_makeport</code>. Add to mach.ko as new trap-multiplexer ops, or implement userland-only via per-fd Mach ports?</li>
-<li><strong>Log rotation deferral</strong>: how long can we run without aslmanager? Periodic launchd job running <code>find /var/log/asl -mtime +7 -delete</code> as a stopgap?</li>
-<li><strong>hwregd asl_log() swap timing</strong>: part of J4 (clean handoff in the ASL plan) or separate hwregd iter-2 commit?</li>
+<li><strong>asl.conf merge policy (RESOLVED)</strong>: <strong>ship a custom ~10-line FreeBSD-specific config</strong>. Neither Apple variant is right — osx variant has dead rules for services we don't have (loginwindow, WindowServer, CrashReporter), ios variant lacks the system.log BSD-text writer. Custom is simpler than either and covers exactly what we need: ASL DB destination + system.log BSD-text writer + level-notice store rule + kernel-sender rule.</li>
+<li><strong>notifyd PID-1 ordering (RESOLVED)</strong>: <strong>no explicit ordering needed — rely on launchd's MachServices port-on-behalf pattern</strong>, same as Apple does on macOS. launchd holds the receive-right for any declared MachServices name as soon as the plist loads at boot, so <code>bootstrap_look_up()</code> returns a usable send-right immediately, even before the target daemon runs. First message queues in the kernel Mach port, triggers on-demand activation, drains when the daemon's <code>mach_msg_server</code> starts. Our launchd-842 port already implements this — it's how <code>com.apple.bootstrap_server</code> works (proved in <code>phase_g2_complete</code>).</li>
+<li><strong>fileport syscall surface (RESOLVED)</strong>: notifyd + ASL need <code>sys/fileport.h</code>'s <code>fileport_makefd</code> / <code>fileport_makeport</code>. Apple implements as kernel Mach traps (XNU), with the kernel tracking fileglob ↔ Mach-port associations and supporting atomic fd-passing inside Mach message bodies. <strong>Decision</strong>: same architecture on FreeBSD via new ops in our mach.ko trap multiplexer (slot 219). Implementation: <code>fget(td, fd, ...)</code> + <code>fhold()</code> for makeport, <code>falloc_noinstall()</code> + <code>finstall()</code> for makefd, store <code>struct file *</code> in the Mach port's kobject slot. ~200-300 LoC, same shape as the <code>task_get/set_special_port</code> ops we added in Phase G prereqs. Slotted as a J2 prereq; bumps J2 from ~1.5-2 wk to ~2.5-3 wk.</li>
+<li><strong>Log rotation (RESOLVED)</strong>: aslmanager ships alongside ASL in J4, not deferred. Without it <code>/var/log/asl/</code> grows unbounded — real disk-fillup consequence, not optional for a shipping system.</li>
+<li><strong>hwregd asl_log() swap timing</strong>: part of J4 (clean handoff in the ASL plan) or separate hwregd iter-2 commit? <em>Leaning toward J4 for atomicity — the ASL plan ships with at least one real consumer wired up.</em></li>
 </ol>
 
 <h2 id="sources">14. Source citations</h2>

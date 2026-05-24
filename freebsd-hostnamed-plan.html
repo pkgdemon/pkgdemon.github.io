@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeBSD hostnamed — porting plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.plist { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">Status</a>
+  <a href="#goal">Goal</a>
+  <a href="#repo">Repo</a>
+  <a href="#apple-model">Apple's model</a>
+  <a href="#arch">Architecture</a>
+  <a href="#synth">Synthesis</a>
+  <a href="#predict">Prediction</a>
+  <a href="#sc-keys">SCDynamicStore keys</a>
+  <a href="#banner">Boot banner</a>
+  <a href="#iters">Iterations</a>
+  <a href="#ci">CI</a>
+  <a href="#open">Open questions</a>
+</nav>
+
+<h1>FreeBSD hostnamed &mdash; porting plan <span class="pill info">freebsd-launchd-mach (v2) effort</span></h1>
+<p class="subtitle">A clean-room daemon that picks a sensible default hostname from hardware identity at first boot, sets <code>kern.hostname</code>, and publishes Apple's three-name shape (<code>ComputerName</code> / <code>LocalHostName</code> / <code>HostName</code>) to <a href="freebsd-configd-plan.html">configd</a>'s <code>SCDynamicStore</code> so <a href="freebsd-mdnsresponder-plan.html">mDNSResponder</a> and other consumers can subscribe. Closest port we can do today of Apple's configd <code>SetHostname</code> plugin, kept as a standalone daemon because this repo's <code>configd</code> has no plugin loader (see <a href="freebsd-configd-plan.html">configd plan</a>'s "deferred" list). Companion to <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-hardware-registry-iokit-plan.html">hwregd</a>, <a href="freebsd-mdnsresponder-plan.html">mDNSResponder</a>, <a href="freebsd-ipconfiguration-plan.html">IPConfiguration</a>.</p>
+
+<section id="tldr" class="tldr">
+  <h3>Status: planning <span class="pill info">v0</span> &mdash; ready for review, no code yet</h3>
+  <ul>
+    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd-mach">github.com/pkgdemon/freebsd-launchd-mach</a> (v2 / Mach-IPC track) &mdash; <strong>monorepo</strong>. New source dir <code>src/hostnamed/</code>.</li>
+    <li><strong>Mission:</strong> stop shipping <code>FreeBSD/amd64 (Amnesiac)</code>. Synthesize a hardware-derived default name (<code>ThinkPad-T420-8AB123</code>, <code>Mac-mini-F12345</code>, &hellip;), publish via SCDynamicStore so mDNSResponder has a real <code>.local</code> name to announce, and respect user overrides via SCPreferences once that surface exists.</li>
+    <li><strong>Why standalone, not a configd plugin:</strong> same trade <code>hwregd</code> / <code>ipconfigd</code> / <code>diskarbitrationd</code> took &mdash; this repo's <code>configd</code> doesn't load <code>.bundle</code> plugins yet (deferred per the <a href="freebsd-configd-plan.html">configd plan</a>). Standalone daemon is the consistent shape; if a plugin loader lands later, <code>hostnamed</code>'s body lifts into a plugin in &lt;200 LOC of glue.</li>
+    <li><strong>Source: hybrid &mdash; vendor where Apple has open source, clean-room where it doesn't.</strong> Apple's modern hostname pipeline lives in <strong><code>Plugins/IPMonitor/set-hostname.c</code></strong> (rolled into IPMonitor in recent configd; there is no standalone <code>SetHostname</code> plugin anymore). That file is APSL 2.0, ~500 LOC, and implements <strong>precedence-based decision + DHCP option 12 + reverse-DNS PTR fallback + the notify_post broadcast</strong>. What it does <em>not</em> do: synthesize a default name from hardware identity &mdash; that lives in Setup Assistant (closed source) on real Macs. So our daemon ports the open-source piece verbatim and clean-rooms the synthesis fallback that fills Setup Assistant's role.</li>
+    <li><strong>Wire shape:</strong> launchd job at boot &rarr; reads <code>kenv</code> + SMBIOS for synthesis fallback &rarr; (iter 1) writes synthesized name to SCDynamicStore <code>Setup:/System</code> + <code>Setup:/Network/HostNames</code> via <code>libSystemConfiguration</code> &rarr; calls <code>sethostname(2)</code> &rarr; <code>notify_post("com.apple.system.hostname")</code> &rarr; exits. Later iters add SCPreferences awareness, the vendored <code>set-hostname.c</code> precedence/DHCP integration, and Bonjour-conflict feedback.</li>
+    <li><strong>Licensing:</strong> mixed. Vendored Apple files (iter 3+ <code>set-hostname.c</code>, possibly bits of <code>SCDHostName.c</code>'s validation helpers) stay APSL 2.0 with their original headers, exactly like configd / IPConfiguration. New clean-room synthesis + glue stays BSD-2-Clause. Same per-file pattern the rest of <code>freebsd-launchd-mach</code> uses.</li>
+  </ul>
+</section>
+
+<h2 id="goal">1. Goal &amp; non-goals</h2>
+
+<h3>1.1 Goal</h3>
+<p>Provide a working <code>/usr/sbin/hostnamed</code> on <code>freebsd-launchd-mach</code> so:</p>
+<ul>
+  <li>The boot banner reads <code>FreeBSD/amd64 (ThinkPad-T420-8AB123)</code> instead of <code>(Amnesiac)</code>.</li>
+  <li><code>$(hostname)</code> returns the synthesized name (not <code>Amnesiac</code>).</li>
+  <li>mDNSResponder &mdash; on its next iter &mdash; can subscribe to <code>State:/Network/HostNames</code> and announce <code>&lt;name&gt;.local</code> over Bonjour without rolling its own gethostname-and-hope path.</li>
+  <li>Two physically identical machines (two T420s, two Mac minis of the same model) end up with different names automatically, because the synthesis salt is a per-machine factory-unique identifier (serial number, NIC MAC, or <code>kern.hostuuid</code>).</li>
+  <li>The name is <strong>predictable</strong> &mdash; standing in the room with the laptop, you can read the bottom-sticker serial and know the name before powering on. No "boot first, then look at the console to learn the name" required.</li>
+</ul>
+
+<h3>1.2 Non-goals (this iteration)</h3>
+<ul>
+  <li><strong>No Setup Assistant.</strong> Apple's Setup Assistant pre-populates <code>ComputerName</code> from the iCloud account name during first boot &mdash; closed source, Apple-OOBE specific. Our synthesis fallback fills the same role; the closest user-facing knob is a <code>kenv hostname.override</code> set in <code>/boot/loader.conf</code> before imaging.</li>
+  <li><strong>No SCPreferences write-back in iter 1.</strong> Synthesis runs every boot until iter 2 wires the &laquo;if <code>ComputerName</code> is already in <code>preferences.plist</code>, skip synthesis&raquo; check. iter 1's synthesis is stable across reboots (inputs are persistent factory identity) so the user-visible name doesn't flap; iter 2 just adds the user-set-beats-synthesis precedence.</li>
+  <li><strong>No DHCP option 12 consumer in iter 1.</strong> Apple's <code>set-hostname.c</code> adopts the DHCP-server-provided hostname (RFC 2132 option 12) when the user hasn't manually set one. <strong>iter 3 vendors that file</strong> &mdash; brings DHCP option 12, reverse-DNS PTR fallback, and Apple's exact precedence logic in one port. iter 1 just does synthesis + write; iter 3 is the "decision engine" port.</li>
+  <li><strong>No reverse-DNS PTR fallback in iter 1.</strong> Apple's <code>set-hostname.c</code> falls back to a reverse-DNS PTR lookup on the primary IP if no preferences / DHCP name is available. iter 3 brings this with the rest of the vendored decision engine.</li>
+  <li><strong>No Bonjour-conflict feedback in iter 1.</strong> When mDNSResponder detects a <code>.local</code> name collision on the LAN and renames itself <code>foo-2.local</code>, it should push the new name back into <code>SCPreferences</code> so the next boot picks the conflict-free name. Apple does this; deferred to iter 4 (depends on iter 2's SCPreferences write surface).</li>
+  <li><strong>No HFS+ / APFS volume-name integration.</strong> Apple sometimes derives <code>ComputerName</code> from the boot-volume label. Not a real path for us (we mount UFS).</li>
+</ul>
+
+<h3>1.3 What Apple has open source vs. what we add</h3>
+<table>
+<thead><tr><th>Piece</th><th>Apple source</th><th>Strategy</th></tr></thead>
+<tbody>
+<tr>
+  <td>Precedence-based hostname decision (prefs &gt; DHCP &gt; reverse-DNS PTR &gt; mDNS &gt; localhost)</td>
+  <td><code>Plugins/IPMonitor/set-hostname.c</code> (~500 LOC, APSL 2.0)</td>
+  <td><strong>Vendor</strong> in iter 3. Apple-canonical. DHCP option 12 + PTR lookup come along for free.</td>
+</tr>
+<tr>
+  <td><code>sethostname(2)</code> + <code>notify_post("com.apple.system.hostname")</code></td>
+  <td>same file</td>
+  <td><strong>Vendor</strong> as part of iter 3. iter 1 calls <code>sethostname(2)</code> + the same <code>notify_post</code> directly &mdash; tiny enough to clean-room until iter 3 lands.</td>
+</tr>
+<tr>
+  <td>SCDynamicStore key paths + key-creation helpers (<code>SCDynamicStoreKeyCreateComputerName</code>, <code>SCDynamicStoreKeyCreateHostNames</code>)</td>
+  <td><code>SystemConfiguration.fproj/SCDHostName.c</code> + the <code>SCSchemaDefinitions</code> constants</td>
+  <td><strong>Already vendored</strong> as part of our <code>libSystemConfiguration</code>. iter 1 calls the existing helpers &mdash; <code>Setup:/System</code> and <code>Setup:/Network/HostNames</code>.</td>
+</tr>
+<tr>
+  <td>LocalHostName validation (RFC 1035 LDH, reject dots, length cap)</td>
+  <td><code>SCDHostName.c</code> uses <code>_SC_CFStringIsValidDNSName()</code></td>
+  <td><strong>Reuse</strong> from <code>libSystemConfiguration</code> if exported; else copy the ~30 LOC helper directly (APSL 2.0). Avoids a buggy clean-room sanitizer.</td>
+</tr>
+<tr>
+  <td>SCPreferences <code>ComputerName</code> read</td>
+  <td><code>_SCPreferencesCopyComputerName()</code> in <code>SCDHostName.c</code></td>
+  <td><strong>Reuse</strong> via existing <code>libSystemConfiguration</code>. iter 2 calls it. Sees through preferences.plist.</td>
+</tr>
+<tr>
+  <td>SCPreferences <code>ComputerName</code> <strong>write</strong> (System Preferences-side)</td>
+  <td><code>SCPreferencesSetComputerName()</code> in <code>SCDHostName.c</code></td>
+  <td><strong>Reuse</strong>. iter 4 (Bonjour conflict feedback) needs the write side.</td>
+</tr>
+<tr>
+  <td>PreferencesMonitor plugin &mdash; bridges preferences.plist &rarr; SCDynamicStore <code>Setup:</code> keys</td>
+  <td><code>Plugins/PreferencesMonitor/</code></td>
+  <td><strong>Skip</strong>. Apple's PreferencesMonitor is a configd plugin we'd need a plugin loader for. iter 1's hostnamed writes the <code>Setup:</code> keys <em>directly</em>, bypassing this layer &mdash; one daemon does the synthesis + publish + sethostname.</td>
+</tr>
+<tr>
+  <td>Synthesize default name from hardware identity (model + serial / MAC)</td>
+  <td><strong>Setup Assistant &mdash; closed source.</strong></td>
+  <td><strong>Clean-room</strong>. ~150 LOC C against <code>kenv(2)</code> + <code>getifaddrs(3)</code> + <code>sysctl kern.hostuuid</code>. This is the "Setup Assistant equivalent" piece. Detailed in &sect;5 below.</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="repo">2. Repository layout</h2>
+
+<p>Monorepo. New directory <code>src/hostnamed/</code> alongside the other Mach-track daemons:</p>
+
+<pre><code>freebsd-launchd-mach/
+├── src/
+│   ├── launchd/
+│   ├── configd/
+│   ├── hwregd/
+│   ├── IPConfiguration/
+│   ├── DiskArbitration/
+│   ├── mDNSResponder/
+│   ├── hostnamed/                                              <-- this plan
+│   │   ├── hostnamed.c                ~400 LOC, the whole daemon
+│   │   ├── Makefile                   BSD bsd.prog.mk
+│   │   └── hostnametest.c             smoke-test client (read SCDynamicStore keys)
+│   ├── libSystemConfiguration/        already shipped (SCDynamicStore client API)
+│   └── ...
+├── overlays/
+│   └── System/Library/LaunchDaemons/
+│       └── com.apple.hostnamed.plist                            <-- new
+└── overlays/usr/tests/freebsd-launchd-mach/
+    └── run.sh                                                    <-- new HOSTNAMED-OK marker
+</code></pre>
+
+<p>No new pkg deps. Builds against base FreeBSD libc + the in-tree <code>libSystemConfiguration</code> + <code>libCoreFoundation</code>.</p>
+
+<h2 id="apple-model">3. Apple's three-name model</h2>
+
+<p>macOS tracks three related but distinct names, all owned by <code>configd</code>. We copy this shape verbatim because mDNSResponder is already coded to it:</p>
+
+<table>
+<thead><tr><th>Name</th><th>Purpose</th><th>Where it lands on macOS</th><th>Where it lands on us</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>ComputerName</code></td>
+  <td>Human-readable; shown in About This Mac, Sharing prefs, Bonjour service names. Allows spaces, mixed case, apostrophes (<code>John's MacBook Pro</code>).</td>
+  <td><code>preferences.plist</code> &rarr; <code>System</code> &rarr; <code>System</code> &rarr; <code>ComputerName</code>; SCDynamicStore <code>Setup:/System</code> mirror.</td>
+  <td>iter 1: synthesized only, published to SCDynamicStore <code>Setup:/System/ComputerName</code>. iter 2: also read from SCPreferences if present.</td>
+</tr>
+<tr>
+  <td><code>LocalHostName</code></td>
+  <td>The Bonjour <code>.local</code> name. RFC 1035 LDH-safe (letters / digits / hyphens; no leading or trailing hyphen; &le;63 chars). Derived from <code>ComputerName</code> by sanitization.</td>
+  <td>SCDynamicStore <code>State:/Network/HostNames</code> &rarr; <code>LocalHostName</code>.</td>
+  <td>Same key, written by <code>hostnamed</code> via <code>SCDynamicStoreSetValue</code>.</td>
+</tr>
+<tr>
+  <td><code>HostName</code></td>
+  <td>BSD-style FQDN; often unset on consumer Macs. Becomes <code>kern.hostname</code> &mdash; what <code>hostname(1)</code> prints, what <code>gethostname(3)</code> returns.</td>
+  <td><code>sysctlbyname("kern.hostname", &hellip;)</code>; SCDynamicStore <code>State:/Network/HostNames</code> &rarr; <code>HostName</code>.</td>
+  <td>Same: <code>sysctlbyname</code> + SCDynamicStore write.</td>
+</tr>
+</tbody>
+</table>
+
+<p>For a synthesized name like <code>ThinkPad-T420-8AB123</code> all three end up identical &mdash; the name is already DNS-safe so the LDH sanitization is a no-op. For a user-set name like <code>John's MacBook Pro</code> (spaces and apostrophe), <code>ComputerName</code> keeps them and the other two become <code>Johns-MacBook-Pro</code>.</p>
+
+<h2 id="arch">4. Architecture</h2>
+
+<div class="ascii-diagram">      +------------------------------------+
+      | /boot/loader.conf.d/local.conf     |
+      |   hostname.override="..." (opt)    |
+      +------------------+-----------------+
+                         |
+                         | kenv(2)
+                         v
+      +------------------------------------+         +-----------------------+
+      |  hostnamed (iter 1)                |         |  configd              |
+      |  one-shot, exits after publish     |         |  com.apple.System     |
+      |                                    |         |  Configuration        |
+      |  1. read kenv hostname.override    |         |                       |
+      |  2. read kenv smbios.system.*      |         |  SCDynamicStore:      |
+      |  3. read getifaddrs(AF_LINK)       |--MIG--->|    Setup:/System      |
+      |  4. read sysctl kern.hostuuid      |  RPC    |      ComputerName     |
+      |                                    |         |      ComputerName-    |
+      |  5. synthesize name (3-tier)       |         |        Encoding       |
+      |                                    |         |    Setup:/Network/    |
+      |  6. SCDynamicStoreSetValue:        |         |      HostNames        |
+      |        Setup:/System,              |         |        LocalHostName  |
+      |        Setup:/Network/HostNames    |         |        HostName       |
+      |     (libSystemConfiguration; uses  |         |                       |
+      |     SCDynamicStoreKeyCreate-       |         +-----------+-----------+
+      |     ComputerName + ...HostNames)   |                     |
+      |                                    |                     | notify
+      |  7. sethostname(2) [POSIX]         |                     v
+      |     [sysctlbyname("kern.hostname") |         +-----------+-----------+
+      |      is equivalent on FreeBSD;     |         |  notifyd              |
+      |      sethostname is what Apple's   |         |  (Phase J2 iter 1)    |
+      |      set-hostname.c calls so       |         |                       |
+      |      we match the syscall path]    |         |  notify_post("com.    |
+      |                                    |--notify->    apple.system.      |
+      |  8. notify_post("com.apple.system. |         |    hostname")         |
+      |     hostname")  [Apple-canonical   |         +-----------+-----------+
+      |     hostname-change broadcast]     |                     |
+      |                                    |                     | dispatch
+      |  9. log + emit HOSTNAMED-OK marker |                     v
+      |                                    |         +-----------+-----------+
+      | 10. exit(0)                        |         |  mDNSResponder        |
+      +------------------------------------+         |  (iter 4b subscriber, |
+                                                     |   re-announces        |
+                                                     |   .local on change)   |
+                                                     +-----------------------+
+</div>
+
+<p><strong>iter 1 is a one-shot</strong> because synthesis inputs are persistent (factory hardware identity), so re-running synthesis on every boot produces the same name. There's nothing to <em>watch</em> until iter 2 / 3 / 4 add SCPreferences, DHCP-option-12, and Bonjour-conflict event sources. <strong>iter 3 promotes hostnamed to <code>KeepAlive=true</code></strong> when the vendored <code>set-hostname.c</code> decision engine arrives &mdash; it needs to subscribe to SCDynamicStore notifications for primary-service changes, DHCP-lease changes, and reverse-DNS query callbacks.</p>
+
+<p><strong>Two Apple-canonical syscalls on the publish path:</strong></p>
+<ol>
+  <li><code>sethostname(2)</code> &mdash; what Apple's <code>set-hostname.c</code> calls. On FreeBSD, <code>sethostname(2)</code> internally writes <code>kern.hostname</code>, so the visible effect is identical. We pick the syscall Apple uses for fidelity.</li>
+  <li><code>notify_post("com.apple.system.hostname")</code> &mdash; the documented hostname-change broadcast. Goes through our <code>notifyd</code> (already shipped, Phase J2). Apple-canonical subscribers (mDNSResponder, anyone else) listen via <code>notify_register_*</code> for this key and re-fetch the new value.</li>
+</ol>
+
+<h2 id="synth">5. Synthesis algorithm</h2>
+
+<p>Three precedence tiers, highest wins. Stops at the first tier that yields a non-empty name.</p>
+
+<h3>5.1 Tier 1 &mdash; <code>kenv hostname.override</code></h3>
+
+<p>If <code>kenv(2)</code> returns a non-empty value for the key <code>hostname.override</code>, use it verbatim. This is the "Setup Assistant pre-populated the name" equivalent &mdash; set in <code>/boot/loader.conf</code> or <code>/boot/loader.conf.d/local.conf</code> at install time:</p>
+
+<pre class="plist"><code>hostname.override="my-t420"</code></pre>
+
+<p>Bypasses synthesis entirely; LDH sanitization still applied for <code>LocalHostName</code> / <code>HostName</code>. Whitelist for characters allowed in the override: <code>[A-Za-z0-9 _.\-]{1,253}</code> (UTF-8 letters allowed in <code>ComputerName</code> only; sanitized out of the LDH names).</p>
+
+<h3>5.2 Tier 2 &mdash; SCPreferences <code>ComputerName</code> <span class="pill info">iter 2+</span></h3>
+
+<p><strong>Not in iter 1.</strong> Once iter 2 lands, <code>hostnamed</code> opens <code>preferences.plist</code> via <code>SCPreferences</code>, checks <code>System</code> &rarr; <code>System</code> &rarr; <code>ComputerName</code>. If present, use it verbatim (sanitize for the other two names) and skip Tier 3. Matches Apple's <em>user-set name beats synthesis</em> behavior.</p>
+
+<h3>5.3 Tier 3 &mdash; synthesize <code>slug-suffix</code></h3>
+
+<p>Default path. Compose <code>${slug}-${suffix}</code> from hardware identity:</p>
+
+<h4>5.3.1 <code>slug</code> &mdash; the model part</h4>
+<p>First non-empty of:</p>
+<ol>
+  <li><code>kenv smbios.system.version</code> &mdash; this is the human-readable model on most laptops. <strong>ThinkPad T420 shows <code>"ThinkPad T420"</code> here.</strong> Apple shows <code>"MacBookPro16,1"</code>; Dell shows <code>"Latitude E7470"</code>; ASUS shows <code>"ROG STRIX G15 G513QY_G513QY"</code>.</li>
+  <li><code>kenv smbios.system.product</code> &mdash; the SKU / MTM string. Lenovo's MTM is <code>"4236AB1"</code>, Apple's is <code>"Mac-mini"</code>. Used as fallback when <code>.version</code> is empty / placeholder.</li>
+  <li>literal <code>"freebsd"</code> &mdash; final fallback (no SMBIOS data at all; VMs or weird embedded boards).</li>
+</ol>
+<p>Sanitization: trim whitespace, replace runs of whitespace with single <code>-</code>, strip anything not in <code>[A-Za-z0-9-]</code>, collapse double-hyphens, trim leading / trailing <code>-</code>, truncate to 40 chars. The result: <code>"ThinkPad T420"</code> &rarr; <code>"ThinkPad-T420"</code>.</p>
+
+<h4>5.3.2 <code>suffix</code> &mdash; the per-machine salt</h4>
+<p>First non-empty of:</p>
+<ol>
+  <li>Last 6 alphanumeric chars of <code>kenv smbios.system.serial</code>. <strong>Skip</strong> if value matches any of the well-known empty-firmware placeholders: <code>""</code>, <code>"None"</code>, <code>"To be filled by O.E.M."</code>, <code>"Default string"</code>, <code>"0"</code>, <code>"0123456789"</code>, <code>"System Serial Number"</code>. Lenovo serials always pass (factory-set, 7-char alphanumerics like <code>R8AB123</code>; suffix = last 6 = <code>8AB123</code>).</li>
+  <li>Last 6 hex chars of the primary NIC MAC. Picked by walking <code>getifaddrs(AF_LINK)</code> for the first non-loopback Ethernet (<code>IFT_ETHER</code>, MAC <code>!= 00:00:00:00:00:00</code>). em0 / re0 / bge0 / etc.</li>
+  <li>6 hex chars from the first segment of <code>sysctl kern.hostuuid</code>. Always exists (the kernel synthesizes a v4 UUID on first boot if absent and persists it). Final fallback.</li>
+</ol>
+
+<h4>5.3.3 Composition</h4>
+<p>Concatenate as <code>"${slug}-${suffix}"</code>; truncate composite to 63 chars (the RFC 1035 label cap that <code>LocalHostName</code> needs anyway). Empty <code>slug</code> + non-empty <code>suffix</code> &rarr; <code>"freebsd-${suffix}"</code>. Both empty (impossible in practice) &rarr; literal <code>"freebsd"</code>.</p>
+
+<h4>5.3.4 Worked examples</h4>
+
+<table>
+<thead><tr><th>Machine</th><th><code>smbios.system.version</code></th><th><code>smbios.system.serial</code></th><th>Synthesized name</th></tr></thead>
+<tbody>
+<tr><td>ThinkPad T420 #1</td><td><code>ThinkPad T420</code></td><td><code>R8AB123</code></td><td><code>ThinkPad-T420-8AB123</code></td></tr>
+<tr><td>ThinkPad T420 #2</td><td><code>ThinkPad T420</code></td><td><code>R7CD456</code></td><td><code>ThinkPad-T420-7CD456</code></td></tr>
+<tr><td>Mac mini 2018</td><td><code>Macmini8,1</code></td><td><code>C07XXXX1234</code></td><td><code>Macmini81-XXX1234</code> &rarr; <code>Macmini81-X1234</code> (last 6)</td></tr>
+<tr><td>Dell Latitude E7470</td><td><code>Latitude E7470</code></td><td><code>CXYZ123</code></td><td><code>Latitude-E7470-YZ123</code> (last 6 of <code>CXYZ123</code> = <code>XYZ123</code>... wait, 6 chars = <code>XYZ123</code>; <code>Latitude-E7470-XYZ123</code>)</td></tr>
+<tr><td>QEMU/SLIRP (CI)</td><td><code>Standard PC (Q35 + ICH9, 2009)</code></td><td><code>Not Specified</code> (skipped)</td><td><code>Standard-PC-Q35--ICH9-2009-345678</code> (NIC suffix from <code>52:54:00:12:34:56</code>) &rarr; truncated to 63</td></tr>
+<tr><td>Bare board w/ no NIC, no SMBIOS</td><td>&mdash;</td><td>&mdash;</td><td><code>freebsd-${hostuuid_first6}</code></td></tr>
+</tbody>
+</table>
+
+<h2 id="predict">6. Predicting the name without booting</h2>
+
+<p>Three answers in order of effort &mdash; the user shouldn't need to plug in a monitor to find their machine on the LAN.</p>
+
+<ol>
+  <li><strong>Read the sticker.</strong> Every Lenovo / Dell / HP enterprise laptop has a bottom-panel sticker with the factory serial. The synthesized name's suffix is the last 6 alphanumeric chars of that serial. For a T420 with <code>S/N: R8AB123</code>, the name is <code>ThinkPad-T420-8AB123</code>. Predictable standing in the room with the laptop.</li>
+  <li><strong>Boot once, look at the console.</strong> The first boot prints:
+    <pre><code>hostnamed 2026-MM-DDTHH:MM:SSZ ComputerName: ThinkPad-T420-8AB123
+hostnamed 2026-MM-DDTHH:MM:SSZ   source: smbios.system.version="ThinkPad T420" smbios.system.serial="R8AB123"
+hostnamed 2026-MM-DDTHH:MM:SSZ   override via: kenv hostname.override="&lt;name&gt;" in /boot/loader.conf</code></pre>
+  and the getty login banner becomes <code>FreeBSD/amd64 (ThinkPad-T420-8AB123)</code>. The synthesis is deterministic so the name is the same on subsequent boots.</li>
+  <li><strong>Override before first boot.</strong> Mount the disk image, edit <code>/boot/loader.conf.d/local.conf</code>:
+    <pre class="plist"><code>hostname.override="my-t420"</code></pre>
+  Tier 1 wins, synthesis doesn't run. Same effect as Apple's Setup-Assistant pre-fill.</li>
+</ol>
+
+<h2 id="sc-keys">7. SCDynamicStore key shape</h2>
+
+<p>iter 1 writes exactly <strong>two</strong> SCDynamicStore keys via <code>SCDynamicStoreSetValue</code>, plus the <code>sethostname(2)</code> + <code>notify_post()</code> pair. The key paths are constructed using Apple's own helpers from <code>libSystemConfiguration</code> (<code>SCDynamicStoreKeyCreateComputerName</code>, <code>SCDynamicStoreKeyCreateHostNames</code>), so they're guaranteed to match what mDNSResponder's subscriber code expects without us hard-coding paths.</p>
+
+<table>
+<thead><tr><th>Key (path resolves to)</th><th>Type</th><th>Value</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>Setup:/System</code> &mdash; built by <code>SCDynamicStoreKeyCreateComputerName()</code> as <code>"/${kSCDynamicStoreDomainSetup}/${kSCCompSystem}"</code></td>
+  <td>CFDictionary</td>
+  <td><pre><code>{
+  "ComputerName"         = "ThinkPad-T420-8AB123";
+  "ComputerNameEncoding" = 134217984;  // kCFStringEncodingUTF8
+}</code></pre></td>
+</tr>
+<tr>
+  <td><code>Setup:/Network/HostNames</code> &mdash; built by <code>SCDynamicStoreKeyCreateHostNames()</code> as <code>"/${kSCDynamicStoreDomainSetup}/${kSCCompNetwork}/${kSCCompHostNames}"</code></td>
+  <td>CFDictionary</td>
+  <td><pre><code>{
+  "HostName"      = "ThinkPad-T420-8AB123";
+  "LocalHostName" = "ThinkPad-T420-8AB123";
+}</code></pre></td>
+</tr>
+<tr>
+  <td>(<code>kern.hostname</code> &mdash; <em>not</em> SCDynamicStore, set via libc)</td>
+  <td>kernel string</td>
+  <td><code>sethostname("ThinkPad-T420-8AB123", 20)</code>. Apple's <code>set-hostname.c</code> uses this syscall; it ends up at <code>kern.hostname</code> internally. We match Apple's choice of <code>sethostname(2)</code> over <code>sysctlbyname("kern.hostname", &hellip;)</code> for fidelity &mdash; visible effect is identical.</td>
+</tr>
+<tr>
+  <td>(<code>com.apple.system.hostname</code> &mdash; <em>not</em> SCDynamicStore, notifyd broadcast)</td>
+  <td>notify token</td>
+  <td><code>notify_post("com.apple.system.hostname")</code>. This is the documented Apple-canonical hostname-change broadcast; mDNSResponder + future SCDHostName-aware consumers re-fetch when they see this token fire.</td>
+</tr>
+</tbody>
+</table>
+
+<p>Note: Apple uses the <strong>Setup:</strong> domain (not State:) for both these keys &mdash; double-checked against <code>SCDHostName.c</code> source. <code>Setup:</code> is the "intended / persistent configuration" domain that PreferencesMonitor normally writes after reading <code>preferences.plist</code>; we bypass PreferencesMonitor and write directly because the read-from-prefs path is iter 2, and iter 1 is solely the synthesis-fallback role.</p>
+
+<p>Notification semantics: <code>SCDynamicStoreSetValue</code> on the existing <code>configd</code> session sends the standard SCDynamicStore notification on any key that's subscribed via <code>SCDynamicStoreSetNotificationKeys</code>. The <code>notify_post</code> is the Apple-canonical higher-level signal for the same event &mdash; both fire from iter 1 because Apple's set-hostname.c does both, and we want subscribers to be able to use whichever notification surface fits them.</p>
+
+<h2 id="banner">8. Boot banner</h2>
+
+<p>The visible-on-the-console "I am <code>&lt;name&gt;</code>" banner has three layers:</p>
+
+<ul>
+  <li><strong>hostnamed's stderr log line.</strong> Always present in <code>/var/log/hostnamed.stderr</code>; dumped at the end of CI's <code>run.sh</code> like every other daemon's log.</li>
+  <li><strong>The login getty banner.</strong> Today: <code>FreeBSD/amd64 (Amnesiac) (console)</code>. After iter 1: getty reads <code>gethostname(3)</code> which goes through <code>kern.hostname</code> &mdash; so as long as <code>hostnamed</code> runs <em>before</em> getty's plist is dispatched, the banner reads the new name automatically. <strong>launchd has no ordering guarantee</strong> (everything <code>RunAtLoad=true</code> starts in parallel), so the first banner print may race the <code>kern.hostname</code> write. Mitigation: hostnamed is a one-shot that exits quickly (&lt;50ms typical), and getty respawns its prompt periodically; even if the very first prompt shows <code>Amnesiac</code>, the next one (and every subsequent connection) shows the right name.</li>
+  <li><strong>Console "I am &hellip;" line</strong> &mdash; we can additionally have <code>hostnamed</code> write a one-liner directly to <code>/dev/console</code> after setting <code>kern.hostname</code>, so the boot transcript shows the synthesized name regardless of getty's timing. Defer this to iter 1 if it ends up needed; the stderr log is the primary signal.</li>
+</ul>
+
+<p>Deferring the "getty re-renders on hostname change" wiring is fine because synthesis is deterministic across reboots &mdash; the user sees the right name on the second boot regardless of any first-boot getty race.</p>
+
+<h2 id="iters">9. Iteration plan</h2>
+
+<div class="phase">
+<h3>iter 1 &mdash; clean-room synthesis + Apple-shape publish <span class="pill info">clean-room daemon body + reuses libSystemConfiguration helpers</span></h3>
+<ul>
+  <li>New <code>src/hostnamed/</code> with the daemon, a Makefile, and a smoke-test client.</li>
+  <li>New <code>overlays/System/Library/LaunchDaemons/com.apple.hostnamed.plist</code>: <code>RunAtLoad=true</code>, <code>KeepAlive=false</code> (one-shot), no <code>MachServices</code> (iter 1 daemon has no RPC surface of its own &mdash; it's purely a producer of SCDynamicStore values).</li>
+  <li>2-tier synthesis: <code>kenv hostname.override</code> &gt; synthesized slug+suffix. (SCPrefs check is deferred to iter 2.)</li>
+  <li><code>SCDynamicStoreSetValue</code> for <code>Setup:/System</code> + <code>Setup:/Network/HostNames</code> via existing <code>libSystemConfiguration</code> helpers.</li>
+  <li><code>sethostname(2)</code> &mdash; the libc syscall Apple's <code>set-hostname.c</code> uses.</li>
+  <li><code>notify_post("com.apple.system.hostname")</code> &mdash; Apple-canonical hostname-change broadcast. Uses our existing <code>libnotify</code> (Phase J2 iter 1).</li>
+  <li>Marker <code>HOSTNAMED-OK</code> emitted after all four operations succeed; <code>HOSTNAMED-FAIL: &lt;why&gt;</code> otherwise.</li>
+  <li>CI gate in <code>tests/boot-test.sh</code>; verifier in <code>run.sh</code>.</li>
+  <li><strong>Apple vendoring in iter 1:</strong> none of <code>set-hostname.c</code>'s decision-engine code (that's iter 3). The LDH-sanitization helper (<code>_SC_CFStringIsValidDNSName</code> equivalent) is reused if exported by <code>libSystemConfiguration</code>; if not, copy the ~30 LOC from <code>SCDHostName.c</code> (APSL 2.0, preserve header).</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>iter 2 &mdash; SCPreferences read awareness <span class="pill info">reuses libSystemConfiguration's _SCPreferencesCopyComputerName</span></h3>
+<ul>
+  <li>Open <code>preferences.plist</code> via the existing <code>SCPreferences</code> API (already in our libSystemConfiguration); call <code>_SCPreferencesCopyComputerName()</code>.</li>
+  <li>If present: skip synthesis. Publish the user-set name as <code>ComputerName</code> and the sanitized form as <code>LocalHostName</code> / <code>HostName</code>.</li>
+  <li>If absent: same as iter 1 (synthesis runs).</li>
+  <li><strong>Read-only SCPrefs is enough for iter 2.</strong> The write surface (<code>SCPreferencesSetComputerName</code>) is iter 4's dependency.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>iter 3 &mdash; <strong>vendor Apple's <code>set-hostname.c</code></strong> as the decision engine <span class="pill info">vendor + freebsd-shim layer</span></h3>
+<ul>
+  <li>Drop Apple's <code>Plugins/IPMonitor/set-hostname.c</code> into <code>src/hostnamed/vendored/</code> with its APSL 2.0 header preserved &mdash; same per-file licensing pattern we use for configd / IPConfiguration vendored files.</li>
+  <li>Write a small <code>freebsd-shim.{c,h}</code> that maps the file's IPMonitor-internal dependencies to standalone equivalents:
+    <ul>
+      <li><code>copy_dhcp_hostname()</code> &mdash; in IPMonitor this reads internal lease state; for us it queries <code>ipconfigd</code> over SCDynamicStore (<code>ipconfigd</code> needs to publish DHCP option 12 in <code>State:/Network/Service/&lt;UUID&gt;/DHCP/Option_12</code> first &mdash; a small additive iter 10 on the IPConfiguration plan).</li>
+      <li><code>check_if_service_expensive()</code> &mdash; on iOS this gates PTR queries to avoid metered-network charges. For us: always return false (no metered concept on FreeBSD).</li>
+      <li>The <code>load_hostname()</code> entry point gets called from <code>hostnamed</code>'s <code>main</code> instead of from a plugin-load hook.</li>
+    </ul>
+  </li>
+  <li>Tier shifts to 4-deep (matches Apple's exact order): <code>kenv.override</code> &gt; <code>SCPrefs.ComputerName</code> &gt; <code>DHCP option 12</code> &gt; <code>reverse-DNS PTR</code> &gt; <code>mDNS local name</code> &gt; <code>synthesized slug+suffix</code> (our fallback below Apple's "localhost").</li>
+  <li>Forces <code>hostnamed</code> from one-shot to persistent (<code>KeepAlive=true</code>, libdispatch event loop subscribing to SCDynamicStore notify keys + DNS resolver callbacks).</li>
+  <li><strong>Win:</strong> DHCP option 12 + reverse-DNS PTR + the change-notification plumbing all come along for free with the vendored file. Without vendoring we'd reimplement ~500 LOC of decision logic and almost certainly miss an edge case Apple already handles (the PTR-fallback gating, the "is-current-name-still-valid" recheck on interface flap, etc.).</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>iter 4 &mdash; Bonjour-conflict feedback <span class="pill info">SCPreferences write side</span></h3>
+<ul>
+  <li>mDNSResponder detects a <code>.local</code> conflict on the LAN and renames itself <code>foo-2.local</code> per RFC 6762 &sect;9.</li>
+  <li>mDNSResponder calls <code>SCPreferencesSetLocalHostName()</code> (the vendored Apple surface from <code>SCDHostName.c</code>) so the rename is persisted.</li>
+  <li>Next boot: iter 2 reads SCPrefs, sees the conflict-free name, skips synthesis.</li>
+  <li>Closes the loop. Apple does this; without it the rename is forgotten across reboots and we'd re-collide every boot.</li>
+</ul>
+</div>
+
+<h2 id="ci">10. CI marker shape</h2>
+
+<p>QEMU/SLIRP has no SMBIOS-meaningful data &mdash; <code>smbios.system.version = "Standard PC (Q35 + ICH9, 2009)"</code>, <code>smbios.system.serial = "Not Specified"</code> (skipped per the placeholder filter). So in CI the synthesis falls through to the MAC-suffix tier. The em0 MAC under QEMU SLIRP is the deterministic <code>52:54:00:12:34:56</code>, so the expected CI name suffix is <code>123456</code>.</p>
+
+<p>Expected CI marker:</p>
+
+<pre><code>hostnamed 2026-MM-DDTHH:MM:SSZ ComputerName: Standard-PC-Q35--ICH9-2009-123456
+hostnamed 2026-MM-DDTHH:MM:SSZ HOSTNAMED-OK</code></pre>
+
+<p>The CI test verifies the name matches the regex <code>[A-Za-z0-9-]+-[0-9a-f]{6}</code> rather than pinning the exact string &mdash; the slug derivation may evolve and we don't want CI to fight that. The regex enforces the load-bearing property: a non-empty slug, a hyphen separator, a 6-hex per-machine suffix.</p>
+
+<p>Verifier checks in <code>run.sh</code>:</p>
+
+<ol>
+  <li><code>$(hostname)</code> equals <code>$(grep '^hostnamed.*ComputerName:' /var/log/hostnamed.stderr | sed 's/.*ComputerName: //')</code></li>
+  <li>A tiny client (<code>hostnametest</code>, reuses configd's MIG client patterns) reads <code>State:/Network/HostNames</code> and confirms <code>LocalHostName</code> + <code>HostName</code> are populated and DNS-safe.</li>
+  <li>Boot log shows <code>FreeBSD/amd64 (&lt;synthesized&gt;)</code> not <code>(Amnesiac)</code> on the second-and-later getty prompt.</li>
+</ol>
+
+<h2 id="open">11. Open questions <span class="pill info">for review before iter 1 lands</span></h2>
+
+<div class="open-q">
+  <strong>Q1.</strong> Daemon shape for iter 1: <strong>one-shot that exits</strong> (the plan as written) vs. <strong><code>KeepAlive=true</code> that sits forever</strong>. One-shot is cleaner now; KeepAlive is what iter 3 (vendored decision engine) needs anyway. Going one-shot first means a small refactor at iter 3 (mostly just adding the dispatch event loop around the existing call). OK with the small refactor, or skip straight to KeepAlive at iter 1?
+</div>
+
+<div class="open-q">
+  <strong>Q2.</strong> Slug source preference: <code>smbios.system.version</code> wins by default. For Apple hardware where <code>.version</code> shows <code>"Macmini8,1"</code> and <code>.product</code> shows <code>"Mac-mini"</code>, the user-friendly name is <code>.product</code>. Worth swapping the precedence, or carrying a small per-vendor table (<code>vendor=="Apple Inc." ? .product : .version</code>)?
+</div>
+
+<div class="open-q">
+  <strong>Q3.</strong> Suffix source: <code>smbios.system.serial</code> wins over MAC. Serial is more stable (NIC swap doesn't change it) but some firmwares ship garbage / blank serials. The placeholder filter handles the well-known offenders, but there's a long tail. Are we OK with the fallback chain (serial &rarr; MAC &rarr; <code>kern.hostuuid</code>), or should we use the MAC unconditionally for predictability ("the sticker has the MAC")?
+</div>
+
+<div class="open-q">
+  <strong>Q4.</strong> Boot banner: should iter 1 write to <code>/dev/console</code> directly so the synthesized name appears in the boot transcript even if getty's first prompt races, or is the stderr log + getty's eventual respawn enough?
+</div>
+
+<div class="open-q">
+  <strong>Q5.</strong> Vendoring scope for iter 3: full file as-is (~500 LOC, preserve APSL 2.0 header) vs. cherry-pick the precedence skeleton + DHCP option 12 logic into a smaller adapted file. <strong>Vendor verbatim</strong> is the plan as written &mdash; tracks Apple's bug fixes / behavior changes for free at next sync; the only modifications are the <code>freebsd-shim</code> redirections at the call boundary. Confirm this is the right call vs. a forked-and-rewritten approach.
+</div>
+
+<div class="open-q">
+  <strong>Q6.</strong> Synthesis vs. Apple's "localhost" final fallback: Apple's <code>set-hostname.c</code> falls back to <code>"localhost"</code> if no prefs / DHCP / PTR / mDNS name is available. Our iter 3 inserts <code>synthesized slug+suffix</code> <em>between</em> mDNS and localhost &mdash; so the synthesized name only fires if every Apple-canonical source came up empty. Confirm this is the right insertion point (vs. "synthesized always wins as the last guaranteed-non-localhost source").
+</div>
+
+<div class="open-q">
+  <strong>Q7.</strong> Where to source <code>_SC_CFStringIsValidDNSName</code>: reuse from <code>libSystemConfiguration</code> if it exports the symbol (it's a SPI; check with <code>nm</code>), else lift the ~30 LOC. The lift is trivial; the reuse means we don't drift from Apple's validation rules as they update. Default to "reuse if available, lift if not."
+</div>
+
+</body>
+</html>

@@ -63,6 +63,7 @@
   .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
   .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
   .open-q strong { color: #7a5e00; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
 </style>
 </head>
 <body>
@@ -83,18 +84,22 @@
   <a href="#open">Open questions</a>
 </nav>
 
-<h1>FreeBSD DiskArbitration — porting plan</h1>
-<p class="subtitle">A port of Apple's DiskArbitration framework + <code>diskarbitrationd</code> to FreeBSD: disk attach/detach events, mount/unmount/eject coordination, mount-policy approval prompts, and the same <code>DiskArbitration.framework</code> C API that Apple-derived applications already use. Replaces ad-hoc <code>kqueue(EVFILT_FS)</code> polling with a clean event API. Companion to <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-kmodloader-plan.html">kmodloader</a>, <a href="freebsd-asl-plan.html">asl</a>, <a href="freebsd-notifyd-plan.html">notifyd</a>, <a href="freebsd-mdnsresponder-plan.html">mDNSResponder</a>.</p>
+<h1>FreeBSD DiskArbitration — porting plan <span class="pill info">freebsd-launchd-mach (v2) effort</span></h1>
+<p class="subtitle">A port of Apple's DiskArbitration framework + <code>diskarbitrationd</code> to FreeBSD: disk attach/detach events, mount/unmount/eject coordination, mount-policy approval prompts, and the same <code>DiskArbitration.framework</code> C API that Apple-derived applications already use. Replaces ad-hoc <code>kqueue(EVFILT_FS)</code> polling with a clean event API. Companion to <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-hardware-registry-iokit-plan.html">hwregd</a>, <a href="freebsd-kmodloader-plan.html">kmodloader</a>, <a href="freebsd-asl-plan.html">asl</a>, <a href="freebsd-notifyd-plan.html">notifyd</a>, <a href="freebsd-mdnsresponder-plan.html">mDNSResponder</a>, <a href="freebsd-ipconfiguration-plan.html">IPConfiguration</a>.</p>
+
+<div class="resolved">
+  <strong>Revision 2026-05-23.</strong> This plan originally targeted the sibling <a href="https://github.com/pkgdemon/freebsd-launchd"><code>freebsd-launchd</code></a> (AF_UNIX / GNUstep Distributed Objects) repo where <code>libgeom</code> replaces IOKit and DO replaces Mach IPC. <strong>Refactored 2026-05-23 to target <a href="https://github.com/pkgdemon/freebsd-launchd-mach"><code>freebsd-launchd-mach</code></a> (v2)</strong>: this repo has <strong><code>hwregd</code></strong> &mdash; a MIG-served IORegistry-shape daemon at <code>org.freebsd.hwregd</code> that aggregates <code>devctl(4)</code> events + GEOM data &mdash; so DiskArbitration consumes <code>hwregd</code>'s storage-device-class notifications instead of walking GEOM directly for hot-plug. Mach IPC is <strong>retained</strong> for the daemon's <code>DiskArbitration.framework</code> client API (MIG IDL <code>da.defs</code>, Mach service <code>com.apple.DiskArbitration</code>, <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> event loop). <code>libgeom</code> is used only for partition / UUID / label / FS-type <strong>enrichment</strong>, in-process, not as the event source.
+</div>
 
 <section id="tldr" class="tldr">
   <h3>Status: planning <span class="pill info">v0</span> &mdash; deferred</h3>
   <ul>
-    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a> &mdash; <strong>monorepo</strong>. DiskArbitration source under <code>diskarb/</code>.</li>
+    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd-mach">github.com/pkgdemon/freebsd-launchd-mach</a> (v2 / Mach-IPC track) &mdash; <strong>monorepo</strong>. DiskArbitration source under <code>diskarb/</code>.</li>
     <li><strong>Mission:</strong> give Apple-derived apps (Workspace's File Viewer, disk utilities, backup tools) the disk-event API they expect. Replaces a polling-based grab-bag of <code>kqueue(EVFILT_FS)</code> + <code>geom(8)</code> walks with an Apple-shaped event-driven model: register a callback once, receive events for the lifetime of your process.</li>
     <li><strong>Source:</strong> Apple <code>DiskArbitration-79.3</code> (latest tag at <code>apple-oss-distributions/DiskArbitration</code>, APSL 2.0). 71 source files, ~34.5k LOC. 10 files have <code>&lt;mach/&gt;</code> includes &mdash; the daemon-client IPC plus IOKit's I/O Registry traversal.</li>
-    <li><strong>The hard part:</strong> Apple's DiskArbitration is <strong>IOKit-tied at its core.</strong> The daemon discovers disks by walking the IOKit registry's <code>IOMedia</code> objects; matches mount policies based on IOKit metadata (<code>kIOMediaContentKey</code>, etc.); subscribes to IOKit notifications for hot-plug. <strong>FreeBSD has no IOKit.</strong> The port replaces the IOKit layer with FreeBSD's <code>libgeom</code> (GEOM-based topology + metadata) plus <code>devctl(4)</code> hot-plug events. This is a real porting effort, not just a swap of the IPC layer.</li>
-    <li><strong>No Mach IPC.</strong> Daemon-client channel rebuilt on GNUstep Distributed Objects + AF_UNIX, same pattern as configd. <code>DiskArbitration.framework</code> client-side calls swap <code>mach_msg</code> for <code>NSConnection</code> RPC.</li>
-    <li><strong>Event loop:</strong> libdispatch sources. <code>DISPATCH_SOURCE_TYPE_READ</code> on <code>devctl(4)</code> for kernel disk events; <code>DISPATCH_SOURCE_TYPE_VNODE</code> on <code>/etc/fstab</code> for mount-policy reload; one source per pending mount-approval-prompt.</li>
+    <li><strong>The hard part:</strong> Apple's DiskArbitration is <strong>IOKit-tied at its core.</strong> The daemon discovers disks by walking the IOKit registry's <code>IOMedia</code> objects; matches mount policies based on IOKit metadata (<code>kIOMediaContentKey</code>, etc.); subscribes to IOKit notifications for hot-plug. <strong>This repo has <code>hwregd</code></strong> &mdash; a MIG-served IORegistry-shape daemon at <code>org.freebsd.hwregd</code> already aggregating <code>devctl(4)</code> + GEOM data with a 10-routine RPC surface and a watch/notify channel. The port replaces IOKit calls with <strong>MIG RPC to <code>hwregd</code></strong> for storage-device-class events; <code>libgeom</code> is retained in-process only for partition-table / UUID / label / FS-type enrichment that <code>hwregd</code> doesn't yet expose. This is a real porting effort, but the hot-plug event source is now a clean MIG subscription, not a hand-rolled devctl reader.</li>
+    <li><strong>Mach IPC retained.</strong> Daemon-client channel stays on Mach (this is the Mach-IPC track). MIG IDL <code>da.defs</code> (matches the <code>hwreg.defs</code> / <code>ipconfig.defs</code> shape) defines a ~5&ndash;10 routine surface: session create/release, register disk-appeared / disappeared / mount-approval callbacks, claim, eject, mount, unmount. Service name <code>com.apple.DiskArbitration</code> (Apple-canonical). <code>DiskArbitration.framework</code> client-side calls keep <code>mach_msg</code>.</li>
+    <li><strong>Event loop:</strong> libdispatch sources. <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> on the <code>com.apple.DiskArbitration</code> service port (client RPC); separate MIG subscription to <code>hwregd</code>'s storage-device-class notify channel for hot-plug; <code>DISPATCH_SOURCE_TYPE_VNODE</code> on <code>/etc/fstab</code> for mount-policy reload; one timer source per pending mount-approval-prompt.</li>
     <li><strong>Why this is deferred:</strong> Workspace's File Viewer is a Phase 8+ concern and the simpler event needs (live ISO file-system mount/unmount feedback) can be served by direct <code>kqueue</code> in a few hundred LOC. DiskArbitration's value compounds with gershwin's full desktop UX maturity, not before. <strong>Phase 8+ work, sequenced after mDNSResponder.</strong></li>
     <li><strong>Licensing:</strong> APSL 2.0 (same as configd / asl). Per-file headers preserved on Apple-derived files; top-level repo stays BSD-2-Clause.</li>
   </ul>
@@ -103,11 +108,11 @@
 <h2 id="goal">1. Goal &amp; non-goals</h2>
 
 <h3>1.1 Goal</h3>
-<p>Provide a working <code>diskarbitrationd</code> + <code>libDiskArbitration</code> on FreeBSD so apps calling the standard DiskArbitration C API (<code>DARegisterDiskAppearedCallback</code>, <code>DARegisterDiskMountApprovalCallback</code>, <code>DADiskUnmount</code>, <code>DADiskEject</code>, <code>DADiskClaim</code>, etc.) work without source modification. Replace the IOKit-based disk-discovery layer with <code>libgeom</code>-based discovery; replace IOKit hot-plug notifications with <code>devctl(4)</code> events; preserve the policy framework that lets apps register mount approval / disapproval callbacks (e.g., disk-encryption tools that want a chance to unlock a disk before it's mounted).</p>
+<p>Provide a working <code>diskarbitrationd</code> + <code>libDiskArbitration</code> on FreeBSD so apps calling the standard DiskArbitration C API (<code>DARegisterDiskAppearedCallback</code>, <code>DARegisterDiskMountApprovalCallback</code>, <code>DADiskUnmount</code>, <code>DADiskEject</code>, <code>DADiskClaim</code>, etc.) work without source modification. Replace the IOKit-based disk-discovery layer with <strong>MIG RPC to <code>hwregd</code></strong> (which already aggregates devctl + GEOM into an IORegistry-shape registry); use <code>libgeom</code> in-process only for enrichment metadata that <code>hwregd</code> doesn't expose; preserve the policy framework that lets apps register mount approval / disapproval callbacks (e.g., disk-encryption tools that want a chance to unlock a disk before it's mounted); serve the framework over the Apple-canonical Mach service <code>com.apple.DiskArbitration</code>.</p>
 
 <h3>1.2 Non-goals (this iteration)</h3>
 <ul>
-  <li><strong>No IOKit port.</strong> Replace the IOKit layer entirely with FreeBSD-native equivalents (GEOM + devctl). Don't try to port IOKit-without-Mach &mdash; that's a configd-scale project on its own.</li>
+  <li><strong>No IOKit port.</strong> Replace IOKit lookups / notifications with MIG RPC to this repo's <code>hwregd</code>. Don't try to port IOKit-without-Mach &mdash; that's a configd-scale project on its own, and <code>hwregd</code> already shipped the IORegistry-shape surface DiskArbitration needs.</li>
   <li><strong>No HFS+ / APFS support.</strong> FreeBSD doesn't natively mount these filesystems (and shouldn't). DiskArbitration's filesystem-type detection skips them.</li>
   <li><strong>No FileVault / encrypted-volume integration.</strong> macOS-specific encryption metadata; FreeBSD has GELI / GBDE / ZFS-native encryption with their own tooling.</li>
   <li><strong>No Spotlight integration.</strong> Apple's DiskArbitration triggers Spotlight indexing on mount; we don't ship Spotlight.</li>
@@ -116,11 +121,13 @@
 
 <h2 id="repo">2. Repository</h2>
 
-<p>Monorepo. Source under <code>diskarb/</code>:</p>
+<p>Monorepo. Source under <code>diskarb/</code> in <code>freebsd-launchd-mach</code>:</p>
 
-<pre><code>freebsd-launchd/
+<pre><code>freebsd-launchd-mach/
 ├── src/                          launchd
-├── configd/                      Apple configd
+├── configd/                      Apple configd (MIG-served)
+├── hwregd/                       IORegistry-shape MIG daemon (devctl + GEOM)
+├── IPConfiguration/              Apple IPConfiguration (MIG-served)
 ├── kmodloader/                   clean-room kmodloader
 ├── asl/                          Apple syslog
 ├── notifyd/                      Apple Libnotify
@@ -128,60 +135,97 @@
 ├── diskarb/                      Apple DiskArbitration (this plan)
 │   ├── scripts/import-source.sh
 │   ├── Makefile
-│   ├── compat/                   FreeBSD-specific shims (GEOM bridge)
+│   ├── compat/                   FreeBSD-specific shims (hwregd MIG client + libgeom enrichment)
+│   ├── mig/                      da.defs MIG IDL + generated stubs
 │   └── src/                      forked Apple DiskArbitration-79.3
 │       ├── DiskArbitration/      framework (libDiskArbitration.so)
 │       ├── DiskArbitrationAgent/ per-user mount-approval prompt agent
 │       ├── diskarbitrationd/     the daemon
 │       ├── autodiskmount/        legacy automount shim (drop or keep small)
 │       ├── datest/               test harness
-│       └── Modules/              IOKit hooks (mostly dropped + replaced)
+│       └── Modules/              IOKit hooks (mostly dropped + replaced by hwregd MIG calls)
 └── make-diskarb.sh               STANDALONE — builds + installs
 </code></pre>
 
 <h2 id="arch">3. Architecture</h2>
 
-<div class="ascii-diagram">                 +------------------+    +-----------------------+
-                 |   /etc/fstab     |    |   devctl(4) socket    |
-                 |   /etc/auto_*    |    |   (kernel disk        |
-                 +--------+---------+    |    attach/detach)     |
-                          |              +----------+------------+
-                          | (vnode)                 | (READ source)
-                          v                         v
-+---------------------+   +-----------+----------------------+
-|     libgeom         |&lt;-+|  diskarbitrationd               |
-| (initial enumera-   |   |  (ObjC, GNUstep, libdispatch)   |
-|  tion at startup,   |   |                                  |
-|  metadata queries)  |   |  - per-disk DADisk* objects      |
-+---------------------+   |  - claim/unclaim arbitration     |
-                          |  - mount-policy callbacks       |
-                          +-+--------------------------------+
+<div class="ascii-diagram">                 +------------------+    +------------------------+
+                 |   /etc/fstab     |    |   hwregd               |
+                 |   /etc/auto_*    |    |   (org.freebsd.hwregd) |
+                 +--------+---------+    |   storage device class |
+                          |              |   ATTACH / DETACH /    |
+                          | (vnode)      |   PROPERTY-CHANGE      |
+                          |              +-----------+------------+
+                          |                          | MIG RPC
+                          |                          | (watch/notify channel
+                          |                          |  DISPATCH_SOURCE_TYPE_MACH_RECV)
+                          v                          v
++---------------------+   +--------------------------+-----------+
+|     libgeom         |&lt;--+  diskarbitrationd                    |
+| (in-process         |   |  (C, libdispatch, libxpc)            |
+|  enrichment only:   |   |                                       |
+|  partition table,   |   |  - per-disk DADisk* objects           |
+|  UUID, label,       |   |  - claim/unclaim arbitration          |
+|  FS type via        |   |  - mount-policy callbacks             |
+|  g_classes walk)    |   |                                       |
++---------------------+   +-+-------------------------------------+
                             |
-                            | DO via /var/run/DiskArbitration.sock
+                            | Mach service com.apple.DiskArbitration
+                            | MIG IDL: da.defs
+                            | DISPATCH_SOURCE_TYPE_MACH_RECV
                             v
                +------------+------------+
-               |   libDiskArbitration   |
-               |   (linked into apps;   |
-               |    callbacks dispatched|
-               |    to app's runloop)   |
+               |   libDiskArbitration    |
+               |   (linked into apps;    |
+               |    mach_msg under the   |
+               |    DADisk* API;         |
+               |    callbacks dispatched |
+               |    to app's runloop /   |
+               |    dispatch queue)      |
                +-------------------------+</div>
 
-<h3>3.1 Replacing IOKit with libgeom</h3>
+<h3>3.1 Sourcing storage events from <code>hwregd</code></h3>
 
-<p>Apple's daemon at startup walks the IOKit I/O Registry to find every <code>IOMedia</code> object &mdash; that's its source of truth for "what disks exist, what their metadata is, are they whole disks vs partitions, what filesystem type per partition." On FreeBSD we use <code>libgeom</code>:</p>
+<p>Apple's daemon at startup walks the IOKit I/O Registry to find every <code>IOMedia</code> object &mdash; that's its source of truth for "what disks exist, what their metadata is, are they whole disks vs partitions, what filesystem type per partition." This repo has <strong><code>hwregd</code></strong> at the Mach service <code>org.freebsd.hwregd</code>, which already aggregates <code>devctl(4)</code> + GEOM data into an IORegistry-shape tree behind a 10-routine MIG RPC surface plus a watch/notify channel. <code>diskarbitrationd</code> consumes that interface rather than walking GEOM directly:</p>
 
 <ul>
-  <li><code>geom_gettree(3)</code> returns the live GEOM topology (providers, consumers, classes).</li>
-  <li>Each provider (<code>geom_provider_t</code>) has metadata: name, sector size, mediasize, etc.</li>
-  <li>Walk the tree at startup; one <code>NCDisk</code> object per provider that's a "disk-shaped" thing (<code>DISK</code> or <code>PART</code> class).</li>
-  <li>Filesystem type detection via <code>g_label</code> metadata or by reading the partition table directly (<code>libufs</code>, ZFS pool import, etc.).</li>
+  <li><strong>Initial enumeration:</strong> open a Mach client to <code>org.freebsd.hwregd</code>; query the storage device class subtree (ATA / SCSI / NVMe / removable / optical) via the registry-walk RPCs. One <code>DADisk</code> per returned node.</li>
+  <li><strong>Hot-plug:</strong> register on <code>hwregd</code>'s watch/notify channel for the storage device class; ATTACH / DETACH / PROPERTY-CHANGE events arrive as Mach messages and drive <code>DADisk</code> instantiation / teardown / property refresh. <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> on the notify port; no <code>devctl(4)</code> parser in <code>diskarbitrationd</code> itself.</li>
+  <li><strong>Identity / class:</strong> from the <code>hwregd</code> properties (subsystem = <code>DEVFS</code>; device name like <code>ada0</code> / <code>da0</code> / <code>nvd0</code> / <code>cd0</code>; class membership in <code>DISK</code> / <code>PART</code> / <code>CD</code>; published GEOM-class enrichment when <code>hwregd</code> has it).</li>
 </ul>
 
-<p>For hot-plug: subscribe to <code>devctl(4)</code> events as kmodloader does. New <code>!system=DEVFS type=CREATE</code> for a disk-shaped device → walk libgeom for the new entry → instantiate <code>NCDisk</code> → fire <code>DARegisterDiskAppearedCallback</code> subscribers.</p>
+<p><strong><code>libgeom</code> is retained for enrichment only, in-process.</strong> When <code>diskarbitrationd</code> needs metadata that <code>hwregd</code> doesn't publish &mdash; partition table contents, GPT UUIDs, GELI/ZFS labels, filesystem-type sniffing &mdash; it walks <code>g_classes</code> directly via <code>libgeom(3)</code> for that single disk. This is library-style use, not event-source use:</p>
 
-<h3>3.2 Replacing Mach IPC with DO</h3>
+<ul>
+  <li>FS type detection: <code>g_label</code> metadata; otherwise read the partition table directly (<code>libufs</code> for UFS, ZFS pool import probe, etc.).</li>
+  <li>UUIDs / labels: <code>gpart show -l</code>-equivalent via <code>libgeom</code> XML walk on the specific provider.</li>
+</ul>
 
-<p>Same pattern as configd / notifyd. Daemon creates an <code>NSConnection</code> over <code>/var/run/DiskArbitration.sock</code> at startup; client framework's <code>DARegister*</code> calls go through DO proxy invocations. Client callbacks are delivered over the same DO connection &mdash; a remote message send back to the client's stub object.</p>
+<p>The separation matters: hot-plug timing / event delivery comes from <code>hwregd</code>'s MIG channel (clean, structured, already plumbed); metadata enrichment is a synchronous in-process call against <code>libgeom</code> (no async surface). If <code>hwregd</code> grows GEOM-class enrichment later, the in-process <code>libgeom</code> use shrinks.</p>
+
+<h3>3.2 Mach IPC retained &mdash; <code>da.defs</code> MIG IDL</h3>
+
+<p>The Mach-IPC track keeps the framework &harr; daemon channel on Mach. <code>diskarbitrationd</code> registers Mach service <strong><code>com.apple.DiskArbitration</code></strong> (Apple-canonical) at startup via launchd's MachServices; <code>libDiskArbitration</code> looks the port up and sends <code>mach_msg</code> requests through MIG stubs generated from <code>da.defs</code>. Daemon side runs a <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> source on the service port; libdispatch routes each request to the generated MIG demux. The IDL filename matches the <code>hwreg.defs</code> / <code>ipconfig.defs</code> shape elsewhere in this repo.</p>
+
+<p>Routine sketch (final list TBD in Phase 2, but the shape is set):</p>
+
+<table>
+<thead><tr><th>Routine</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>da_session_create</code></td><td>Per-client session; receive port for callback delivery; client-name string for logging.</td></tr>
+<tr><td><code>da_session_release</code></td><td>Tear down session; cancel all callbacks; drop claims.</td></tr>
+<tr><td><code>da_register_disk_appeared</code></td><td>Client registers interest in disk-appeared events. Daemon delivers existing disks immediately, then streams new arrivals via the session's receive port.</td></tr>
+<tr><td><code>da_register_disk_disappeared</code></td><td>Counterpart on detach.</td></tr>
+<tr><td><code>da_register_disk_mount_approval</code></td><td>Client opts into mount-veto rights for the disk classes it cares about.</td></tr>
+<tr><td><code>da_disk_claim</code></td><td>Client takes exclusive arbitration over a disk (suppresses auto-mount).</td></tr>
+<tr><td><code>da_disk_unclaim</code></td><td>Release the claim.</td></tr>
+<tr><td><code>da_disk_mount</code></td><td>Request mount with options dict (path, fs-type, flags). Daemon delegates to <code>mount(8)</code>.</td></tr>
+<tr><td><code>da_disk_unmount</code></td><td>Request unmount with force-flag option.</td></tr>
+<tr><td><code>da_disk_eject</code></td><td>Unmount + eject (delegates to <code>camcontrol</code> / <code>cdcontrol</code> as appropriate).</td></tr>
+</tbody>
+</table>
+
+<p>Callback delivery is asynchronous Mach messages from daemon to the client's session port, dispatched through the framework into the app's runloop or dispatch queue &mdash; same shape Apple uses, same byte-for-byte client-side public API.</p>
 
 <h3>3.3 Mount-policy arbitration</h3>
 
@@ -200,13 +244,15 @@
 <table>
 <thead><tr><th>Source type</th><th>Watches</th><th>Reaction</th></tr></thead>
 <tbody>
-<tr><td><code>DISPATCH_SOURCE_TYPE_READ</code></td><td>devctl(4) socket</td><td>parse disk attach/detach events; instantiate or destroy <code>NCDisk</code> objects; fire callbacks</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_MACH_RECV</code></td><td><code>com.apple.DiskArbitration</code> service port</td><td>demux incoming MIG requests from framework clients (<code>da.defs</code> routines)</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_MACH_RECV</code></td><td><code>hwregd</code> watch/notify port</td><td>storage-device-class ATTACH / DETACH / PROPERTY-CHANGE; instantiate or destroy <code>DADisk</code> objects; fire callbacks</td></tr>
 <tr><td><code>DISPATCH_SOURCE_TYPE_VNODE</code></td><td><code>/etc/fstab</code>, <code>/etc/auto_master</code></td><td>reload mount policy on edit</td></tr>
-<tr><td><code>DISPATCH_SOURCE_TYPE_PROC</code></td><td>each registered client PID</td><td>auto-cancel registrations on <code>DISPATCH_PROC_EXIT</code></td></tr>
 <tr><td><code>DISPATCH_SOURCE_TYPE_TIMER</code></td><td>per-pending-approval timeout</td><td>if no subscriber responds within N seconds, default to "approve"</td></tr>
-<tr><td><code>DISPATCH_SOURCE_TYPE_SIGNAL</code></td><td>SIGTERM, SIGHUP</td><td>SIGTERM: clean shutdown. SIGHUP: full re-enumeration of GEOM tree.</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_SIGNAL</code></td><td>SIGTERM, SIGHUP</td><td>SIGTERM: clean shutdown. SIGHUP: full re-enumeration via <code>hwregd</code> registry walk.</td></tr>
 </tbody>
 </table>
+
+<p>Per-client lifecycle (auto-cancel on client exit) is handled at the Mach layer: when a session's receive port goes dead, the daemon gets a <code>MACH_NOTIFY_NO_SENDERS</code> notification and tears down the session. No <code>DISPATCH_SOURCE_TYPE_PROC</code> needed.</p>
 
 <h2 id="paths">4. Install paths</h2>
 
@@ -217,7 +263,8 @@
 <tr><td><code>DiskArbitrationAgent</code></td><td><code>/usr/libexec/DiskArbitrationAgent</code></td><td>Per-user GUI agent: shows mount-approval prompts.</td></tr>
 <tr><td><code>libDiskArbitration.so</code></td><td><code>/System/Library/Libraries/libDiskArbitration.so</code></td><td>Client library; apps link.</td></tr>
 <tr><td>Headers</td><td><code>/System/Library/Headers/DiskArbitration/*.h</code></td><td>Public API; apps <code>#include &lt;DiskArbitration/DiskArbitration.h&gt;</code>.</td></tr>
-<tr><td>Daemon socket</td><td><code>/var/run/DiskArbitration.sock</code></td><td>DO listener (launchd-opened).</td></tr>
+<tr><td>Mach service name</td><td><code>com.apple.DiskArbitration</code></td><td>Registered via launchd MachServices; framework looks up by name through bootstrap.</td></tr>
+<tr><td>MIG IDL</td><td><code>diskarb/mig/da.defs</code></td><td>Generates client + server stubs at build time.</td></tr>
 <tr><td>launchd plists</td><td><code>/System/Library/LaunchDaemons/org.freebsd.diskarbitrationd.plist</code><br><code>/System/Library/LaunchAgents/org.freebsd.DiskArbitrationAgent.plist</code></td><td>System daemon + per-user agent.</td></tr>
 </tbody>
 </table>
@@ -228,11 +275,11 @@
 <thead><tr><th>Decision</th><th>Choice</th></tr></thead>
 <tbody>
 <tr><td>Source baseline</td><td>Apple <code>DiskArbitration-79.3</code>. APSL 2.0. Latest tag.</td></tr>
-<tr><td>Disk discovery</td><td><code>libgeom(3)</code> walk at startup; <code>devctl(4)</code> for hot-plug. <strong>No IOKit.</strong></td></tr>
-<tr><td>Mach IPC</td><td>None. Replaced with GNUstep DO over AF_UNIX.</td></tr>
-<tr><td>Event loop</td><td>libdispatch dispatch sources only.</td></tr>
-<tr><td>Filesystem-type detection</td><td>libgeom metadata + partition-table inspection. Drop HFS+/APFS detection (FreeBSD doesn't mount them).</td></tr>
-<tr><td>Mount mechanism</td><td>FreeBSD <code>mount(8)</code> (and ZFS <code>zfs mount</code> for ZFS volumes) invoked as <code>NSTask</code> children, NOT direct <code>mount(2)</code> syscalls. Matches Apple's pattern of delegating to <code>/sbin/mount</code>.</td></tr>
+<tr><td>Disk discovery</td><td>MIG RPC to <code>hwregd</code> for enumeration + hot-plug events; <code>libgeom(3)</code> in-process for enrichment only. <strong>No IOKit; no devctl reader in <code>diskarbitrationd</code>.</strong></td></tr>
+<tr><td>Daemon &harr; framework IPC</td><td><strong>Mach IPC retained.</strong> MIG IDL <code>da.defs</code>; service name <code>com.apple.DiskArbitration</code>.</td></tr>
+<tr><td>Event loop</td><td>libdispatch sources, predominantly <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code>.</td></tr>
+<tr><td>Filesystem-type detection</td><td>libgeom metadata + partition-table inspection (in-process enrichment). Drop HFS+/APFS detection (FreeBSD doesn't mount them).</td></tr>
+<tr><td>Mount mechanism</td><td>FreeBSD <code>mount(8)</code> (and ZFS <code>zfs mount</code> for ZFS volumes) invoked via <code>posix_spawn</code> + <code>waitpid</code>, NOT direct <code>mount(2)</code> syscalls. Matches Apple's pattern of delegating to <code>/sbin/mount</code>. (Apple uses <code>NSTask</code>; we stay in C / libdispatch shape with no Foundation dep.)</td></tr>
 <tr><td>Per-user agent</td><td>Yes (Phase 4). Approval prompts surface to user via the agent + Workspace UI.</td></tr>
 <tr><td>License (top-level)</td><td>BSD-2-Clause. Apple's DA source retains APSL 2.0 per-file.</td></tr>
 </tbody>
@@ -245,8 +292,8 @@
 <h3>6.1 Deleted on import</h3>
 <ul>
   <li><code>DiskArbitration.xcodeproj/</code> &mdash; Xcode</li>
-  <li><code>Modules/</code> &mdash; IOKit-based device-classification hooks; replaced by GEOM-based logic</li>
-  <li>Mach IDL files (<code>*.defs</code>) wherever they exist in the repo</li>
+  <li><code>Modules/</code> &mdash; IOKit-based device-classification hooks; replaced by <code>hwregd</code> MIG queries</li>
+  <li>Apple's Mach IDL files (<code>*.defs</code>) &mdash; <strong>replaced</strong>, not dropped: our own <code>diskarb/mig/da.defs</code> takes their place. The Apple-shipped <code>.defs</code> references Darwin-private types and is regenerated from scratch.</li>
   <li><code>autodiskmount/</code> &mdash; legacy pre-DiskArbitration mount mechanism; either drop entirely or keep a small shim that translates <code>autodiskmount</code> CLI invocations to DA calls. Decision: drop in Phase 1; add back in Phase 5 if any compat consumer turns up.</li>
 </ul>
 
@@ -255,31 +302,31 @@
 <table>
 <thead><tr><th>Directory / file</th><th>Apple LOC</th><th>Action</th></tr></thead>
 <tbody>
-<tr><td><code>diskarbitrationd/diskarbitrationd.{c,m}</code></td><td>~3k</td><td>Substantial rewrite. Replace IOKit registry walk with libgeom enumeration; replace IOKit notifications with devctl(4) source. Keep the disk-state-machine + arbitration logic.</td></tr>
-<tr><td><code>diskarbitrationd/DAMain.{c,m}</code></td><td>~2k</td><td>Daemon main; replace Mach service-loop with dispatch_main + libdispatch sources.</td></tr>
-<tr><td><code>diskarbitrationd/DAServer.{c,m}</code></td><td>~5k</td><td>The IPC server. Replace Mach IPC with DO. Keep the request-routing + per-client-state.</td></tr>
-<tr><td><code>diskarbitrationd/DADisk.{c,m}</code></td><td>~3k</td><td>Per-disk state object. Replace IOKit-derived metadata getters with libgeom-derived ones. Heavy refactor; ~50% rewrite.</td></tr>
+<tr><td><code>diskarbitrationd/diskarbitrationd.{c,m}</code></td><td>~3k</td><td>Substantial rewrite. Replace IOKit registry walk with <code>hwregd</code> MIG enumeration; replace IOKit notifications with the <code>hwregd</code> watch/notify channel under <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code>. Keep the disk-state-machine + arbitration logic.</td></tr>
+<tr><td><code>diskarbitrationd/DAMain.{c,m}</code></td><td>~2k</td><td>Daemon main; replace Apple's Mach service-loop boilerplate with <code>dispatch_main</code> + libdispatch sources. Service port still obtained via <code>bootstrap_check_in</code>.</td></tr>
+<tr><td><code>diskarbitrationd/DAServer.{c,m}</code></td><td>~5k</td><td>The IPC server. Keep Mach IPC; regenerate against <code>da.defs</code>. Keep the request-routing + per-client-state.</td></tr>
+<tr><td><code>diskarbitrationd/DADisk.{c,m}</code></td><td>~3k</td><td>Per-disk state object. Replace IOKit-derived metadata getters with <code>hwregd</code> property reads + <code>libgeom</code> enrichment calls. Heavy refactor; ~50% rewrite.</td></tr>
 <tr><td><code>diskarbitrationd/DAMount.{c,m}</code></td><td>~2k</td><td>Mount/unmount/eject orchestration. Replace <code>diskutil</code> NSTask invocations with <code>mount(8)</code> / <code>umount(8)</code> / <code>zfs</code>.</td></tr>
 <tr><td><code>diskarbitrationd/DAFileSystem*</code></td><td>~3k</td><td>Filesystem-type detection. Drop HFS+/APFS detection; keep + extend UFS / EXT / FAT / NTFS / ISO9660 / ZFS detection.</td></tr>
-<tr><td><code>DiskArbitration/DiskArbitration.{h,c}</code> + family</td><td>~5k</td><td>Client library. Replace Mach IPC with DO. <strong>Public API must stay byte-for-byte stable</strong>: <code>DASessionCreate</code>, <code>DARegister*</code>, <code>DADisk*</code> functions all keep signatures.</td></tr>
+<tr><td><code>DiskArbitration/DiskArbitration.{h,c}</code> + family</td><td>~5k</td><td>Client library. Keep Mach IPC; regenerate MIG client stubs against <code>da.defs</code>. <strong>Public API must stay byte-for-byte stable</strong>: <code>DASessionCreate</code>, <code>DARegister*</code>, <code>DADisk*</code> functions all keep signatures.</td></tr>
 <tr><td><code>DiskArbitrationAgent/</code></td><td>~3k</td><td>Per-user agent. Port last; depends on Workspace having UI surface for approval prompts.</td></tr>
 <tr><td><code>datest/</code></td><td>~1k</td><td>Adapt as a self-test harness. Useful for verifying GEOM-based discovery matches IOKit-based behavior on Apple.</td></tr>
 </tbody>
 </table>
 
-<p>Total post-Phase-2: roughly <strong>22-24k LOC</strong> vs Apple's ~34k. About 30% deletion, plus ~30% of remaining code is new GEOM-bridging logic. Net: similar LOC but very different shape.</p>
+<p>Total post-Phase-2: roughly <strong>22-24k LOC</strong> vs Apple's ~34k. About 30% deletion, plus ~30% of remaining code is new <code>hwregd</code>-client logic + <code>libgeom</code> enrichment shims. Net: similar LOC but very different shape. Mach IPC scaffolding (MIG demux, service-port management, no-senders notifications) is largely preserved from Apple verbatim modulo the regenerated <code>da.defs</code> stubs.</p>
 
 <h2 id="bsd-wins">7. FreeBSD-only wins (vs Apple's Darwin-tied DiskArbitration)</h2>
 
 <table>
 <thead><tr><th>Feature</th><th>Apple's daemon does</th><th>This port (FreeBSD-only)</th></tr></thead>
 <tbody>
-<tr><td>Disk enumeration</td><td>IOKit registry walk; <code>IOMediaClass</code> matching</td><td><code>libgeom(3)</code> tree walk; provider/consumer/class introspection</td></tr>
-<tr><td>Hot-plug notification</td><td>IOKit <code>IOServiceAddInterestNotification</code></td><td><code>devctl(4)</code> via <code>DISPATCH_SOURCE_TYPE_READ</code></td></tr>
-<tr><td>Filesystem-type detection</td><td>HFS+, APFS, FAT, NTFS, ExFAT, plus IOKit-published metadata</td><td>UFS, ZFS, FAT, NTFS, ExFAT, ISO9660, EXT2/3/4 (via FreeBSD's <code>fusefs-ext4</code>), via libgeom labels + partition-table inspection</td></tr>
+<tr><td>Disk enumeration</td><td>IOKit registry walk; <code>IOMediaClass</code> matching</td><td>MIG RPC to <code>hwregd</code> (storage device class subtree); <code>libgeom(3)</code> in-process for enrichment</td></tr>
+<tr><td>Hot-plug notification</td><td>IOKit <code>IOServiceAddInterestNotification</code></td><td><code>hwregd</code> watch/notify Mach channel via <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code></td></tr>
+<tr><td>Filesystem-type detection</td><td>HFS+, APFS, FAT, NTFS, ExFAT, plus IOKit-published metadata</td><td>UFS, ZFS, FAT, NTFS, ExFAT, ISO9660, EXT2/3/4 (via FreeBSD's <code>fusefs-ext4</code>), via <code>libgeom</code> labels + partition-table inspection (in-process enrichment)</td></tr>
 <tr><td>Encryption-volume hooks</td><td>FileVault / FileVault2 keychain integration</td><td>Drop. GELI / ZFS-native encryption use their own tooling outside DA.</td></tr>
 <tr><td>Auto-mount target</td><td><code>/Volumes/&lt;name&gt;</code></td><td><code>/Volumes/&lt;name&gt;</code> &mdash; same convention. The <code>Volumes</code> directory is already created by macOS-style overlays in our system.</td></tr>
-<tr><td>Daemon IPC</td><td>Mach ports + MIG stubs</td><td>GNUstep DO over AF_UNIX</td></tr>
+<tr><td>Daemon IPC</td><td>Mach ports + MIG stubs</td><td>Mach ports + MIG stubs (retained). MIG IDL <code>da.defs</code>; service <code>com.apple.DiskArbitration</code>.</td></tr>
 </tbody>
 </table>
 
@@ -290,8 +337,8 @@
 <p>The "Devices" sidebar in File Viewer (Finder-equivalent) populates from DA events. When a user plugs in a USB stick:</p>
 
 <ol>
-  <li>Kernel attaches the device; <code>devctl(4)</code> fires.</li>
-  <li>diskarbitrationd sees the new disk via libgeom; instantiates DADisk; runs approval callbacks (none registered for USB sticks by default → approves).</li>
+  <li>Kernel attaches the device; <code>devctl(4)</code> fires; <code>hwregd</code> publishes a storage-device-class ATTACH event on its notify channel.</li>
+  <li>diskarbitrationd receives the ATTACH via its <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> source on the <code>hwregd</code> watch port; reads device properties via MIG; calls <code>libgeom</code> in-process for partition / FS-type enrichment; instantiates DADisk; runs approval callbacks (none registered for USB sticks by default → approves).</li>
   <li>Auto-mount fires: <code>mount</code> is invoked with the right filesystem type at <code>/Volumes/&lt;name&gt;</code>.</li>
   <li>Mount-success callback fires; subscribers (Workspace) get notified.</li>
   <li>Workspace adds the volume to the sidebar; user clicks → opens the mount point.</li>
@@ -328,18 +375,16 @@
     &lt;key&gt;ProgramArguments&lt;/key&gt;  &lt;array&gt;&lt;string&gt;/usr/libexec/diskarbitrationd&lt;/string&gt;&lt;/array&gt;
     &lt;key&gt;RunAtLoad&lt;/key&gt;         &lt;true/&gt;
     &lt;key&gt;KeepAlive&lt;/key&gt;         &lt;true/&gt;
-    &lt;key&gt;Sockets&lt;/key&gt;           &lt;dict&gt;
-        &lt;key&gt;Listeners&lt;/key&gt;     &lt;dict&gt;
-            &lt;key&gt;SockPathName&lt;/key&gt; &lt;string&gt;/var/run/DiskArbitration.sock&lt;/string&gt;
-            &lt;key&gt;SockType&lt;/key&gt;     &lt;string&gt;stream&lt;/string&gt;
-            &lt;key&gt;SockPathMode&lt;/key&gt; &lt;integer&gt;438&lt;/integer&gt; &lt;!-- 0666 --&gt;
-        &lt;/dict&gt;
+    &lt;key&gt;MachServices&lt;/key&gt;      &lt;dict&gt;
+        &lt;key&gt;com.apple.DiskArbitration&lt;/key&gt; &lt;true/&gt;
     &lt;/dict&gt;
 &lt;/dict&gt;
 &lt;/plist&gt;</code></pre>
 
+<p>launchd creates the Mach service port and stashes it in the daemon's bootstrap namespace before <code>exec</code>; <code>diskarbitrationd</code> picks it up with <code>bootstrap_check_in("com.apple.DiskArbitration", &amp;port)</code> at startup and wraps it in a <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> source.</p>
+
 <h3>9.2 Boot ordering</h3>
-<p>diskarbitrationd needs <code>devctl(4)</code> open + libgeom topology populated. Both available immediately after kernel boot. Order: starts in parallel with other system daemons; provides events from "now" forward (existing already-mounted root + critical filesystems aren't re-arbitrated).</p>
+<p>diskarbitrationd needs the <code>hwregd</code> Mach service available (for storage-device subscription) + <code>libgeom</code> topology populated. <code>hwregd</code> is a peer system daemon launched by launchd; <code>diskarbitrationd</code> connects via bootstrap lookup and retries with backoff if <code>hwregd</code> isn't up yet. Order: starts in parallel with other system daemons; provides events from "now" forward (existing already-mounted root + critical filesystems aren't re-arbitrated).</p>
 
 <h2 id="license">10. Licensing</h2>
 
@@ -351,7 +396,7 @@
 <tr><td>Apple <code>DiskArbitration-79.3</code></td><td>APSL 2.0</td><td>Per-file headers preserved verbatim. Edits inherit APSL.</td></tr>
 <tr><td>This repo's new code (GEOM bridge, FreeBSD shims, integration glue)</td><td>BSD-2-Clause</td><td>SPDX header on each new file.</td></tr>
 <tr><td>libgeom (FreeBSD base)</td><td>BSD-2-Clause</td><td>Linked from base; nothing in our tree.</td></tr>
-<tr><td>libdispatch, GNUstep Foundation (linked)</td><td>Apache / LGPL</td><td>Listed in NOTICE.</td></tr>
+<tr><td>libdispatch, libxpc, libCoreFoundation (linked)</td><td>Apache 2.0 / APSL 2.0</td><td>Listed in NOTICE. (Same stack as configd / IPConfiguration / hwregd in this repo; no GNUstep Foundation dep.)</td></tr>
 </tbody>
 </table>
 
@@ -360,27 +405,27 @@
 <div class="phase">
 <h3>Phase 0 &mdash; repo scaffold + import</h3>
 <ul>
-  <li>Create <code>diskarb/</code> at the top of <code>freebsd-launchd</code>. Update <code>NOTICE</code>.</li>
+  <li>Create <code>diskarb/</code> at the top of <code>freebsd-launchd-mach</code>. Update <code>NOTICE</code>.</li>
   <li>Add <code>diskarb/scripts/import-source.sh</code> at <code>DiskArbitration-79.3</code>.</li>
-  <li>One-shot import + amputation per §6.1 (Xcode + IOKit Modules + autodiskmount + Mach IDL out).</li>
+  <li>One-shot import + amputation per §6.1 (Xcode + IOKit Modules + autodiskmount + Apple's <code>.defs</code> out).</li>
+  <li>Author <code>diskarb/mig/da.defs</code> from scratch (modeled on <code>hwreg.defs</code> / <code>ipconfig.defs</code> in this repo); wire MIG codegen into the Makefile.</li>
 </ul>
 </div>
 
 <div class="phase">
-<h3>Phase 1 &mdash; daemon foundation: GEOM + devctl + DO</h3>
+<h3>Phase 1 &mdash; daemon foundation: <code>hwregd</code> subscription + Mach service skeleton</h3>
 <ul>
-  <li>Implement the <code>compat/</code> GEOM bridge layer: replace <code>IOServiceGetMatchingServices</code> et al. with <code>geom_gettree</code>-based functions.</li>
-  <li>Port <code>diskarbitrationd/diskarbitrationd.{c,m}</code>, <code>DAMain</code>, <code>DAServer</code>, <code>DADisk</code> with the GEOM/devctl substitutions.</li>
-  <li>Replace Mach IPC with DO in <code>DAServer</code>.</li>
-  <li>Daemon enumerates disks at startup, fires "disk appeared" callbacks; hot-plug works.</li>
+  <li>Implement the <code>compat/</code> bridge: <code>hwregd</code> MIG client wrappers (initial enumerate + watch/notify subscribe) replacing <code>IOServiceGetMatchingServices</code> / <code>IOServiceAddInterestNotification</code>; thin <code>libgeom</code> enrichment helpers (partition / UUID / FS-type) for in-process metadata.</li>
+  <li>Port <code>diskarbitrationd/diskarbitrationd.{c,m}</code>, <code>DAMain</code>, <code>DAServer</code>, <code>DADisk</code> against the <code>hwregd</code> + libgeom shims; stand up the <code>com.apple.DiskArbitration</code> Mach service port under a <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> source; wire the generated <code>da.defs</code> server demux.</li>
+  <li>Daemon enumerates disks at startup via <code>hwregd</code> RPC, fires "disk appeared" callbacks; hot-plug via <code>hwregd</code> notify channel works.</li>
   <li>Boot test extension: ssh in, run a small DA-API test program; verify it sees the boot disk and any USB stick attached during the test.</li>
 </ul>
 </div>
 
 <div class="phase">
-<h3>Phase 2 &mdash; libDiskArbitration framework</h3>
+<h3>Phase 2 &mdash; libDiskArbitration framework (<code>da.defs</code> client side)</h3>
 <ul>
-  <li>Port <code>DiskArbitration/</code> &mdash; the client library. Replace Mach IPC with DO proxy calls. Keep public API stable.</li>
+  <li>Port <code>DiskArbitration/</code> &mdash; the client library. Regenerate MIG client stubs from <code>da.defs</code>; wire <code>DASessionCreate</code> to <code>bootstrap_look_up("com.apple.DiskArbitration", &amp;port)</code>; deliver callbacks on a session-owned receive port pumped from the app's runloop / dispatch queue. Keep public API stable.</li>
   <li>Build + install <code>libDiskArbitration.so</code>.</li>
   <li>Boot test: write a small client app, register a callback, plug a USB stick, verify callback fires.</li>
 </ul>
@@ -423,7 +468,7 @@
 </div>
 
 <div class="open-q">
-<strong>Q3. CD/DVD eject mechanism.</strong> Apple uses <code>DADiskEject</code> → IOKit eject. FreeBSD's <code>cdcontrol(8)</code> handles physical eject. Decision: <code>DADiskEject</code> dispatches to <code>cdcontrol eject &lt;dev&gt;</code> via NSTask. Same code path covers USB-attached optical drives.
+<strong>Q3. CD/DVD eject mechanism.</strong> Apple uses <code>DADiskEject</code> → IOKit eject. FreeBSD's <code>cdcontrol(8)</code> handles physical eject. Decision: <code>DADiskEject</code> dispatches to <code>cdcontrol eject &lt;dev&gt;</code> via <code>posix_spawn</code> + <code>waitpid</code> (matches the rest of the daemon's C / libdispatch shape; no Foundation in this daemon). Same code path covers USB-attached optical drives.
 </div>
 
 <div class="open-q">
@@ -438,11 +483,15 @@
 
 <ul>
   <li>Apple source: <a href="https://github.com/apple-oss-distributions/DiskArbitration">github.com/apple-oss-distributions/DiskArbitration</a> (latest tag <code>DiskArbitration-79.3</code>).</li>
-  <li>Companion plans: <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-asl-plan.html">asl</a>, <a href="freebsd-notifyd-plan.html">notifyd</a>, <a href="freebsd-mdnsresponder-plan.html">mDNSResponder</a>.</li>
+  <li>Target repo: <a href="https://github.com/pkgdemon/freebsd-launchd-mach">github.com/pkgdemon/freebsd-launchd-mach</a> (v2 / Mach-IPC track).</li>
+  <li>Companion plans: <a href="freebsd-launchd-mach-plan.html">launchd (Mach track)</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-hardware-registry-iokit-plan.html">hwregd (hardware registry)</a>, <a href="freebsd-ipconfiguration-plan.html">IPConfiguration</a>, <a href="freebsd-asl-plan.html">asl</a>, <a href="freebsd-notifyd-plan.html">notifyd</a>, <a href="freebsd-mdnsresponder-plan.html">mDNSResponder</a>.</li>
   <li>FreeBSD <code>geom(8)</code>, <code>libgeom(3)</code>, <code>devctl(4)</code> manpages.</li>
   <li>Apple's DiskArbitration framework: <code>man 3 DiskArbitration</code> on macOS.</li>
   <li>Apple Public Source License 2.0: <a href="https://opensource.apple.com/apsl/">opensource.apple.com/apsl/</a>.</li>
 </ul>
+
+<hr>
+<p class="subtitle"><strong>Revision 2026-05-23.</strong> Refactored to target <code>freebsd-launchd-mach</code> (v2 / Mach-IPC track). Disk-event source pivoted from in-process <code>libgeom</code> + <code>devctl(4)</code> reader to MIG RPC against the in-repo <code>hwregd</code> daemon; <code>libgeom</code> retained for in-process partition / UUID / label / FS-type enrichment only. Daemon &harr; framework IPC retained on Mach (MIG IDL <code>da.defs</code>, service <code>com.apple.DiskArbitration</code>), <strong>not</strong> rebuilt on GNUstep Distributed Objects + AF_UNIX as the sibling <code>freebsd-launchd</code> repo plan does. Event loop uses <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> on the service port and on the <code>hwregd</code> notify port. launchd plist switched from <code>Sockets</code> to <code>MachServices</code>. Phased delivery, architecture diagram, file-by-file plan, and BSD-wins table updated to match.</p>
 
 </body>
 </html>

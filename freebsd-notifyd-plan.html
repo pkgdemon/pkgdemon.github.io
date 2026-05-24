@@ -103,19 +103,26 @@
 </nav>
 
 <h1>FreeBSD notifyd — porting plan</h1>
-<p class="subtitle">A FreeBSD-only port of Apple's <code>notifyd</code> + <code>libnotify</code> — Apple's lightweight named-event pub/sub bus. Drops Mach IPC; replaces the wire layer with GNUstep Distributed Objects + AF_UNIX socket; preserves the libnotify C API surface so Apple-derived applications (gershwin desktop apps, ported third-party Cocoa apps) Just Work without source changes. Companion to <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-kmodloader-plan.html">kmodloader</a>, <a href="freebsd-asl-plan.html">asl</a>.</p>
+<p class="subtitle">A FreeBSD-only port of Apple's <code>notifyd</code> + <code>libnotify</code> — Apple's lightweight named-event pub/sub bus. Retains Mach IPC end-to-end: libnotify connects to notifyd via a MIG-served Mach service <code>com.apple.notifyd</code>; preserves the libnotify C API surface so Apple-derived applications (gershwin desktop apps, ported third-party Cocoa apps) Just Work without source changes. Companion to <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-kmodloader-plan.html">kmodloader</a>, <a href="freebsd-asl-plan.html">asl</a>.</p>
+
+<p><span class="pill info">Filed under: <code>freebsd-launchd-mach</code> (v2) effort</span> <span class="pill ok">SHIPPED</span></p>
+
+<div class="tldr">
+<h3>Revision 2026-05-23</h3>
+<p>This plan originally targeted the sibling <code>freebsd-launchd</code> (AF_UNIX / GNUstep Distributed Objects) repo. Refactored 2026-05-23 to target the <code>freebsd-launchd-mach</code> (v2) Mach-IPC track. notifyd has already <strong>SHIPPED</strong> in this repo's Phase J1 (<code>libnotify</code>) + Phase J2 iter 1 (<code>notifyd</code> daemon) — Mach IPC retained throughout (<code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> via libdispatch's Mach backend, as documented in the libxpc <code>libdispatch-mach</code> spike). Sections below describing "future work" now describe shipped work; the architecture-decision sentences have been flipped from DO/AF_UNIX to MIG/Mach.</p>
+</div>
 
 <section id="tldr" class="tldr">
-  <h3>Status: planning <span class="pill info">v0</span> &mdash; deferred</h3>
+  <h3>Status: <span class="pill ok">SHIPPED</span> — Phase J1 (libnotify) + Phase J2 iter 1 (notifyd daemon)</h3>
   <ul>
-    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a> — <strong>monorepo</strong>. notifyd source under <code>notifyd/</code> at the top, alongside <code>src/</code> (launchd), <code>configd/</code>, <code>kmodloader/</code>, <code>asl/</code>. Single build pipeline, single CI, single boot test.</li>
+    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd-mach">github.com/pkgdemon/freebsd-launchd-mach</a> (v2, Mach-IPC track) — <strong>monorepo</strong>. notifyd source under <code>src/Libnotify/</code>, alongside <code>src/launchd/</code>, <code>src/syslog/</code>, <code>src/libxpc/</code>, <code>src/libdispatch/</code>, <code>src/libCoreFoundation/</code>. Single build pipeline (<code>build.sh</code>), single CI, single boot test.</li>
     <li><strong>Mission:</strong> give gershwin and any Apple-derived apps the named-event pub/sub bus they expect. Apps call <code>notify_post()</code>, <code>notify_register_dispatch()</code>, <code>notify_get_state()</code> — same C API — and the daemon does the fan-out. Promotes cross-process event coordination from "build a bespoke channel each time" to "just pick a name."</li>
-    <li><strong>Source:</strong> Apple <code>Libnotify-98.5</code> (latest tag at <code>apple-oss-distributions/Libnotify</code>, APSL). 48 source files, ~17k LOC. 12 files have <code>&lt;mach/&gt;</code> includes; 2 MIG <code>.defs</code> files (<code>notify_ipc.defs</code>, <code>notify_old_ipc.defs</code>). Phase 1 amputation drops the Mach plumbing.</li>
-    <li><strong>Why this is deferred:</strong> nothing in launchd / configd / kmodloader Phases 0-5 needs notifyd. Promotion happens when (a) the first Apple-derived app showing up wants <code>libnotify</code> linkage, OR (b) configd's DO-callback fan-out becomes a bottleneck for many-subscriber events and we want the cheaper notifyd model. <strong>Phase 7+ work, sequenced after configd ships and before/after ASL based on demand.</strong></li>
-    <li><strong>No Mach IPC.</strong> Apple's libnotify uses Mach ports for the daemon connection and shared-memory pages for state values. <strong>Replaced</strong> with: <code>NSConnection</code> over AF_UNIX for the daemon-client channel; <code>shm_open(2)</code> + <code>mmap(2)</code> for the state-value pages (preserves Apple's "reads are zero-IPC" performance characteristic).</li>
-    <li><strong>Event loop:</strong> <code>libdispatch</code> dispatch sources only. <code>DISPATCH_SOURCE_TYPE_VNODE</code> for path-watch notifications (already what Apple does — pathwatch.c uses kqueue under the hood). <code>DISPATCH_SOURCE_TYPE_READ</code> on the AF_UNIX listener.</li>
+    <li><strong>Source:</strong> Apple <code>Libnotify-98.5</code> (latest tag at <code>apple-oss-distributions/Libnotify</code>, APSL). 48 source files, ~17k LOC. 12 files have <code>&lt;mach/&gt;</code> includes; 2 MIG <code>.defs</code> files (<code>notify_ipc.defs</code>, <code>notify_old_ipc.defs</code>). On the v2 track these are <em>kept</em> — Mach IPC is the substrate.</li>
+    <li><strong>Why this shipped:</strong> ASL's libsystem_asl emits notifyd posts (<code>com.apple.system.logger</code>) on every log write; configd, PowerManagement, IPConfiguration, DiskArbitration, IOKitUser all register for / post named events. With Mach IPC + libxpc + libdispatch (incl. <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code>) all working, notifyd lands as a thin MIG server on top of the existing substrate. <strong>Built in Phase J1/J2 alongside ASL.</strong></li>
+    <li><strong>Mach IPC retained.</strong> libnotify uses Mach ports for the daemon connection (MIG client stubs from <code>notify_ipc.defs</code>); <code>shm_open(2)</code> + <code>mmap(2)</code> for the shared state-value pages (preserves Apple's "reads are zero-IPC" performance characteristic).</li>
+    <li><strong>Event loop:</strong> libdispatch with <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> on notifyd's MIG service port (the libxpc spike documented why we needed this — libdispatch's Mach backend now provides it on FreeBSD). <code>DISPATCH_SOURCE_TYPE_VNODE</code> for path-watch notifications (same as Apple — <code>pathwatch.c</code> already uses kqueue under the hood).</li>
     <li><strong>libnotify C API preserved byte-for-byte.</strong> <code>notify_post</code>, <code>notify_register_dispatch</code>, <code>notify_register_signal</code>, <code>notify_register_file_descriptor</code>, <code>notify_register_check</code>, <code>notify_get_state</code>, <code>notify_set_state</code>, <code>notify_cancel</code> all keep their existing signatures and semantics. Apple-derived apps link our <code>libnotify.so</code> without source changes.</li>
-    <li><strong>One delivery type drops:</strong> <code>NOTIFY_TYPE_PORT</code> (Mach port wakeup) is removed. Apps using it would need to switch to <code>NOTIFY_TYPE_DISPATCH</code> or <code>NOTIFY_TYPE_FD</code> — semantically equivalent, just different kernel mechanism.</li>
+    <li><strong>All delivery types retained including <code>NOTIFY_TYPE_PORT</code></strong> (Mach-port wakeup) — Mach IPC is the substrate, so the port-delivery type is the natural one. <code>NOTIFY_TYPE_DISPATCH</code>, <code>NOTIFY_TYPE_SIGNAL</code>, <code>NOTIFY_TYPE_FD</code>, <code>NOTIFY_TYPE_CHECK</code> all preserved as well.</li>
     <li><strong>Licensing:</strong> Apple's source is APSL 1.1 (older variant; APSL 2.0 in newer files within the repo). FSF-approved free software; per-file headers preserved on Apple-derived files; our top-level repo stays BSD-2-Clause.</li>
   </ul>
 </section>
@@ -123,11 +130,10 @@
 <h2 id="goal">1. Goal &amp; non-goals</h2>
 
 <h3>1.1 Goal</h3>
-<p>Provide a working <code>libnotify</code> + <code>notifyd</code> on FreeBSD so Apple-derived apps (gershwin desktop, ported Cocoa apps, third-party Apple-OSS-distributions tools) can use named pub/sub events without porting work. Replicate the API surface byte-for-byte; replace Mach-tied IPC + shared-memory mechanisms with FreeBSD-native equivalents (DO + POSIX shm). Preserve the performance characteristic that <em>reads of state values are zero-IPC</em> — that's what makes notifyd fundamentally different from a sockets-only pub/sub system.</p>
+<p>Provide a working <code>libnotify</code> + <code>notifyd</code> on FreeBSD so Apple-derived apps (gershwin desktop, ported Cocoa apps, third-party Apple-OSS-distributions tools) can use named pub/sub events without porting work. Replicate the API surface byte-for-byte; retain Apple's Mach-IPC substrate (libnotify ↔ notifyd via MIG over <code>mach_msg</code>); use POSIX <code>shm_open(2)</code>+<code>mmap(2)</code> for the shared state-value pages (the one Mach-specific mechanism with no clean equivalent on FreeBSD's Mach port — same end result, portable substrate). Preserve the performance characteristic that <em>reads of state values are zero-IPC</em> — that's what makes notifyd fundamentally different from a sockets-only pub/sub system.</p>
 
 <h3>1.2 Non-goals (this iteration)</h3>
 <ul>
-  <li><strong>No <code>NOTIFY_TYPE_PORT</code> (Mach port delivery).</strong> Same project-wide rule. Apps that registered for a Mach port to receive notifications: source change to <code>NOTIFY_TYPE_DISPATCH</code> or <code>NOTIFY_TYPE_FD</code>. Net code change in the consumer is ~5 lines.</li>
   <li><strong>No DTrace probes.</strong> <code>notify_probes.d</code> is dropped. FreeBSD has DTrace but the probe definitions are Apple-specific.</li>
   <li><strong>No iOS/iPadOS configs.</strong> <code>notify.conf.iOSSimulator</code>, <code>notify.conf.iPhone</code> dropped on import.</li>
   <li><strong>No sandbox profile.</strong> <code>com.apple.notifyd.sb</code> is sandbox(7); FreeBSD has Capsicum but the policy doesn't translate. Hardening pass later.</li>
@@ -137,34 +143,31 @@
 
 <h2 id="repo">2. Repository</h2>
 
-<p>Monorepo, same as the other ports. notifyd source lives under <code>notifyd/</code> at the top of <code>freebsd-launchd</code>:</p>
+<p>Monorepo, same as the other ports on the v2 track. notifyd source lives under <code>src/Libnotify/</code> at the top of <code>freebsd-launchd-mach</code>:</p>
 
-<pre><code>freebsd-launchd/
-├── src/                          launchd Apple-imported source
-├── configd/                      Apple configd-imported source
-├── kmodloader/                   clean-room kmodloader
-├── asl/                          Apple syslog-imported source
-├── notifyd/                      Apple Libnotify-imported source (this plan)
-│   ├── scripts/import-source.sh
-│   ├── Makefile                  top-level: build daemon + libnotify + notifyutil
-│   ├── compat/
-│   └── src/                      forked Apple Libnotify-98.5
-│       ├── libnotify.{c,h}       the libnotify client library — API surface
-│       ├── notify.h              public API header
-│       ├── notify_keys.h         public well-known notification names
-│       ├── notify_client.c       client-side state management
-│       ├── notify_internal.h
-│       ├── notify_private.h
-│       ├── table.{c,h}           hash-table for token registry
-│       ├── notifyd/              the notifyd daemon
-│       │   ├── notifyd.{c,h}     daemon main, dispatch loop
-│       │   ├── service.{c,h}     service registration + name table
-│       │   ├── notify_proc.c     per-client process tracking
-│       │   ├── pathwatch.{c,h}   path-watch notifications via kqueue
-│       │   └── notify.conf       (MacOSX flavor; iOS variants dropped)
-│       ├── notifyutil/           notifyutil(1) CLI tool
-│       └── notifybench/          throughput benchmark harness
-└── make-notifyd.sh               STANDALONE — builds + installs
+<pre><code>freebsd-launchd-mach/
+├── src/launchd/                  launchd Apple-imported source
+├── src/syslog/                   Apple syslog-imported source (ASL)
+├── src/libxpc/                   libxpc (Mach IPC client/server)
+├── src/libdispatch/              libdispatch (incl. Mach backend: MACH_RECV, MACH_SEND)
+├── src/libCoreFoundation/        CoreFoundation port
+├── src/Libnotify/                Apple Libnotify-imported source (this plan)
+│   ├── libnotify.{c,h}           the libnotify client library — API surface
+│   ├── notify.h                  public API header
+│   ├── notify_keys.h             public well-known notification names
+│   ├── notify_client.c           client-side state management
+│   ├── notify_internal.h
+│   ├── notify_private.h
+│   ├── notify_ipc.defs           MIG IDL (current)
+│   ├── notify_old_ipc.defs       MIG IDL (legacy, for back-compat clients)
+│   ├── table.{c,h}               hash-table for token registry
+│   └── notifyd/                  the notifyd daemon
+│       ├── notifyd.{c,h}         daemon main, dispatch loop
+│       ├── service.{c,h}         service registration + name table
+│       ├── notify_proc.c         per-client process tracking
+│       ├── pathwatch.{c,h}       path-watch notifications via kqueue
+│       └── notify.conf           (MacOSX flavor; iOS variants dropped)
+└── build.sh                      top-level: builds libnotify + notifyd alongside ASL + libxpc + libdispatch
 </code></pre>
 
 <h2 id="arch">3. Architecture</h2>
@@ -173,26 +176,26 @@
                   | publisher process      |
                   | notify_post("name")    |
                   +------------+-----------+
-                               | (NSConnection -postName:)
+                               | (MIG: notify_server_post over mach_msg)
                                v
 +----------------+    +--------+--------+    +--------------------+
 | /etc/notify.   |--&gt;|    notifyd      |&lt;-->| /var/run/notifyd/  |
-|  conf          |   |    (ObjC,       |    |  state-pages       |
-| (early-access  |   |    GNUstep,     |    | (POSIX shm; one    |
-|  table)        |   |    libdispatch) |    |  uint64 per state  |
+|  conf          |   |    (MIG server, |    |  state-pages       |
+| (early-access  |   |    libdispatch  |    | (POSIX shm; one    |
+|  table)        |   |    MACH_RECV)   |    |  uint64 per state  |
 +----------------+   +--------+--------+    |  value, atomically |
                                |             |  updated)          |
                                | (delivery   +--------------------+
                                |  per token type:
-                               v   _DISPATCH | _SIGNAL | _FD)
+                               v   _PORT | _DISPATCH | _SIGNAL | _FD)
               +----------------+----------------+
               |        subscribers              |
               |   (libnotify clients in apps)   |
               |   token = notify_register_*("name", ...)|
               +---------------------------------+
 
-         AF_UNIX socket: /var/run/notifyd.sock
-         (DO connection — one server, many clients)</div>
+         Mach service: com.apple.notifyd
+         (bootstrap_check_in by notifyd; bootstrap_look_up by libnotify)</div>
 
 <h3>3.1 The state-value optimization (load-bearing)</h3>
 
@@ -200,21 +203,21 @@
 
 <p>This is why notifyd works for high-frequency state (volume level updates 60Hz, network reachability checks per HTTP request, etc.) where a sockets-roundtrip-per-read would be too slow.</p>
 
-<p><strong>FreeBSD port preserves this</strong>: replace Apple's Mach-allocated shared pages with <code>shm_open(2)</code> POSIX shared memory. The daemon allocates one or more shm segments holding the state-value array; clients <code>mmap()</code> them read-only at registration time. Daemon writes go through atomic store intrinsics (<code>__atomic_store_n</code>) so torn reads aren't possible.</p>
+<p><strong>FreeBSD port preserves this</strong>: replace Apple's Mach-allocated shared pages with <code>shm_open(2)</code> POSIX shared memory (the one place we substitute a portable POSIX primitive for a Mach VM primitive — Apple's <code>vm_allocate</code>+port-handoff has no clean equivalent on FreeBSD's mach.ko port, but the end-user semantic — "shared page, daemon writes, clients read with no syscall" — is identical). The daemon allocates one or more shm segments holding the state-value array; clients <code>mmap()</code> them read-only at registration time. Daemon writes go through atomic store intrinsics (<code>__atomic_store_n</code>) so torn reads aren't possible.</p>
 
-<h3>3.2 Replacing Mach IPC with DO</h3>
+<h3>3.2 Mach IPC: MIG over mach_msg</h3>
 
-<p>The daemon-client channel uses Mach ports in Apple's source — see <code>notify_ipc.defs</code> + <code>notify_old_ipc.defs</code> (two MIG IDLs; old + current). We replace with:</p>
+<p>The daemon-client channel uses Mach ports — see <code>notify_ipc.defs</code> + <code>notify_old_ipc.defs</code> (two MIG IDLs; old + current). Both are kept on the v2 track:</p>
 
 <ul>
-  <li><strong>Server side:</strong> notifyd creates an <code>NSConnection</code> over <code>/var/run/notifyd.sock</code> at startup. Implements an <code>@protocol NotifydService</code> with <code>-registerName:type:client:</code>, <code>-postName:</code>, <code>-getState:returning:</code>, <code>-setState:value:</code>, etc.</li>
-  <li><strong>Client side:</strong> <code>libnotify.c</code>'s wire-format functions are replaced with <code>NSConnection rootProxy</code> + remote message sends. The public <code>notify_*</code> API remains identical; only the implementation guts under it change.</li>
-  <li><strong>Notification delivery</strong> (subscriber wakeup): preserved per-type:
+  <li><strong>Server side:</strong> notifyd registers the Mach service <code>com.apple.notifyd</code> via <code>bootstrap_check_in</code> at startup. The MIG-generated server stubs (<code>notify_ipc_server.c</code>) dispatch incoming <code>mach_msg</code> requests to the daemon's handler functions (<code>_notifyd_server_post</code>, <code>_notifyd_server_register_*</code>, <code>_notifyd_server_get_state</code>, <code>_notifyd_server_set_state</code>, etc.). The receive-side runs on a libdispatch <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> source attached to the service port.</li>
+  <li><strong>Client side:</strong> <code>libnotify.c</code> calls the MIG-generated client stubs (<code>notify_ipc_user.c</code>); each stub builds a <code>mach_msg</code>, sends it to the service port (obtained once via <code>bootstrap_look_up("com.apple.notifyd")</code>), and waits on the reply port. The public <code>notify_*</code> API remains identical to Apple's; the MIG layer is unchanged from Apple's source.</li>
+  <li><strong>Notification delivery</strong> (subscriber wakeup): preserved per-type, all four supported:
     <ul>
-      <li><code>NOTIFY_TYPE_DISPATCH</code> — daemon writes a byte to a libdispatch source's mach_port-or-fd; we use <code>kqueue/EVFILT_USER</code> + a unix-pipe-pair as the wakeup mechanism. <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_OR, ...)</code> implements the same semantics.</li>
+      <li><code>NOTIFY_TYPE_PORT</code> — daemon sends an empty <code>mach_msg</code> to a port the subscriber registered. Native Mach mechanism; no translation needed.</li>
+      <li><code>NOTIFY_TYPE_DISPATCH</code> — daemon sends a Mach message to a port driving a libdispatch source (<code>DISPATCH_SOURCE_TYPE_MACH_RECV</code>) in the subscriber. Same path Apple takes.</li>
       <li><code>NOTIFY_TYPE_SIGNAL</code> — daemon <code>kill(pid, sig)</code>s the subscriber. Portable as-is.</li>
       <li><code>NOTIFY_TYPE_FD</code> — daemon writes a byte to a pipe the subscriber holds the read end of. Portable as-is.</li>
-      <li><code>NOTIFY_TYPE_PORT</code> (Mach) — <strong>dropped</strong>. Apps source-port to <code>_DISPATCH</code>.</li>
     </ul>
   </li>
 </ul>
@@ -228,7 +231,7 @@
 <table>
 <thead><tr><th>Source type</th><th>Watches</th><th>Reaction</th></tr></thead>
 <tbody>
-<tr><td><code>DISPATCH_SOURCE_TYPE_READ</code></td><td>DO listener fd (launchd-opened)</td><td>accept new <code>NSConnection</code> clients; their messages flow through the protocol</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_MACH_RECV</code></td><td>notifyd's MIG service port (<code>com.apple.notifyd</code>, registered via <code>bootstrap_check_in</code>)</td><td>incoming <code>mach_msg</code> is dispatched through the MIG-generated server stubs (<code>notify_ipc_server.c</code>) to the daemon's handler functions</td></tr>
 <tr><td><code>DISPATCH_SOURCE_TYPE_VNODE</code></td><td>each registered path</td><td>fire path-changed notification to subscribers</td></tr>
 <tr><td><code>DISPATCH_SOURCE_TYPE_PROC</code></td><td>each registered client PID</td><td>auto-cancel registrations on <code>DISPATCH_PROC_EXIT</code> (don't deliver to dead clients)</td></tr>
 <tr><td><code>DISPATCH_SOURCE_TYPE_VNODE</code></td><td><code>/etc/notify.conf</code></td><td>reload early-access table on config change</td></tr>
@@ -247,10 +250,10 @@
 <tr><td><code>notifyutil</code> CLI</td><td><code>/usr/bin/notifyutil</code></td><td>Admin/dev tool: post a name, watch for posts, set/get state. Standard <code>/usr/bin</code> for user-callable commands.</td></tr>
 <tr><td><code>libnotify.so</code></td><td><code>/System/Library/Libraries/libnotify.so</code></td><td>The client library. Apps link against this.</td></tr>
 <tr><td>Public headers</td><td><code>/System/Library/Headers/notify.h</code><br><code>/System/Library/Headers/notify_keys.h</code></td><td>Apps include via <code>#include &lt;notify.h&gt;</code>.</td></tr>
-<tr><td>DO socket</td><td><code>/var/run/notifyd.sock</code></td><td>Per-host daemon connection. launchd-opened via <code>Sockets={Listeners=...}</code>.</td></tr>
+<tr><td>Mach service</td><td><code>com.apple.notifyd</code></td><td>Per-host daemon connection. notifyd checks in via <code>bootstrap_check_in("com.apple.notifyd")</code>; clients look up via <code>bootstrap_look_up</code>. launchd publishes the service via <code>MachServices</code> in the daemon's plist.</td></tr>
 <tr><td>State-page directory</td><td><code>/var/run/notifyd/</code></td><td>Daemon-managed POSIX shm names. Created by daemon at startup.</td></tr>
 <tr><td>Config</td><td><code>/etc/notify.conf</code></td><td>Apple's "early-access" table — names that get a state slot allocated at daemon startup so they're available before the publisher posts.</td></tr>
-<tr><td>launchd plist</td><td><code>/System/Library/LaunchDaemons/org.freebsd.notifyd.plist</code></td><td>Project-shipped daemon plist.</td></tr>
+<tr><td>launchd plist</td><td><code>/System/Library/LaunchDaemons/com.apple.notifyd.plist</code></td><td>Project-shipped daemon plist. Uses Apple's canonical label so apps registering for system events match Apple's bootstrap naming.</td></tr>
 </tbody>
 </table>
 
@@ -262,25 +265,23 @@
 </thead>
 <tbody>
 <tr><td>Source baseline</td><td>Apple <code>Libnotify-98.5</code>. APSL. Latest tag.</td></tr>
-<tr><td>Mach IPC</td><td>None. Both <code>.defs</code> files deleted; client-server channel rebuilt on DO over AF_UNIX.</td></tr>
-<tr><td>Shared-memory state pages</td><td>Replaced with POSIX <code>shm_open(2)</code> + <code>mmap(2)</code>. Atomic updates via <code>&lt;stdatomic.h&gt;</code>.</td></tr>
-<tr><td>Notification delivery types</td><td><code>NOTIFY_TYPE_DISPATCH</code>, <code>NOTIFY_TYPE_SIGNAL</code>, <code>NOTIFY_TYPE_FD</code>, <code>NOTIFY_TYPE_CHECK</code> all preserved. <code>NOTIFY_TYPE_PORT</code> (Mach) dropped.</td></tr>
+<tr><td>Mach IPC</td><td>Retained. Both <code>.defs</code> files (<code>notify_ipc.defs</code>, <code>notify_old_ipc.defs</code>) kept; MIG client + server stubs compiled in-tree. Service name <code>com.apple.notifyd</code> published via launchd's <code>MachServices</code> dict.</td></tr>
+<tr><td>Shared-memory state pages</td><td>POSIX <code>shm_open(2)</code> + <code>mmap(2)</code> substituted for Apple's <code>vm_allocate</code>+port-handoff. Atomic updates via <code>&lt;stdatomic.h&gt;</code>. (Same end-user semantic; one Mach VM primitive without a clean FreeBSD-mach.ko equivalent.)</td></tr>
+<tr><td>Notification delivery types</td><td>All four preserved: <code>NOTIFY_TYPE_PORT</code> (Mach), <code>NOTIFY_TYPE_DISPATCH</code>, <code>NOTIFY_TYPE_SIGNAL</code>, <code>NOTIFY_TYPE_FD</code>, <code>NOTIFY_TYPE_CHECK</code>.</td></tr>
 <tr><td>Public API stability</td><td>All <code>notify_*</code> functions in <code>notify.h</code> keep their signatures and observable semantics. Source compatibility with Apple-derived apps is mandatory.</td></tr>
-<tr><td>Event loop</td><td>libdispatch dispatch sources only.</td></tr>
+<tr><td>Event loop</td><td>libdispatch dispatch sources, incl. <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> (Mach backend on FreeBSD — see the libxpc libdispatch-mach spike for the enabling work).</td></tr>
 <tr><td>Path-watch impl</td><td>kqueue (already what Apple does on Darwin; preserved).</td></tr>
 <tr><td>License (top-level)</td><td>BSD-2-Clause. Apple's libnotify files retain APSL per-file (mix of 1.1 and 2.0 — preserve whichever the file header carries).</td></tr>
 </tbody>
 </table>
 
-<h2 id="files">6. File-by-file plan (<code>notifyd/src/</code>)</h2>
+<h2 id="files">6. File-by-file plan (<code>src/Libnotify/</code>)</h2>
 
-<p>Imported source: Apple <code>Libnotify-98.5</code>. 48 files, ~17k LOC. 12 Mach-tied; 2 MIG <code>.defs</code>.</p>
+<p>Imported source: Apple <code>Libnotify-98.5</code>. 48 files, ~17k LOC. 12 Mach-tied (retained); 2 MIG <code>.defs</code> (retained).</p>
 
-<h3>6.1 Deleted on import (Mach-only or out-of-scope)</h3>
+<h3>6.1 Deleted on import (out-of-scope; Mach files retained)</h3>
 <ul>
   <li><code>Libnotify.xcodeproj/</code>, <code>xcodeconfig/</code>, <code>xcodescripts/</code>, <code>notifyd/xcodescripts/</code> — Xcode build infra</li>
-  <li><code>notify_ipc.defs</code>, <code>notify_old_ipc.defs</code> — MIG IDL (the entire layer they describe is replaced with DO)</li>
-  <li><code>notify_register_mach_port.3</code>, related Mach-port-delivery code — drops with <code>NOTIFY_TYPE_PORT</code></li>
   <li><code>notifyd/com.apple.notifyd.sb</code> — sandbox(7) profile; not portable</li>
   <li><code>notifyd/entitlements.plist</code>, <code>notifyutil/notifyutil_entitlements.plist</code> — code-signing entitlements; not portable</li>
   <li><code>notifyd/notify.conf.iPhone</code>, <code>notifyd/notify.conf.iOSSimulator</code> — iOS variants</li>
@@ -288,6 +289,7 @@
   <li><code>xctests/</code>, <code>notifyd-xctests/</code> — XCTest harnesses</li>
   <li><code>notify_private.modulemap</code>, <code>notify.modulemap</code> — Clang module maps for Apple's framework build; not used in our pkg-config-based build</li>
 </ul>
+<p><strong>Retained (was deleted in the v1 / AF_UNIX-DO plan):</strong> <code>notify_ipc.defs</code>, <code>notify_old_ipc.defs</code>, <code>notify_register_mach_port.3</code>, all Mach-tied <code>.c</code>/<code>.h</code> files. The Mach plumbing is the substrate on the v2 track, not an amputation target.</p>
 
 <h3>6.2 Retained — Phase 2 fate</h3>
 
@@ -296,34 +298,36 @@
 <tr><th>File</th><th>Apple LOC</th><th>Action</th><th>Target LOC</th></tr>
 </thead>
 <tbody>
-<tr><td><code>libnotify.c</code></td><td>~3.5k</td><td>Substantial rewrite of the IPC layer. Replace Mach-port-allocation + MIG-stub-call with <code>NSConnection</code> proxy calls. Public <code>notify_*</code> API unchanged. Replace shared-memory mapping (Mach <code>vm_allocate</code> + port handoff) with POSIX <code>shm_open</code> + <code>mmap</code>.</td><td>~2k</td></tr>
-<tr><td><code>notify_client.c</code></td><td>~2k</td><td>Port. Per-token bookkeeping. Mostly Mach-free; minor pruning.</td><td>~1.7k</td></tr>
+<tr><td><code>libnotify.c</code></td><td>~3.5k</td><td>Keep IPC layer mostly intact — Mach-port-allocation + MIG-stub-call paths run on FreeBSD via mach.ko + libxpc. Public <code>notify_*</code> API unchanged. Replace only the shared-memory mapping (Apple's <code>vm_allocate</code> + port handoff) with POSIX <code>shm_open</code> + <code>mmap</code>.</td><td>~3.2k</td></tr>
+<tr><td><code>notify_client.c</code></td><td>~2k</td><td>Keep. Per-token bookkeeping. Mach-aware; runs unchanged.</td><td>~2k</td></tr>
+<tr><td><code>notify_ipc.defs</code>, <code>notify_old_ipc.defs</code></td><td>—</td><td>Keep. MIG IDL files; the FreeBSD <code>mig(1)</code> port generates client + server stubs from these (same as Apple's build).</td><td>—</td></tr>
 <tr><td><code>table.{c,h}</code>, <code>table.in.c</code></td><td>~1.5k</td><td>Keep. Hash-table impl for token registry. Pure data structure.</td><td>~1.5k</td></tr>
-<tr><td><code>notify.h</code>, <code>notify_keys.h</code>, <code>notify_internal.h</code>, <code>notify_private.h</code></td><td>~1k</td><td>Keep. Public API + internal protocol declarations. Drop only the <code>NOTIFY_TYPE_PORT</code> token type.</td><td>~900</td></tr>
-<tr><td><code>notifyd/notifyd.{c,h}</code></td><td>~2k</td><td>Prune. Replace Mach service-loop init with <code>dispatch_main</code> + libdispatch sources. Drop bootstrap-port registration. Keep config-file load + signal handling.</td><td>~1.2k</td></tr>
-<tr><td><code>notifyd/service.{c,h}</code></td><td>~3k</td><td>Port. Service registration + name table. Replace Mach-port-based subscriber tracking with PID-keyed table tied to <code>DISPATCH_SOURCE_TYPE_PROC</code>.</td><td>~2.2k</td></tr>
-<tr><td><code>notifyd/notify_proc.c</code></td><td>~1k</td><td>Port. Per-client process management. Auto-cancel registrations on PROC_EXIT.</td><td>~800</td></tr>
+<tr><td><code>notify.h</code>, <code>notify_keys.h</code>, <code>notify_internal.h</code>, <code>notify_private.h</code></td><td>~1k</td><td>Keep. Public API + internal protocol declarations. All token types (incl. <code>NOTIFY_TYPE_PORT</code>) retained.</td><td>~1k</td></tr>
+<tr><td><code>notifyd/notifyd.{c,h}</code></td><td>~2k</td><td>Keep. Mach service-loop init runs on FreeBSD's mach.ko; <code>bootstrap_check_in("com.apple.notifyd")</code> + libdispatch <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code>. Keep config-file load + signal handling.</td><td>~2k</td></tr>
+<tr><td><code>notifyd/service.{c,h}</code></td><td>~3k</td><td>Keep. Service registration + name table. Mach-port-based subscriber tracking runs as-is, augmented with <code>DISPATCH_SOURCE_TYPE_PROC</code> for PID-exit cleanup.</td><td>~3k</td></tr>
+<tr><td><code>notifyd/notify_proc.c</code></td><td>~1k</td><td>Keep. Per-client process management. Auto-cancel registrations on PROC_EXIT.</td><td>~1k</td></tr>
 <tr><td><code>notifyd/pathwatch.{c,h}</code></td><td>~600</td><td>Keep mostly intact. kqueue-based; portable.</td><td>~600</td></tr>
-<tr><td><code>notifyutil/notifyutil.c</code></td><td>~700</td><td>Port. The CLI is mostly libnotify-call-and-print; once libnotify works the CLI follows.</td><td>~600</td></tr>
+<tr><td><code>notifyutil/notifyutil.c</code></td><td>~700</td><td>Port. The CLI is mostly libnotify-call-and-print; once libnotify works the CLI follows.</td><td>~700</td></tr>
 <tr><td><code>notifybench/</code></td><td>~500</td><td>Port. Useful for verifying state-page reads stay zero-IPC after our shm_open swap.</td><td>~500</td></tr>
-<tr><td>Manpages (<code>notify*.3</code>, <code>notifyd.8</code>, <code>notifyutil.1</code>)</td><td>—</td><td>Keep mostly intact. Drop <code>notify_register_mach_port.3</code>.</td><td>shrinks</td></tr>
+<tr><td>Manpages (<code>notify*.3</code>, <code>notifyd.8</code>, <code>notifyutil.1</code>)</td><td>—</td><td>Keep intact, incl. <code>notify_register_mach_port.3</code>.</td><td>same</td></tr>
 </tbody>
 </table>
 
-<p>Total post-Phase-2: roughly <strong>11-12k LOC</strong> vs Apple's ~17k pre-amputation. About 30% deletion (smaller ratio than configd/asl because notifyd is fundamentally smaller and most of the code is portable already).</p>
+<p>Total post-port: roughly <strong>16-17k LOC</strong>, ~Apple's pre-port size. On the v2 (Mach-IPC) track we keep nearly all of Apple's source unchanged; only the Mach-VM shared-page handoff is substituted with POSIX shm. Compare: the abandoned v1 (AF_UNIX/DO) plan would have rewritten ~30% of the source to swap the wire layer.</p>
 
-<h2 id="bsd-wins">7. FreeBSD-only wins (vs Apple's Darwin-tied Libnotify)</h2>
+<h2 id="bsd-wins">7. FreeBSD port: substrate parity with Apple (v2 / Mach track)</h2>
 
 <table>
 <thead>
-<tr><th>Feature</th><th>Apple's notifyd does</th><th>This port (FreeBSD-only)</th></tr>
+<tr><th>Feature</th><th>Apple's notifyd does</th><th>This port (<code>freebsd-launchd-mach</code>)</th></tr>
 </thead>
 <tbody>
-<tr><td>Daemon-client IPC</td><td>Mach ports + MIG-generated stubs (two flavors: current + legacy)</td><td>GNUstep DO over AF_UNIX. ~3k LOC of Mach plumbing replaced by ~600 LOC of DO. <code>notify_old_ipc.defs</code> goes away entirely (was for back-compat with pre-Snow-Leopard apps).</td></tr>
-<tr><td>State-value pages</td><td>Mach <code>vm_allocate</code> + port handoff for shared memory</td><td>POSIX <code>shm_open(2)</code> + <code>mmap(2)</code>. Same zero-IPC-read characteristic; portable across any Unix.</td></tr>
-<tr><td>Subscriber wakeup (<code>NOTIFY_TYPE_DISPATCH</code>)</td><td>Mach port message → libdispatch source</td><td>EVFILT_USER + libdispatch source. One less indirection layer.</td></tr>
+<tr><td>Daemon-client IPC</td><td>Mach ports + MIG-generated stubs (two flavors: current + legacy)</td><td>Identical: Mach ports + MIG-generated stubs (both <code>notify_ipc.defs</code> + <code>notify_old_ipc.defs</code> retained, generated via FreeBSD's <code>mig(1)</code>). Substrate provided by mach.ko + libxpc + libdispatch's Mach backend.</td></tr>
+<tr><td>State-value pages</td><td>Mach <code>vm_allocate</code> + port handoff for shared memory</td><td>POSIX <code>shm_open(2)</code> + <code>mmap(2)</code>. The one substitution. Same zero-IPC-read characteristic; portable across any Unix; matches Apple's user-visible semantic.</td></tr>
+<tr><td>Subscriber wakeup (<code>NOTIFY_TYPE_PORT</code>)</td><td>Mach <code>mach_msg</code> to registered port</td><td>Identical. Native Mach mechanism on the v2 substrate.</td></tr>
+<tr><td>Subscriber wakeup (<code>NOTIFY_TYPE_DISPATCH</code>)</td><td>Mach port message → libdispatch source</td><td>Identical. Subscriber holds a libdispatch <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> source; daemon sends a Mach message.</td></tr>
 <tr><td>Path notifications</td><td>kqueue under the hood (already!)</td><td>kqueue. Identical.</td></tr>
-<tr><td>Subscriber bookkeeping</td><td>Mach send-rights tracked per-client; subscriber-died detected via Mach port-no-senders notification</td><td><code>DISPATCH_SOURCE_TYPE_PROC</code> on each subscriber's PID. <code>DISPATCH_PROC_EXIT</code> fires; daemon cancels that PID's registrations. Cleaner.</td></tr>
+<tr><td>Subscriber bookkeeping</td><td>Mach send-rights tracked per-client; subscriber-died detected via Mach port-no-senders notification</td><td>Both retained: Mach port-no-senders notification on the v2 substrate (the natural mechanism), augmented with <code>DISPATCH_SOURCE_TYPE_PROC</code> on each subscriber's PID as a belt-and-suspenders catch for clients that crash mid-message.</td></tr>
 <tr><td>Build-system gates</td><td>iOS / sim / catalyst <code>#if</code></td><td>Delete. One target.</td></tr>
 </tbody>
 </table>
@@ -404,25 +408,22 @@
 <pre class="plist"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
 &lt;plist version="1.0"&gt;
 &lt;dict&gt;
-    &lt;key&gt;Label&lt;/key&gt;             &lt;string&gt;org.freebsd.notifyd&lt;/string&gt;
+    &lt;key&gt;Label&lt;/key&gt;             &lt;string&gt;com.apple.notifyd&lt;/string&gt;
     &lt;key&gt;ProgramArguments&lt;/key&gt;  &lt;array&gt;&lt;string&gt;/usr/libexec/notifyd&lt;/string&gt;&lt;/array&gt;
     &lt;key&gt;RunAtLoad&lt;/key&gt;         &lt;true/&gt;
     &lt;key&gt;KeepAlive&lt;/key&gt;         &lt;true/&gt;
-    &lt;key&gt;Sockets&lt;/key&gt;           &lt;dict&gt;
-        &lt;key&gt;Listeners&lt;/key&gt;     &lt;dict&gt;
-            &lt;key&gt;SockPathName&lt;/key&gt; &lt;string&gt;/var/run/notifyd.sock&lt;/string&gt;
-            &lt;key&gt;SockType&lt;/key&gt;     &lt;string&gt;stream&lt;/string&gt;
-            &lt;key&gt;SockPathMode&lt;/key&gt; &lt;integer&gt;438&lt;/integer&gt; &lt;!-- 0666 --&gt;
-        &lt;/dict&gt;
+    &lt;key&gt;MachServices&lt;/key&gt;      &lt;dict&gt;
+        &lt;key&gt;com.apple.notifyd&lt;/key&gt;        &lt;true/&gt;
+        &lt;key&gt;com.apple.system.notification_center&lt;/key&gt; &lt;true/&gt;
     &lt;/dict&gt;
 &lt;/dict&gt;
 &lt;/plist&gt;</code></pre>
 
-<p>launchd opens the AF_UNIX listener and hands the fd to notifyd; client connections queue in the kernel even when notifyd is restarting.</p>
+<p>launchd registers the Mach service names on notifyd's behalf; clients <code>bootstrap_look_up</code> them and obtain a send right; notifyd calls <code>bootstrap_check_in</code> at startup to receive the receive right. Pending client messages queue on the port even when notifyd is restarting.</p>
 
 <h3>9.2 Boot ordering</h3>
 
-<p>notifyd has no dependencies on other daemons — it's a leaf service. Configd may want to use notifyd internally for fan-out (instead of DO callbacks) once both are present, but configd works fine without it. Order it alongside other system daemons; no explicit ordering needed.</p>
+<p>notifyd has no dependencies on other daemons — it's a leaf service. ASL's libsystem_asl uses notifyd internally for fan-out (every log write posts <code>com.apple.system.logger</code>); configd, PowerManagement, IPConfiguration, DiskArbitration, IOKitUser all post / register for named events. Order it alongside other system daemons; no explicit ordering needed (launchd's bootstrap machinery handles "client looks up service before service has checked in" via held messages).</p>
 
 <h2 id="license">10. Licensing</h2>
 
@@ -432,85 +433,51 @@
 <thead><tr><th>Source</th><th>License</th><th>How we handle it</th></tr></thead>
 <tbody>
 <tr><td>Apple Libnotify-98.5 (per-file APSL headers)</td><td>APSL 1.1 / 2.0 mix</td><td>Keep per-file headers verbatim. Our edits inherit APSL via inbound=outbound — those individual files stay APSL regardless of top-level repo license.</td></tr>
-<tr><td>This repo's new code (DO bridge, FreeBSD shims, integration glue)</td><td>BSD-2-Clause</td><td>SPDX header on each new file.</td></tr>
-<tr><td>GNUstep Foundation, libdispatch (linked, not in tree)</td><td>LGPL/Apache as applicable</td><td>Listed in <code>NOTICE</code>. Same calculus as launchd/configd.</td></tr>
+<tr><td>This repo's new code (FreeBSD shims, build glue, shm-replacement of vm_allocate)</td><td>BSD-2-Clause</td><td>SPDX header on each new file.</td></tr>
+<tr><td>libdispatch, libxpc, libCoreFoundation (in-tree, in <code>src/</code>)</td><td>Apache 2.0 / APSL</td><td>Listed in <code>NOTICE</code>. Same calculus as launchd/configd/ASL.</td></tr>
 </tbody>
 </table>
 
 <h2 id="phases">11. Phased delivery</h2>
 
+<p>On the v2 (Mach-IPC) track notifyd ships as part of the ASL block — see the <a href="freebsd-asl-plan.html">ASL plan</a>'s Phase J1/J2 for the joint build. Reproduced here for completeness:</p>
+
 <div class="phase">
-<h3>Phase 0 — repo scaffold + import</h3>
+<h3>Phase J1 — <code>libnotify</code> <span class="pill ok">SHIPPED</span></h3>
 <ul>
-  <li>Create <code>notifyd/</code> at the top of <code>freebsd-launchd</code>. Update <code>NOTICE</code> for APSL attribution.</li>
-  <li>Add <code>notifyd/scripts/import-source.sh</code> that clones <code>apple-oss-distributions/Libnotify</code> at <code>Libnotify-98.5</code>, strips <code>.git</code>, drops it under <code>notifyd/src/</code>.</li>
-  <li>One-shot import commit (verbatim Apple tree).</li>
-  <li>Follow-up amputation commit per §6.1 (Mach IDL + Xcode + iOS variants + entitlements out).</li>
-  <li>No build wired up; ISO unchanged.</li>
+  <li>Import Apple <code>Libnotify-98.5</code> into <code>src/Libnotify/</code>.</li>
+  <li>Build <code>libnotify.so</code>: client API library. MIG client stubs generated from <code>notify_ipc.defs</code> via FreeBSD's <code>mig(1)</code>. <code>notify_post</code>, <code>notify_register_dispatch</code>, <code>notify_register_signal</code>, <code>notify_register_file_descriptor</code>, <code>notify_register_mach_port</code>, <code>notify_cancel</code> all linkable; calls land on a Mach service name (no daemon yet — stubs return success).</li>
+  <li>Joint Phase J1 with ASL <code>libsystem_asl</code> because every <code>asl_*</code> log write posts <code>com.apple.system.logger</code> via libnotify.</li>
+  <li><strong>Wired into <code>build.sh</code></strong>; downstream linkers see <code>-lnotify</code>.</li>
 </ul>
 </div>
 
 <div class="phase">
-<h3>Phase 1 — minimal notifyd + libnotify (DO IPC, no shm)</h3>
+<h3>Phase J2 iter 1 — <code>notifyd</code> daemon <span class="pill ok">SHIPPED</span></h3>
 <ul>
-  <li>Top-level <code>notifyd/Makefile</code> + <code>make-notifyd.sh</code>.</li>
-  <li>Port <code>notifyd.c</code>, <code>service.c</code>, <code>notify_proc.c</code>: minimum daemon that accepts DO connections, registers names, fans out posts.</li>
-  <li>Port <code>libnotify.c</code>: client API. Replace Mach IPC layer with NSConnection. <code>notify_post</code>, <code>notify_register_dispatch</code>, <code>notify_register_signal</code>, <code>notify_register_fd</code>, <code>notify_cancel</code> all work end-to-end.</li>
-  <li>State values still go through DO (slow path) — <code>notify_get_state</code>, <code>notify_set_state</code> are RPC calls in this phase.</li>
-  <li>Boot test extension: launchctl-equivalent harness runs <code>notifyutil</code>; verify a posted name reaches a subscriber in another process.</li>
+  <li>Build <code>notifyd</code> from <code>src/Libnotify/notifyd/</code>. MIG server stubs generated from <code>notify_ipc.defs</code>.</li>
+  <li>Daemon registers Mach service <code>com.apple.notifyd</code> via <code>bootstrap_check_in</code>; receives requests via libdispatch <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> on the service port.</li>
+  <li>POSIX <code>shm_open</code> + <code>mmap</code> for state-value pages — atomic stores via <code>&lt;stdatomic.h&gt;</code>; clients map read-only at registration. The one substitution for Apple's <code>vm_allocate</code>+port-handoff.</li>
+  <li>All delivery types working: <code>NOTIFY_TYPE_PORT</code>, <code>NOTIFY_TYPE_DISPATCH</code>, <code>NOTIFY_TYPE_SIGNAL</code>, <code>NOTIFY_TYPE_FD</code>, <code>NOTIFY_TYPE_CHECK</code>.</li>
+  <li><code>com.apple.notifyd.plist</code> in <code>/System/Library/LaunchDaemons/</code>; launchd boot-starts it.</li>
 </ul>
 </div>
 
 <div class="phase">
-<h3>Phase 2 — POSIX shm state pages</h3>
+<h3>Phase J2 iter 2+ — pathwatch + notifyutil + launch-events <span class="pill warn">FOLLOW-UP</span></h3>
 <ul>
-  <li>Replace the DO RPC for <code>notify_get_state</code> with shared-memory mapping. Daemon allocates <code>shm_open</code>'d segments holding the state-value array; client <code>mmap</code>s them read-only on registration.</li>
-  <li>Daemon writes state via atomic store intrinsics (<code>atomic_store_explicit</code>) so torn reads are impossible.</li>
-  <li>Run <code>notifybench</code>: confirm state reads stay zero-IPC after the swap. Compare to Phase 1 RPC baseline.</li>
+  <li>pathwatch.c (file-path-change notifications via kqueue) — Apple source is portable; thin wire-up.</li>
+  <li>notifyutil(1) CLI for admin/dev. Useful for boot-test verification.</li>
+  <li>launchd <code>LaunchEvents</code> + <code>com.apple.notifyd.matching</code> stanza support (notifyd-driven job-on-event activation). Replaces ad-hoc polling for "wait for network up", "wait for filesystems mounted", etc.</li>
 </ul>
 </div>
 
 <div class="phase">
-<h3>Phase 3 — pathwatch + advanced features</h3>
+<h3>Phase K+ — downstream consumers <span class="pill warn">IN-FLIGHT</span></h3>
 <ul>
-  <li>Port <code>pathwatch.c</code>: subscribe-to-path-changes notifications. Already kqueue-based; minimal changes.</li>
-  <li>Port <code>notify_register_check</code> (poll-based; check counter changes via shm).</li>
-  <li><code>NOTIFY_TYPE_FD</code> delivery (subscriber holds the read end of a pipe) wired up.</li>
-</ul>
-</div>
-
-<div class="phase">
-<h3>Phase 4 — notifyutil CLI</h3>
-<ul>
-  <li>Port <code>notifyutil/notifyutil.c</code>: post a name, watch for posts, set/get state. Useful for testing + system administration.</li>
-  <li>Boot test: ssh in, <code>notifyutil -p test.foo</code> from one shell; <code>notifyutil -w test.foo</code> from another; confirm wakeup.</li>
-</ul>
-</div>
-
-<div class="phase">
-<h3>Phase 5 — launchd <code>LaunchEvents</code> integration</h3>
-<ul>
-  <li>Add <code>LaunchEvents</code> + <code>com.apple.notifyd.matching</code> stanza support to <code>core.m</code> in the launchd source. Job stays in WAITING state until a matching name is posted; spawn happens on first post.</li>
-  <li>Replaces the proposed <code>RequiresPhase</code> mechanism (launchd plan §11.3) with the more general notifyd-driven approach.</li>
-  <li>Migrate phase no-op jobs (kld-loaded, filesystems-ready, network-ready) to post their phase names through notifyd; consumer plists use <code>LaunchEvents</code> instead of <code>RequiresPhase</code>.</li>
-</ul>
-</div>
-
-<div class="phase">
-<h3>Phase 6 — gershwin integration</h3>
-<ul>
-  <li>Workspace, prefs panels, menubar widgets all start using notifyd posts (theme, audio, network, battery, etc.).</li>
-  <li>Per-user launchd agents triggered by <code>org.freebsd.session.user-logged-in</code>.</li>
-  <li>Configd (if shipped) routes its dynamic-store change events through notifyd for fan-out, replacing the per-client DO-callback scheme.</li>
-</ul>
-</div>
-
-<div class="phase">
-<h3>Phase 7+ — optional, demand-driven</h3>
-<ul>
-  <li>Re-enable <code>NOTIFY_TYPE_PORT</code> only if some app's port-receiving consumer can't be source-ported. Unlikely.</li>
-  <li>DTrace probes (port <code>notify_probes.d</code>) when the perf-measurement need shows up.</li>
-  <li>Cross-host event federation (SSDP-style notifyd network bridge) — speculative.</li>
+  <li>configd posts <code>com.apple.system.config.network_change</code> on reachability/store updates (consumed by Mail / browsers / sync clients).</li>
+  <li>PowerManagement, IPConfiguration, DiskArbitration, IOKitUser all link <code>-lnotify</code> and use the API natively (no porting work — Apple's code Just Works on the v2 Mach substrate).</li>
+  <li>gershwin Workspace, prefs panels, menubar widgets emit posts (theme, audio, network, battery, etc.) — landed alongside the gershwin desktop port.</li>
 </ul>
 </div>
 
@@ -537,7 +504,7 @@
 </div>
 
 <div class="open-q">
-<strong>Q6. Bootstrapping order with launchd.</strong> notifyd needs to be running before <code>LaunchEvents</code>-using plists can be evaluated. If notifyd is itself launched by launchd, there's a chicken-and-egg if the launchd plist using <code>LaunchEvents</code> is loaded before notifyd is up. Decision: notifyd's own plist has highest priority RunAtLoad, no <code>LaunchEvents</code>; other plists' <code>LaunchEvents</code> are evaluated after notifyd's IPC socket is up. Same pattern as configd.
+<strong>Q6. Bootstrapping order with launchd.</strong> notifyd needs to be running before <code>LaunchEvents</code>-using plists can be evaluated. If notifyd is itself launched by launchd, there's a chicken-and-egg if the launchd plist using <code>LaunchEvents</code> is loaded before notifyd is up. Decision: notifyd's own plist has highest priority RunAtLoad, no <code>LaunchEvents</code>; the launchd bootstrap machinery holds client <code>bootstrap_look_up("com.apple.notifyd")</code> calls until notifyd has called <code>bootstrap_check_in</code>. Same pattern as configd / WindowServer / any other Mach-service-providing daemon.
 </div>
 
 <div class="open-q">
@@ -553,6 +520,9 @@
   <li>Apple Public Source License: <a href="https://opensource.apple.com/apsl/">opensource.apple.com/apsl/</a>.</li>
   <li>POSIX <code>shm_open(2)</code>: <code>man 2 shm_open</code>.</li>
 </ul>
+
+<hr>
+<p class="footnote"><strong>Revision 2026-05-23.</strong> Refactored from the v1 (AF_UNIX / GNUstep DO) target to the v2 (<code>freebsd-launchd-mach</code> / Mach-IPC) target. notifyd <strong>SHIPPED</strong> in Phase J1 (<code>libnotify</code>) + Phase J2 iter 1 (<code>notifyd</code> daemon) under <code>src/Libnotify/</code>; MIG client/server stubs from <code>notify_ipc.defs</code>, libdispatch <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> on the service port, POSIX <code>shm_open</code>+<code>mmap</code> the sole substitution for Apple's <code>vm_allocate</code>+port-handoff. <code>NOTIFY_TYPE_PORT</code> retained (it was dropped in the v1 plan). Companion ASL plan at <a href="freebsd-asl-plan.html">freebsd-asl-plan.html</a>.</p>
 
 </body>
 </html>

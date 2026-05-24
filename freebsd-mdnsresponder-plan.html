@@ -86,8 +86,12 @@
   <a href="#open">Open questions</a>
 </nav>
 
-<h1>FreeBSD mDNSResponder — porting plan</h1>
+<h1>FreeBSD mDNSResponder — porting plan <span class="pill info">freebsd-launchd-mach (v2) effort</span></h1>
 <p class="subtitle">A port of Apple's mDNSResponder + libdns_sd to FreeBSD, providing native Bonjour / zeroconf service discovery: <code>.local</code> hostname resolution, automatic printer / file-share discovery on the LAN, and the same <code>dns-sd(1)</code> + <code>libdns_sd</code> API surface that Apple-derived applications already speak. Companion to <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-kmodloader-plan.html">kmodloader</a>, <a href="freebsd-asl-plan.html">asl</a>, <a href="freebsd-notifyd-plan.html">notifyd</a>.</p>
+
+<div class="resolved">
+  <strong>Revision 2026-05-23.</strong> Filed under the <code>freebsd-launchd-mach</code> (v2) Mach-IPC track effort. Strategy: keep Apple's cross-platform <code>mDNSPosix/</code> layer as the protocol engine (zero Mach surface &mdash; kqueue + sockets); add a Mach service layer mirroring Apple's <code>dnssd.defs</code> MIG IDL so <code>DNSServiceBrowse</code> / <code>DNSServiceRegister</code> / <code>DNSServiceResolve</code> clients get Apple-shape <code>DNSServiceRef</code> behavior over <code>mach_msg</code>. Network-state events sourced via Mach RPC from the in-repo MIG-served configd (<code>com.apple.SystemConfiguration</code>), NOT via GNUstep DO.
+</div>
 
 <section id="tldr" class="tldr">
   <h3>Status: planning <span class="pill info">v0</span> &mdash; deferred</h3>
@@ -202,7 +206,7 @@ Client side: app links libdns_sd.so -- DNSServiceRegister(...), etc.
 <tr><td><code>DISPATCH_SOURCE_TYPE_READ</code></td><td>each connected client fd</td><td>parse client IPC framed messages: register / browse / resolve / cancel</td></tr>
 <tr><td><code>DISPATCH_SOURCE_TYPE_VNODE</code></td><td><code>/etc/mdnsd.conf</code></td><td>reload config; reset interface filters</td></tr>
 <tr><td><code>DISPATCH_SOURCE_TYPE_SIGNAL</code></td><td>SIGTERM, SIGHUP, SIGUSR1</td><td>SIGTERM: clean shutdown. SIGHUP: reload conf. SIGUSR1: dump cache.</td></tr>
-<tr><td>configd subscription (DO)</td><td>network-state events from configd</td><td>iface up: open multicast socket; iface down: tear down. Replaces configd-internal polling that mDNSResponder.proj's macOSX layer does.</td></tr>
+<tr><td>configd subscription via Mach RPC (SCDynamicStoreCreate + SCDynamicStoreSetNotificationKeys against <code>com.apple.SystemConfiguration</code>)</td><td>network-state events from configd</td><td>iface up: open multicast socket; iface down: tear down. Replaces configd-internal polling that mDNSResponder.proj's macOSX layer does.</td></tr>
 </tbody>
 </table>
 
@@ -278,7 +282,7 @@ Client side: app links libdns_sd.so -- DNSServiceRegister(...), etc.
 <table>
 <thead><tr><th>Feature</th><th>Apple's Darwin build</th><th>This port (FreeBSD-only)</th></tr></thead>
 <tbody>
-<tr><td>Network state ingestion</td><td>configd's network-state plugin via Mach notifications</td><td>configd subscription via DO (per our configd port). Or stock mDNSPosix iface poll.</td></tr>
+<tr><td>Network state ingestion</td><td>configd's network-state plugin via Mach notifications</td><td>configd subscription via Mach RPC (the in-repo MIG-served configd at <code>com.apple.SystemConfiguration</code>). Or stock mDNSPosix iface poll.</td></tr>
 <tr><td>Power management hooks</td><td>IOKit power-management for sleep/wake</td><td>Skip in Phase 1. Phase 3+: subscribe to notifyd's <code>org.freebsd.power.sleep-requested</code> / <code>...wake</code>; pause/resume mDNS state appropriately.</td></tr>
 <tr><td>Sandboxing</td><td>sandbox(7) profile (<code>mdnsd.sb</code>)</td><td>Drop. Capsicum-based sandboxing later.</td></tr>
 <tr><td>Wide-Area Bonjour</td><td>Integration with iCloud + Back to My Mac infrastructure</td><td>Dropped (non-goal).</td></tr>
@@ -388,7 +392,7 @@ Client side: app links libdns_sd.so -- DNSServiceRegister(...), etc.
 <h3>Phase 3 &mdash; libdispatch event loop (polish)</h3>
 <ul>
   <li>Replace <code>PosixDaemon.c</code>'s select loop with libdispatch sources. ~200 LOC. Optional polish for stack consistency.</li>
-  <li>Subscribe to configd's network events via DO so iface attach/detach events propagate without polling.</li>
+  <li>Subscribe to configd's network events via SCDynamicStore (Mach RPC) so iface attach/detach events propagate without polling. Alternatively, subscribe directly to <code>hwregd</code>'s <code>IFNET/ATTACH</code> Mach notifications for a more direct path.</li>
 </ul>
 </div>
 
@@ -437,6 +441,9 @@ Client side: app links libdns_sd.so -- DNSServiceRegister(...), etc.
   <li>RFC 6762 (mDNS), RFC 6763 (DNS-SD), RFC 8490 (DSO).</li>
   <li>Apache License 2.0: <a href="https://www.apache.org/licenses/LICENSE-2.0">apache.org/licenses/LICENSE-2.0</a>.</li>
 </ul>
+
+<hr style="margin-top: 3rem; border: none; border-top: 1px solid var(--rule);">
+<p style="color: var(--muted); font-size: .88rem; margin-top: 1rem;"><strong>Revised 2026-05-23.</strong> Refiled under the <code>freebsd-launchd-mach</code> (v2) Mach-IPC track: <code>mDNSPosix</code> remains the kqueue+sockets protocol engine; client API surface mirrors Apple's <code>dnssd.defs</code> MIG IDL; network-state events sourced via Mach RPC from the in-repo MIG-served configd at <code>com.apple.SystemConfiguration</code>.</p>
 
 </body>
 </html>

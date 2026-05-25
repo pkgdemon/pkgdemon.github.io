@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FreeBSD/Mach PAM Port — Plan</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; line-height: 1.55; color: #222; }
+h1, h2, h3 { line-height: 1.2; }
+h1 { border-bottom: 2px solid #555; padding-bottom: 0.3em; }
+h2 { margin-top: 2em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h3 { margin-top: 1.5em; }
+code, pre { font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+code { background: #f4f4f4; padding: 0.1em 0.3em; border-radius: 3px; }
+pre { background: #f4f4f4; padding: 0.8em 1em; border-radius: 5px; overflow-x: auto; }
+table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+th, td { border: 1px solid #ccc; padding: 0.4em 0.8em; text-align: left; vertical-align: top; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #888; padding: 0.3em 1em; margin: 1em 0; background: #f9f9f9; color: #444; }
+.tag { display: inline-block; background: #e5e5e5; color: #333; padding: 0.1em 0.5em; border-radius: 3px; font-size: 0.85em; }
+.recommend { background: #e8f4e8; border-left: 3px solid #2a2; padding: 0.3em 1em; margin: 1em 0; }
+.note { background: #eef4fb; border-left: 3px solid #48a; padding: 0.3em 1em; margin: 1em 0; }
+</style>
+</head>
+<body>
+
+<h1>FreeBSD/Mach PAM Port — Plan</h1>
+
+<p>Status: <span class="tag">v1 &mdash; ready to execute</span></p>
+
+<p>This plan scopes the replacement of FreeBSD&rsquo;s PAM stack
+(<code>FreeBSD-pam</code> + <code>FreeBSD-pam-lib</code> packages
+plus <code>/etc/pam.d/*</code> policy) on the
+<code>freebsd-launchd-mach</code> image with pure-Apple vendored
+source. Trigger: <code>pam_xdg.so</code> session-failure mode
+during <a href="freebsd-hostnamed-plan.html">hostnamed iter 1</a>.
+Deeper goal: stop carrying FreeBSD&rsquo;s PAM modules + policy.</p>
+
+<p>OpenDirectory is intentionally out of scope here &mdash; it&rsquo;s
+deferred to a separate
+<a href="freebsd-opendirectory-port-plan.html">OpenDirectory port
+scoping doc</a> for later consideration. The PAM port doesn&rsquo;t
+depend on any of that work.</p>
+
+<h2>1. Goals (stated, in priority order)</h2>
+
+<ol>
+  <li><strong>Drop <code>FreeBSD-pam*</code> packages</strong> from
+      <code>pkglist-base.txt</code>. No FreeBSD PAM modules, no
+      FreeBSD <code>/etc/pam.d/*</code> shipped on the image.</li>
+  <li><strong>Drop <code>pam_xdg</code></strong> and the XDG
+      runtime-dir convention entirely.</li>
+  <li><strong>Basic auth still works</strong>: root console login
+      via <code>login(1)</code> + <code>LoginWindow.app</code>,
+      <code>sshd</code>, <code>su</code>, <code>sudo</code>,
+      <code>passwd</code>.</li>
+</ol>
+
+<h2>2. What we vendor</h2>
+
+<p>Pure Apple vendoring &mdash; zero new module code authored.</p>
+
+<table>
+  <tr><th>Component</th><th>Apple repo</th><th>Provides</th></tr>
+  <tr><td>OpenPAM framework + bundled modules</td>
+      <td><code>apple-oss-distributions/OpenPAM</code> (457 KB)</td>
+      <td><code>libpam.so</code> framework (replaces
+          <code>FreeBSD-pam-lib</code>), plus three modules from
+          <code>openpam/modules/</code>:
+          <ul>
+            <li><code>pam_unix.so</code> &mdash; 196 LOC upstream
+                Dag-Erling Sm&oslash;rgrav code,
+                <code>getpwnam</code> + <code>crypt</code>; defers
+                store selection to NSS</li>
+            <li><code>pam_deny.so</code> &mdash; always-deny terminator</li>
+            <li><code>pam_permit.so</code> &mdash; always-permit terminator</li>
+          </ul></td></tr>
+  <tr><td>Apple standalone modules</td>
+      <td><code>apple-oss-distributions/pam_modules</code> (316 KB)</td>
+      <td>The 5 portable ones (the others need OD / SecurityServer
+          / SmartCard subsystems we don&rsquo;t have):
+          <ul>
+            <li><code>pam_self.so</code> &mdash; allow root to su to anyone</li>
+            <li><code>pam_rootok.so</code> &mdash; allow root without password</li>
+            <li><code>pam_uwtmp.so</code> &mdash; utmp/wtmp accounting</li>
+            <li><code>pam_nologin.so</code> &mdash; respect <code>/etc/nologin</code></li>
+            <li><code>pam_env.so</code> &mdash; set environment variables</li>
+          </ul></td></tr>
+</table>
+
+<p><strong>Net</strong>: 1 framework + 8 modules, all from Apple
+upstream. Plus an overlay
+<code>/etc/pam.d/{login,su,sshd,sudo,passwd,other}</code>
+composing the 8 modules into working policies.</p>
+
+<h2>3. Auth backend: defer to NSS</h2>
+
+<p>Apple&rsquo;s upstream <code>pam_unix.c</code> (196 LOC) does
+<code>getpwnam(user)</code> &rarr; <code>crypt(password, hash)</code>
+&rarr; compare. It defers backend selection to NSS via the standard
+libc API. Whatever the system&rsquo;s <code>nsswitch.conf</code>
+resolves through is what authenticates. The PAM stack has no
+opinion about where users live.</p>
+
+<p>This means the same module handles:</p>
+<ul>
+  <li>Plain <code>/etc/master.passwd</code> (default nss_files
+      backend) &mdash; works out of the box.</li>
+  <li>gershwin&rsquo;s plist store (via the existing
+      <code>nss_gershwin.so</code> module) &mdash; transparent;
+      no PAM-side change needed.</li>
+  <li>A future LDAP-backed store, sqlite, etc. &mdash; whatever
+      NSS module is configured.</li>
+</ul>
+
+<blockquote class="note">
+<strong>Gershwin integration is out of scope for this plan.</strong>
+The gershwin desktop ships its own NSS bridge and auth daemon
+which downstream of this PAM port will transparently provide the
+user store. Verifying that integration happens at integration
+time, not as part of the PAM port itself.
+</blockquote>
+
+<h2>4. What breaks in FreeBSD-runtime / FreeBSD-rescue?</h2>
+
+<p>Dropping <code>FreeBSD-pam*</code> removes
+<code>/usr/lib/pam/pam_*.so</code> and FreeBSD&rsquo;s stock
+<code>/etc/pam.d/*</code>. Question: does this break the
+PAM-consuming binaries shipped in <code>FreeBSD-runtime</code> or
+<code>FreeBSD-rescue</code>?</p>
+
+<h3>4.1 Why the binaries themselves are safe</h3>
+
+<table>
+  <tr><th>Source</th><th>Binary</th><th>libpam linkage</th><th>Module loading</th></tr>
+  <tr><td rowspan="6">FreeBSD-runtime</td>
+      <td><code>/usr/bin/login</code></td>
+      <td>dynamic <code>-lpam</code></td>
+      <td>runtime <code>dlopen</code> from <code>/usr/lib/pam/</code></td></tr>
+  <tr><td><code>/usr/bin/su</code></td>
+      <td>dynamic</td><td>runtime <code>dlopen</code></td></tr>
+  <tr><td><code>/usr/bin/passwd</code> (+ <code>chsh</code>,
+          <code>chfn</code>, <code>chpass</code> hardlinks)</td>
+      <td>dynamic</td><td>runtime <code>dlopen</code></td></tr>
+  <tr><td><code>/usr/sbin/sshd</code></td>
+      <td>dynamic (built <code>--with-pam</code>)</td>
+      <td>runtime <code>dlopen</code></td></tr>
+  <tr><td><code>/usr/sbin/cron</code></td>
+      <td>dynamic</td><td>runtime <code>dlopen</code></td></tr>
+  <tr><td><code>/usr/bin/at</code></td>
+      <td>dynamic</td><td>runtime <code>dlopen</code></td></tr>
+  <tr><td rowspan="3">FreeBSD-rescue</td>
+      <td><code>/rescue/login</code></td>
+      <td><strong>static</strong> <code>libpam.a</code> embedded</td>
+      <td>runtime <code>dlopen</code> &mdash; static libpam still
+          loads <code>.so</code> modules at run-time</td></tr>
+  <tr><td><code>/rescue/su</code></td>
+      <td>static</td><td>runtime <code>dlopen</code></td></tr>
+  <tr><td><code>/rescue/passwd</code></td>
+      <td>static</td><td>runtime <code>dlopen</code></td></tr>
+</table>
+
+<p>Key fact: <strong>OpenPAM is the same upstream framework on
+FreeBSD and on Apple</strong>. The ABI is stable. The
+<code>pam_sm_*</code> entry points haven&rsquo;t changed in years.
+So a binary statically-linked with FreeBSD&rsquo;s libpam happily
+loads modules from Apple&rsquo;s pam_modules, and a binary
+dynamically-linked against Apple OpenPAM happily loads modules with
+FreeBSD-shape entry points too. <strong>No binary rebuild or shim
+required.</strong></p>
+
+<h3>4.2 Where breakage CAN occur: pam.d references to absent modules</h3>
+
+<p>Each <code>/etc/pam.d/&lt;service&gt;</code> file names modules
+by basename. When a service runs, libpam parses the file and
+<code>dlopen</code>s each named module. If a referenced module
+file doesn&rsquo;t exist, PAM returns <code>PAM_OPEN_ERR</code> /
+<code>PAM_MODULE_UNKNOWN</code> and the whole service stack fails.</p>
+
+<table>
+  <tr><th>FreeBSD-only module</th><th>Used in stock pam.d?</th><th>What we lose</th><th>Mitigation</th></tr>
+  <tr><td><code>pam_login_access.so</code></td>
+      <td>/etc/pam.d/login (auth + account)</td>
+      <td>Reading <code>/etc/login.access</code> for
+          per-user/per-tty allow/deny rules</td>
+      <td>Drop the lines from our overlay&rsquo;s pam.d/login.
+          sshd has its own AllowUsers/DenyUsers.</td></tr>
+  <tr><td><code>pam_lastlog.so</code></td>
+      <td>/etc/pam.d/login (session)</td>
+      <td>Updating <code>/var/log/lastlog</code> on login;
+          affects <code>last(1)</code> and
+          <code>finger(1)</code></td>
+      <td>Drop the line. Apple&rsquo;s <code>pam_uwtmp</code>
+          still writes utmp/wtmp; lastlog file stays empty.
+          Could be patched into pam_uwtmp later.</td></tr>
+  <tr><td><code>pam_securetty.so</code></td>
+      <td>Sometimes /etc/pam.d/login</td>
+      <td>Reading <code>/etc/ttys</code> &ldquo;secure&rdquo;
+          flag to restrict root tty logins</td>
+      <td>Drop the line. sshd uses
+          <code>PermitRootLogin</code>; console root login
+          restrictions can use <code>login.conf</code>
+          classes.</td></tr>
+  <tr><td><code>pam_deny.so</code> / <code>pam_permit.so</code></td>
+      <td>/etc/pam.d/other (catch-all default)</td>
+      <td>Explicit always-deny / always-permit terminators</td>
+      <td><strong>Vendored by Apple OpenPAM</strong>
+          (<code>openpam/modules/{pam_deny,pam_permit}/</code>).
+          No additional work.</td></tr>
+  <tr><td><code>pam_unix.so</code></td>
+      <td>Almost every pam.d service</td>
+      <td>UNIX password verification</td>
+      <td><strong>Vendored by Apple OpenPAM</strong> (196 LOC
+          upstream DES, <code>getpwnam</code>+<code>crypt</code>).
+          Goes through NSS.</td></tr>
+  <tr><td><code>pam_xdg.so</code></td>
+      <td>/etc/pam.d/login (session)</td>
+      <td>Creating <code>/var/run/xdg/$USER</code></td>
+      <td><strong>Intentionally dropped.</strong> Goal #2.</td></tr>
+  <tr><td><code>pam_ssh.so</code></td>
+      <td>/etc/pam.d/sshd in some configs</td>
+      <td>PAM-managed ssh-agent forwarding</td>
+      <td>Drop. ssh-agent works directly without PAM glue.</td></tr>
+</table>
+
+<h3>4.3 Net effect</h3>
+
+<p>Provided iter 3 ships a complete overlay
+<code>/etc/pam.d/{login,su,sshd,sudo,passwd,cron,other}</code>
+set that references only the 8 modules we vendor, the following
+continue to work unmodified:</p>
+
+<ul>
+  <li><strong>FreeBSD-runtime</strong>: <code>login</code>,
+      <code>su</code>, <code>passwd</code> (+chsh/chfn/chpass),
+      <code>sshd</code>, <code>cron</code>, <code>at</code>.</li>
+  <li><strong>FreeBSD-rescue</strong>: <code>/rescue/login</code>,
+      <code>/rescue/su</code>, <code>/rescue/passwd</code>.</li>
+  <li><strong>gershwin-components</strong>: <code>LoginWindow.app</code>
+      (calls <code>pam_start("login", ...)</code>),
+      <code>SudoAskPass</code> (bypasses PAM, hits dshelper
+      socket directly &mdash; unaffected by any PAM change).</li>
+</ul>
+
+<p>Functional regressions accepted (all small):</p>
+<ul>
+  <li><code>last(1)</code> output incomplete (no lastlog
+      updates).</li>
+  <li><code>/etc/login.access</code> ignored.</li>
+  <li><code>/etc/securetty</code> ignored for root restriction
+      (use sshd config + login.conf classes instead).</li>
+  <li>PAM-managed ssh-agent forwarding gone (ssh-agent itself
+      unaffected).</li>
+</ul>
+
+<h2>5. Iteration plan</h2>
+
+<table>
+  <tr><th>Iter</th><th>Scope</th><th>CI gate</th><th>Est. LOC</th></tr>
+  <tr><td>1</td>
+      <td>Vendor Apple OpenPAM as <code>src/openpam/</code>.
+          Builds <code>libpam.so</code> + <code>pam_unix.so</code>
+          + <code>pam_deny.so</code> + <code>pam_permit.so</code>
+          as a single source drop. Install <code>libpam.so</code>
+          into <code>/usr/lib/</code>, the 3 modules into
+          <code>/usr/lib/pam/</code>. Replace
+          <code>FreeBSD-pam-lib</code> (lib only; modules still
+          come from FreeBSD-pam at this point so we can verify
+          ABI compatibility).</td>
+      <td>existing post-login markers stay green; new
+          <code>PAM-FRAMEWORK-OK</code> verifies framework
+          <code>dlopen</code> of one of our new modules
+          succeeds</td>
+      <td>vendor ~10k, shim ~200</td></tr>
+  <tr><td>2</td>
+      <td>Vendor 5 standalone Apple modules from
+          <code>pam_modules</code>
+          (<code>pam_self</code>, <code>pam_rootok</code>,
+          <code>pam_uwtmp</code>, <code>pam_nologin</code>,
+          <code>pam_env</code>) into
+          <code>src/pam_modules/&lt;name&gt;/</code>; install as
+          <code>/usr/lib/pam/&lt;name&gt;.so</code>. No policy
+          change yet.</td>
+      <td>new <code>PAM-MODULES-OK</code>: each .so loadable
+          via <code>dlopen</code> + has required entry points</td>
+      <td>vendor ~3k, shim ~100</td></tr>
+  <tr><td>3</td>
+      <td>Compose overlay
+          <code>/etc/pam.d/{login,su,sshd,sudo,passwd,other}</code>
+          using only Apple modules (8 total &mdash; 3 from
+          OpenPAM + 5 from pam_modules). Drop
+          <code>FreeBSD-pam</code> from
+          <code>pkglist-base.txt</code>. CI&rsquo;s existing
+          post-login marker chain (and a fresh
+          <code>PAM-LOGIN-OK</code> marker via
+          <code>su root -c true</code>) is the regression gate.</td>
+      <td>existing markers green via the new stack +
+          <code>PAM-LOGIN-OK</code></td>
+      <td>~50 (configs only)</td></tr>
+  <tr><td>4</td>
+      <td>Restore <code>RunAtLoad=true</code> on hostnamed +
+          syslogd plists (no <code>pam_xdg</code> means no race
+          on /var/run/xdg). Verify boot banner shows synthesized
+          hostname instead of <code>Amnesiac</code>.</td>
+      <td>boot banner regex on first login</td>
+      <td>~10 (plist edits)</td></tr>
+</table>
+
+<h2>6. Open questions</h2>
+
+<ol>
+  <li><strong>OpenPAM build system</strong>: Apple&rsquo;s OpenPAM
+      uses autoconf + xcodeproj. Cross-build cleanly via our
+      bsd.lib.mk wrapping (libdispatch pattern), or run autoconf
+      in the chroot? Likely the former.</li>
+  <li><strong><code>pam_uwtmp</code> utmp ABI</strong>:
+      Apple&rsquo;s utmp/wtmp format may differ from FreeBSD&rsquo;s.
+      Investigate in iter 2 &mdash; if incompatible, either patch
+      <code>pam_uwtmp</code> to write FreeBSD utmpx, or accept
+      that <code>last(1)</code> / <code>who(1)</code> output stays
+      empty (low priority).</li>
+  <li><strong>nsswitch.conf ordering</strong>: confirm whichever
+      build overlays the right <code>passwd:</code> line so PAM
+      consults the expected user store. Iter 3 verifies.</li>
+  <li><strong>sshd <code>UsePAM</code></strong>: confirm OpenSSH
+      ships with <code>UsePAM yes</code>. If not, overlay
+      <code>sshd_config</code>.</li>
+  <li><strong><code>passwd(1)</code> integration</strong>:
+      FreeBSD&rsquo;s <code>passwd(1)</code> may bypass PAM and
+      edit <code>/etc/master.passwd</code> directly via
+      <code>pw_*</code> APIs. If so, dropping
+      <code>FreeBSD-pam</code>&rsquo;s passwd entry has no effect
+      on actual password changes. Test in iter 3.</li>
+</ol>
+
+<h2>7. Out of scope</h2>
+
+<ul>
+  <li>OpenDirectory porting &mdash; deferred. See
+      <a href="freebsd-opendirectory-port-plan.html">OpenDirectory
+      port scoping doc</a>.</li>
+  <li>Apple-only modules requiring SecurityServer, SmartCard,
+      LocalAuthentication, OpenDirectory.</li>
+  <li>Kerberos / NTLM auth.</li>
+  <li>Active Directory binding.</li>
+  <li>Keychain ACL evaluation (no Keychain port on roadmap).</li>
+  <li>Gershwin DirectoryServices changes &mdash; downstream of
+      this work, separate concern.</li>
+</ul>
+
+<hr>
+
+<p><em>v1 generated 2026-05-25. PAM port is independent of all
+directory-services decisions; those live in the companion
+<a href="freebsd-opendirectory-port-plan.html">OD port scoping
+doc</a>.</em></p>
+
+</body>
+</html>

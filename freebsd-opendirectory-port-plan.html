@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FreeBSD/Mach OpenDirectory Port — Scoping (Deferred)</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; line-height: 1.55; color: #222; }
+h1, h2, h3 { line-height: 1.2; }
+h1 { border-bottom: 2px solid #555; padding-bottom: 0.3em; }
+h2 { margin-top: 2em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+h3 { margin-top: 1.5em; }
+code, pre { font-family: SFMono-Regular, Menlo, Consolas, monospace; }
+code { background: #f4f4f4; padding: 0.1em 0.3em; border-radius: 3px; }
+pre { background: #f4f4f4; padding: 0.8em 1em; border-radius: 5px; overflow-x: auto; }
+table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+th, td { border: 1px solid #ccc; padding: 0.4em 0.8em; text-align: left; vertical-align: top; }
+th { background: #eee; }
+blockquote { border-left: 3px solid #888; padding: 0.3em 1em; margin: 1em 0; background: #f9f9f9; color: #444; }
+.tag { display: inline-block; background: #e5e5e5; color: #333; padding: 0.1em 0.5em; border-radius: 3px; font-size: 0.85em; }
+.warn { background: #fff5e0; border-left: 3px solid #c80; }
+.recommend { background: #e8f4e8; border-left: 3px solid #2a2; }
+.note { background: #eef4fb; border-left: 3px solid #48a; padding: 0.3em 1em; margin: 1em 0; }
+.blocked { background: #fde8e8; border-left: 3px solid #c33; padding: 0.3em 1em; margin: 1em 0; }
+</style>
+</head>
+<body>
+
+<h1>FreeBSD/Mach OpenDirectory Port — Scoping (Deferred)</h1>
+
+<p>Status: <span class="tag">SCOPING ONLY — not a commitment to execute; deferred until a real consumer emerges</span></p>
+
+<p>This document captures everything currently known about what
+porting Apple&rsquo;s OpenDirectory stack (and related directory
+infrastructure) would entail on the
+<code>freebsd-launchd-mach</code> image. It is <strong>NOT</strong>
+a commitment to do this work &mdash; it&rsquo;s discovery so the
+decision can be made later from a position of accurate
+information rather than guesses. The companion
+<a href="freebsd-pam-port-plan.html">PAM port plan</a> intentionally
+does NOT depend on any of this.</p>
+
+<h2>1. Why this is its own plan</h2>
+
+<p>Two reasons OD is split from the PAM port:</p>
+
+<ol>
+  <li>The PAM port is a small, well-bounded vendoring task (~1&ndash;2
+      weeks); OD is a multi-month, multi-component undertaking with
+      genuine architectural questions still open.</li>
+  <li>Apple&rsquo;s upstream <code>pam_unix</code> defers to NSS &mdash;
+      whatever directory lives at the NSS layer is invisible to PAM.
+      So the PAM port works against any directory backend (today
+      gershwin DS via nss_gershwin; tomorrow potentially OD; the
+      day after potentially something else). They&rsquo;re
+      orthogonal decisions.</li>
+</ol>
+
+<h2>2. The binding constraints</h2>
+
+<h3>2.1 <code>opendirectoryd</code> daemon source is CLOSED</h3>
+
+<blockquote class="blocked">
+Apple stopped publishing the directory-services daemon when it
+was renamed <code>opendirectoryd</code> in Mac OS X 10.7 Lion
+(2011). The XPC + MIG wire-protocol headers
+(<code>opendirectory/odipc.h</code>,
+<code>opendirectory/odutils.h</code>,
+<code>opendirectory/odconstants.h</code>) ship only with the
+closed daemon. The open client framework
+(<code>apple-oss-distributions/OpenDirectory</code>, 313 KB /
+~6,200 LOC CF core) is functional code but has no server to
+talk to.
+</blockquote>
+
+<h3>2.2 Active Directory plugin source is CLOSED</h3>
+
+<blockquote class="blocked">
+Apple ships an AD plugin for OpenDirectory but never
+open-sourced it. A code search across <code>apple-oss-distributions</code>
+for <code>DSActiveDirectory*</code> / <code>PlugInActiveDirectory*</code>
+returns zero results. The other DS plugins (LDAPv3, NIS,
+PasswordServer, NSL, etc.) are open; AD is the conspicuous
+exception.
+</blockquote>
+
+<h3>2.3 Tiger NetInfo open-source drop is incomplete</h3>
+
+<blockquote class="warn">
+<code>apple-oss-distributions/netinfo</code> (tag
+<code>netinfo-384</code>) ships only the <code>common/</code>
+shared library (~382 KB of C). The actual daemons
+(<code>netinfod</code>, <code>nibindd</code>,
+<code>lookupd</code>) and tools (<code>nicl</code>,
+<code>niutil</code>, <code>nidump</code>, <code>niload</code>,
+<code>nigrep</code>, <code>nipush</code>, <code>nireport</code>,
+<code>nifind</code>, <code>nidomain</code>) were dropped from the
+open-source bundle. Reconstructing the daemons is real
+engineering, not just a rebuild.
+</blockquote>
+
+<h2>3. What IS open and portable</h2>
+
+<table>
+  <tr><th>Component</th><th>Apple repo</th><th>Size</th><th>Role</th></tr>
+  <tr><td>OpenDirectory client framework</td>
+      <td><code>OpenDirectory</code></td>
+      <td>313 KB / ~6,200 LOC C core</td>
+      <td>Pure XPC client to <code>opendirectoryd</code>. Functional
+          but needs the closed daemon&rsquo;s wire-protocol headers
+          and a server to talk to.</td></tr>
+  <tr><td>Legacy DirectoryService daemon</td>
+      <td><code>DirectoryService</code></td>
+      <td>2.2 MB / ~50k LOC C++/MIG</td>
+      <td>opendirectoryd&rsquo;s 2009-vintage predecessor (Snow
+          Leopard). Plugin host. Uses Mach IPC + MIG + optional
+          DH+AES TCP proxy. Fully open including SDK.</td></tr>
+  <tr><td>DS admin tools</td>
+      <td><code>DSTools</code></td>
+      <td>432 KB</td>
+      <td>Source for <code>dscl</code>, <code>dscacheutil</code>,
+          <code>dsenableroot</code>, <code>dsmemberutil</code>,
+          <code>dsconfigldap</code>, <code>pwpolicy</code>,
+          <code>dserr</code>, <code>ugtools</code>,
+          <code>dirt</code>. NOT in DSTools (closed):
+          <code>dseditgroup</code>, <code>dsexport</code>,
+          <code>dsimport</code>, <code>dsconfigad</code>.</td></tr>
+  <tr><td>DS plugin backends</td>
+      <td><code>DSLDAPv3PlugIn</code>, <code>DSLDAPPlugIn</code>,
+          <code>DSNISPlugin</code>,
+          <code>DSPasswordServerPlugin</code>,
+          <code>DSNSLPlugins</code>, <code>DSAgent</code></td>
+      <td>~1.4 MB total</td>
+      <td>LDAPv3, NIS, PasswordServer, mDNS/SLP/SMB-browse
+          backends for the DS daemon. AD plugin is NOT here.</td></tr>
+  <tr><td>Kerberos (Heimdal)</td>
+      <td><code>Kerberos</code>,
+          <code>KerberosHelper</code>,
+          <code>KerberosLibraries</code></td>
+      <td>22 MB + 300 KB + 14 MB</td>
+      <td>Apple&rsquo;s Heimdal port plus their helper daemon and
+          libraries. Tightly tied to OS X internals; FreeBSD ports
+          already has Heimdal so this isn&rsquo;t the only path.</td></tr>
+  <tr><td>SMB client (modern)</td>
+      <td><code>SMBClient</code></td>
+      <td>4.8 MB</td>
+      <td>Apple&rsquo;s SMB3 client. Replaced Samba when GPLv3
+          became unacceptable to Apple in OS X 10.7.</td></tr>
+  <tr><td>SMB kernel module</td>
+      <td><code>smb</code></td>
+      <td>2.8 MB</td>
+      <td>Apple&rsquo;s kernel smbfs (XNU). Not portable to FreeBSD
+          kernel without major rewrite.</td></tr>
+  <tr><td>Samba (legacy)</td>
+      <td><code>samba</code></td>
+      <td>43 MB</td>
+      <td>Apple&rsquo;s Samba 3.x fork, frozen at the GPLv2 era.
+          Still buildable but Apple stopped maintaining it.</td></tr>
+  <tr><td>NetInfo (lib only)</td>
+      <td><code>netinfo</code></td>
+      <td>382 KB C (lib only)</td>
+      <td>Daemons + CLIs not published. See &sect;2.3.</td></tr>
+</table>
+
+<h2>4. Directory-service landscape comparison</h2>
+
+<table>
+  <tr>
+    <th>Feature</th>
+    <th>Tiger NetInfo</th>
+    <th>Snow Leopard DirectoryService</th>
+    <th>Gershwin DS (today)</th>
+  </tr>
+  <tr><td>Record types</td>
+      <td>~20 (users, groups, machines, networks, services,
+          printers, mounts, aliases, bootp, &hellip;)</td>
+      <td>~50 (extensible per plug-in via
+          <code>dsRecTypeNative:</code> prefix)</td>
+      <td><strong>2</strong> &mdash; users + groups only</td></tr>
+  <tr><td>Attributes</td>
+      <td>Flexible key/value</td>
+      <td>~100 standard + native-per-plugin</td>
+      <td>6 fixed per type (uid/gid/realName/shell/hash/noPassword
+          for users)</td></tr>
+  <tr><td>Pluggable backends</td>
+      <td>No (monolithic engine over single NIDB store)</td>
+      <td><strong>Yes</strong> &mdash; Local plist, LDAPv3, AD,
+          NIS, BSD-flat, Bonjour/mDNS, PasswordServer, NBP/SLP/SMB</td>
+      <td>No (single plist backend)</td></tr>
+  <tr><td>Auth methods</td>
+      <td><code>crypt(3)</code> only</td>
+      <td>25+ (Crypt, NTLMv1/v2, MS-CHAPv1/v2, CRAM-MD5,
+          DIGEST-MD5, APOP, CHAP, Kerberos, &hellip;)</td>
+      <td>SHA-512 <code>crypt(3)</code> only</td></tr>
+  <tr><td>Password policy</td>
+      <td>None</td>
+      <td><strong>Rich</strong> via PasswordServer
+          (<code>pwpolicy(8)</code>): lockout, expiry, history,
+          complexity, admin status, disabled flag</td>
+      <td>None &mdash; NSS module hardcodes all shadow fields to
+          <code>-1</code></td></tr>
+  <tr><td>Group nesting</td>
+      <td>No</td>
+      <td>Yes (<code>kDSNAttrNestedGroups</code>, resolved by
+          <code>memberd</code>)</td>
+      <td>Special-case <code>admin&rarr;wheel/sudo</code>
+          injection only</td></tr>
+  <tr><td>Replication</td>
+      <td>Master/clone with DB-version delta sync</td>
+      <td>Delegated per-backend (LDAP replicas, PasswordServer
+          replica set)</td>
+      <td><strong>None</strong> &mdash; one server per LAN; data
+          shared via NFS</td></tr>
+  <tr><td>Server discovery</td>
+      <td>Broadcast (parent-domain chaining)</td>
+      <td>DHCP option / SLP / Bonjour / manual
+          <code>dsconfigldap</code></td>
+      <td>gdomap broadcast (GNUstep portmapper)</td></tr>
+  <tr><td>Transport security</td>
+      <td>Plaintext Sun RPC over UDP/TCP; no server auth</td>
+      <td>Mach IPC (audit-token authenticated) + optional
+          Diffie-Hellman + AES TCP proxy + Kerberos for AD</td>
+      <td><strong>Plaintext everywhere</strong> &mdash; AF_UNIX
+          socket, TCP/4721 LAN listener, NFS (AUTH_SYS), gdomap
+          broadcasts. No TLS, no signing, no Kerberos</td></tr>
+  <tr><td>Open-source status</td>
+      <td><strong>Partial</strong> &mdash; only <code>common/</code>
+          lib; daemons + CLIs dropped</td>
+      <td>Fully open (daemon, SDK, all major plug-ins, tools,
+          framework) &mdash; <strong>except AD plugin</strong></td>
+      <td>Fully open (this is gershwin&rsquo;s own code)</td></tr>
+  <tr><td>Source size</td>
+      <td>~382 KB C library only</td>
+      <td>~3.1 MB DS daemon + ~860 KB DSTools + ~810 KB
+          OpenDirectory framework + ~1.4 MB plugins =
+          <strong>~6 MB</strong></td>
+      <td><strong>~4.7k LOC total</strong> (~80% Obj-C, 20% C)</td></tr>
+</table>
+
+<h2>5. Possible end-states and what each requires</h2>
+
+<h3>5.1 OD client on the FreeBSD/Mach box (no AD)</h3>
+
+<p>Means: <code>pam_opendirectory.so</code> works against a local
+or remote OD/LDAP directory. No AD support.</p>
+
+<table>
+  <tr><th>Component</th><th>Status</th></tr>
+  <tr><td>OpenDirectory framework</td><td>Vendor, ~6,200 LOC,
+      modest shimming (asl, assumes, CrashReporterClient,
+      mbr_*, NetBSD rb-tree)</td></tr>
+  <tr><td>opendirectoryd-equivalent daemon</td><td><strong>Closed.</strong>
+      Either: (a) port legacy DirectoryService daemon and bridge
+      OD framework calls to dsapi, or (b) write a minimal
+      XPC-speaking daemon that mimics the wire protocol enough
+      for the framework's needs.</td></tr>
+  <tr><td>DS daemon (Path B)</td><td>2.2 MB / 50k LOC
+      C++/MIG, 2009 vintage, multi-week port</td></tr>
+  <tr><td>LDAPv3 plugin or Local plugin</td><td>Open, ~weeks
+      to port + adapt to read our user store</td></tr>
+  <tr><td>DSTools</td><td>Open, ~432 KB, port to get the
+      <code>dscl</code> family of admin tools</td></tr>
+</table>
+
+<p>Realistic effort: <strong>~6&ndash;8 weeks</strong> of focused
+porting. Result: an OD client capable of running
+<code>pam_opendirectory</code> + admin via <code>dscl</code>.
+Still no AD binding.</p>
+
+<h3>5.2 OD + AD bind on the FreeBSD/Mach box</h3>
+
+<p>Means: machine can join an Active Directory domain, users can
+log in with AD credentials, machine can pull GPOs.</p>
+
+<table>
+  <tr><th>Component</th><th>Status</th></tr>
+  <tr><td>Everything in 5.1</td><td>Required</td></tr>
+  <tr><td>AD plugin</td><td><strong>Closed.</strong> Write from
+      scratch against the DS plugin SDK. Realistic: ~5&ndash;10k
+      LOC integrating Kerberos + LDAP + SMB + DNS SRV +
+      computer-account creation + GPO retrieval.</td></tr>
+  <tr><td>Kerberos</td><td>Open (or use FreeBSD&rsquo;s
+      Heimdal port). Needs modern enctypes (AES-256-CTS-HMAC-SHA384-192)
+      for current AD environments &mdash; FreeBSD&rsquo;s port has
+      this; Apple&rsquo;s 22 MB port may need upgrades.</td></tr>
+  <tr><td>SMBClient</td><td>Open, 4.8 MB. ~1&ndash;2 weeks port
+      atop existing CF/launchd/configd.</td></tr>
+  <tr><td>DNS SRV lookups</td><td>Already work via libresolv.</td></tr>
+</table>
+
+<p>Realistic effort: <strong>5.1 + 2&ndash;3 months</strong> for the
+AD plugin. Result: AD-bound FreeBSD/Mach box. Modern AD features
+(claims, gMSA, smartcard, FIDO2) still won&rsquo;t work without
+further plugin work; basic user-login + group-resolution would.</p>
+
+<h3>5.3 OD server for modern Macs to bind to</h3>
+
+<p>Means: FreeBSD/Mach box runs an Open Directory server. Newer
+macOS clients can bind to it for users + Kerberos auth.</p>
+
+<table>
+  <tr><th>Component</th><th>Status</th></tr>
+  <tr><td>Everything in 5.1</td><td>Required</td></tr>
+  <tr><td>OpenLDAP slapd</td><td>~50 MB FreeBSD port, well-known
+      build effort. Several hours to compile cleanly.</td></tr>
+  <tr><td>Kerberos KDC</td><td>Apple ports / FreeBSD&rsquo;s
+      Heimdal. KDC requires careful crypto configuration to
+      satisfy current macOS clients.</td></tr>
+  <tr><td>PasswordServer</td><td>Open at
+      <code>apple-oss-distributions/DSPasswordServerPlugin</code>
+      (482 KB). 2009 era; modern clients may require crypto
+      modernization.</td></tr>
+  <tr><td>DS daemon</td><td>Required (5.1)</td></tr>
+</table>
+
+<p>Realistic effort: <strong>~2&ndash;3 months</strong> stand-up,
+plus permanent ongoing maintenance for crypto modernization as
+macOS raises security bars. Result: OD server. Modern Macs can
+bind for user login + Kerberos. Some features may need patching
+over time.</p>
+
+<h3>5.4 AD server impersonation</h3>
+
+<p>Means: pretend to be a Windows AD server, accept Mac and
+Windows client binds.</p>
+
+<blockquote class="blocked">
+<strong>Not viable via Apple sources.</strong> Apple has never
+shipped an AD server. AD server requires Microsoft&rsquo;s
+specific schema (~5000 attributes), DRSR replication protocol,
+GPO infrastructure, SYSVOL share, etc. That&rsquo;s Samba 4&rsquo;s
+territory &mdash; ~15 years of focused engineering. If this is
+ever a real need, use Samba 4 directly (FreeBSD port exists).
+</blockquote>
+
+<h2>6. What this would actually buy us</h2>
+
+<p>Gershwin DS today covers ~5&ndash;10% of OD/DS&rsquo;s surface
+but covers the things actively used: user/group lookup, password
+verification, simple admin CLI. The gap that an OD port would
+fill:</p>
+
+<ul>
+  <li><strong>Kerberos integration</strong> &mdash; ticket-based
+      auth, single sign-on across services on the box and across
+      the LAN.</li>
+  <li><strong>Rich password policy</strong> &mdash; lockout,
+      expiry, history, complexity rules (today gershwin DS has
+      none).</li>
+  <li><strong>Nested groups</strong> &mdash; today gershwin DS
+      has the admin&rarr;wheel/sudo special case only.</li>
+  <li><strong>Many more record types</strong> &mdash; mounts,
+      printers, machines, etc. (today gershwin DS has users +
+      groups).</li>
+  <li><strong>Transport security</strong> &mdash; today gershwin
+      DS is plaintext everywhere including a TCP/4721 LAN
+      listener serving unauthenticated reads.</li>
+  <li><strong>Replication / multi-server</strong> &mdash; today
+      gershwin DS supports one server per LAN.</li>
+  <li><strong>Standard <code>dscl</code> CLI</strong> &mdash; the
+      Apple-canonical directory admin tool, vs gershwin&rsquo;s
+      bespoke <code>dscli</code>.</li>
+  <li><strong>AD bind (5.2 only)</strong> &mdash; let a user
+      type their corporate AD credentials and log in.</li>
+  <li><strong>Modern Mac bind (5.3 only)</strong> &mdash; let a
+      MacBook bind to the FreeBSD/Mach server for shared user
+      accounts.</li>
+</ul>
+
+<h2>7. When to revisit</h2>
+
+<p>This plan is in scoping-only state until at least one of the
+following becomes true:</p>
+
+<ul>
+  <li>A real consumer needs Kerberos SSO on the FreeBSD/Mach
+      box.</li>
+  <li>A real consumer needs to bind to a corporate AD domain.</li>
+  <li>A real consumer needs to manage Macs that bind to the
+      FreeBSD/Mach server.</li>
+  <li>Gershwin DS&rsquo;s feature gaps (password policy, nested
+      groups, transport security, replication) start hurting
+      real workloads.</li>
+  <li>A community AD-plugin reimplementation appears (low
+      probability).</li>
+</ul>
+
+<p>Until then, focus stays on completing the PAM port (see
+<a href="freebsd-pam-port-plan.html">PAM plan</a>) which is
+unaffected by any of this.</p>
+
+<h2>8. Open questions for future decision</h2>
+
+<ol>
+  <li>If we ever pursue 5.1, do we port the legacy DirectoryService
+      daemon (Path B) or write a minimal XPC-speaking
+      opendirectoryd-equivalent that bridges the OD framework? The
+      latter is smaller code but requires reverse-engineering the
+      XPC schema from <code>OpenDirectory/Core/odxpc.c</code>.</li>
+  <li>If we ever pursue 5.2, is FreeBSD&rsquo;s Heimdal port
+      acceptable, or do we vendor Apple&rsquo;s Kerberos
+      (22 MB)?</li>
+  <li>If we ever pursue 5.3, do we vendor Apple&rsquo;s legacy
+      Samba (43 MB, GPLv2-era) for SYSVOL share serving, or use
+      FreeBSD&rsquo;s Samba 4 port?</li>
+  <li>Could the gershwin DS evolution path (incrementally add
+      Kerberos, password policy, transport security) reach feature
+      parity with what we need for less effort than porting OD?
+      Likely yes; the strategic question is whether maintaining
+      our own daemon vs. carrying Apple&rsquo;s 2009 code is the
+      better long-term burden.</li>
+  <li>Would a community reimplementation of the OD XPC protocol
+      ever emerge? Unlikely; the audience is tiny and the
+      reverse-engineering effort substantial.</li>
+</ol>
+
+<hr>
+
+<p><em>Scoping document generated 2026-05-25 from deep-dive of
+<code>apple-oss-distributions/{OpenDirectory, DirectoryService,
+DSTools, DSLDAPv3PlugIn, DSNISPlugin, DSPasswordServerPlugin,
+DSNSLPlugins, Kerberos, SMBClient, samba, netinfo}</code> and
+<code>gershwin-desktop/gershwin-components/DirectoryServices</code>.</em></p>
+
+</body>
+</html>

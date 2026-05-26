@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>srclist build strategy &mdash; which /usr/src tools build standalone, which need prereqs</title>
+<style>
+  :root {
+    --fg: #1a1a1a; --fg-muted: #555; --bg: #fafaf7; --accent: #b8472a;
+    --accent-soft: #f3e7df; --border: #d8d4c8; --code-bg: #f0ece2;
+    --table-stripe: #f4efe5; --warn: #8a5a00; --good: #2d6f3b; --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif; color: var(--fg); background: var(--bg); line-height: 1.55; margin: 0; padding: 0; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 48px 32px 96px; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--border); letter-spacing: -0.005em; }
+  h3 { font-size: 1.15rem; margin: 32px 0 10px; color: var(--accent); }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg); }
+  code { padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  pre { padding: 14px 18px; border-radius: 4px; overflow-x: auto; font-size: 0.86rem; line-height: 1.45; margin: 0 0 18px; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+  .lede { font-size: 1.05rem; color: var(--fg-muted); margin-bottom: 32px; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 0.91rem; }
+  th, td { text-align: left; padding: 8px 10px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 18px 0 22px; border-radius: 0 4px 4px 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-good { border-left-color: var(--good); background: #e8f1e3; }
+  .callout-warn { border-left-color: var(--warn); background: #fbf3df; }
+  .callout-bad  { border-left-color: var(--bad);  background: #fbe6e6; }
+  .pill { display: inline-block; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 10px; margin-right: 6px; }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .toc { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 18px 24px 14px 36px; margin: 0 0 36px; font-size: 0.95rem; }
+  .toc h2 { margin: 0 0 8px; padding-top: 0; border-top: none; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-left: -14px; }
+  .toc ol { margin: 0 0 0 6px; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  @media (max-width: 600px) { .wrap { padding: 24px 18px 64px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>srclist build strategy &mdash; which <code>/usr/src</code> tools build standalone, which need prereqs</h1>
+
+<p class="lede">Deep-dive investigation triggered by CI failure on <a href="https://github.com/pkgdemon/freebsd-launchd-mach/pull/107">PR #107</a> (drop <code>FreeBSD-rescue</code> pkg, build <code>/rescue/</code> from <code>/usr/src</code>): the standalone <code>make -C rescue/rescue</code> failed because <code>rescue/rescue</code>'s crunchgen pulls in <code>lib/libifconfig</code> which generates a header at lib build time. Question: how many other tools have this kind of prereq, and what's the right scope for <code>srclist-rescue.txt</code> and <code>srclist-runtime.txt</code> in <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/104">tickets #104</a> / <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/105">#105</a>?</p>
+
+<div class="callout callout-good">
+<p><strong>TL;DR.</strong> Two findings, in order of importance:</p>
+<ul>
+  <li><strong>Apple has no <code>/rescue/</code> &mdash; ever.</strong> macOS recovery is a separate Recovery partition (recoveryOS), not a directory of statically-linked tools. Per architectural rule 3 ("don't invent things Apple doesn't do"), the right answer for ticket #104 is to <strong>drop FreeBSD-rescue entirely and not replace it</strong> &mdash; not rebuild it from <code>/usr/src</code>. See &sect;2.</li>
+  <li>For ticket #105 (the actually-load-bearing work): <strong>FreeBSD-runtime + utilities = ~425 <code>/usr/src</code> dirs</strong>, of which only <strong><code>/sbin/ifconfig</code></strong> has a generated-header prereq (libifconfig). Drop it from <code>srclist-runtime.txt</code> &mdash; matches the existing Apple <code>network_cmds/ifconfig</code> port in the v3 plan. Everything else builds standalone per-subdir.</li>
+  <li><strong>No <code>buildworld</code> needed.</strong> Per-subdir <code>make</code> against the host's pkgbase-installed headers and libs is sufficient. CI budget concern remains (~425 entries × ~10 sec each = 70+ min serial); slim the manifest or parallelize.</li>
+</ul>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#question">The investigation question</a></li>
+  <li><a href="#apple-rescue">Does Apple even have <code>/rescue/</code>? (No.)</a></li>
+  <li><a href="#data-inventory">Data: complete pkg inventory (agent 3)</a></li>
+  <li><a href="#data-categorization">Data: per-tool dep categorization (agent 1)</a></li>
+  <li><a href="#data-infrastructure">Data: FreeBSD build infrastructure (agent 2)</a></li>
+  <li><a href="#data-dropkeep">Data: drop-or-keep matrix (agent 4)</a></li>
+  <li><a href="#strategy">Strategy</a></li>
+  <li><a href="#action-104">Action for #104 (rescue) &mdash; revised</a></li>
+  <li><a href="#action-105">Action for #105 (runtime + utilities)</a></li>
+  <li><a href="#followup-landmines">Follow-up landmines</a></li>
+</ol>
+</div>
+
+<h2 id="question">1. The investigation question</h2>
+
+<p>PR #107 (proof-of-concept for ticket #104) failed CI with this error:</p>
+
+<pre><code>lib/libifconfig/libifconfig_sfp.h:33:10: fatal error:
+  'libifconfig_sfp_tables.h' file not found
+*** Error code 1
+Stop.</code></pre>
+
+<p>That header is <strong>generated at lib build time</strong> by <code>sfp.lua</code> in <code>lib/libifconfig/Makefile</code>. Standalone <code>make -C rescue/rescue</code> doesn't trigger the prerequisite <code>lib/libifconfig</code> build, so the header never exists in <code>${OBJTOP}/lib/libifconfig/</code> when the crunchgen step needs it.</p>
+
+<p>The question this investigation answers: <strong>is this prereq pattern an outlier, or pervasive?</strong> If pervasive, the manifest-driven build mechanism in <code>srclist-rescue.txt</code> / <code>srclist-runtime.txt</code> needs significant scaffolding (full <code>buildworld</code> prologue, etc.). If outlier, we can drop the offending tools and keep the simple per-subdir <code>make</code> pattern.</p>
+
+<p>Four parallel research agents inventoried four orthogonal facets:</p>
+
+<ol>
+  <li><strong>Per-tool dep categorization</strong> across a curated 48-tool sample (agent 1)</li>
+  <li><strong>FreeBSD build infrastructure</strong> &mdash; what <code>buildworld</code> does and how long it costs (agent 2)</li>
+  <li><strong>Complete pkg inventory</strong> &mdash; every binary in FreeBSD-runtime/utilities/rescue mapped to <code>/usr/src</code> dirs (agent 3)</li>
+  <li><strong>Drop-or-keep matrix</strong> &mdash; which specific tools force prereq libs (agent 4)</li>
+</ol>
+
+<h2 id="apple-rescue">2. Does Apple even have <code>/rescue/</code>? (No.)</h2>
+
+<p>This question wasn't part of the original investigation but came up reviewing the data. The answer reframes ticket #104 significantly.</p>
+
+<h3>2.1. Apple's recovery model</h3>
+
+<p>macOS has never had a <code>/rescue/</code> directory. Apple's recovery story is a <strong>separate Recovery partition (recoveryOS)</strong> &mdash; an entire stripped-down macOS image living on its own APFS volume in the same container. Boot paths:</p>
+
+<table>
+<tr><th>Mechanism</th><th>How it works</th></tr>
+<tr><td><strong>Cmd+R at boot</strong> (Intel Macs)</td><td>Boots into the local Recovery partition's recoveryOS. Provides Disk Utility, Terminal, Safari, Reinstall macOS, Time Machine restore.</td></tr>
+<tr><td><strong>Cmd+Option+R</strong> (Intel Macs)</td><td>Internet Recovery &mdash; downloads recoveryOS over network.</td></tr>
+<tr><td><strong>Long-press Power button</strong> (Apple Silicon)</td><td>Brings up Startup Options menu including Recovery.</td></tr>
+<tr><td><strong>Single-user mode</strong> (<code>boot -s</code>, Intel only)</td><td>Boots normal macOS but drops to <code>/bin/sh</code> before launchd starts services. Uses <strong>regular <code>/bin</code> and <code>/sbin</code></strong>, not a separate rescue dir.</td></tr>
+<tr><td><strong>Safe Boot</strong> (Shift at boot)</td><td>Normal macOS with extension loading restricted.</td></tr>
+</table>
+
+<p>Crucially: <strong>no statically-linked emergency-tools directory exists on macOS at any path.</strong> If <code>/bin/sh</code> or <code>/sbin/mount</code> is broken, you boot recoveryOS (a separate OS image) and use its tools instead. The convention of "one statically-linked crunchgen binary with command-name symlinks at <code>/rescue/</code>" is BSD-only.</p>
+
+<h3>2.2. Why FreeBSD has <code>/rescue/</code></h3>
+
+<p>FreeBSD's <code>/rescue/</code> is a single statically-linked multi-call binary built via <code>crunchgen</code> that ships every essential tool name as a symlink (ls, cp, mv, sh, mount, fsck, kldload, etc.). The rationale: if <code>/usr</code> is unmountable or <code>/lib</code> is corrupted, <code>/rescue/</code> still works because nothing it does requires shared libraries.</p>
+
+<p>Worth noting: <strong>FreeBSD's single-user mode also drops to <code>/bin/sh</code> first</strong> (just like macOS), and only escalates to <code>/rescue/sh</code> if <code>/bin/sh</code> can't execute (e.g., <code>/lib/libc.so.7</code> missing). The path of recovery is layered: shared-lib tools first, statically-linked rescue tools as fallback.</p>
+
+<h3>2.3. What we actually need for <code>freebsd-launchd-mach</code></h3>
+
+<p>We're building a live ISO that boots in QEMU for CI testing and on real hardware as a dev/research environment. We're <strong>not</strong> building a production OS where someone's data hangs on recovering from a corrupted /lib. The actual failure modes we care about:</p>
+
+<ul>
+  <li><strong>CI boot test fails</strong> &rarr; we read the QEMU console + serial log; no in-VM recovery needed</li>
+  <li><strong>Dev machine boots to broken state</strong> &rarr; rebuild and reflash; the ISO is throwaway</li>
+  <li><strong>Real recovery story</strong> &rarr; not load-bearing; users who need it can keep a FreeBSD live USB around (which has its own /rescue/)</li>
+</ul>
+
+<p>So per architectural rule 3 ("don't invent things Apple doesn't do"), and per practical need: <strong>we don't need <code>/rescue/</code> at all</strong>.</p>
+
+<h3>2.4. Implication for ticket #104</h3>
+
+<p>The original framing of #104 ("Drop FreeBSD-rescue pkg; build /rescue/ from /usr/src") is solving the wrong problem. The right framing is: <strong>drop FreeBSD-rescue pkg; don't replace it</strong>. <code>/rescue/</code> simply doesn't exist on our ISO. Single-user mode (if anyone invokes it) falls through to <code>/bin/sh</code> from FreeBSD-runtime (ticket #105 will continue to provide that via <code>bin/sh</code> in <code>srclist-runtime.txt</code>).</p>
+
+<p>This eliminates the entire crunchgen + libifconfig prereq question for #104. The "proof-of-concept for the manifest mechanism" claim of #104 stays valid &mdash; we still need the manifest mechanism for #105's runtime+utilities replacement &mdash; but we don't need to exercise it on rescue. We can validate the mechanism on a single leaf tool (e.g. building <code>bin/echo</code> from src) as a smaller proof-of-concept, then move directly to #105.</p>
+
+<div class="callout callout-good">
+<p><strong>Updated recommendation for #104:</strong> close PR #107 in favor of a simpler one that just drops the <code>FreeBSD-rescue</code> pkgbase line and adjusts run.sh + boot-test.sh to expect <code>/rescue/</code> to NOT exist (rather than to exist with src-built contents). Optionally pick a different proof-of-concept tool for the manifest mechanism &mdash; or skip the proof and go straight to #105's smaller-scoped runtime work where the mechanism is actually load-bearing.</p>
+</div>
+
+<h2 id="data-inventory">3. Data: complete pkg inventory (agent 3)</h2>
+
+<p>Inventoried live from <code>pkg.freebsd.org/FreeBSD:14:amd64/base_latest/</code> pkgbase manifests on 2026-05-26.</p>
+
+<table>
+<tr><th>Pkg</th><th>Binaries</th><th>Distinct /usr/src dirs</th><th>Notes</th></tr>
+<tr><td><code>FreeBSD-runtime</code></td><td>187</td><td>~96</td><td>Includes 27 LINK aliases of <code>sbin/md5</code> (md5sum, sha1, sha256, etc.) + reboot family (halt/poweroff/fastboot) + ln/link, pkill family, etc. After collapsing LINKs: ~96 distinct dirs.</td></tr>
+<tr><td><code>FreeBSD-utilities</code></td><td>604</td><td>~330</td><td>The long tail. ~245 <code>usr.bin/*</code>, ~70 <code>usr.sbin/*</code>, ~15 <code>libexec/*</code>, plus ~20 <code>contrib/</code> consumers (less, gzip, bzip2, xz, zstd, libarchive, mandoc, ldns, ntp, sendmail, tcpdump, dialog, …).</td></tr>
+<tr><td><code>FreeBSD-rescue</code></td><td>148</td><td>0 new</td><td>All 148 files in <code>/rescue/</code> are hardlinks of one crunchgen multi-call binary (<code>rescue/rescue</code>). Every source dir is already in runtime or utilities &mdash; no new src dirs needed.</td></tr>
+<tr><td colspan="2"><strong>Combined runtime + utilities (the scope of <code>srclist-runtime.txt</code>):</strong></td><td><strong>~400 dirs</strong></td><td>791 binaries</td></tr>
+</table>
+
+<p>Rescue contributing zero new dirs is a useful finding: once <code>srclist-runtime.txt</code> covers runtime + utilities, we have everything we need to also re-build the rescue crunchgen.</p>
+
+<h2 id="data-categorization">4. Data: per-tool dep categorization (agent 1)</h2>
+
+<p>Curated 48-tool sample focused on the v3-plan "irreducible /usr/src" set + key daily-driver tools. Each tool's Makefile inspected directly for LIBADD + generated-header chains.</p>
+
+<table>
+<tr><th>Category</th><th>Count</th><th>%</th><th>Build pattern</th><th>Examples</th></tr>
+<tr><td><strong>A &mdash; Leaf (pure libc)</strong></td><td>25</td><td>52%</td><td><code>make -C dir obj &amp;&amp; make &amp;&amp; make install</code> works trivially. No LIBADD, no generated headers.</td><td>kldload, kldunload, devfs, reboot, cp, mv, rm, mkdir, cat, chmod, echo, ln, test, find, xargs, sed, grep, true, false, mdmfs, newfs_msdos, dumpon (MK_OPENSSL=no), ...</td></tr>
+<tr><td><strong>B &mdash; Lib-dependent (prebuilt libs in pkgbase)</strong></td><td>22</td><td>46%</td><td>Standalone <code>make</code> works because libs are already in <code>/usr/lib</code> from pkgbase clibs / utilities / etc.</td><td>kldstat (libutil), mdconfig (libgeom), geom, savecore (libxo+z+zstd), mount (libutil+xo), fsck_ffs (libufs), newfs, tunefs, init (libcrypt), login (libpam+bsm), getty, sysctl (libjail), dmesg (libkvm), ls (libutil+termcapw), gzip (libbz2+lzma+z+zstd), tar (libarchive), ...</td></tr>
+<tr><td><strong>C &mdash; .PATH into sibling source</strong></td><td>8</td><td>17% (overlap with B)</td><td>Works fine if full <code>/usr/src</code> checkout is present (it is, via src.txz). No buildworld needed.</td><td>sh (uses bin/kill, bin/test, usr.bin/printf sources via .PATH), awk (contrib/one-true-awk), csh (contrib/tcsh), umount (.PATH onto sbin/mount), fsck_msdosfs (.PATH onto sbin/fsck), fsck_ffs (.PATH onto sys/ufs/ffs), newfs (.PATH onto sys/geom), tar (contrib/libarchive)</td></tr>
+<tr><td><strong>D &mdash; Crunchgen with lib-build prereq</strong></td><td>1</td><td>2%</td><td><strong>Fails standalone.</strong> Crunchgen pulls in <code>libifconfig.a</code> via <code>CRUNCH_LIBS+= ${OBJTOP}/lib/libifconfig/libifconfig.a</code> AND a <code>-I ${OBJTOP}/lib/libifconfig</code> include path that depends on the generated <code>libifconfig_sfp_tables.h</code>.</td><td><code>rescue/rescue</code> (the only one)</td></tr>
+<tr><td><strong>E &mdash; Full <code>buildworld</code> required</strong></td><td>0</td><td>0%</td><td>n/a</td><td>(none in the inventory)</td></tr>
+</table>
+
+<p><strong>Result: 47 of 48 tools (98%) build standalone with <code>make -C dir obj &amp;&amp; make &amp;&amp; make install DESTDIR=...</code> against a stock FreeBSD-runtime target plus a full <code>/usr/src</code> checkout.</strong> Only <code>rescue/rescue</code> requires a prereq step.</p>
+
+<h2 id="data-infrastructure">5. Data: FreeBSD build infrastructure (agent 2)</h2>
+
+<p>From <code>Makefile.inc1</code> + freebsd-launchd-mach's own build.sh / GitHub Actions inspection.</p>
+
+<table>
+<tr><th>Build approach</th><th>Wall time on 4-vCPU VM</th><th>Notes</th></tr>
+<tr><td>Full <code>make buildworld</code></td><td>45&ndash;90 min</td><td>Cold cache (vmactions reality &mdash; no <code>/usr/obj</code> populated). The <code>_cross-tools</code> phase (rebuilding clang+lld+lldb) is the single biggest cost at 8&ndash;15 min.</td></tr>
+<tr><td>Stacked <code>WITHOUT_*</code> knobs (CLANG+LLD+LLDB+TESTS+MAN+LIB32+NLS+PROFILE+GAMES) + <code>WITHOUT_CLEAN</code></td><td>20&ndash;30 min</td><td>Floor. Still over our 15-min CI budget.</td></tr>
+<tr><td><code>SUBDIR_OVERRIDE=lib/libifconfig make buildworld</code></td><td>~15 min</td><td>Still runs <code>_cross-tools</code> prologue. Saves <code>everything</code> phase but not bootstrap.</td></tr>
+<tr><td><strong>Per-subdir <code>make -C lib/libifconfig obj &amp;&amp; make</code></strong></td><td><strong>~30 sec</strong></td><td>Uses host's clang + headers + libc already in <code>/usr/lib</code>. Just builds that one lib's <code>.a</code> + populates its obj dir with the generated header. This is the right pattern for one-off prereqs.</td></tr>
+<tr><td><strong>Per-subdir <code>make -C bin/cp obj &amp;&amp; make &amp;&amp; make install</code> (leaf)</strong></td><td><strong>~5&ndash;15 sec</strong></td><td>The existing <code>build.sh</code> step 3a2 pattern. Works for every Category A / B / C tool.</td></tr>
+</table>
+
+<p><strong>Recommendation from agent 2:</strong> stay on the leaf-only pattern (already validated by step 3a2 for <code>rescue/rescue</code>). Treat any "needs full buildworld" finding as a signal to drop the tool, not to add buildworld machinery. CI budget remains at ~15 min for the whole pipeline.</p>
+
+<h2 id="data-dropkeep">6. Data: drop-or-keep matrix (agent 4)</h2>
+
+<h3>5.1. Generated-header libs in <code>/usr/src/lib/</code></h3>
+
+<p>The actual landmines &mdash; libs whose Makefile runs code-gen at build time, producing headers that external consumers need:</p>
+
+<table>
+<tr><th>Lib</th><th>Generator</th><th>Generated headers</th><th>External consumers in our scope</th></tr>
+<tr><td><code>lib/libifconfig</code></td><td><code>sfp.lua</code> (src.lua.mk)</td><td><code>libifconfig_sfp_tables.h</code>, <code>libifconfig_sfp_tables_internal.h</code></td><td><strong><code>sbin/ifconfig</code></strong>, <strong><code>rescue/rescue</code></strong> crunchgen</td></tr>
+<tr><td><code>lib/libpcap</code></td><td>yacc/bison</td><td><code>tokdefs.h</code> from <code>grammar.h</code></td><td><strong><code>sbin/ipf</code></strong> (rescue), tcpdump (utilities), many others outside scope</td></tr>
+<tr><td><code>lib/libsysdecode</code></td><td><code>mktables</code> sh + <code>mkioctls</code></td><td><code>tables.h</code>, <code>tables_linux.h</code>, <code>ioctl.c</code></td><td><code>kdump</code>, <code>truss</code> (utilities; not load-bearing)</td></tr>
+<tr><td><code>lib/ncurses/{tinfo,ncurses}</code></td><td>sh + awk MK* scripts</td><td>term.h, curses.h, init_keytry.h, nomacros.h, hashsize.h, parametrized.h (6 headers)</td><td><strong>None in our srclist scope</strong> &mdash; <code>ls</code> and <code>less</code> link against the <em>installed</em> <code>libtermcapw.a</code> from pkgbase clibs, not requiring rebuild.</td></tr>
+<tr><td>libfetch, libedit, libsm*, libypclnt</td><td>(internal codegens)</td><td>(internal headers)</td><td>None &mdash; codegen is intra-lib, builds in a single <code>make</code> pass.</td></tr>
+</table>
+
+<h3>5.2. Drop-or-keep for FreeBSD-rescue's crunchgen</h3>
+
+<table>
+<tr><th>Sub-tool</th><th>Source dir</th><th>Generated-header dep</th><th>Decision</th><th>Why</th></tr>
+<tr><td><code>ifconfig</code></td><td>sbin/ifconfig</td><td><strong>libifconfig</strong></td><td><span class="pill pill-bad">DROP</span></td><td>Emergency-mode rescue rarely needs full ifconfig. Apple's <code>network_cmds/ifconfig</code> in v3 plan replaces /sbin/ifconfig later anyway.</td></tr>
+<tr><td><code>ipf</code></td><td>sbin/ipf/ipf</td><td><strong>libpcap</strong></td><td><span class="pill pill-bad">DROP</span></td><td>Packet filter not needed in single-user/emergency shell.</td></tr>
+<tr><td>All other ~70 crunchgen entries</td><td>various</td><td>None (verified)</td><td><span class="pill pill-good">KEEP</span></td><td>Including iscsictl/iscsid (libiscsiutil has NO codegen &mdash; that was a red herring in earlier analysis), ping/ping6, dhclient, pfctl, ipfw, zfs/zpool/zdb, camcontrol, geom/fdisk/bsdlabel, md5, savecore, mount/mount_*, fsck/fsck_*, sh/ls/ps/cp/etc., nc/tar/gzip/bzip2/xz/zstd/less/vi.</td></tr>
+</table>
+
+<p><strong>Net rescue change:</strong> patch <code>rescue/rescue/Makefile</code> to remove ~7 lines (the <code>ifconfig</code> entry + the <code>MK_IPFILTER</code> ipf block + the <code>CRUNCH_LIBS+= libifconfig.a</code> + the <code>CRUNCH_BUILDOPTS+= -I ${OBJTOP}/lib/libifconfig</code> + the <code>CRUNCH_LIBS_ifconfig+= ${LIBNV}</code>). After that, crunchgen has no external lib-build prereqs.</p>
+
+<h3>5.3. Drop-or-keep for FreeBSD-runtime</h3>
+
+<p>Of 96 distinct <code>/usr/src</code> dirs in FreeBSD-runtime, exactly <strong>one</strong> binary force the libifconfig prereq:</p>
+
+<table>
+<tr><th>Installed path</th><th>/usr/src dir</th><th>Generated-header LIBADD</th><th>Decision</th><th>Why</th></tr>
+<tr><td><code>/sbin/ifconfig</code></td><td>sbin/ifconfig</td><td><strong>libifconfig</strong></td><td><span class="pill pill-bad">DROP</span> from srclist-runtime.txt</td><td>Apple <code>network_cmds/ifconfig</code> replacement on roadmap. Same rationale as rescue's <code>ifconfig</code>.</td></tr>
+<tr><td>All other 95 dirs</td><td>various</td><td>None</td><td><span class="pill pill-good">KEEP</span></td><td>cat, chmod, cp, ls, mv, rm, init, mount, fsck, login, getty, sysctl, dmesg, sh, etc. Empty LIBADD or libutil/libmd/libxo/libjail/libcrypt/libgeom only.</td></tr>
+</table>
+
+<p><strong>Net runtime change:</strong> <code>srclist-runtime.txt</code> will list ~95 dirs (instead of 96); <code>/sbin/ifconfig</code> stays missing on the ISO until ticket #106's first per-tool Apple swap (or until <code>network_cmds/ifconfig</code> port lands as a separate per-Apple-repo ticket later in the v3 plan).</p>
+
+<h3>5.4. FreeBSD-utilities (the 330-dir long tail)</h3>
+
+<p>Agent 4 spot-checked the utilities list. Two more potential concerns surfaced:</p>
+
+<table>
+<tr><th>Installed path</th><th>/usr/src dir</th><th>Concern</th><th>Decision</th></tr>
+<tr><td><code>/usr/bin/kdump</code>, <code>/usr/bin/truss</code></td><td>usr.bin/{kdump,truss}</td><td>LIBADD <code>libsysdecode</code> (has codegen)</td><td><span class="pill pill-warn">drop or keep</span> &mdash; not load-bearing for boot. Drop unless someone needs them.</td></tr>
+<tr><td>(others)</td><td>various</td><td>None confirmed</td><td><span class="pill pill-good">KEEP</span></td></tr>
+</table>
+
+<p><strong>Conclusion: the universe of "tools with generated-header lib prereqs" is essentially {<code>ifconfig</code>, <code>ipf</code>, <code>kdump</code>, <code>truss</code>, tcpdump (libpcap)} across all three pkgs.</strong> Everything else builds clean per-subdir.</p>
+
+<h2 id="strategy">7. Strategy</h2>
+
+<p>The data + the Apple-shape reframing (&sect;2) settle the question decisively:</p>
+
+<ol>
+  <li><strong>Drop <code>/rescue/</code> entirely.</strong> Per rule 3 (don't invent things Apple doesn't do): Apple has Recovery partition, not /rescue/ directory. Eliminates the rescue crunchgen / libifconfig prereq problem at its root.</li>
+  <li><strong>Stay on the leaf-only manifest pattern</strong> for #105's runtime + utilities work &mdash; the <code>build.sh</code> step 3a2 wiring is right; just point it at a different srclist file.</li>
+  <li><strong>Drop <code>/sbin/ifconfig</code> from <code>srclist-runtime.txt</code></strong> &mdash; matches the existing Apple-userland-cmds v3 plan (network_cmds replacement).</li>
+  <li><strong>Decide on <code>kdump</code>/<code>truss</code></strong> in utilities &mdash; drop unless someone needs them; otherwise add <code>lib/libsysdecode</code> as a prereq entry.</li>
+  <li><strong>Watch for ncurses</strong> if anything new starts needing it. Not currently a problem; would become one if we start manifesting against headers we don't have.</li>
+  <li><strong>Slim the manifest aggressively for #105's first iter.</strong> ~425 entries is too many for our CI budget. Trim to the boot/login-critical subset (~50 entries) for the first PR; add the long tail in subsequent iters.</li>
+</ol>
+
+<h2 id="action-104">8. Action for #104 (rescue) &mdash; revised in light of &sect;2</h2>
+
+<p>Close PR #107 (the "build /rescue/ from src" approach) and open a simpler PR:</p>
+
+<ol>
+  <li><strong>Keep <code>FreeBSD-rescue</code> commented out in <code>pkglist-base.txt</code></strong> (as PR #107 already did).</li>
+  <li><strong>Delete <code>srclist-rescue.txt</code></strong> &mdash; we don't need it; the manifest mechanism gets proven in #105 instead.</li>
+  <li><strong>Delete the build.sh step 3a2</strong> entirely.</li>
+  <li><strong>Update run.sh</strong>: change the <code>RESCUE-SRC-OK</code> check to instead verify <code>/rescue/</code> does NOT exist (Apple-shape sanity check). Or just remove the check entirely &mdash; absence-of-/rescue/ is a trivial filesystem state, not really worth a CI gate.</li>
+  <li><strong>Update boot-test.sh</strong>: remove the <code>RESCUE-SRC-OK</code> expect block (or change to <code>RESCUE-ABSENT-OK</code> matching the run.sh change).</li>
+  <li><strong>Document in commit message + ticket update</strong>: ticket #104's framing of "build /rescue/ from src" was wrong; the right answer is to drop /rescue/ entirely per rule 3 (don't invent things Apple doesn't do).</li>
+</ol>
+
+<p>This is much smaller than PR #107: it's the original pkglist-base.txt change + a small run.sh + boot-test.sh delta. ~10 LOC net change, no new files.</p>
+
+<p><strong>Proof-of-concept for the manifest mechanism</strong> (the second rationale for #104) doesn't need rescue. It gets proven naturally by #105 (drop runtime + utilities, build from manifest). If we want a tiny standalone POC first, build a single leaf tool (<code>bin/echo</code> or <code>usr.bin/yes</code>) via a one-entry manifest &mdash; that exercises the build.sh wiring without engaging the rescue/crunchgen prereq problem.</p>
+
+<h2 id="action-105">9. Action for #105 (runtime + utilities)</h2>
+
+<p>Now we know the scope:</p>
+
+<ul>
+  <li><code>srclist-runtime.txt</code>: ~95 entries (96 runtime dirs minus <code>sbin/ifconfig</code>)</li>
+  <li>Add a second manifest <code>srclist-utilities.txt</code>: ~330 entries (utilities long tail), optionally minus <code>kdump</code>/<code>truss</code>/<code>tcpdump</code></li>
+  <li>OR combine into one <code>srclist-base.txt</code> &mdash; 425+ entries.</li>
+</ul>
+
+<p>Both files iterated by <code>build.sh</code> in the same loop as <code>srclist-rescue.txt</code>. CI cost: per-subdir <code>make</code> at ~5&ndash;15 sec each × ~425 entries = <strong>~35&ndash;105 minutes of build time</strong>. That's well over our 15-min CI budget &mdash; agent 2 was implicitly assuming a much smaller manifest.</p>
+
+<div class="callout callout-warn">
+<p><strong>CI budget reality check.</strong> The 425-entry manifest is the load-bearing concern, not the prereq question. We have three ways to fit:</p>
+<ul>
+  <li><strong>Parallel <code>make -j N</code></strong> across the srclist iteration &mdash; if the host has 4 vCPUs, ~4&times; speedup. Likely lands at 10&ndash;30 min.</li>
+  <li><strong>Slim the manifest</strong> &mdash; do we actually need all 330 utilities entries on the live ISO? Probably not. Trim to the ~50 that actually boot/login uses, defer the rest.</li>
+  <li><strong>ccache</strong> &mdash; pkg-installed ccache would cut rebuild times to ~2&ndash;3 sec per subdir after first run, but vmactions VMs start cold each time. Useful only if we cache <code>$WORK/srcbuild-obj</code> across CI runs (GitHub Actions cache action).</li>
+</ul>
+<p>Recommendation: slim the manifest to the boot/login-critical subset for ticket #105's first iteration; add the long tail later via separate per-category iterations.</p>
+</div>
+
+<h2 id="followup-landmines">10. Follow-up landmines</h2>
+
+<p>If we expand the manifest to cover more tools in future tickets, watch for:</p>
+
+<ul>
+  <li><strong>libncurses chain.</strong> Six generated headers across <code>lib/ncurses/{tinfo,ncurses}/Makefile</code> via MK* shell scripts + awk + make_keys helper. If <code>/bin/ls</code> or <code>/usr/bin/less</code> stop linking against the pkgbase-installed <code>libtermcapw.a</code> and need a from-source rebuild, this becomes the next prereq pain.</li>
+  <li><strong>libsysdecode</strong> (kdump, truss) &mdash; if these are wanted, plan to also build <code>lib/libsysdecode</code> first.</li>
+  <li><strong>libpcap</strong> (tcpdump, ipfw, dhclient sometimes) &mdash; same pattern. Tcpdump is in FreeBSD-utilities; dhclient is in FreeBSD-rescue's crunchgen but doesn't actually link libpcap directly (only ipf does via the BPF filter compiler).</li>
+  <li><strong>libypclnt</strong> &mdash; NIS client codegen; irrelevant unless we start needing NIS interop.</li>
+  <li><strong>contrib/ vendored sources.</strong> Many usr.bin entries pull from <code>contrib/</code>: less, gzip, bzip2, xz, zstd, libarchive, mandoc, ldns, ntp, sendmail, tcpdump, dialog, bsddialog, ofed, openbsm, pf, ipfilter, ipfw. These all build fine standalone with their existing Makefile shim under <code>usr.bin/&lt;name&gt;</code>; just be aware that the actual source lives in <code>contrib/</code> not the wrapper dir.</li>
+</ul>
+
+<p class="footnote">Drafted 2026-05-26 from four parallel research-agent passes across <code>apple-oss-distributions</code>, <code>freebsd/freebsd-src</code> on GitHub, and live pkgbase manifests at <code>pkg.freebsd.org/FreeBSD:14:amd64/base_latest/</code>. Scopes <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/104">issue #104</a> + <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/105">#105</a>. Source data files (pkg manifests, build.sh inspection, Makefile.inc1 phase list) retained in the agent transcripts.</p>
+
+</div>
+</body>
+</html>

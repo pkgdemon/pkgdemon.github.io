@@ -60,7 +60,7 @@
 <ul>
   <li><strong>Apple has no <code>/rescue/</code> &mdash; ever.</strong> macOS recovery is a separate Recovery partition (recoveryOS), not a directory of statically-linked tools. Per architectural rule 3 ("don't invent things Apple doesn't do"), the right answer for ticket #104 is to <strong>drop FreeBSD-rescue entirely and not replace it</strong>. <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/104">Issue #104</a> + <a href="https://github.com/pkgdemon/freebsd-launchd-mach/pull/107">PR #107</a> closed 2026-05-26. See &sect;2.</li>
   <li><strong>Strategic shift to Apple-source userland (for Linux portability).</strong> The single rule: <strong>REPLACE everything in an Apple userland-cmds repo</strong> (file_cmds, shell_cmds, adv_cmds, text_cmds, system_cmds, network_cmds, PowerManagement, DiskArbitration); <strong>KEEP only the irreducible FreeBSD-only items</strong> (kld* family, UFS mount/fsck, devfs, ldconfig, pw, kenv, freebsd-version + BSD-specific debug tools fstat/sockstat/ktrace/ldd/&hellip;). Whole-repo porting means whole-repo replacement &mdash; no "Apple value-add vs Apple-version-is-same" cherry-picking. See &sect;9 strategic shift.</li>
-  <li><strong>Net under the strict rule:</strong> <code>srclist-fbsdglue.txt</code> = <strong>42 entries</strong> combined runtime + utilities (full list in &sect;9.6.6 ready-to-paste; live current state after iter 2 PR #119 iterated camcontrol+libnvmf out). The other ~175&ndash;200 binaries come from Apple sources. <strong>Nine sequential PRs</strong> (&sect;9.2): #105a iter 1 (mechanism + minimal entries; <a href="https://github.com/pkgdemon/freebsd-launchd-mach/pull/118">PR #118 merged</a>), #105a iter 2 (full 42 entries with prereq libs; <a href="https://github.com/pkgdemon/freebsd-launchd-mach/pull/119">PR #119 in flight</a>), then #105b file_cmds &rarr; #105g network_cmds &rarr; #105h final pkg drop. Each PR is shippable; CI green throughout; OpenPAM iter-3 overlay-overwrite pattern. On future Linux port, the 42 fbsdglue entries swap 1:1 for Linux equivalents (modprobe/util-linux/strace/&hellip;) and the Apple-source userland transfers identically.</li>
+  <li><strong>Net under the strict rule:</strong> <code>srclist-fbsdglue.txt</code> = <strong>41 entries</strong> combined runtime + utilities (full list in &sect;9.6.6 ready-to-paste; live current state after iter 2 PR #119 iteration log there). The other ~175&ndash;200 binaries come from Apple sources. <strong>Nine sequential PRs</strong> (&sect;9.2): #105a iter 1 (mechanism + minimal entries; <a href="https://github.com/pkgdemon/freebsd-launchd-mach/pull/118">PR #118 merged</a>), #105a iter 2 (full 41 entries with prereq libs; <a href="https://github.com/pkgdemon/freebsd-launchd-mach/pull/119">PR #119 in flight</a>), then #105b file_cmds &rarr; #105g network_cmds &rarr; #105h final pkg drop. Each PR is shippable; CI green throughout; OpenPAM iter-3 overlay-overwrite pattern. On future Linux port, the 41 fbsdglue entries swap 1:1 for Linux equivalents (modprobe/util-linux/strace/&hellip;) and the Apple-source userland transfers identically.</li>
   <li><strong>Sequencing: FreeBSD-glue mechanism FIRST (high risk), Apple-repo ports second (low risk).</strong> The libifconfig prereq that triggered this investigation IS the FreeBSD-glue mechanism risk. Validating that mechanism early surfaces additional landmines (libsysdecode for kdump/truss, etc.) before any Apple-repo work commits. Apple-side pattern is OpenPAM-proven.</li>
   <li><strong>No <code>buildworld</code> needed</strong> anywhere. Per-subdir <code>make</code> against pkgbase-installed headers/libs is sufficient. CI budget: trivial &mdash; only ~25&ndash;30 entries to build from <code>/usr/src</code>, the rest from Apple sources we vendor under <code>src/</code>.</li>
 </ul>
@@ -399,10 +399,10 @@ Stop.</code></pre>
 <tr><td>usr.sbin/kldxref</td><td>FreeBSD kld(4) cache</td><td><code>depmod</code></td></tr>
 <tr><td>usr.sbin/pw</td><td>FreeBSD user/group mgmt</td><td><code>useradd</code>/<code>groupadd</code></td></tr>
 <tr><td colspan="3"><em>FreeBSD-specific debug tools (no Apple analogue):</em></td></tr>
-<tr><td>usr.bin/fstat, sockstat, procstat, fuser</td><td>FreeBSD-specific process/socket introspection (Apple uses <code>lsof</code> + <code>sample</code>)</td><td><code>lsof</code> / <code>ss</code> / <code>fuser</code> (procps)</td></tr>
+<tr><td>usr.bin/fstat, sockstat, procstat</td><td>FreeBSD-specific process/socket introspection (Apple uses <code>lsof</code> + <code>sample</code>). <em>(fuser is a LINK from usr.bin/fstat &mdash; binary appears at /usr/bin/fuser via fstat's Makefile LINKS=.)</em></td><td><code>lsof</code> / <code>ss</code> / <code>fuser</code> (procps)</td></tr>
 <tr><td>usr.bin/ktrace, kdump, truss, ktrdump</td><td>FreeBSD ktrace/truss (Apple uses dtrace/sample)</td><td><code>strace</code></td></tr>
 <tr><td>usr.bin/ldd</td><td>FreeBSD-specific rtld query (Apple uses <code>otool -L</code>)</td><td><code>ldd</code> (glibc)</td></tr>
-<tr><td>usr.bin/login_cap, getent, hostid, logname</td><td>BSD-specific helpers</td><td>various</td></tr>
+<tr><td>usr.bin/getent</td><td>BSD-specific NSS query (Apple uses dscacheutil). <em>(login_cap was a phantom &mdash; libutil function not a binary; logname is REPLACE via shell_cmds; hostid dropped &mdash; not a FreeBSD binary, /etc/rc.d/hostid is a script and we don't run /etc/rc.)</em></td><td>various</td></tr>
 <tr><td>usr.bin/top, w, vmstat</td><td>BSD vmstat/top format</td><td>procps top/w/vmstat</td></tr>
 <tr><td>usr.sbin/devctl, diskinfo, fstyp, gstat, pciconf, crashinfo</td><td>FreeBSD-specific newbus/GEOM/PCI/crash tools</td><td>various (udev/lspci/...)</td></tr>
 <tr><td>libexec/save-entropy</td><td>FreeBSD entropy daemon</td><td>systemd-random-seed</td></tr>
@@ -767,9 +767,9 @@ sbin/umount
 usr.bin/fetch
 usr.bin/file
 usr.bin/fstat
-usr.bin/fuser
+# fuser dropped — LINK from usr.bin/fstat, not own dir
 usr.bin/getent
-usr.bin/hostid
+# hostid dropped — not a FreeBSD binary (rc.d script only)
 usr.bin/kdump
 usr.bin/ktrace
 usr.bin/ktrdump
@@ -797,14 +797,16 @@ usr.sbin/pw
 libexec/save-entropy
 </code></pre>
 
-<p><strong>42 entries total</strong> (was 44 in initial estimate; iter 2 dropped <code>sbin/camcontrol</code> + its <code>lib/libnvmf</code> prereq, removed phantom <code>usr.bin/login_cap</code> which isn't a /usr/src dir, kept <code>usr.sbin/nologin</code> only since the SOURCE dir is there). Compared to original 425-dir inventory, that's a ~90% trim. The other ~175 entries (REPLACE) come from Apple sources via the seven sequential Apple-repo PRs; the remaining ~190 (DROP) + ~80 (DEFER) never ship.</p>
+<p><strong>41 entries total</strong> (was 44 in initial estimate). Compared to original 425-dir inventory, that's a ~90% trim. The other ~175 entries (REPLACE) come from Apple sources via the seven sequential Apple-repo PRs; the remaining ~190 (DROP) + ~80 (DEFER) never ship.</p>
 
 <p><strong>Iteration log of changes from initial 44 estimate:</strong></p>
 <ul>
-  <li><code>sbin/camcontrol</code> &rarr; DEFER (iter 2 CI run 26459081598 surfaced <code>lib/libnvmf</code> privatelib prereq; not load-bearing)</li>
+  <li><code>sbin/camcontrol</code> &rarr; DEFER (iter 2 CI run 26459081598 surfaced <code>lib/libnvmf</code> privatelib prereq; not load-bearing for CI virtio or daily dev)</li>
   <li><code>lib/libnvmf</code> &rarr; DROP (was iter-2 prereq for camcontrol; both removed together)</li>
   <li><code>usr.bin/login_cap</code> &rarr; not a /usr/src dir (login_cap is a libutil function, not a binary); removed from estimate</li>
   <li><code>sbin/nologin</code> &rarr; <code>usr.sbin/nologin</code> (the SOURCE dir is at usr.sbin/; Makefile LINKs to /sbin/nologin at install time)</li>
+  <li><code>usr.bin/fuser</code> &rarr; DROP from manifest (LINK from <code>usr.bin/fstat</code>; binary still appears at /usr/bin/fuser via fstat's Makefile LINKS=). CI iter 2 run 26459388127 surfaced.</li>
+  <li><code>usr.bin/hostid</code> &rarr; DROP (not a FreeBSD binary; <code>/etc/rc.d/hostid</code> is a shell script that reads <code>/etc/hostid</code> UUID into <code>kern.hostuuid</code> sysctl). We don't run <code>/etc/rc</code> (launchd PID 1) and none of our daemons use <code>gethostid()</code>, so functional impact is zero. CI iter 2 run 26459641829 surfaced.</li>
 </ul>
 
 <p><strong>For the Linux port (future):</strong> this 44-entry file gets renamed to <code>srclist-linuxglue.txt</code> (or similar) and its content swapped 1:1 for Linux equivalents:</p>

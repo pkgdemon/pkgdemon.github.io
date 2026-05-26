@@ -275,15 +275,104 @@ Stop.</code></pre>
 
 <p><strong>Proof-of-concept for the manifest mechanism</strong> (the second rationale for #104) doesn't need rescue. It gets proven naturally by #105 (drop runtime + utilities, build from manifest). If we want a tiny standalone POC first, build a single leaf tool (<code>bin/echo</code> or <code>usr.bin/yes</code>) via a one-entry manifest &mdash; that exercises the build.sh wiring without engaging the rescue/crunchgen prereq problem.</p>
 
-<h2 id="action-105">9. Action for #105 (runtime) &mdash; concrete trim list</h2>
+<h2 id="strategic-shift">9. Strategic shift &mdash; Apple-source userland for Linux portability</h2>
+
+<div class="callout callout-bad">
+<p><strong>Major reframing (2026-05-26 evening):</strong> the v3 plan's "drop FreeBSD-runtime, ship interim FreeBSD-source from /usr/src" approach is wrong for the project's actual long-term goal. The user's ultimate goal is <strong>future Linux portability</strong> &mdash; the freebsd-launchd-mach stack should one day run on Linux too. FreeBSD-source binaries can't port to Linux; Apple-source binaries can (with platform-shim work, same pattern as macOS &rarr; FreeBSD already proven on libxpc/libdispatch/configd/PAM/etc.).</p>
+<p>So: <strong>port the Apple userland-cmds repos now</strong>, alongside #105, and only ship from <code>srclist-fbsdglue.txt</code> for the ~13 irreducibly-platform-specific items. The 47-KEEP / 21-REPLACE / 15-DEFER / 13-DROP breakdown in &sect;9.1 was scoped under the wrong assumption.</p>
+</div>
+
+<h3>9.0. Irreducibly FreeBSD-only on the current ISO (becomes Linux-specific later)</h3>
+
+<p>Re-auditing the original 47-KEEP list under the strict "is there an Apple counterpart?" test, only <strong>~13 entries</strong> are truly FreeBSD-only:</p>
+
+<table>
+<tr><th>/usr/src dir</th><th>Why FreeBSD-only</th><th>Linux equivalent (future)</th></tr>
+<tr><td>bin/freebsd-version</td><td>FreeBSD release version reporter</td><td><code>lsb_release</code> / <code>/etc/os-release</code></td></tr>
+<tr><td>bin/kenv</td><td>FreeBSD-only kernel environment</td><td><code>/proc/cmdline</code> + custom parsing</td></tr>
+<tr><td>sbin/camcontrol</td><td>FreeBSD CAM/SCSI control</td><td><code>lsblk</code> + <code>smartctl</code></td></tr>
+<tr><td>sbin/devfs</td><td>FreeBSD devfs.rules subsystem</td><td><code>udev</code> / systemd-udev rules</td></tr>
+<tr><td>sbin/fsck</td><td>FreeBSD UFS fsck driver</td><td><code>e2fsck</code> / <code>fsck.ext4</code></td></tr>
+<tr><td>sbin/mount, umount</td><td>FreeBSD VFS mount</td><td>util-linux <code>mount</code>/<code>umount</code></td></tr>
+<tr><td>sbin/kldconfig, kldload, kldstat, kldunload, usr.sbin/kldxref</td><td>FreeBSD kld(4) module family</td><td><code>modprobe</code>/<code>lsmod</code>/<code>rmmod</code>/<code>depmod</code> (kmod)</td></tr>
+<tr><td>sbin/ldconfig</td><td>FreeBSD rtld hint cache</td><td>glibc <code>ldconfig</code> (different binary, same purpose)</td></tr>
+<tr><td>usr.sbin/pw</td><td>FreeBSD user/group mgmt</td><td><code>useradd</code>/<code>usermod</code>/<code>groupadd</code></td></tr>
+</table>
+
+<p>That's the entire "must-stay-platform-source" set: <strong>~13 entries in <code>srclist-fbsdglue.txt</code></strong> on FreeBSD. On a future Linux port, the same 13 paths get filled by the Linux equivalents above. Everything else &mdash; the other 89%+ of daily-driver userland &mdash; comes from Apple sources and ports identically across platforms.</p>
+
+<h3>9.1. KEEP entries with Apple counterparts (reclassify as REPLACE)</h3>
+
+<p>The original 47-KEEP list, re-audited:</p>
+
+<table>
+<tr><th>Apple repo</th><th>KEEP entries that should be REPLACE</th></tr>
+<tr><td><code>file_cmds</code></td><td>bin/cat, chflags, dd, ln, mkdir, realpath, rm, rmdir, sync, usr.bin/install</td></tr>
+<tr><td><code>shell_cmds</code></td><td>bin/echo, expr, pwd, sh, sleep, test, date, usr.bin/mktemp, env, uname, logger</td></tr>
+<tr><td><code>adv_cmds</code></td><td>bin/df, du, kill, pgrep, stty, groups, id</td></tr>
+<tr><td><code>text_cmds</code></td><td>bin/tr</td></tr>
+<tr><td><code>system_cmds</code></td><td>sbin/md5 (27 hash aliases &rarr; Apple md5/shasum family), usr.bin/passwd, usr.sbin/pwd_mkdb</td></tr>
+<tr><td>upstream contrib (vendor directly, not via FreeBSD pkg)</td><td>usr.bin/bsdtar (libarchive), less, ncurses</td></tr>
+</table>
+
+<p>Combined with the original 21 already-REPLACE entries: <strong>~34 KEEP-now entries reclassified to REPLACE</strong>. Everything except the 13-entry FreeBSD-glue set gets sourced from Apple repos (or upstream contrib for libarchive/less/ncurses).</p>
+
+<h3>9.2. Sequencing strategy &mdash; one Apple repo per PR, FreeBSD-runtime stays installed until final PR</h3>
+
+<p>The OpenPAM iter-3 pattern handles the overlay-vs-pkgbase question: install Apple binaries at canonical paths (overlaying FreeBSD's), then <code>pkg set -A 0 FreeBSD-runtime FreeBSD-utilities FreeBSD-pam-lib</code> to prevent <code>pkg autoremove</code> from clobbering. FreeBSD-runtime stays installed but its binaries are silently shadowed by Apple's at the same paths. Final PR drops the pkgs entirely once everything has been validated piecemeal.</p>
+
+<p>This avoids the all-or-nothing scoping risk: each PR is shippable, CI stays green throughout, regressions are easily bisected.</p>
+
+<table>
+<tr><th>PR</th><th>What lands</th><th>What stays from FreeBSD source</th></tr>
+<tr><td><strong>#105a</strong></td><td><strong>file_cmds port</strong> — 27 Apple binaries (cat, cp, mv, ls, chmod, chflags, chown, dd, df, du, gzip, install, ln, mkdir, mkfifo, mknod, mtree, pax, rm, rmdir, stat, touch, truncate, &hellip;). Overlay /bin + /usr/bin paths. <code>pkg set -A 0</code> applied. CI markers per binary.</td><td>Everything else from FreeBSD-runtime/utilities (overlaid only for the 27 file_cmds paths)</td></tr>
+<tr><td><strong>#105b</strong></td><td><strong>shell_cmds port</strong> — ~45 binaries. /bin/sh swap is the load-bearing one; basename/dirname/echo/env/expr/find/getopt/hexdump/jot/kill/mktemp/printf/seq/sleep/test/tee/true/false/uname/xargs/etc.</td><td>Same minus the ~45 shell_cmds-overlaid paths</td></tr>
+<tr><td><strong>#105c</strong></td><td><strong>adv_cmds port</strong> — 15 binaries. /bin/ps and /bin/pkill (Apple kinfo_proc layout shim). Also: stty, tty, finger, last, whois, locale, localedef, cap_mkdb, gencat, tabs, lsvfs.</td><td>Same minus adv_cmds-overlaid paths</td></tr>
+<tr><td><strong>#105d</strong></td><td><strong>text_cmds port</strong> — 34 binaries. sort (Mach semaphores) + grep/sed/tr/wc/tail/head/uniq/comm/cut/paste/&hellip; (pure POSIX vendor).</td><td>Same minus text_cmds-overlaid paths</td></tr>
+<tr><td><strong>#105e</strong></td><td><strong>system_cmds port</strong> — ~50 binaries. The big one: getty, login, sysctl, dmesg, halt/shutdown/reboot, dynamic_pager, hash family (md5/sha1/sha256/&hellip; 27 aliases), passwd, pwd_mkdb. <strong>Subsumes ticket #106</strong> (getty swap) entirely.</td><td>Same minus system_cmds-overlaid paths</td></tr>
+<tr><td><strong>#105f</strong></td><td><strong>network_cmds port</strong> — 15 binaries: ifconfig, ping, ping6, route, arp, ndp, rtadvd, rtsol, netstat, traceroute, traceroute6, kdumpd. <strong>Resolves the libifconfig prereq question that triggered this whole investigation</strong> &mdash; Apple's ifconfig replaces FreeBSD's, no FreeBSD-source ifconfig in srclist needed.</td><td>Same minus network_cmds-overlaid paths</td></tr>
+<tr><td><strong>#105g</strong></td><td><strong>Final pkg drop</strong> &mdash; remove FreeBSD-runtime + FreeBSD-utilities + FreeBSD-pam-lib from pkglist-base.txt. Ship <code>srclist-fbsdglue.txt</code> with only the ~13 irreducibly-platform-specific entries from &sect;9.0. <strong>Closes #103</strong> (pam-lib phantom).</td><td>Only the ~13-entry fbsdglue set (kld*, mount/umount/fsck, ldconfig, devfs, camcontrol, pw, kenv, freebsd-version, kldxref)</td></tr>
+</table>
+
+<p><strong>Ticket #106 (getty swap) becomes redundant</strong> since system_cmds (#105e) includes getty. Close #106 with a redirect to #105e.</p>
+
+<h3>9.3. First-iter PR scope &mdash; aggressive drop+defer</h3>
+
+<p>Concretely for <strong>#105a (file_cmds port, the first PR)</strong>:</p>
+
+<ul>
+  <li>Vendor <code>apple-oss-distributions/file_cmds</code> into <code>src/file_cmds/</code> at a pinned tag</li>
+  <li>Build all 27 binaries (no half-port; whole-repo). Most are leaf POSIX (no Apple-stack deps); cp/mv/ls/install/gzip/pax/mtree need libdispatch (already shipped) + libacl shim</li>
+  <li>Install at Apple-canonical paths: /bin/cp, /bin/ls, /bin/cat, etc. (overlay-overwriting FreeBSD-runtime's same paths)</li>
+  <li><code>pkg set -A 0 FreeBSD-runtime FreeBSD-utilities</code> applied right after pkg install (mirrors the OpenPAM iter-3 pattern at build.sh:175-198)</li>
+  <li><strong>Nothing else changes</strong>: pkglist-base.txt keeps FreeBSD-runtime/utilities; no srclist mechanism introduced; no /usr/src builds from manifest</li>
+  <li>CI markers per binary or per logical group: <code>FILECMD-CP-OK</code> (verify Apple cp via clonefile attempt or Apple-specific behavior), <code>FILECMD-LS-OK</code> (verify -e flag for ACL display works), etc.</li>
+</ul>
+
+<p>Per-iteration scope thereafter is the same shape: vendor one Apple repo, build all its binaries, overlay onto pkgbase paths, ship. No interim srclist mechanism needed until #105g when the final pkg drop happens.</p>
+
+<p><strong>The srclist mechanism (and srclist-rescue.txt's failed shape from PR #107) is no longer load-bearing.</strong> It's only needed for the final ~13-entry fbsdglue manifest at #105g, which is tiny and trivial.</p>
+
+<h2 id="action-105-old">9.5. (Historical) Action for #105 (runtime) &mdash; concrete trim list</h2>
 
 <div class="callout callout-warn">
-<p><strong>Scope clarification:</strong> FreeBSD-runtime and FreeBSD-utilities are <strong>separate pkgbase packages</strong>. The verdict table in &sect;9.1 covers <strong>FreeBSD-runtime only</strong> (96 dirs &rarr; 47 KEEP). FreeBSD-utilities is a separate effort (~330 dirs) covered in <a href="#action-105-utilities">&sect;10</a> below once its deep-scope agent returns. The original "runtime + utilities" combined framing of #105 should be split into two iters: this one drops runtime + pam-lib phantom; a follow-up iter drops utilities.</p>
+<p><strong>Scope clarification:</strong> FreeBSD-runtime and FreeBSD-utilities are <strong>separate pkgbase packages</strong>. The verdict table in &sect;9.6 covers <strong>FreeBSD-runtime only</strong> (96 dirs &rarr; 47 KEEP). FreeBSD-utilities is a separate effort (~330 dirs) covered in <a href="#action-105-utilities">&sect;10</a>. Superseded by &sect;9 above (2026-05-26 strategic shift).</p>
 </div>
 
 <p>Deep-scope agent verified every srcdir in FreeBSD-runtime against build.sh's actual boot path (build.sh:2130&ndash;2195 confirms GPT/UFS-only boot, no <code>mdconfig</code>, no unionfs, no <code>/etc/rc</code>, no memdisk pivot). The "init.sh uses /rescue/mdconfig" comment in <code>pkglist-base.txt</code> is stale history &mdash; not the current boot path.</p>
 
-<p><strong>Result: 47 entries for the first-iter <code>srclist-runtime.txt</code>, down from ~96 dirs.</strong> A 51% trim with confirmed-dead drops + Apple-roadmap-replaces.</p>
+<div class="callout callout-warn">
+<p><strong>Verdict semantics clarified 2026-05-26.</strong> The KEEP / REPLACE distinction below is about <em>Apple value-add priority</em>, NOT whether the entry is in the first-iter srclist:</p>
+<ul>
+  <li><strong>KEEP</strong> &mdash; ship FreeBSD's version; <strong>in srclist-runtime.txt</strong>. Apple's version (if any) is pure-POSIX-equivalent &mdash; no urgency to swap, may stay FreeBSD-source permanently or get swapped later for consistency.</li>
+  <li><strong>REPLACE</strong> &mdash; Apple's version has substantive value-add (clonefile, ACL preservation, Mach IPC integration, etc.). For first iter: <strong>still in srclist-runtime.txt</strong> so the binary exists on the ISO; gets removed from srclist when the Apple repo port lands and the Apple binary takes over the path.</li>
+  <li><strong>DEFER</strong> &mdash; NOT in srclist; add when a real consumer surfaces.</li>
+  <li><strong>DROP</strong> &mdash; NOT in srclist; confirmed irrelevant.</li>
+</ul>
+<p><strong>First-iter <code>srclist-runtime.txt</code> = KEEP (~47) + REPLACE-later (~21) = ~68 entries</strong> (not 47 as previously shown). Earlier "47-entry manifest" was wrong &mdash; it excluded REPLACE-later entries which would have left the ISO missing /bin/cp, /bin/ls, /bin/mv, /bin/chmod, /sbin/ifconfig, /usr/bin/find, etc. until Apple repos port. Corrected list in &sect;9.2.</p>
+</div>
+
+<p><strong>Result: ~68 entries in first-iter <code>srclist-runtime.txt</code>, down from ~96 dirs</strong> (29% trim &mdash; DROP'd 13, DEFER'd 15). Of the 68 included, 47 are pure KEEP and 21 are REPLACE-later (Apple value-add ports pending). The KEEP-only count of 47 represents what stays in the manifest <em>after</em> the v3 Apple userland-cmds roadmap finishes &mdash; the long-term-FreeBSD-source set.</p>
 
 <h3>9.1. Per-srcdir verdicts</h3>
 
@@ -301,7 +390,7 @@ Stop.</code></pre>
 <tr><td>bin/expr</td><td><span class="pill pill-good">KEEP</span></td><td>overlay sh scripts depend on it</td><td>shell_cmds (later)</td></tr>
 <tr><td>bin/freebsd-version</td><td><span class="pill pill-good">KEEP</span></td><td>kernel/userland mismatch diag; tiny</td><td>&mdash;</td></tr>
 <tr><td>bin/getfacl</td><td><span class="pill pill-neutral">DEFER</span></td><td>UFS ACLs unused on this ISO</td><td>&mdash;</td></tr>
-<tr><td>bin/hostname</td><td><span class="pill pill-bad">DROP</span></td><td>hostnamed/SCDynamicStore owns hostname; collides</td><td>hostnamed (in repo)</td></tr>
+<tr><td>bin/hostname</td><td><span class="pill pill-warn">REPLACE</span> &mdash; KEEP first iter</td><td>Apple has /bin/hostname in shell_cmds (per v3 all-PORT). Both Apple's and FreeBSD's are thin gethostname/sethostname wrappers &mdash; neither syncs SCDynamicStore (canonical is <code>scutil --set HostName</code>). KEEP FreeBSD's for first iter to avoid losing the CLI until shell_cmds ports. <em>Reclassified from DROP 2026-05-26 after the &sect;1.5 sweep.</em></td><td>shell_cmds (v3 roadmap)</td></tr>
 <tr><td>bin/kenv</td><td><span class="pill pill-good">KEEP</span></td><td><strong>mach.debug_enable + launchd_trace=1 go through kenv</strong></td><td>&mdash; (FreeBSD-only)</td></tr>
 <tr><td>bin/kill</td><td><span class="pill pill-good">KEEP</span></td><td>pkill paths shell out to it</td><td>adv_cmds (later)</td></tr>
 <tr><td>bin/ln</td><td><span class="pill pill-good">KEEP</span></td><td>overlay install, plist fixups</td><td>file_cmds (later)</td></tr>

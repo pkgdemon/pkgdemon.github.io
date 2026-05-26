@@ -56,11 +56,11 @@
 <p class="lede">Deep-dive investigation triggered by CI failure on <a href="https://github.com/pkgdemon/freebsd-launchd-mach/pull/107">PR #107</a> (drop <code>FreeBSD-rescue</code> pkg, build <code>/rescue/</code> from <code>/usr/src</code>): the standalone <code>make -C rescue/rescue</code> failed because <code>rescue/rescue</code>'s crunchgen pulls in <code>lib/libifconfig</code> which generates a header at lib build time. Question: how many other tools have this kind of prereq, and what's the right scope for <code>srclist-rescue.txt</code> and <code>srclist-runtime.txt</code> in <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/104">tickets #104</a> / <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/105">#105</a>?</p>
 
 <div class="callout callout-good">
-<p><strong>TL;DR.</strong> Two findings, in order of importance:</p>
+<p><strong>TL;DR.</strong> Three findings, in order of importance:</p>
 <ul>
-  <li><strong>Apple has no <code>/rescue/</code> &mdash; ever.</strong> macOS recovery is a separate Recovery partition (recoveryOS), not a directory of statically-linked tools. Per architectural rule 3 ("don't invent things Apple doesn't do"), the right answer for ticket #104 is to <strong>drop FreeBSD-rescue entirely and not replace it</strong> &mdash; not rebuild it from <code>/usr/src</code>. See &sect;2.</li>
-  <li>For ticket #105 (the actually-load-bearing work): <strong>FreeBSD-runtime + utilities = ~425 <code>/usr/src</code> dirs</strong>, of which only <strong><code>/sbin/ifconfig</code></strong> has a generated-header prereq (libifconfig). Drop it from <code>srclist-runtime.txt</code> &mdash; matches the existing Apple <code>network_cmds/ifconfig</code> port in the v3 plan. Everything else builds standalone per-subdir.</li>
-  <li><strong>No <code>buildworld</code> needed.</strong> Per-subdir <code>make</code> against the host's pkgbase-installed headers and libs is sufficient. CI budget concern remains (~425 entries × ~10 sec each = 70+ min serial); slim the manifest or parallelize.</li>
+  <li><strong>Apple has no <code>/rescue/</code> &mdash; ever.</strong> macOS recovery is a separate Recovery partition (recoveryOS), not a directory of statically-linked tools. Per architectural rule 3 ("don't invent things Apple doesn't do"), the right answer for ticket #104 is to <strong>drop FreeBSD-rescue entirely and not replace it</strong>. <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/104">Issue #104</a> + <a href="https://github.com/pkgdemon/freebsd-launchd-mach/pull/107">PR #107</a> closed 2026-05-26. See &sect;2.</li>
+  <li><strong>FreeBSD-runtime trims to 47 entries (from 96).</strong> Deep-scope per-srcdir agent verdicts in &sect;9: 47 KEEP, 21 REPLACE (already on Apple v3 roadmap), 15 DEFER, 13 DROP (confirmed dead per build.sh boot-path inspection). Ready-to-paste first-iter <code>srclist-runtime.txt</code> in &sect;9.2.</li>
+  <li><strong>No <code>buildworld</code> needed.</strong> Per-subdir <code>make</code> against pkgbase-installed headers/libs is sufficient for the 47 keepers. CI budget: ~8 min serial &mdash; well within ~15 min target. No parallelization or caching needed.</li>
 </ul>
 </div>
 
@@ -273,27 +273,189 @@ Stop.</code></pre>
 
 <p><strong>Proof-of-concept for the manifest mechanism</strong> (the second rationale for #104) doesn't need rescue. It gets proven naturally by #105 (drop runtime + utilities, build from manifest). If we want a tiny standalone POC first, build a single leaf tool (<code>bin/echo</code> or <code>usr.bin/yes</code>) via a one-entry manifest &mdash; that exercises the build.sh wiring without engaging the rescue/crunchgen prereq problem.</p>
 
-<h2 id="action-105">9. Action for #105 (runtime + utilities)</h2>
+<h2 id="action-105">9. Action for #105 (runtime + utilities) &mdash; concrete trim list</h2>
 
-<p>Now we know the scope:</p>
+<p>Deep-scope agent verified every srcdir in FreeBSD-runtime against build.sh's actual boot path (build.sh:2130&ndash;2195 confirms GPT/UFS-only boot, no <code>mdconfig</code>, no unionfs, no <code>/etc/rc</code>, no memdisk pivot). The "init.sh uses /rescue/mdconfig" comment in <code>pkglist-base.txt</code> is stale history &mdash; not the current boot path.</p>
+
+<p><strong>Result: 47 entries for the first-iter <code>srclist-runtime.txt</code>, down from ~96.</strong> A 51% trim with confirmed-dead drops + Apple-roadmap-replaces.</p>
+
+<h3>9.1. Per-srcdir verdicts</h3>
+
+<table>
+<tr><th>/usr/src dir</th><th>Verdict</th><th>Rationale</th><th>Apple replacement (if any)</th></tr>
+<tr><td>bin/cat</td><td><span class="pill pill-good">KEEP</span></td><td>plist + launchd log scripts use it</td><td>file_cmds (later)</td></tr>
+<tr><td>bin/chflags</td><td><span class="pill pill-good">KEEP</span></td><td>UFS schg protects /etc/master.passwd etc</td><td>file_cmds (later)</td></tr>
+<tr><td>bin/chmod</td><td><span class="pill pill-warn">REPLACE</span></td><td>daily; Apple ports cleanly</td><td>file_cmds (v3 roadmap)</td></tr>
+<tr><td>bin/cp</td><td><span class="pill pill-warn">REPLACE</span></td><td>overlay install + dev use; clonefile-aware</td><td>file_cmds (v3 roadmap)</td></tr>
+<tr><td>bin/date</td><td><span class="pill pill-good">KEEP</span></td><td>log triage, launchd timers</td><td>system_cmds (later)</td></tr>
+<tr><td>bin/dd</td><td><span class="pill pill-good">KEEP</span></td><td>imaging, /dev/random checks</td><td>file_cmds (later)</td></tr>
+<tr><td>bin/df</td><td><span class="pill pill-good">KEEP</span></td><td>dev sanity</td><td>adv_cmds (later)</td></tr>
+<tr><td>bin/echo</td><td><span class="pill pill-good">KEEP</span></td><td>every plist uses it</td><td>shell_cmds (later)</td></tr>
+<tr><td>bin/ed</td><td><span class="pill pill-neutral">DEFER</span></td><td>vi from utilities is enough</td><td>&mdash;</td></tr>
+<tr><td>bin/expr</td><td><span class="pill pill-good">KEEP</span></td><td>overlay sh scripts depend on it</td><td>shell_cmds (later)</td></tr>
+<tr><td>bin/freebsd-version</td><td><span class="pill pill-good">KEEP</span></td><td>kernel/userland mismatch diag; tiny</td><td>&mdash;</td></tr>
+<tr><td>bin/getfacl</td><td><span class="pill pill-neutral">DEFER</span></td><td>UFS ACLs unused on this ISO</td><td>&mdash;</td></tr>
+<tr><td>bin/hostname</td><td><span class="pill pill-bad">DROP</span></td><td>hostnamed/SCDynamicStore owns hostname; collides</td><td>hostnamed (in repo)</td></tr>
+<tr><td>bin/kenv</td><td><span class="pill pill-good">KEEP</span></td><td><strong>mach.debug_enable + launchd_trace=1 go through kenv</strong></td><td>&mdash; (FreeBSD-only)</td></tr>
+<tr><td>bin/kill</td><td><span class="pill pill-good">KEEP</span></td><td>pkill paths shell out to it</td><td>adv_cmds (later)</td></tr>
+<tr><td>bin/ln</td><td><span class="pill pill-good">KEEP</span></td><td>overlay install, plist fixups</td><td>file_cmds (later)</td></tr>
+<tr><td>bin/ls</td><td><span class="pill pill-warn">REPLACE</span></td><td>core dev UX</td><td>file_cmds (v3 roadmap)</td></tr>
+<tr><td>bin/mkdir</td><td><span class="pill pill-good">KEEP</span></td><td>install / plist setup</td><td>file_cmds (later)</td></tr>
+<tr><td>bin/mv</td><td><span class="pill pill-warn">REPLACE</span></td><td>daily use</td><td>file_cmds (v3 roadmap)</td></tr>
+<tr><td>bin/nproc</td><td><span class="pill pill-neutral">DEFER</span></td><td>nice-to-have on bsd01, not load-bearing on ISO</td><td>&mdash;</td></tr>
+<tr><td>bin/pax</td><td><span class="pill pill-warn">REPLACE</span></td><td>install(1) + tarball flows</td><td>file_cmds (v3 roadmap)</td></tr>
+<tr><td>bin/pgrep</td><td><span class="pill pill-good">KEEP</span></td><td>launchd debugging</td><td>adv_cmds (later)</td></tr>
+<tr><td>bin/ps</td><td><span class="pill pill-warn">REPLACE</span></td><td>"is launchd running?" first reflex</td><td>adv_cmds (v3 roadmap)</td></tr>
+<tr><td>bin/pwd</td><td><span class="pill pill-good">KEEP</span></td><td>find -exec uses external form</td><td>shell_cmds (later)</td></tr>
+<tr><td>bin/realpath</td><td><span class="pill pill-good">KEEP</span></td><td>overlay install scripts</td><td>file_cmds (later)</td></tr>
+<tr><td>bin/rm, rmdir, sh, sleep, stty, sync, test</td><td><span class="pill pill-good">KEEP</span></td><td>obvious / load-bearing</td><td>file_cmds + shell_cmds + system_cmds (later)</td></tr>
+<tr><td>bin/setfacl</td><td><span class="pill pill-neutral">DEFER</span></td><td>pairs with getfacl; ACLs unused</td><td>&mdash;</td></tr>
+<tr><td>bin/uuidgen</td><td><span class="pill pill-neutral">DEFER</span></td><td>hwregd has its own</td><td>&mdash;</td></tr>
+<tr><td>sbin/adjkerntz</td><td><span class="pill pill-bad">DROP</span></td><td>UTC-only ISO; no CMOS-local-time</td><td>&mdash;</td></tr>
+<tr><td>sbin/bsdlabel</td><td><span class="pill pill-bad">DROP</span></td><td>GPT-only boot; MBR/disklabel dead</td><td>&mdash;</td></tr>
+<tr><td>sbin/camcontrol</td><td><span class="pill pill-good">KEEP</span></td><td>real-hw USB/SATA enum</td><td>&mdash;</td></tr>
+<tr><td>sbin/comcontrol, conscontrol</td><td><span class="pill pill-neutral">DEFER</span></td><td>no serial-console story yet</td><td>&mdash;</td></tr>
+<tr><td>sbin/ddb</td><td><span class="pill pill-bad">DROP</span></td><td>kernel ddb is in-kernel; userland unused</td><td>&mdash;</td></tr>
+<tr><td>sbin/devfs</td><td><span class="pill pill-good">KEEP</span></td><td>devfs rules; no Apple analogue</td><td>&mdash;</td></tr>
+<tr><td>sbin/dmesg</td><td><span class="pill pill-warn">REPLACE</span></td><td>first thing after every boot test</td><td>system_cmds (v3 roadmap)</td></tr>
+<tr><td>sbin/dumpon</td><td><span class="pill pill-neutral">DEFER</span></td><td>core dumps disabled (coredump-off.plist)</td><td>&mdash;</td></tr>
+<tr><td>sbin/etherswitchcfg</td><td><span class="pill pill-bad">DROP</span></td><td>embedded-switch hw we don't have</td><td>&mdash;</td></tr>
+<tr><td>sbin/fdisk</td><td><span class="pill pill-bad">DROP</span></td><td>GPT-only; mkimg builds image</td><td>&mdash;</td></tr>
+<tr><td>sbin/fsck</td><td><span class="pill pill-good">KEEP</span></td><td>UFS rw root; dirty-unmount recovery</td><td>&mdash;</td></tr>
+<tr><td>sbin/fsck_msdosfs</td><td><span class="pill pill-neutral">DEFER</span></td><td>FAT USB stick only</td><td>&mdash;</td></tr>
+<tr><td>sbin/halt (+reboot+poweroff+fastboot+fasthalt+nextboot)</td><td><span class="pill pill-warn">REPLACE</span></td><td>6 aliases, one src dir</td><td>system_cmds (v3 roadmap)</td></tr>
+<tr><td><strong>sbin/ifconfig</strong></td><td><span class="pill pill-warn">REPLACE</span></td><td>required by launchd-network plist + dev work; <strong>generated-header lib prereq</strong> &mdash; drop until Apple version lands</td><td>network_cmds (v3 roadmap)</td></tr>
+<tr><td>sbin/init</td><td><span class="pill pill-bad">DROP</span></td><td>launchd is PID 1; pkglist comment already notes init unused</td><td>&mdash;</td></tr>
+<tr><td>sbin/kldconfig, kldload, kldstat, kldunload</td><td><span class="pill pill-good">KEEP</span></td><td>mach.ko mgmt: "kldload mach" is THE headline install step</td><td>&mdash; (FreeBSD-only)</td></tr>
+<tr><td>sbin/ldconfig</td><td><span class="pill pill-good">KEEP</span></td><td>dlopen hints; libxpc/libmach/libdispatch all dlopened</td><td>&mdash; (FreeBSD-only)</td></tr>
+<tr><td>sbin/md5</td><td><span class="pill pill-good">KEEP</span></td><td>27 hash aliases (md5/sha1/sha256/skein/rmd160…) from one src dir</td><td>system_cmds (later)</td></tr>
+<tr><td>sbin/mdconfig, mdmfs</td><td><span class="pill pill-bad">DROP</span></td><td><strong>No memdisk pivot in current build</strong> (build.sh:2145 confirms)</td><td>&mdash;</td></tr>
+<tr><td>sbin/mknod</td><td><span class="pill pill-neutral">DEFER</span></td><td>devfs autopopulates</td><td>&mdash;</td></tr>
+<tr><td>sbin/mount</td><td><span class="pill pill-good">KEEP</span></td><td>root remount-rw on PID 1 takeover</td><td>&mdash; (FreeBSD-only initially)</td></tr>
+<tr><td>sbin/mount_cd9660</td><td><span class="pill pill-bad">DROP</span></td><td>no ISO9660 in boot path</td><td>&mdash;</td></tr>
+<tr><td>sbin/mount_fusefs, mount_msdosfs, newfs_msdos</td><td><span class="pill pill-neutral">DEFER</span></td><td>FUSE/FAT niche</td><td>&mdash;</td></tr>
+<tr><td>sbin/mount_mfs, mount_udf, mount_unionfs</td><td><span class="pill pill-bad">DROP</span></td><td>build.sh:2145 explicitly "no unionfs"; mfs dead with mdconfig; UDF no use case</td><td>&mdash;</td></tr>
+<tr><td>sbin/mount_nullfs</td><td><span class="pill pill-neutral">DEFER</span></td><td>no overlay/nullfs trick in current build</td><td>&mdash;</td></tr>
+<tr><td>sbin/ping, ping6</td><td><span class="pill pill-warn">REPLACE</span></td><td>dev work</td><td>network_cmds (v3 roadmap)</td></tr>
+<tr><td>sbin/recoverdisk</td><td><span class="pill pill-neutral">DEFER</span></td><td>data-recovery, not boot-path</td><td>&mdash;</td></tr>
+<tr><td>sbin/route, rtsol</td><td><span class="pill pill-warn">REPLACE</span></td><td>dhclient/ipconfigd will replace</td><td>network_cmds (v3 roadmap)</td></tr>
+<tr><td>sbin/routed</td><td><span class="pill pill-bad">DROP</span></td><td>RIP daemon; no dynamic routing</td><td>&mdash;</td></tr>
+<tr><td>sbin/savecore</td><td><span class="pill pill-bad">DROP</span></td><td>core dumps disabled, no swap-dump</td><td>&mdash;</td></tr>
+<tr><td>sbin/shutdown</td><td><span class="pill pill-warn">REPLACE</span></td><td>login users hit this</td><td>system_cmds (v3 roadmap)</td></tr>
+<tr><td>sbin/swapon</td><td><span class="pill pill-neutral">DEFER</span></td><td>no swap configured by default</td><td>&mdash;</td></tr>
+<tr><td>sbin/sysctl</td><td><span class="pill pill-warn">REPLACE</span></td><td>dev work, kern.* knobs</td><td>system_cmds (v3 roadmap)</td></tr>
+<tr><td>sbin/umount</td><td><span class="pill pill-good">KEEP</span></td><td>shutdown path</td><td>&mdash;</td></tr>
+<tr><td>usr.bin/bsdtar</td><td><span class="pill pill-good">KEEP</span></td><td>overlay tarballs, pkg flows</td><td>(stays FreeBSD)</td></tr>
+<tr><td>usr.bin/bzip2 (bz*grep/bzless scripts)</td><td><span class="pill pill-neutral">DEFER</span></td><td>compressed-log convenience; not load-bearing</td><td>&mdash;</td></tr>
+<tr><td>usr.bin/ncurses (tic/tput/clear/reset/tset/&hellip;)</td><td><span class="pill pill-good">KEEP</span></td><td>login(1) + vi(1) need termcap; tput/clear in plists</td><td>&mdash;</td></tr>
+<tr><td>usr.bin/du</td><td><span class="pill pill-good">KEEP</span></td><td>build.sh:2147 calls it</td><td>adv_cmds (later)</td></tr>
+<tr><td>usr.bin/env</td><td><span class="pill pill-good">KEEP</span></td><td>shebang lines (#!/usr/bin/env sh)</td><td>shell_cmds (later)</td></tr>
+<tr><td>usr.bin/find</td><td><span class="pill pill-warn">REPLACE</span></td><td>overlay install + cleanup loops</td><td>shell_cmds (v3 roadmap)</td></tr>
+<tr><td>usr.bin/fsync</td><td><span class="pill pill-neutral">DEFER</span></td><td>sync(1) covers boot case</td><td>&mdash;</td></tr>
+<tr><td>usr.bin/grep</td><td><span class="pill pill-warn">REPLACE</span></td><td>universal</td><td>text_cmds (v3 roadmap)</td></tr>
+<tr><td>usr.bin/groups, id</td><td><span class="pill pill-good">KEEP</span></td><td>shell prompt + login sanity</td><td>adv_cmds (later)</td></tr>
+<tr><td>usr.bin/install</td><td><span class="pill pill-good">KEEP</span></td><td>build.sh + overlay install</td><td>file_cmds (later)</td></tr>
+<tr><td>usr.bin/less (+lz*+xz*+zstd* aliases)</td><td><span class="pill pill-good">KEEP</span></td><td>reading dmesg/syslog</td><td>(stays FreeBSD/upstream)</td></tr>
+<tr><td>usr.bin/limits</td><td><span class="pill pill-neutral">DEFER</span></td><td>launchd plists set limits directly</td><td>&mdash;</td></tr>
+<tr><td>usr.bin/logger</td><td><span class="pill pill-good">KEEP</span></td><td>every run.sh uses it; syslog/ASL bring-up</td><td>syslog (in repo)</td></tr>
+<tr><td>usr.bin/login</td><td><span class="pill pill-warn">REPLACE</span></td><td>PAM done; Apple login is the next swap</td><td>system_cmds (v3 roadmap)</td></tr>
+<tr><td>usr.bin/mktemp</td><td><span class="pill pill-good">KEEP</span></td><td>overlay scripts</td><td>shell_cmds (later)</td></tr>
+<tr><td>usr.bin/passwd</td><td><span class="pill pill-good">KEEP</span></td><td>works with our Apple-PAM /etc/pam.d/passwd</td><td>system_cmds (later) &mdash; keep yppasswd OFF</td></tr>
+<tr><td>usr.bin/sed</td><td><span class="pill pill-warn">REPLACE</span></td><td>universal</td><td>text_cmds (v3 roadmap)</td></tr>
+<tr><td>usr.bin/sort</td><td><span class="pill pill-good">KEEP</span></td><td>log triage</td><td>text_cmds (later)</td></tr>
+<tr><td>usr.bin/tr, uname</td><td><span class="pill pill-good">KEEP</span></td><td>overlay scripts; diag prompt</td><td>text_cmds + shell_cmds (later)</td></tr>
+<tr><td>usr.bin/what</td><td><span class="pill pill-neutral">DEFER</span></td><td>SCCS-tag inspector; we don't ship SCCS tags</td><td>&mdash;</td></tr>
+<tr><td>usr.bin/xargs</td><td><span class="pill pill-warn">REPLACE</span></td><td>overlay install, find piping</td><td>shell_cmds (v3 roadmap)</td></tr>
+<tr><td>usr.libexec/getty</td><td><span class="pill pill-warn">REPLACE</span></td><td>first per-tool Apple swap (issue #106)</td><td>system_cmds (v3 roadmap)</td></tr>
+<tr><td>usr.sbin/ip6addrctl</td><td><span class="pill pill-neutral">DEFER</span></td><td>RFC 6724 source-addr policy; default table fine</td><td>&mdash;</td></tr>
+<tr><td>usr.sbin/kldxref</td><td><span class="pill pill-good">KEEP</span></td><td>needed once after dropping mach.ko in /boot/kernel</td><td>&mdash; (FreeBSD-only)</td></tr>
+<tr><td>usr.sbin/pw</td><td><span class="pill pill-good">KEEP</span></td><td>adding dev/test users; Apple has no equivalent (DS overkill)</td><td>&mdash; (FreeBSD-only)</td></tr>
+<tr><td>usr.sbin/pwd_mkdb</td><td><span class="pill pill-good">KEEP</span></td><td>every pw triggers it; PAM read path needs spwd.db</td><td>&mdash;</td></tr>
+<tr><td>usr.sbin/service</td><td><span class="pill pill-bad">DROP</span></td><td>/etc/rc gone; launchctl owns service lifecycle</td><td>launchctl (in launchd)</td></tr>
+<tr><td>usr.sbin/services_mkdb</td><td><span class="pill pill-neutral">DEFER</span></td><td>/etc/services hash; getservbyname flat-file fallback works</td><td>&mdash;</td></tr>
+<tr><td>usr.sbin/traceroute, traceroute6</td><td><span class="pill pill-warn">REPLACE</span></td><td>dev work</td><td>network_cmds (v3 roadmap)</td></tr>
+</table>
+
+<h3>9.2. First-iter <code>srclist-runtime.txt</code> &mdash; ready to paste</h3>
+
+<p>47 entries (KEEP only). REPLACE entries (~21) live in Apple-userland-cmds v3 plan and get swapped per the established mechanism (issue #106's getty swap is the first example). DEFER (~15) and DROP (~16) entries don't make the live ISO.</p>
+
+<pre><code>bin/cat
+bin/chflags
+bin/date
+bin/dd
+bin/df
+bin/echo
+bin/expr
+bin/freebsd-version
+bin/kenv
+bin/kill
+bin/ln
+bin/mkdir
+bin/pgrep
+bin/pwd
+bin/realpath
+bin/rm
+bin/rmdir
+bin/sh
+bin/sleep
+bin/stty
+bin/sync
+bin/test
+sbin/camcontrol
+sbin/devfs
+sbin/fsck
+sbin/kldconfig
+sbin/kldload
+sbin/kldstat
+sbin/kldunload
+sbin/ldconfig
+sbin/md5
+sbin/mount
+sbin/umount
+usr.bin/bsdtar
+usr.bin/ncurses
+usr.bin/du
+usr.bin/env
+usr.bin/groups
+usr.bin/id
+usr.bin/install
+usr.bin/less
+usr.bin/logger
+usr.bin/mktemp
+usr.bin/passwd
+usr.bin/sort
+usr.bin/tr
+usr.bin/uname
+usr.sbin/kldxref
+usr.sbin/pw
+usr.sbin/pwd_mkdb
+</code></pre>
+
+<h3>9.3. CI budget check for the trimmed list</h3>
+
+<p>47 entries × ~10 sec/entry serial &asymp; <strong>~8 minutes</strong>. Well within the 15-min CI budget. No parallelization or caching required for first iter. Add the long tail (FreeBSD-utilities ~330 entries) in subsequent tickets once #105 is green.</p>
+
+<h3>9.4. REPLACE entries &mdash; all already on the v3 roadmap</h3>
+
+<p>Every REPLACE entry in the table above already has an Apple-source port path in the <a href="freebsd-apple-userland-cmds-plan.html">userland-cmds v3 plan</a>:</p>
 
 <ul>
-  <li><code>srclist-runtime.txt</code>: ~95 entries (96 runtime dirs minus <code>sbin/ifconfig</code>)</li>
-  <li>Add a second manifest <code>srclist-utilities.txt</code>: ~330 entries (utilities long tail), optionally minus <code>kdump</code>/<code>truss</code>/<code>tcpdump</code></li>
-  <li>OR combine into one <code>srclist-base.txt</code> &mdash; 425+ entries.</li>
+  <li><code>chmod, cp, ls, mv, pax</code> &rarr; <code>file_cmds</code></li>
+  <li><code>ps</code> &rarr; <code>adv_cmds</code></li>
+  <li><code>dmesg, halt (family), sysctl, login, getty, shutdown</code> &rarr; <code>system_cmds</code></li>
+  <li><code>ifconfig, ping, ping6, route, rtsol, traceroute, traceroute6</code> &rarr; <code>network_cmds</code></li>
+  <li><code>find, xargs</code> &rarr; <code>shell_cmds</code></li>
+  <li><code>grep, sed</code> &rarr; <code>text_cmds</code></li>
 </ul>
 
-<p>Both files iterated by <code>build.sh</code> in the same loop as <code>srclist-rescue.txt</code>. CI cost: per-subdir <code>make</code> at ~5&ndash;15 sec each × ~425 entries = <strong>~35&ndash;105 minutes of build time</strong>. That's well over our 15-min CI budget &mdash; agent 2 was implicitly assuming a much smaller manifest.</p>
+<p>No new v3-plan tickets needed &mdash; everything's covered. The remaining KEEP items that stay FreeBSD-only (<code>kenv</code>, <code>kld*</code>, <code>ldconfig</code>, <code>pw</code>, <code>pwd_mkdb</code>, <code>devfs</code>, <code>mount</code>, <code>camcontrol</code>, <code>kldxref</code>) are kernel-bound by design and have no Apple analogue worth porting.</p>
 
-<div class="callout callout-warn">
-<p><strong>CI budget reality check.</strong> The 425-entry manifest is the load-bearing concern, not the prereq question. We have three ways to fit:</p>
-<ul>
-  <li><strong>Parallel <code>make -j N</code></strong> across the srclist iteration &mdash; if the host has 4 vCPUs, ~4&times; speedup. Likely lands at 10&ndash;30 min.</li>
-  <li><strong>Slim the manifest</strong> &mdash; do we actually need all 330 utilities entries on the live ISO? Probably not. Trim to the ~50 that actually boot/login uses, defer the rest.</li>
-  <li><strong>ccache</strong> &mdash; pkg-installed ccache would cut rebuild times to ~2&ndash;3 sec per subdir after first run, but vmactions VMs start cold each time. Useful only if we cache <code>$WORK/srcbuild-obj</code> across CI runs (GitHub Actions cache action).</li>
-</ul>
-<p>Recommendation: slim the manifest to the boot/login-critical subset for ticket #105's first iteration; add the long tail later via separate per-category iterations.</p>
-</div>
+<h3>9.5. Confirmed-dead drops (no risk)</h3>
+
+<p>16 srcdirs verified dead by build.sh inspection or in-repo daemons that supersede them:</p>
+
+<p><code>sbin/adjkerntz, sbin/bsdlabel, sbin/ddb, sbin/etherswitchcfg, sbin/fdisk, sbin/init, sbin/mdconfig, sbin/mdmfs, sbin/mount_cd9660, sbin/mount_mfs, sbin/mount_udf, sbin/mount_unionfs, sbin/routed, sbin/savecore, bin/hostname, usr.sbin/service</code> &mdash; all confirmed dead per build.sh (no MBR, no memdisk, no unionfs, no /etc/rc) or superseded in-repo (hostnamed, launchctl).</p>
 
 <h2 id="followup-landmines">10. Follow-up landmines</h2>
 

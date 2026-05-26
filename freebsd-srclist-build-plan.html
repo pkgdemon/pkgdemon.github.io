@@ -59,7 +59,7 @@
 <p><strong>TL;DR.</strong> Three findings, in order of importance:</p>
 <ul>
   <li><strong>Apple has no <code>/rescue/</code> &mdash; ever.</strong> macOS recovery is a separate Recovery partition (recoveryOS), not a directory of statically-linked tools. Per architectural rule 3 ("don't invent things Apple doesn't do"), the right answer for ticket #104 is to <strong>drop FreeBSD-rescue entirely and not replace it</strong>. <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/104">Issue #104</a> + <a href="https://github.com/pkgdemon/freebsd-launchd-mach/pull/107">PR #107</a> closed 2026-05-26. See &sect;2.</li>
-  <li><strong>FreeBSD-runtime trims to 47 entries (from 96).</strong> Deep-scope per-srcdir agent verdicts in &sect;9: 47 KEEP, 21 REPLACE (already on Apple v3 roadmap), 15 DEFER, 13 DROP (confirmed dead per build.sh boot-path inspection). Ready-to-paste first-iter <code>srclist-runtime.txt</code> in &sect;9.2.</li>
+  <li><strong>FreeBSD-runtime trims to 47 entries (from 96).</strong> Deep-scope per-srcdir agent verdicts in &sect;9: 47 KEEP, 21 REPLACE (already on Apple v3 roadmap), 15 DEFER, 13 DROP (confirmed dead per build.sh boot-path inspection). Ready-to-paste first-iter <code>srclist-runtime.txt</code> in &sect;9.2. <strong>FreeBSD-utilities is a separate package</strong> (~330 dirs); deep-scope agent in flight, verdicts pending in &sect;10.</li>
   <li><strong>No <code>buildworld</code> needed.</strong> Per-subdir <code>make</code> against pkgbase-installed headers/libs is sufficient for the 47 keepers. CI budget: ~8 min serial &mdash; well within ~15 min target. No parallelization or caching needed.</li>
 </ul>
 </div>
@@ -75,7 +75,8 @@
   <li><a href="#data-dropkeep">Data: drop-or-keep matrix (agent 4)</a></li>
   <li><a href="#strategy">Strategy</a></li>
   <li><a href="#action-104">Action for #104 (rescue) &mdash; revised</a></li>
-  <li><a href="#action-105">Action for #105 (runtime + utilities)</a></li>
+  <li><a href="#action-105">Action for #105 (runtime)</a></li>
+  <li><a href="#action-105-utilities">Action for #105 (utilities) &mdash; in progress</a></li>
   <li><a href="#followup-landmines">Follow-up landmines</a></li>
 </ol>
 </div>
@@ -273,11 +274,15 @@ Stop.</code></pre>
 
 <p><strong>Proof-of-concept for the manifest mechanism</strong> (the second rationale for #104) doesn't need rescue. It gets proven naturally by #105 (drop runtime + utilities, build from manifest). If we want a tiny standalone POC first, build a single leaf tool (<code>bin/echo</code> or <code>usr.bin/yes</code>) via a one-entry manifest &mdash; that exercises the build.sh wiring without engaging the rescue/crunchgen prereq problem.</p>
 
-<h2 id="action-105">9. Action for #105 (runtime + utilities) &mdash; concrete trim list</h2>
+<h2 id="action-105">9. Action for #105 (runtime) &mdash; concrete trim list</h2>
+
+<div class="callout callout-warn">
+<p><strong>Scope clarification:</strong> FreeBSD-runtime and FreeBSD-utilities are <strong>separate pkgbase packages</strong>. The verdict table in &sect;9.1 covers <strong>FreeBSD-runtime only</strong> (96 dirs &rarr; 47 KEEP). FreeBSD-utilities is a separate effort (~330 dirs) covered in <a href="#action-105-utilities">&sect;10</a> below once its deep-scope agent returns. The original "runtime + utilities" combined framing of #105 should be split into two iters: this one drops runtime + pam-lib phantom; a follow-up iter drops utilities.</p>
+</div>
 
 <p>Deep-scope agent verified every srcdir in FreeBSD-runtime against build.sh's actual boot path (build.sh:2130&ndash;2195 confirms GPT/UFS-only boot, no <code>mdconfig</code>, no unionfs, no <code>/etc/rc</code>, no memdisk pivot). The "init.sh uses /rescue/mdconfig" comment in <code>pkglist-base.txt</code> is stale history &mdash; not the current boot path.</p>
 
-<p><strong>Result: 47 entries for the first-iter <code>srclist-runtime.txt</code>, down from ~96.</strong> A 51% trim with confirmed-dead drops + Apple-roadmap-replaces.</p>
+<p><strong>Result: 47 entries for the first-iter <code>srclist-runtime.txt</code>, down from ~96 dirs.</strong> A 51% trim with confirmed-dead drops + Apple-roadmap-replaces.</p>
 
 <h3>9.1. Per-srcdir verdicts</h3>
 
@@ -457,7 +462,32 @@ usr.sbin/pwd_mkdb
 
 <p><code>sbin/adjkerntz, sbin/bsdlabel, sbin/ddb, sbin/etherswitchcfg, sbin/fdisk, sbin/init, sbin/mdconfig, sbin/mdmfs, sbin/mount_cd9660, sbin/mount_mfs, sbin/mount_udf, sbin/mount_unionfs, sbin/routed, sbin/savecore, bin/hostname, usr.sbin/service</code> &mdash; all confirmed dead per build.sh (no MBR, no memdisk, no unionfs, no /etc/rc) or superseded in-repo (hostnamed, launchctl).</p>
 
-<h2 id="followup-landmines">10. Follow-up landmines</h2>
+<h2 id="action-105-utilities">10. Action for #105 (utilities) &mdash; investigation in progress</h2>
+
+<div class="callout callout-warn">
+<p><strong>Status:</strong> Deep-scope agent dispatched 2026-05-26; verdicts pending. This section will be populated with the same KEEP / REPLACE / DEFER / DROP table for FreeBSD-utilities once the agent returns.</p>
+</div>
+
+<p>FreeBSD-utilities is the long tail: 604 binaries / ~330 distinct <code>/usr/src</code> dirs. The agent's brief includes strong-trim heuristics for confirmed-irrelevant categories:</p>
+
+<ul>
+  <li><strong>NIS/YP</strong> &rarr; DROP (no NIS on this ISO)</li>
+  <li><strong>UUCP</strong> (<code>cu</code>, <code>tip</code>) &rarr; DROP (no modem dialer)</li>
+  <li><strong>Floppy / serial / tape backup</strong> (<code>fdformat</code>, <code>mt</code>, <code>tcopy</code>) &rarr; DROP</li>
+  <li><strong>Mail tools</strong> (<code>mail</code>, <code>mailx</code>, <code>sendmail</code>, <code>biff</code>, <code>talk</code>, <code>write</code>, <code>wall</code>) &rarr; DROP (no MTA)</li>
+  <li><strong>Printer suite</strong> (<code>lpr</code>, <code>lpd</code>, <code>lpq</code>, <code>lprm</code>, <code>lpc</code>, <code>pac</code>) &rarr; DROP (no printing)</li>
+  <li><strong>RPC services not used</strong> (<code>rpc.rusersd</code>, <code>rpc.rwalld</code>, <code>spray</code>) &rarr; DROP</li>
+  <li><strong>BSM audit</strong> (<code>audit</code>, <code>auditd</code>, <code>praudit</code>) &rarr; DEFER (we stub BSM)</li>
+  <li><strong>Cron + at scheduling</strong> &rarr; DEFER (launchd has StartCalendarInterval)</li>
+  <li><strong>HyperV / Mellanox / CXGBE / MPS</strong> hardware tools &rarr; DROP (CI VMs don't have)</li>
+  <li><strong>NTP suite</strong> &rarr; DEFER (launchd-managed simpler ntp later)</li>
+  <li><strong>BSD games</strong> (<code>fortune</code>, <code>morse</code>, <code>banner</code>, <code>factor</code>, <code>primes</code>) &rarr; DROP</li>
+  <li><strong>Apple roadmap REPLACE entries</strong> (file_cmds/shell_cmds/text_cmds/adv_cmds/system_cmds/network_cmds/PowerManagement/DiskArbitration v3 ports) &rarr; REPLACE</li>
+</ul>
+
+<p>Based on these heuristics, the expected utilities KEEP count is probably <strong>50-80 entries</strong> (out of ~330 dirs) &mdash; an even more aggressive 75&ndash;85% trim than runtime. Will update with the actual numbers once the agent returns.</p>
+
+<h2 id="followup-landmines">11. Follow-up landmines</h2>
 
 <p>If we expand the manifest to cover more tools in future tickets, watch for:</p>
 

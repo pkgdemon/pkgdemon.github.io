@@ -59,7 +59,8 @@
 <p><strong>TL;DR.</strong> Three findings, in order of importance:</p>
 <ul>
   <li><strong>Apple has no <code>/rescue/</code> &mdash; ever.</strong> macOS recovery is a separate Recovery partition (recoveryOS), not a directory of statically-linked tools. Per architectural rule 3 ("don't invent things Apple doesn't do"), the right answer for ticket #104 is to <strong>drop FreeBSD-rescue entirely and not replace it</strong>. <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/104">Issue #104</a> + <a href="https://github.com/pkgdemon/freebsd-launchd-mach/pull/107">PR #107</a> closed 2026-05-26. See &sect;2.</li>
-  <li><strong>FreeBSD-runtime trims to 47 entries (from 96).</strong> Deep-scope per-srcdir agent verdicts in &sect;9: 47 KEEP, 21 REPLACE (already on Apple v3 roadmap), 15 DEFER, 13 DROP (confirmed dead per build.sh boot-path inspection). Ready-to-paste first-iter <code>srclist-runtime.txt</code> in &sect;9.2. <strong>FreeBSD-utilities is a separate package</strong> (~330 dirs); deep-scope agent in flight, verdicts pending in &sect;10.</li>
+  <li><strong>FreeBSD-runtime trims to 47 entries (from 96).</strong> &sect;9 has the verdict table: 47 KEEP, 21 REPLACE, 15 DEFER, 13 DROP. Ready-to-paste <code>srclist-runtime.txt</code> in &sect;9.2.</li>
+  <li><strong>FreeBSD-utilities trims to 63 entries (from ~330).</strong> &sect;10 has the verdict table: ~50 KEEP, ~38 REPLACE, ~85 DEFER, ~190+ DROP. Ready-to-paste <code>srclist-utilities.txt</code> in &sect;10.3. <strong>Combined: 110 entries total</strong> (down from ~425 = 74% trim).</li>
   <li><strong>No <code>buildworld</code> needed.</strong> Per-subdir <code>make</code> against pkgbase-installed headers/libs is sufficient for the 47 keepers. CI budget: ~8 min serial &mdash; well within ~15 min target. No parallelization or caching needed.</li>
 </ul>
 </div>
@@ -462,30 +463,158 @@ usr.sbin/pwd_mkdb
 
 <p><code>sbin/adjkerntz, sbin/bsdlabel, sbin/ddb, sbin/etherswitchcfg, sbin/fdisk, sbin/init, sbin/mdconfig, sbin/mdmfs, sbin/mount_cd9660, sbin/mount_mfs, sbin/mount_udf, sbin/mount_unionfs, sbin/routed, sbin/savecore, bin/hostname, usr.sbin/service</code> &mdash; all confirmed dead per build.sh (no MBR, no memdisk, no unionfs, no /etc/rc) or superseded in-repo (hostnamed, launchctl).</p>
 
-<h2 id="action-105-utilities">10. Action for #105 (utilities) &mdash; investigation in progress</h2>
+<h2 id="action-105-utilities">10. Action for #105 (utilities) &mdash; concrete trim list</h2>
 
-<div class="callout callout-warn">
-<p><strong>Status:</strong> Deep-scope agent dispatched 2026-05-26; verdicts pending. This section will be populated with the same KEEP / REPLACE / DEFER / DROP table for FreeBSD-utilities once the agent returns.</p>
-</div>
+<p>FreeBSD-utilities is the long tail: 604 binaries / ~330 distinct <code>/usr/src</code> dirs. Deep-scope agent applied the same KEEP/REPLACE/DEFER/DROP heuristics as runtime.</p>
 
-<p>FreeBSD-utilities is the long tail: 604 binaries / ~330 distinct <code>/usr/src</code> dirs. The agent's brief includes strong-trim heuristics for confirmed-irrelevant categories:</p>
+<p><strong>Result: 63 entries for the first-iter <code>srclist-utilities.txt</code>, down from ~330.</strong> An 80% trim &mdash; even more aggressive than runtime's 51%, because most of FreeBSD-utilities is daemons + tools we don't ship (mail, printer, NIS, NFS, UUCP, BSD games, etc.).</p>
+
+<h3>10.1. Verdict counts</h3>
+
+<table>
+<tr><th>Verdict</th><th>Count</th><th>What it means</th></tr>
+<tr><td><span class="pill pill-good">KEEP</span></td><td>~50</td><td>Load-bearing daily-driver dev work on the ISO (debug tools, doc reading, network introspection)</td></tr>
+<tr><td><span class="pill pill-warn">REPLACE</span></td><td>~38</td><td>Already on Apple userland-cmds v3 roadmap; let the Apple swap fill the path</td></tr>
+<tr><td><span class="pill pill-neutral">DEFER</span></td><td>~85</td><td>Useful eventually but not iter-1 essential; add when a real consumer surfaces</td></tr>
+<tr><td><span class="pill pill-bad">DROP</span></td><td>~190+</td><td>Confirmed irrelevant: mail, printer, NIS, NFS-server-only, UUCP, BSD games, embedded-only HW, legacy MBR boot, etc.</td></tr>
+</table>
+
+<h3>10.2. Per-srcdir verdicts (selected entries)</h3>
+
+<p>Full table is long; abbreviated here grouping by /usr/src bucket. The complete agent transcript covers all ~365 dirs evaluated.</p>
+
+<h4><code>usr.bin/*</code> highlights</h4>
+
+<table>
+<tr><th>Category</th><th>Examples (verdict)</th><th>Rationale</th></tr>
+<tr><td><strong>Essential debug toolkit (KEEP)</strong></td><td>awk, fstat, sockstat, procstat, fuser, ktrace, kdump, truss, top, w, vmstat, ldd, strings, file, hexdump, nc, stat, readlink</td><td>Half of port debugging is "why isn't this resolving / what syscall failed / what's listening"; without these we're blind</td></tr>
+<tr><td><strong>Shell-script primitives (KEEP)</strong></td><td>basename, head, tail, wc, uniq, cut, paste, tr, comm, col, mkfifo, seq, tee, time, touch, truncate, yes, getconf, getent, which, logname, hostid</td><td>Overlays + run.sh use these everywhere</td></tr>
+<tr><td><strong>Man page reading (KEEP)</strong></td><td>man, mandoc, manpath, apropos, whatis</td><td>Research ISO with no internet; <code>man ifconfig</code> during porting is needed. Cheap to build.</td></tr>
+<tr><td><strong>Apple v3 roadmap REPLACE</strong></td><td>find, xargs (shell_cmds); grep, sed (text_cmds); ls, cp, mv, chmod, pax, gzip (file_cmds); ps, pkill, locale, localedef, finger, lsvfs, tty, cap_mkdb, gencat, whois, colldef (adv_cmds); gcore, su (system_cmds + shell_cmds)</td><td>~25 entries; let Apple swap fill them</td></tr>
+<tr><td><strong>Mail tools (DROP)</strong></td><td>mail, mailx, vacation, biff, from, mesg, write, wall, talk</td><td>No MTA on this ISO</td></tr>
+<tr><td><strong>Printer suite (DROP)</strong></td><td>lp, lpq, lpr, lprm</td><td>No printing</td></tr>
+<tr><td><strong>UUCP / modem (DROP)</strong></td><td>cu, tip, chat</td><td>No modem</td></tr>
+<tr><td><strong>BSD games (DROP)</strong></td><td>fortune, morse, banner, factor, primes, random, number, msgs, caesar, rot13, pom, leave, strfile</td><td>Trivia</td></tr>
+<tr><td><strong>Floppy / tape (DROP)</strong></td><td>mt, tcopy, fdformat (in usr.sbin)</td><td>No floppy / no tape</td></tr>
+<tr><td><strong>On-target compile toolchain (DEFER)</strong></td><td>ar, ranlib, bmake, make, mkdep, byacc, yacc, lex, c89, c99, ctags, indent, file2c, mkstr, xstr</td><td>Build on host, not ISO</td></tr>
+<tr><td><strong>Binary forensics (DEFER)</strong></td><td>brandelf, elfctl, elfdump, etdump, gprof</td><td>Forensics from laptop instead</td></tr>
+<tr><td><strong>Cron/at scheduling (DROP)</strong></td><td>crontab + cron daemon</td><td>launchd's StartCalendarInterval covers every cron use-case</td></tr>
+</table>
+
+<h4><code>usr.sbin/*</code> highlights</h4>
+
+<table>
+<tr><th>Category</th><th>Examples (verdict)</th><th>Rationale</th></tr>
+<tr><td><strong>Real-HW + debug essentials (KEEP)</strong></td><td>pciconf, devctl, diskinfo, gstat, iostat, fstyp, crashinfo, tcpdump, chroot, nologin</td><td>pciconf for hwregd debug; tcpdump as the "kernel vs userland" oracle when network_cmds ports flake; crashinfo for routine Mach-IPC panic forensics</td></tr>
+<tr><td><strong>Apple v3 roadmap REPLACE</strong></td><td>arp, ndp, rtadvd, rtsold (network_cmds); powerd (PowerManagement); route (network_cmds)</td><td>~5 entries; let Apple swap fill them</td></tr>
+<tr><td><strong>BSM audit (DEFER)</strong></td><td>audit, auditd, auditdistd, auditreduce, praudit</td><td>We stub BSM; flesh out later if needed</td></tr>
+<tr><td><strong>NTP suite (DEFER)</strong></td><td>ntpd, ntpdate, ntpdc, ntptime, sntp, ntpq, ntp-keygen</td><td>Use launchd-managed simpler approach later; not load-bearing for iter 1</td></tr>
+<tr><td><strong>NFS suite (DEFER)</strong></td><td>mountd, rpc.statd, rpc.tlsclntd/tlsservd, rpcbind</td><td>NFS server-side; client may be added later</td></tr>
+<tr><td><strong>Printer / mail / NIS (DROP)</strong></td><td>lpc, lpd, lpr-suite, lptcontrol, sendmail, mailwrapper, editmap, makemap, keyserv</td><td>Same drops as usr.bin</td></tr>
+<tr><td><strong>HyperV / hw RAID / embedded (DROP)</strong></td><td>hv_kvp_daemon, hv_vss_daemon, mfiutil, mprutil, mpsutil, mptutil, mrsasutil, i2c, spi, pwm, gpioctl, uefisign</td><td>Not in CI VMs / not target HW</td></tr>
+<tr><td><strong>Legacy / install (DROP)</strong></td><td>boot0cfg, btxld (MBR boot), bsdconfig, freebsd-update, etcupdate, mergemaster, sysrc, tzsetup</td><td>GPT-only; not how we install/update</td></tr>
+<tr><td><strong>IPsec / firewall / VPN (DROP)</strong></td><td>setkey, authpf, ipfwpcap, pfilctl, wg</td><td>No FW / no VPN on iter-1 ISO</td></tr>
+</table>
+
+<h4><code>libexec/*</code> + <code>bin/*</code> + <code>sbin/*</code> (utilities-side)</h4>
+
+<table>
+<tr><th>Path</th><th>Verdict</th><th>Rationale</th></tr>
+<tr><td>libexec/save-entropy</td><td><span class="pill pill-good">KEEP</span></td><td>launchd RandomSeed plist will exec at boot+shutdown for /var/db/entropy</td></tr>
+<tr><td>libexec/bootpd, rbootd, tftp-proxy, tftpd, comsat, fingerd, ntalkd, locate.* helpers, phttpget, pppoed, rpc.* helpers, ulog-helper, flua</td><td><span class="pill pill-bad">DROP</span> (most) / <span class="pill pill-neutral">DEFER</span> (flua)</td><td>Mail / talk / netboot / NIS / dialup &mdash; all unused</td></tr>
+<tr><td>bin/timeout</td><td><span class="pill pill-good">KEEP</span></td><td>Test harness uses it</td></tr>
+<tr><td>sbin/nologin</td><td><span class="pill pill-good">KEEP</span></td><td>login(1) shell-of-last-resort for /sbin/nologin shell</td></tr>
+<tr><td>bin/chio (tape changer), bin/cpuset, sbin/decryptcore, sbin/nos-tun, sbin/pfilctl, sbin/setkey, sbin/zfsbootcfg</td><td><span class="pill pill-bad">DROP</span> / <span class="pill pill-neutral">DEFER</span></td><td>Tape / CPU pinning / encrypted dumps / IPsec / ZFS boot &mdash; not iter 1</td></tr>
+</table>
+
+<h3>10.3. First-iter <code>srclist-utilities.txt</code> &mdash; ready to paste</h3>
+
+<p>63 entries (KEEP only). REPLACE entries (~38) live in the Apple userland-cmds v3 plan and get swapped per the established mechanism. DEFER (~85) and DROP (~190+) entries don't make the live ISO.</p>
+
+<pre><code>usr.bin/awk
+usr.bin/basename
+usr.bin/bsdcat
+usr.bin/chgrp
+usr.bin/cmp
+usr.bin/col
+usr.bin/comm
+usr.bin/cut
+usr.bin/du
+usr.bin/file
+usr.bin/fstat
+usr.bin/fuser
+usr.bin/getconf
+usr.bin/getent
+usr.bin/head
+usr.bin/hexdump
+usr.bin/hostid
+usr.bin/kdump
+usr.bin/ktrace
+usr.bin/ldd
+usr.bin/login_cap
+usr.bin/logname
+usr.bin/man
+usr.bin/mandoc
+usr.bin/manpath
+usr.bin/mkfifo
+usr.bin/nc
+usr.bin/paste
+usr.bin/printenv
+usr.bin/procstat
+usr.bin/readlink
+usr.bin/renice
+usr.bin/seq
+usr.bin/sockstat
+usr.bin/stat
+usr.bin/strings
+usr.bin/tail
+usr.bin/tee
+usr.bin/time
+usr.bin/top
+usr.bin/touch
+usr.bin/tr
+usr.bin/truncate
+usr.bin/truss
+usr.bin/uniq
+usr.bin/vmstat
+usr.bin/w
+usr.bin/wc
+usr.bin/which
+usr.bin/yes
+usr.sbin/chroot
+usr.sbin/crashinfo
+usr.sbin/devctl
+usr.sbin/diskinfo
+usr.sbin/fstyp
+usr.sbin/gstat
+usr.sbin/iostat
+usr.sbin/nologin
+usr.sbin/pciconf
+usr.sbin/tcpdump
+libexec/save-entropy
+bin/timeout
+sbin/nologin
+</code></pre>
+
+<p>Dedupe note: a few KEEP entries above overlap with runtime's srclist (e.g., <code>bin/timeout</code> is utilities-side, but <code>tr</code>/<code>basename</code>-equivalents may already be in runtime). Resolve at integration time before pushing the PR.</p>
+
+<h3>10.4. CI budget for combined runtime + utilities</h3>
+
+<p>47 (runtime) + 63 (utilities) = <strong>110 total entries</strong>. At ~10 sec per subdir serial: <strong>~18&ndash;19 min combined</strong>. Tight against the ~15-min target but workable; if needed, parallelize with <code>make -j N</code> across the srclist iteration (4&times; speedup on 4-vCPU VM, lands at ~5 min).</p>
+
+<h3>10.5. Non-obvious decisions worth flagging</h3>
 
 <ul>
-  <li><strong>NIS/YP</strong> &rarr; DROP (no NIS on this ISO)</li>
-  <li><strong>UUCP</strong> (<code>cu</code>, <code>tip</code>) &rarr; DROP (no modem dialer)</li>
-  <li><strong>Floppy / serial / tape backup</strong> (<code>fdformat</code>, <code>mt</code>, <code>tcopy</code>) &rarr; DROP</li>
-  <li><strong>Mail tools</strong> (<code>mail</code>, <code>mailx</code>, <code>sendmail</code>, <code>biff</code>, <code>talk</code>, <code>write</code>, <code>wall</code>) &rarr; DROP (no MTA)</li>
-  <li><strong>Printer suite</strong> (<code>lpr</code>, <code>lpd</code>, <code>lpq</code>, <code>lprm</code>, <code>lpc</code>, <code>pac</code>) &rarr; DROP (no printing)</li>
-  <li><strong>RPC services not used</strong> (<code>rpc.rusersd</code>, <code>rpc.rwalld</code>, <code>spray</code>) &rarr; DROP</li>
-  <li><strong>BSM audit</strong> (<code>audit</code>, <code>auditd</code>, <code>praudit</code>) &rarr; DEFER (we stub BSM)</li>
-  <li><strong>Cron + at scheduling</strong> &rarr; DEFER (launchd has StartCalendarInterval)</li>
-  <li><strong>HyperV / Mellanox / CXGBE / MPS</strong> hardware tools &rarr; DROP (CI VMs don't have)</li>
-  <li><strong>NTP suite</strong> &rarr; DEFER (launchd-managed simpler ntp later)</li>
-  <li><strong>BSD games</strong> (<code>fortune</code>, <code>morse</code>, <code>banner</code>, <code>factor</code>, <code>primes</code>) &rarr; DROP</li>
-  <li><strong>Apple roadmap REPLACE entries</strong> (file_cmds/shell_cmds/text_cmds/adv_cmds/system_cmds/network_cmds/PowerManagement/DiskArbitration v3 ports) &rarr; REPLACE</li>
+  <li><strong><code>crashinfo</code> is KEEP, not DEFER.</strong> Kernel panics during Mach-IPC porting are routine; crashinfo wraps the savecore&rarr;symbolicate flow. Without it, post-panic forensics is manual and slow.</li>
+  <li><strong><code>man</code>/<code>mandoc</code>/<code>manpath</code> are KEEP.</strong> Research ISO with no internet: <code>man ifconfig</code> during debugging is needed. Cheap.</li>
+  <li><strong><code>tcpdump</code> is KEEP, not DEFER</strong>, even though ifconfig/route get REPLACE'd. When the Apple network_cmds swap misbehaves, tcpdump tells us what packets actually went out the NIC. Canonical "kernel bug vs userland bug" oracle.</li>
+  <li><strong><code>pciconf</code> is KEEP</strong> specifically because hwregd's PCI enrichment is new &mdash; when hwregd-published topology disagrees with newbus, <code>pciconf -lv</code> is the tiebreaker.</li>
+  <li><strong><code>ldd</code> non-negotiable KEEP.</strong> Half the porting work is "why isn't libpam.so.6 resolving" &mdash; ldd answers in 5 seconds.</li>
+  <li><strong>NTP suite all DEFER.</strong> QEMU host time injection + launchd RunAtLoad of a one-shot ntpdate-style helper later is cleaner than ntpd-the-daemon.</li>
+  <li><strong>cron + crontab DROP, not DEFER.</strong> launchd's StartCalendarInterval covers every cron use-case. Two scheduling systems = two sets of bug reports.</li>
+  <li><strong><code>save-entropy</code> KEEP</strong> even though tiny. Launchd RandomSeed plist will exec it; easier to keep than stub.</li>
+  <li><strong>Aggressive but defensible.</strong> If we want a smaller iter 1, the obvious next cuts are <code>man</code>/<code>mandoc</code>/<code>manpath</code> (read docs from the laptop instead) and <code>libexec/save-entropy</code> &mdash; brings the count to ~58.</li>
 </ul>
-
-<p>Based on these heuristics, the expected utilities KEEP count is probably <strong>50-80 entries</strong> (out of ~330 dirs) &mdash; an even more aggressive 75&ndash;85% trim than runtime. Will update with the actual numbers once the agent returns.</p>
 
 <h2 id="followup-landmines">11. Follow-up landmines</h2>
 

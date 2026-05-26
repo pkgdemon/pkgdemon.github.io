@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HFS+ kernel module port plan for FreeBSD</title>
+<style>
+  :root {
+    --fg: #1a1a1a; --fg-muted: #555; --bg: #fafaf7; --accent: #b8472a;
+    --accent-soft: #f3e7df; --border: #d8d4c8; --code-bg: #f0ece2;
+    --table-stripe: #f4efe5; --warn: #8a5a00; --good: #2d6f3b; --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif; color: var(--fg); background: var(--bg); line-height: 1.55; margin: 0; padding: 0; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 32px 96px; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--border); letter-spacing: -0.005em; }
+  h3 { font-size: 1.15rem; margin: 32px 0 10px; color: var(--accent); }
+  h4 { font-size: 1rem; margin: 24px 0 6px; color: var(--fg); }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg); }
+  code { padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  pre { padding: 14px 18px; border-radius: 4px; overflow-x: auto; font-size: 0.86rem; line-height: 1.45; margin: 0 0 18px; }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+  .lede { font-size: 1.05rem; color: var(--fg-muted); margin-bottom: 32px; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 0.91rem; }
+  th, td { text-align: left; padding: 8px 10px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 18px 0 22px; border-radius: 0 4px 4px 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn { border-left-color: var(--warn); background: #fbf3df; }
+  .callout-good { border-left-color: var(--good); background: #e8f1e3; }
+  .callout-bad  { border-left-color: var(--bad);  background: #fbe6e6; }
+  .pill { display: inline-block; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 10px; margin-right: 6px; }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 18px 24px 14px 36px; margin: 0 0 36px; font-size: 0.95rem; }
+  .toc h2 { margin: 0 0 8px; padding-top: 0; border-top: none; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-left: -14px; }
+  .toc ol { margin: 0 0 0 6px; }
+  .toc li { margin-bottom: 4px; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  @media (max-width: 600px) { .wrap { padding: 24px 18px 64px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>HFS+ kernel module port plan for FreeBSD</h1>
+
+<p class="lede">Porting Apple's HFS+ filesystem as a vendored FreeBSD <code>hfs.ko</code> kernel module + userland tools (<code>mount_hfs</code>, <code>newfs_hfs</code>, <code>fsck_hfs</code>), targeting read-write mount, journal support, and decmpfs decompression. Scopes <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/73">issue #73 (HFS+ support scoping)</a>. The headline find: a GSoC 2025 port (<code>stupendoussuperpowers/freebsd_hfs</code>, FreeBSD Foundation mentored) already exists with RO+RW mount + basic VOPs working; the port stopped at journal + fsck/newfs + decmpfs. We fork that as the starting point.</p>
+
+<div class="callout callout-good">
+<p><strong>Why this matters:</strong></p>
+<ul>
+  <li><strong>Mount Apple-source DMGs natively.</strong> Almost every <code>.dmg</code> Apple distributes contains an HFS+ volume; with <code>hfs.ko</code> + <code>md(4)</code> + a DMG extractor we mount installer images without FUSE.</li>
+  <li><strong>Unlocks Apple-source <code>mount_hfs</code> / <code>newfs_hfs</code> / <code>fsck_hfs</code></strong> from <code>apple-oss-distributions/hfs</code> &mdash; same lineage as the modern XNU HFS+ tools, matching Mac behavior exactly.</li>
+  <li><strong>Removes <code>darling-dmg</code> dependency</strong> for the read path &mdash; darling-dmg embeds its own HFS+ reader, which becomes redundant once we have kernel-side HFS+.</li>
+  <li><strong>Boot-from-HFS+</strong> (long-tail) becomes reachable, paired with a bootloader port (separate scoping; see &sect;10).</li>
+  <li><strong>Time Machine sparsebundle inspection</strong> (non-APFS targets) becomes possible.</li>
+</ul>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#problem">Why HFS+</a></li>
+  <li><a href="#source-landscape">Source landscape</a></li>
+  <li><a href="#gsoc-port">The GSoC 2025 FreeBSD port (Sahay)</a></li>
+  <li><a href="#apple-source">Apple's HFS source &mdash; what it contains</a></li>
+  <li><a href="#impedance">Apple/FreeBSD VFS impedance points</a></li>
+  <li><a href="#strategy">Strategy: fork freebsd_hfs as starting point</a></li>
+  <li><a href="#phases">Phased delivery</a></li>
+  <li><a href="#userland">Userland tools (<code>mount_hfs</code>, <code>newfs_hfs</code>, <code>fsck_hfs</code>)</a></li>
+  <li><a href="#risks">Risks</a></li>
+  <li><a href="#related">Bootloader + DMG + APFS &mdash; related work</a></li>
+  <li><a href="#out-of-scope">Out of scope</a></li>
+</ol>
+</div>
+
+<h2 id="problem">1. Why HFS+</h2>
+
+<p>HFS+ is Apple's pre-APFS filesystem and remains the on-disk format inside almost every <code>.dmg</code> Apple distributes (installers, source-release archives from <code>apple-oss-distributions</code>, Mac OS X 10.4&ndash;10.12 boot drives, Time Machine backups against non-APFS targets). Without HFS+ support <code>freebsd-launchd-mach</code> can't:</p>
+
+<ul>
+  <li>Mount Apple-source <code>.dmg</code> files we vendor from</li>
+  <li>Read Apple-formatted external drives plugged into a <code>freebsd-launchd-mach</code> machine</li>
+  <li>Write to such drives for interop with older Macs</li>
+  <li>Boot from / install onto HFS+ (long-tail but real for dual-boot Mac hardware)</li>
+</ul>
+
+<p>Current state in the wider FreeBSD ecosystem: <code>sysutils/fusefs-hfsfuse</code> (MIT) provides solid read-only HFS+ via FUSE &mdash; including journal-aware reads, decmpfs decompression, hard links, xattrs. ravynOS uses this combination (<code>fusefs-hfsfuse</code> + <code>dmg2img</code>) and it works. The question this plan answers: <strong>do we want better than that?</strong> Read-write, in-kernel, Apple-source-aligned. Yes &mdash; matches the project's overall "port Apple userland from Apple source" stance.</p>
+
+<h2 id="source-landscape">2. Source landscape</h2>
+
+<table>
+<tr><th>Source</th><th>License</th><th>Read</th><th>Write</th><th>Journal</th><th>decmpfs</th><th>Notes</th></tr>
+<tr><td><code>apple-oss-distributions/hfs</code></td><td>APSL 2.0</td><td>Yes</td><td>Yes</td><td>Yes</td><td>References XNU's; not bundled</td><td>The reference implementation; ~65-75K SLOC kernel, ~30K SLOC userland. Targets XNU.</td></tr>
+<tr><td>Linux <code>fs/hfsplus/</code></td><td>GPL-2.0</td><td>Yes</td><td>Non-journaled only</td><td>No (silently downgrades RO with warning)</td><td>No</td><td>~27 source files. Not actively maintained since 2008. <strong>License-incompatible</strong> with BSD base kmod.</td></tr>
+<tr><td>NetBSD <code>sys/fs/hfs/</code></td><td>BSD-2-Clause</td><td>Yes (RO only)</td><td>No</td><td>No</td><td>No</td><td>Clean-room reimplementation. ~160 KB C. <em>"MASSIVE performance + memory optimization pending"</em> per its own TODO.</td></tr>
+<tr><td><code>0x09/hfsfuse</code> (FreeBSD port: <code>sysutils/fusefs-hfsfuse</code>)</td><td>MIT</td><td>Yes</td><td>No</td><td>Read-aware</td><td>zlib + LZVN + LZFSE</td><td>Extends NetBSD <code>libhfs</code>. Most capable FUSE option. Already in FreeBSD ports.</td></tr>
+<tr><td><code>darling-dmg</code></td><td>GPL-3.0</td><td>Yes</td><td>No</td><td>No</td><td>No</td><td>FUSE-based, HFS+ embedded in DMG. Library-usable.</td></tr>
+<tr><td><code>stupendoussuperpowers/freebsd_hfs</code></td><td>APSL 2.0 (inherited from Apple)</td><td>Yes</td><td>Yes (basic)</td><td>Claimed but unverified</td><td>No</td><td>GSoC 2025, FreeBSD Foundation. Fork of Apple's HFS + compat shim. Parked July 2025.</td></tr>
+<tr><td><code>johnothwolo/hfs-freebsd</code></td><td>MPL-2.0</td><td>Yes (RO)</td><td>No (explicitly disabled)</td><td>No</td><td>No</td><td>Earlier WIP, less complete than the GSoC port. Based on Apple HFS 556.60.1.</td></tr>
+</table>
+
+<p>The GSoC port (row 6) is the most-advanced FreeBSD-kernel target we can build on. APSL 2.0 license aligns with the rest of our vendored Apple sources.</p>
+
+<h2 id="gsoc-port">3. The GSoC 2025 FreeBSD port (Sahay)</h2>
+
+<p><strong>Project:</strong> <a href="https://github.com/stupendoussuperpowers/freebsd_hfs">stupendoussuperpowers/freebsd_hfs</a> by Sanchit Sahay (NYU), FreeBSD Foundation-mentored. Targets FreeBSD 14. Last commit 2025-07-03. Status documented in the <a href="https://www.freebsd.org/status/report-2025-04-2025-06/hfs/">FreeBSD Q2 2025 status report</a> as "successfully completed" for the GSoC milestone scope, though clearly more work remains.</p>
+
+<p><strong>What works (per repo README + blog post):</strong></p>
+<ul>
+  <li>Mount RO + RW</li>
+  <li>Unmount</li>
+  <li><code>ls</code>, <code>stat</code>, <code>mkdir</code>, <code>touch</code>, <code>cat</code>, <code>echo &gt; file</code></li>
+  <li>Modern FreeBSD VFS API (VOP / VFS vectors)</li>
+  <li>Rust <code>mount_hfs</code> binary in <code>disk_bin/</code></li>
+  <li>Build as out-of-tree kmod against FreeBSD 14 (no kernel patches)</li>
+</ul>
+
+<p><strong>What's missing:</strong></p>
+<ul>
+  <li><code>mmap</code> &mdash; needed for shared-memory binaries; current code uses <code>vn_read</code>/<code>vn_write</code> only</li>
+  <li><strong>Journal support</strong> &mdash; claimed in README but unverified against real Apple-generated dirty journals; <code>hfs_journal.c</code> is 157 KB</li>
+  <li>Native port of <code>hfscommon/</code> (still uses Apple shims rather than FreeBSD-native impls)</li>
+  <li><code>newfs_hfs</code> (Rust stub only; no real backend)</li>
+  <li><code>fsck_hfs</code> (Rust stub only; no real backend)</li>
+  <li>Automated tests</li>
+  <li>decmpfs (transparent compression) &mdash; not vendored from XNU yet</li>
+  <li>NFS export, root-fs mount</li>
+  <li>Soak-test coverage on Apple-formatted real-world volumes</li>
+</ul>
+
+<p><strong>Tree layout (model for our fork):</strong></p>
+<ul>
+  <li><code>xnu/</code> &mdash; verbatim Apple HFS source from <code>apple-oss-distributions/hfs</code></li>
+  <li><code>hfsplus/</code> &mdash; HFS logic + <code>hfscommon</code></li>
+  <li><code>vfs/</code> &mdash; UTF-8 utilities from XNU</li>
+  <li><code>sys/</code> &mdash; compat shims (aliased types, header bridges) &mdash; the FreeBSD/XNU impedance layer</li>
+  <li><code>disk_bin/</code> &mdash; Rust userland scaffolding for mount/newfs/fsck</li>
+</ul>
+
+<p><strong>Specific FreeBSD VFS porting deltas Sahay documented:</strong></p>
+<ul>
+  <li>VOP_LOCK/UNLOCK signature changes (no thread arg)</li>
+  <li>MALLOC macro rewrite</li>
+  <li>FREE&rarr;free</li>
+  <li>__private_extern__ removal</li>
+  <li>VFS op signatures</li>
+  <li>Pointer-arithmetic clang fixes (MOVE_PTR macros)</li>
+  <li>Quota wrapped in <code>#ifdef DARWIN_QUOTA</code></li>
+  <li><code>console_user</code> removed</li>
+  <li><strong>IOCTL replaced by GEOM</strong> (<code>g_vfs_open</code>, <code>g_vfs_close</code>, consumer/provider pattern)</li>
+  <li><code>insmntqueue()</code> adoption</li>
+  <li><code>buf_obj_ops</code> implementation</li>
+  <li>Lock-order pain caught with <code>INVARIANTS</code> + <code>WITNESS</code> + <code>VFS_DEBUG_LOCKS</code></li>
+</ul>
+
+<p>These deltas are the "owed work" any HFS+&rarr;FreeBSD port has to pay; Sahay paid most of it. Forking from him means we inherit ~3 engineer-months of saved work.</p>
+
+<h2 id="apple-source">4. Apple's HFS source &mdash; what it contains</h2>
+
+<p>From <code>apple-oss-distributions/hfs</code> top-level (research-verified):</p>
+
+<table>
+<tr><th>Directory</th><th>Bytes</th><th>Purpose</th></tr>
+<tr><td><code>core/</code></td><td>2.5 MB</td><td>Kernel-side HFS+ filesystem (the kext). ~65-75K SLOC.</td></tr>
+<tr><td><code>livefiles_hfs_plugin/</code></td><td>1.9 MB</td><td>Userland HFS+ implementation (UserFS/livefiles plugin) &mdash; a second, parallel impl.</td></tr>
+<tr><td><code>lib_fsck_hfs/</code> + <code>dfalib/</code></td><td>1.5 MB</td><td>fsck engine ("dfa" = disk first aid). Mostly self-contained C.</td></tr>
+<tr><td><code>newfs_hfs/</code></td><td>130 KB</td><td>mkfs.hfs equivalent.</td></tr>
+<tr><td><code>hfs_util/</code></td><td>176 KB</td><td><code>hfs.util</code> &mdash; Disk Arbitration helper (probe/mount/fsck/getuuid). DA-dependent.</td></tr>
+<tr><td><code>fsck_hfs/</code></td><td>99 KB</td><td>fsck driver/CLI shell over <code>lib_fsck_hfs</code>.</td></tr>
+<tr><td><code>CopyHFSMeta/</code></td><td>66 KB</td><td>Metadata-only volume copier (diagnostics).</td></tr>
+<tr><td><code>mount_hfs/</code></td><td>39 KB</td><td><code>mount_hfs(8)</code> &mdash; the most portable tool.</td></tr>
+<tr><td><code>hfs_encodings/</code></td><td>32 KB</td><td>Legacy MacRoman/non-Unicode encoding tables (separate kext).</td></tr>
+</table>
+
+<p><strong>Modern HFS+ features in the source:</strong></p>
+
+<ul>
+  <li><strong>Journal (HFS+J):</strong> <code>core/hfs_journal.c</code> 157 KB, full transaction-log impl.</li>
+  <li><strong>Transparent compression (decmpfs):</strong> referenced from <code>hfs_readwrite.c</code> but <em>impl lives in XNU</em> (<code>bsd/kern/decmpfs.c</code> ~65 KB). Must be separately vendored.</li>
+  <li><strong>Extended attributes:</strong> <code>hfs_xattr.c</code> 97 KB, backed by the Attributes B-tree.</li>
+  <li><strong>Hard links:</strong> <code>hfs_link.c</code> 40 KB, both file (indirect-node) and dir (Time Machine) variants.</li>
+  <li><strong>Hot-file clustering:</strong> <code>hfs_hotfiles.c</code> 106 KB.</li>
+  <li><strong>Case-sensitive HFSX:</strong> in core, mount-time flag.</li>
+  <li><strong>Content protection (per-file encryption):</strong> <code>hfs_cprotect.c</code> 77 KB. <em>Requires Apple AppleKeyStore kext</em>; stubbable to no-op for non-encrypted volumes, but cannot decrypt encrypted volumes.</li>
+  <li><strong>fsevents:</strong> <code>hfs_notification.c</code> calls XNU's <code>fsevents</code> (different from FreeBSD's <code>kqueue VNODE</code>).</li>
+  <li><code>resize</code>, <code>attrlist</code>, <code>fsctl</code>, <code>search</code> &mdash; all present.</li>
+</ul>
+
+<h2 id="impedance">5. Apple/FreeBSD VFS impedance points</h2>
+
+<p>Things that need bridging through a compat layer (the <code>sys/</code> directory in the GSoC port; conceptually equivalent to OpenZFS's SPL):</p>
+
+<table>
+<tr><th>Apple primitive</th><th>FreeBSD equivalent</th><th>Bridging approach</th></tr>
+<tr><td><strong>UBC/cluster API</strong>: <code>cluster_read/write/pageout</code>, <code>ubc_setsize/getsize</code>, <code>ubc_upl_*</code></td><td><code>vnode_pager_*</code>, <code>vop_getpages/putpages</code></td><td>Translation layer in <code>hfs_readwrite.c</code>. Route file I/O through <code>vn_read</code>/<code>vn_write</code> + <code>bufobj</code>. This is the largest single bridge.</td></tr>
+<tr><td><code>vfs_context_t</code> (cred+thread bundled)</td><td>Separate <code>struct ucred *</code> + <code>struct thread *</code></td><td>Mechanical but pervasive find/replace.</td></tr>
+<tr><td><code>vnode_t</code> opaque accessors (<code>vnode_iocount</code>, <code>vnode_put</code>, <code>vnode_create</code>, &hellip;)</td><td><code>struct vnode *</code> direct access (<code>vref</code>/<code>vrele</code>/<code>VOP_*</code> macros)</td><td>Wrap with macros: <code>#define vnode_put(vp) vrele(vp)</code>.</td></tr>
+<tr><td><code>buf_t</code> accessors</td><td><code>struct buf *</code> with field access</td><td>Wrapper macros.</td></tr>
+<tr><td><code>kauth_cred_t</code></td><td><code>struct ucred *</code></td><td>Wrap with the ~10 <code>kauth_cred_get*</code> accessors HFS actually uses.</td></tr>
+<tr><td><code>lck_mtx_t</code>, <code>lck_rw_t</code>, <code>lck_spin_t</code></td><td><code>struct mtx</code>, <code>struct sx</code> (or rwlock), <code>MTX_SPIN</code></td><td>Compat header. Init API differs (<code>lck_grp_alloc_init</code> vs <code>mtx_init</code>).</td></tr>
+<tr><td><code>OSMalloc</code>, <code>OSKextLib</code>, <code>pexpert</code></td><td><code>malloc(M_HFS, &hellip;)</code>, FreeBSD module init</td><td>Drop; replace.</td></tr>
+<tr><td><code>thread_call_*</code> (deferred work)</td><td><code>taskqueue</code> or <code>callout</code></td><td>Direct equivalent.</td></tr>
+<tr><td><code>IOKit/IOMedia</code> content hints</td><td>GEOM probing</td><td>Drop <code>hfs_iokit.cpp</code> entirely.</td></tr>
+<tr><td><code>fsevents</code> (<code>add_fsevent</code>)</td><td>(none &mdash; FreeBSD uses kqueue VNODE)</td><td>Stub to no-op; FreeBSD kqueue VNODE notifications come "for free" via VFS.</td></tr>
+<tr><td><code>KAUTH_*</code> listeners</td><td>(none)</td><td>Stub.</td></tr>
+<tr><td><code>&lt;sys/disk.h&gt;</code> ioctls (DKIOC*)</td><td>GEOM <code>g_io_getattr</code></td><td>Translate to GEOM. Already done in Sahay's port.</td></tr>
+<tr><td>AppleKeyStore / cprotect crypto</td><td>(none)</td><td>Cannot port. Compile out behind <code>#ifndef HFS_CONTENT_PROTECTION</code>. Document as limitation.</td></tr>
+<tr><td><code>decmpfs.c</code></td><td>(none &mdash; must vendor from XNU)</td><td>Pull <code>bsd/kern/decmpfs.c</code> (~65 KB) into our tree. Otherwise compressed files read as zero-length. <strong>Hard requirement.</strong></td></tr>
+</table>
+
+<h2 id="strategy">6. Strategy: fork freebsd_hfs as starting point</h2>
+
+<p><strong>Decision: fork <code>stupendoussuperpowers/freebsd_hfs</code> into our tree at <code>src/hfs/</code></strong>. Do <em>not</em> start fresh; do <em>not</em> start from Linux <code>hfsplus.ko</code> (GPL-2 incompatible); do <em>not</em> start from NetBSD's <code>libhfs</code> (too incomplete to bridge to RW + journal).</p>
+
+<p><strong>Rationale:</strong></p>
+<ul>
+  <li>GSoC port has already paid ~3 engineer-months of VFS impedance work.</li>
+  <li>License (APSL 2.0) aligns with our other vendored Apple source.</li>
+  <li>The <code>sys/</code> compat-shim pattern maps 1:1 to OpenZFS's SPL pattern, which has a decade-plus of proven success on FreeBSD.</li>
+  <li>Resuming from a known-working "mount RO+RW, basic VOPs" baseline beats writing the same code from scratch.</li>
+  <li>Apple's HFS source includes complete journal + decmpfs (via XNU) + fsck/newfs &mdash; full upstream feature set. Linux/NetBSD don't.</li>
+</ul>
+
+<p><strong>What forking means here:</strong> import Sahay's tree wholesale into <code>freebsd-launchd-mach</code>'s <code>src/hfs/</code>, treat it as a vendor branch we own. Rebase periodically against <code>apple-oss-distributions/hfs</code> main (Sahay's <code>xnu/</code> directory tracks Apple's source). Stay on Sahay's git history as upstream until/unless he restarts &mdash; in which case we contribute back.</p>
+
+<h2 id="phases">7. Phased delivery</h2>
+
+<table>
+<tr><th>Phase</th><th>Effort</th><th>Deliverable</th><th>CI marker</th></tr>
+<tr>
+  <td>1</td>
+  <td>1&ndash;2 weeks</td>
+  <td>Vendor <code>freebsd_hfs</code> at <code>src/hfs/</code>. Get the kext loading + RO mounting an HFS+ image in QEMU CI. Land <code>mount_hfs(8)</code> stub.</td>
+  <td><code>HFSKMOD-MOUNT-RO-OK</code></td>
+</tr>
+<tr>
+  <td>2</td>
+  <td>2&ndash;3 weeks</td>
+  <td>RW path validated. Validate Sahay's write code against real Apple-formatted images. Port real <code>newfs_hfs</code> (replace Rust stub).</td>
+  <td><code>HFSKMOD-MOUNT-RW-OK</code>, <code>HFSKMOD-NEWFS-OK</code></td>
+</tr>
+<tr>
+  <td>3</td>
+  <td>3&ndash;4 weeks</td>
+  <td>Port <code>fsck_hfs</code> userland. Userland-only, mostly portable. <code>lib_fsck_hfs/dfalib/</code> is 1.35 MB of standalone-ish C. Killer-app deliverable for DMG forensics even without journal RW.</td>
+  <td><code>HFSKMOD-FSCK-OK</code></td>
+</tr>
+<tr>
+  <td>4</td>
+  <td>4&ndash;6 weeks</td>
+  <td><strong>Journal support.</strong> The hardest part. <code>hfs_journal.c</code> is 157 KB, deeply integrated with XNU's <code>buf_t</code> + IO barriers. Without this, RW mounts of journaled volumes (default on every modern Mac) require disabling the journal first.</td>
+  <td><code>HFSKMOD-JOURNAL-OK</code></td>
+</tr>
+<tr>
+  <td>5</td>
+  <td>2&ndash;3 weeks</td>
+  <td><strong>decmpfs.</strong> Vendor <code>bsd/kern/decmpfs.c</code> from XNU. Wire to FreeBSD UBC equivalents. Without it, virtually every modern macOS system binary reads as 0 bytes.</td>
+  <td><code>HFSKMOD-DECMPFS-OK</code></td>
+</tr>
+<tr>
+  <td>6</td>
+  <td>1&ndash;2 weeks</td>
+  <td><code>mmap</code> support via FreeBSD <code>vnode_pager</code>. Required for shared-memory binaries.</td>
+  <td><code>HFSKMOD-MMAP-OK</code></td>
+</tr>
+<tr>
+  <td>7+</td>
+  <td>Open</td>
+  <td>Optional: content-protection stub, attrlist polish, fsevents stub, hot-file, hfs_japanese, NFS export, root-fs.</td>
+  <td>(per-feature)</td>
+</tr>
+</table>
+
+<p><strong>Total realistic effort:</strong> ~3&ndash;4 engineer-months for Phases 1&ndash;6. The "read-write, journaled, decompresses, fsckable" milestone is the proper-product threshold.</p>
+
+<p><strong>MVP shortcut:</strong> Phases 1 + 3 + 5 alone (RO mount + fsck + decmpfs) makes Apple DMGs and installer images natively mountable on our FreeBSD &mdash; that's the headline benefit even before RW lands. ~6&ndash;9 weeks total.</p>
+
+<h2 id="userland">8. Userland tools (<code>mount_hfs</code>, <code>newfs_hfs</code>, <code>fsck_hfs</code>)</h2>
+
+<p>Apple's open-source HFS repo ships userland tools alongside the kext. Per the Apple <code>README</code>: "the other HFS targets are known not to build outside of Apple's internal build environment." Tooling depends on:</p>
+
+<ul>
+  <li>Apple's <code>libutil</code> (BSD-compat, mostly portable)</li>
+  <li>IOKit framework (for raw-disk access on iOS &mdash; not needed on Mac or FreeBSD)</li>
+  <li><code>&lt;sys/disk.h&gt;</code> ioctls (<code>DKIOCGETBLOCKSIZE</code> vs FreeBSD's <code>DIOCGSECTORSIZE</code>) &mdash; translate</li>
+  <li>Entitlements for raw-disk access on iOS &mdash; ignore</li>
+</ul>
+
+<p>Estimated per-tool porting effort:</p>
+
+<table>
+<tr><th>Tool</th><th>Apple LOC</th><th>FreeBSD port effort</th><th>Notes</th></tr>
+<tr><td><code>mount_hfs(8)</code></td><td>39 KB</td><td>1 week</td><td>Calls <code>mount(2)</code>. Most portable.</td></tr>
+<tr><td><code>newfs_hfs(8)</code></td><td>130 KB</td><td>2 weeks</td><td>Uses BSD-ish raw-device IO. Translation of disk-ioctls.</td></tr>
+<tr><td><code>fsck_hfs(8)</code> + <code>lib_fsck_hfs/dfalib/</code></td><td>1.45 MB</td><td>3&ndash;4 weeks</td><td>Mostly self-contained C. Biggest payoff post-RO-mount.</td></tr>
+<tr><td><code>hfs.util</code></td><td>176 KB</td><td>(defer)</td><td>Depends on Apple's <code>diskarbitrationd</code>. We're porting DA separately; this can come later.</td></tr>
+<tr><td><code>CopyHFSMeta</code></td><td>66 KB</td><td>1 week if wanted</td><td>Diagnostic tool. Optional.</td></tr>
+<tr><td><code>fstyp_hfs</code></td><td>7 KB</td><td>1 day</td><td>Trivial.</td></tr>
+</table>
+
+<h2 id="risks">9. Risks</h2>
+
+<h3>9.1. GSoC port is parked</h3>
+<p>No Q3/Q4 2025 follow-up. We own rebases against FreeBSD-current as kernel APIs drift. Mitigation: start from Sahay's last good commit, treat as a vendor fork, contribute back if Sahay restarts.</p>
+
+<h3>9.2. Journal port is genuinely hard</h3>
+<p><code>hfs_journal.c</code> integrates with XNU IO barriers and <code>buf_t</code> semantics in ways FreeBSD's <code>bufobj</code> doesn't directly match. There's a reason Sahay stopped here. A r/w journal port that lies about successful replay <strong>silently corrupts the volume</strong>. Mitigation: extensive soak testing on dirty-journal images generated by real macOS; degrade to RO if journal-replay confidence is low.</p>
+
+<h3>9.3. APSL 2.0 license posture</h3>
+<p>APSL 2.0 is OSI-approved free software but <strong>not GPL-compatible</strong>. For our project this is fine; for FreeBSD upstream this would matter. Document clearly in kmod LICENSE. Same posture as the rest of our vendored Apple source.</p>
+
+<h3>9.4. decmpfs is a hard requirement, not optional</h3>
+<p>Modern macOS volumes have most <code>/System/Library/&hellip;</code> files <code>decmpfs</code>-compressed. A driver without LZVN/LZFSE/zlib decode silently reads zeros for the file body. Apple's decompressor licenses are usable (LZFSE is BSD-3, LZVN is more constrained, zlib is zlib license). Each adds an in-kernel dependency.</p>
+
+<h3>9.5. Vnode lifecycle + namecache races</h3>
+<p>Apple's <code>vnode_create</code>/<code>vnode_recycle</code>/<code>vnode_iterate</code> patterns differ from FreeBSD's <code>vrele</code>/<code>vput</code>/<code>vunref</code> conventions. <code>INVARIANTS</code> + <code>WITNESS</code> + <code>VFS_DEBUG_LOCKS</code> will surface bugs early (Sahay already leans on these), but the long tail of <code>cache_lookup</code> / <code>cache_enter_time</code> rules will regress under load. NTFS and ext2's r/w-edge history both confirm this; production-quality RW takes years of soak. Mitigation: ship Phase 2 as opt-in, default to RO; gather field data before declaring RW production.</p>
+
+<h3>9.6. Buffer cache impedance</h3>
+<p>XNU <code>buf_t</code> exposes <code>buf_meta_bread</code>, <code>buf_setflags(B_LOCKED)</code>, vectored <code>cluster_*</code> I/O, and <code>vnode_pager_setsize</code> semantics that don't have 1:1 FreeBSD analogs. HFS's <code>hfs_systemfile_*</code> puts B-trees in metadata buffers &mdash; lock-order inversion against <code>bufobj</code> is easy. Mitigation: methodical conversion module-by-module, lean on WITNESS to catch inversions during boot.</p>
+
+<h3>9.7. Content protection (per-file encryption)</h3>
+<p>Cannot port &mdash; Apple's HSM-backed key wrapping (Data Protection classes A&ndash;F) requires AppleKeyStore. Document as limitation; encrypted volumes won't open. Stub <code>hfs_cprotect.c</code> to ENOTSUP.</p>
+
+<h2 id="related">10. Bootloader + DMG + APFS &mdash; related work</h2>
+
+<table>
+<tr><th>Workstream</th><th>Relationship</th><th>Status</th></tr>
+<tr>
+  <td><strong>Bootloader for HFS+</strong> (<a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/80">#80</a> &mdash; "Scope Apple boot-132")</td>
+  <td>FreeBSD's existing <code>/boot/loader</code> can't read HFS+. Booting from HFS+ requires either: (a) porting Apple's <code>boot-132</code> (or a modern derivative like OpenCore); (b) adding HFS+ to FreeBSD's loader's filesystem support. <strong>Separate scoping plan in flight</strong> (research dispatched 2026-05-26).</td>
+  <td>Companion plan</td>
+</tr>
+<tr>
+  <td><strong>DMG utilities</strong> (<a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/74">#74</a>, <a href="freebsd-hdiutil-port-plan.html">hdiutil port plan</a>)</td>
+  <td>DMG mounting combines DMG-container parsing + filesystem (HFS+) reader. Our HFS+ kmod unlocks the FS side; the DMG-container side is separately scoped in the hdiutil plan (four options for that workstream).</td>
+  <td>Companion plan</td>
+</tr>
+<tr>
+  <td><strong>APFS</strong></td>
+  <td>macOS post-10.13 defaults to APFS. Closed-source on Apple side. Third-party readers exist (<code>apfs-fuse</code> GPL, <code>libapfs</code> partial). Different workstream entirely; HFS+ doesn't unlock APFS.</td>
+  <td>Separate effort (deferred)</td>
+</tr>
+<tr>
+  <td><strong>DiskArbitration</strong> port (<a href="freebsd-disk-arbitration-plan.html">existing plan</a>)</td>
+  <td>Apple's <code>hfs.util</code> depends on <code>diskarbitrationd</code>. DA port is independently scoped; once it lands we can port <code>hfs.util</code> as a follow-up.</td>
+  <td>Existing plan</td>
+</tr>
+</table>
+
+<h2 id="out-of-scope">11. Out of scope</h2>
+
+<ul>
+  <li><strong>Per-file content protection.</strong> AppleKeyStore HSM-backed key wrapping is Apple-internal; encrypted HFS+ volumes won't open. Document as limitation.</li>
+  <li><strong>APFS.</strong> Different filesystem entirely; separate effort.</li>
+  <li><strong>Apple-specific fsctl flavors.</strong> Sparseimage, Time Machine inheritance, Spotlight metadata &mdash; defer or stub.</li>
+  <li><strong><code>livefiles_hfs_plugin/</code></strong> &mdash; Apple's userland HFS+ reimplementation for UserFS/livefiles. Interesting reference but we don't need a second userland impl; kmod is the goal.</li>
+  <li><strong><code>hfs_japanese/</code></strong> &mdash; JIS encoding tables. Niche; skip until/unless a real consumer asks.</li>
+  <li><strong><code>hfs_appex/</code></strong> &mdash; iOS UserFS app extension. Apple-only.</li>
+  <li><strong>NFS export of HFS+ volumes.</strong> Possible but not load-bearing; defer.</li>
+  <li><strong>Root-fs mount of HFS+.</strong> Requires bootloader work (separate scoping); defer.</li>
+  <li><strong>Hot-file clustering.</strong> Performance optimization; defer.</li>
+  <li><strong>fsevents</strong> (XNU-specific notification subsystem). Stub; FreeBSD kqueue VNODE covers the equivalent.</li>
+</ul>
+
+<p class="footnote">Drafted 2026-05-26 from two parallel agent research passes: (1) Apple HFS source deep dive at <code>apple-oss-distributions/hfs</code>; (2) existing FreeBSD/Linux/NetBSD HFS+ ports + FreeBSD VFS bridging precedents. Companion to <a href="freebsd-hdiutil-port-plan.html">hdiutil port plan</a>. Scopes <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/73">issue #73</a>. Key references: <a href="https://github.com/apple-oss-distributions/hfs">apple-oss-distributions/hfs</a>, <a href="https://github.com/stupendoussuperpowers/freebsd_hfs">stupendoussuperpowers/freebsd_hfs</a>, <a href="https://www.freebsd.org/status/report-2025-04-2025-06/hfs/">FreeBSD Q2 2025 status report</a>, <a href="https://github.com/0x09/hfsfuse">hfsfuse</a>, <a href="https://developer.apple.com/library/archive/technotes/tn/tn1150.html">Apple TN1150</a>.</p>
+
+</div>
+</body>
+</html>

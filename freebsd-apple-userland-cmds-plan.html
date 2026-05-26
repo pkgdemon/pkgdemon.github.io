@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>freebsd-apple-userland-cmds: porting Apple userland onto FreeBSD</title>
+<title>freebsd-apple-userland-cmds: porting Apple userland onto FreeBSD (v3)</title>
 <style>
   :root {
     --fg: #1a1a1a; --fg-muted: #555; --bg: #fafaf7; --accent: #b8472a;
@@ -48,98 +48,117 @@
   .toc a { color: var(--fg); text-decoration: none; }
   .toc a:hover { text-decoration: underline; }
   .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  .historical { color: var(--fg-muted); font-style: italic; font-size: 0.9rem; }
   @media (max-width: 600px) { .wrap { padding: 24px 18px 64px; } }
 </style>
 </head>
 <body>
 <div class="wrap">
 
-<h1><code>freebsd-apple-userland-cmds</code> &mdash; per-repo, per-binary port audit</h1>
-<p class="lede">A data-grounded audit of <strong>six Apple userland repos</strong> &mdash; <code>bootstrap_cmds</code>, <code>file_cmds</code>, <code>shell_cmds</code>, <code>system_cmds</code>, <code>network_cmds</code>, <code>text_cmds</code> &mdash; for the question <em>"should we replace FreeBSD's version with Apple's?"</em>. Decision rule: <strong>port if Apple's version gives Mach IPC integration, libxpc/libdispatch/launchd integration, or a real feature advantage over the FreeBSD equivalent. Skip if there's no advantage.</strong> Tables grounded in direct source inspection by five parallel research agents over <code>/Users/jmaloney/Documents/launchd/{bootstrap,file,shell,system,network,text}_cmds/</code>. Tools install at their <strong>Apple-canonical paths</strong> with <strong>zero conflict</strong>: <code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code> are <em>not</em> installed; the ~40 FreeBSD-specific tools we still need (mount/fsck/kld*/swapon/gpart/&hellip; + the audit-skipped POSIX shell tools) are built from <code>/usr/src</code> per-tool via a tracked manifest. See &sect;1.1 for the manifest and &sect;1.2 for the sequencing &mdash; the manifest build lands <em>after</em> the daemon-port roadmap (mDNSResponder etc.) to keep CI fast during the high-iteration daemon work.</p>
+<h1><code>freebsd-apple-userland-cmds</code> &mdash; v3 plan</h1>
+
+<p class="lede">Porting Apple userland onto <code>freebsd-launchd-mach</code>. <strong>Revised 2026-05-26 (v3)</strong>: the per-tool <em>"port if Apple has integration advantage, skip otherwise"</em> rule is retired. New rule: <strong>vendor every Apple userland repo we have open-source for, port all of its binaries, modify as needed to fit FreeBSD</strong>. Rationale: anything we don't port from Apple still has to be built from source on the live ISO (<code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code> are not installed); we'd rather the source live in our <code>src/</code> tree than be fetched from <code>/usr/src</code> at build time. The same modify-to-fit approach already proved out on OpenPAM (<a href="freebsd-pam-port-plan.html">PAM port plan</a>) &mdash; vendor + shim layer + patched <code>config.h</code>.</p>
+
+<div class="callout">
+<p><strong>v3 scope at a glance.</strong></p>
+<ul>
+  <li><strong>9 Apple repos in current scope:</strong> <code>bootstrap_cmds</code>, <code>network_cmds</code>, <code>file_cmds</code>, <code>shell_cmds</code>, <code>system_cmds</code>, <code>text_cmds</code>, <code>adv_cmds</code>, <code>PowerManagement</code>, <code>DiskArbitration</code>. ~155 binaries total. All <span class="pill pill-good">PORT</span>.</li>
+  <li><strong>Deferred to separate scoping tickets</strong> (see &sect;13): <code>hdiutil</code>/<code>hdik</code> (Apple-closed; darling-dmg-style fresh-write); <code>diskdev_cmds</code> (<code>mount</code>/<code>fsck</code>/<code>newfs</code>; needs Apple OSS fetch + UFS2 forward-port); kext loader substrate (<code>kextload</code>/<code>kextunload</code> needs XNU <code>OSKext</code> ported into <code>mach.ko</code>).</li>
+  <li><strong>Stays in <code>/usr/src</code> gap-filler manifest for now</strong> (transitional, see &sect;1.1): <code>kldload</code>/<code>kldunload</code>/<code>kldstat</code>/<code>kldconfig</code>/<code>kldxref</code>, <code>mdconfig</code>/<code>mdmfs</code>, <code>geom</code> family, <code>devfs</code> (rules tool), <code>dumpon</code>/<code>savecore</code>, <code>swapon</code>/<code>swapoff</code>, plus the deferred items above (<code>mount</code>/<code>fsck</code>/<code>newfs</code>).</li>
+  <li><strong>Per-tool SKIP / PARTIAL pills in audit tables below are historical audit data.</strong> Under the v3 rule every binary in an in-scope repo &rarr; <span class="pill pill-good">PORT</span>. The audit-rationale columns (Apple-stack integration, Apple-specific feature) are still useful context for the porting work.</li>
+</ul>
+</div>
 
 <div class="toc">
 <h2>Contents</h2>
 <ol>
-  <li><a href="#decisions">Decisions made</a></li>
-  <li><a href="#scoreboard">Scoreboard &mdash; total port count per repo</a></li>
+  <li><a href="#decisions">v3 Decisions</a></li>
+  <li><a href="#manifest">Transitional <code>/usr/src</code> gap-filler manifest</a></li>
+  <li><a href="#sequencing">Sequencing &mdash; when this lands</a></li>
+  <li><a href="#scoreboard">Scoreboard</a></li>
   <li><a href="#bootstrap_cmds"><code>bootstrap_cmds</code></a></li>
   <li><a href="#file_cmds"><code>file_cmds</code> audit</a></li>
   <li><a href="#shell_cmds"><code>shell_cmds</code> audit</a></li>
   <li><a href="#system_cmds"><code>system_cmds</code> audit</a></li>
   <li><a href="#network_cmds"><code>network_cmds</code> audit</a></li>
   <li><a href="#text_cmds"><code>text_cmds</code> audit</a></li>
+  <li><a href="#adv_cmds"><code>adv_cmds</code> audit (NEW in v3)</a></li>
+  <li><a href="#powermanagement"><code>PowerManagement</code> audit (NEW in v3)</a></li>
+  <li><a href="#diskarbitration"><code>DiskArbitration</code> audit (NEW in v3)</a></li>
   <li><a href="#aggregated">Aggregated port list</a></li>
   <li><a href="#install-order">Install order in <code>build.sh</code></a></li>
+  <li><a href="#deferred">Deferred scoping tickets</a></li>
   <li><a href="#risks">Risks &amp; known sharp edges</a></li>
   <li><a href="#out-of-scope">Out of scope</a></li>
 </ol>
 </div>
 
-<h2 id="decisions">1. Decisions made</h2>
+<h2 id="decisions">1. v3 Decisions</h2>
 
 <ul>
   <li><strong>Apple-canonical install paths.</strong> No <code>/System/Library/Tools/</code>, no <code>/usr/local/sbin/</code>, no PATH-shadowing. Apple's <code>ifconfig</code> goes at <code>/sbin/ifconfig</code>.</li>
-  <li><strong>Drop <code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code> entirely; build the gap-fillers from <code>/usr/src</code>.</strong> Earlier framing (&laquo;install <code>FreeBSD-runtime</code> intact, then overwrite the ~17 conflict paths&raquo;) is <strong>rejected</strong> &mdash; it leaves pkg's database believing <code>FreeBSD-runtime</code> owns paths Apple ports actually own, and a stray <code>pkg upgrade</code> on a dev machine silently reverts the overwrites. New approach: pkgbase has no subpackage granularity, so for the ~40 FreeBSD-specific tools we still need (filesystem mount/check, kld*, swap, GEOM, audit-skipped POSIX shell tools) we build each from <code>/usr/src/&lt;dir&gt;/</code> via a manifest file (<code>pkglist-fbsdsrc-manifest.txt</code> in the <code>freebsd-launchd-mach</code> repo), iterated by <code>build.sh</code> as <code>make obj &amp;&amp; make &amp;&amp; make install DESTDIR=$WORK/rootfs MK_MAN=no</code>. See &sect;1.1.</li>
-  <li><strong>Sequencing: gap-filler manifest lands <em>after</em> the daemon-port roadmap.</strong> Per-tool <code>/usr/src</code> builds increase CI time. The <code>freebsd-launchd-mach</code> daemon ports (configd remaining work, IPConfiguration iter 7+ &mdash; RA/SLAAC, DHCPv6 &mdash; <code>ipconfig(8)</code>, mDNSResponder, notifyd, ASL, DiskArbitration, etc.) iterate heavily; the Apple-userland-cmds work + manifest build move in <em>after</em> those daemons stabilize. Until then, the live ISO uses <code>/rescue/*</code> (already in <code>FreeBSD-rescue</code>) for the minimal early-boot toolset.</li>
-  <li><strong>Port-if-advantage, skip-otherwise.</strong> The audits below enforce this strictly. No "port for completeness" entries.</li>
-  <li><strong>Apple-canonical paths land cleanly.</strong> With <code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code> absent, the 28 Apple ports + the manifest-built FreeBSD gap-fillers occupy disjoint paths. pkg's database is authoritative for everything it installs; no unregistered overwrites.</li>
+  <li><strong>Drop <code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code> entirely.</strong> The conflict-overwrite model (install pkgs intact, then overwrite Apple paths) is rejected &mdash; pkg's database silently reverts overwrites on <code>pkg upgrade</code>. Apple-ports + transitional <code>/usr/src</code>-built BSD gap-fillers occupy disjoint paths.</li>
+  <li><strong>v3 rule: port every binary in every in-scope Apple repo.</strong> The per-binary "SKIP if no Apple integration advantage" rule from v1/v2 is retired. Reason: we already need each tool on the live ISO; the build cost is the same whether the source comes from <code>/usr/src</code> or from <code>src/&lt;apple-repo&gt;/</code>; vendoring into our tree gives us the modify-as-needed lever (proven on OpenPAM).</li>
+  <li><strong>Modify-to-fit, not rewrite-from-scratch.</strong> The OpenPAM pattern: vendor upstream Apple tarball, add <code>freebsd-shims/</code> headers, patch <code>config.h</code> for FreeBSD library naming + paths, accept Apple-only feature paths failing gracefully (ioctl returns -1, flag never set). No major rewrites.</li>
+  <li><strong>Things Apple has no source for &rarr; deferred scoping tickets, not in-line ports.</strong> <code>hdiutil</code>/<code>hdik</code>/<code>diskutil</code>/DiskImages.framework are Apple-closed; <code>mount</code>/<code>fsck</code>/<code>newfs</code> need <code>diskdev_cmds</code> fetched from Apple OSS archive; <code>kextload</code> needs XNU <code>OSKext</code> ported into <code>mach.ko</code>. Each gets a scoping ticket and lands in a later phase (&sect;13).</li>
+  <li><strong>FreeBSD-specific kernel-tied tools stay in the transitional <code>/usr/src</code> manifest</strong> until we decide whether to vendor FreeBSD source into <code>src/freebsd-vendored/</code> or fresh-write Apple-shape equivalents. Tools: <code>kld*</code>, <code>mdconfig</code>/<code>mdmfs</code>, <code>geom</code>, <code>devfs</code> (rules), <code>dumpon</code>/<code>savecore</code>, <code>swapon</code>/<code>swapoff</code>. See &sect;2.</li>
 </ul>
 
-<h3>1.1. BSD gap-filler manifest &mdash; built from <code>/usr/src</code> per-tool</h3>
+<h2 id="manifest">2. Transitional <code>/usr/src</code> gap-filler manifest</h2>
 
-<p>The 28-binary Apple port list (&sect;9) covers everything where Apple has a real integration advantage. The categories below are <strong>FreeBSD-specific</strong> tools we still need on the live system &mdash; Apple's equivalents either don't exist, target HFS+/APFS only, or use macOS-kernel-specific interfaces that don't translate. With <code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code> dropped from <code>pkglist-base.txt</code>, these are built per-tool from <code>/usr/src/&lt;dir&gt;/</code> in the builder chroot and installed into the ISO rootfs.</p>
-
-<p>The list lives in <code>pkglist-fbsdsrc-manifest.txt</code> at the root of the <code>freebsd-launchd-mach</code> repo (created when the workstream starts; see &sect;1.2 sequencing). <code>build.sh</code> iterates each line as <code>(cd /usr/src/$DIR &amp;&amp; make obj &amp;&amp; make &amp;&amp; make install DESTDIR=$WORK/rootfs MK_MAN=no MK_TESTS=no)</code> in the FreeBSD-15 builder chroot. Manifest format: one <code>/usr/src</code>-relative directory per line; <code>#</code> for comments.</p>
+<p>Under v3 the manifest contracts from ~40 entries to the irreducible FreeBSD-kernel-tied set plus the items deferred to scoping tickets. Built per-tool from <code>/usr/src/&lt;dir&gt;/</code> in the FreeBSD-15 builder chroot via <code>(cd /usr/src/$DIR &amp;&amp; make obj &amp;&amp; make &amp;&amp; make install DESTDIR=$WORK/rootfs MK_MAN=no MK_TESTS=no)</code>. Manifest at <code>pkglist-fbsdsrc-manifest.txt</code> in the <code>freebsd-launchd-mach</code> repo.</p>
 
 <table>
-<tr><th>Category</th><th><code>/usr/src</code> directories</th><th>Why no Apple replacement</th></tr>
-<tr><td><strong>Filesystem mount &amp; check</strong></td><td><code>sbin/mount</code>, <code>sbin/umount</code>, <code>sbin/mount_nullfs</code>, <code>sbin/mount_unionfs</code>, <code>sbin/mount_tmpfs</code>, <code>sbin/mount_msdosfs</code>, <code>sbin/mount_cd9660</code>, <code>sbin/fsck</code>, <code>sbin/fsck_ffs</code>, <code>sbin/fsck_msdosfs</code>, <code>sbin/newfs</code>, <code>sbin/newfs_msdos</code>, <code>sbin/tunefs</code></td><td>Apple's <code>system_cmds</code> equivalents target HFS+/APFS via Apple's VFS layer. FreeBSD uses UFS / ZFS / unionfs / nullfs &mdash; entirely different kernel interfaces. No code reuse possible.</td></tr>
-<tr><td><strong>Kernel module management</strong></td><td><code>sbin/kldload</code>, <code>sbin/kldunload</code>, <code>sbin/kldstat</code>, <code>sbin/kldconfig</code>, <code>usr.sbin/kldxref</code></td><td>Apple uses kexts via <code>kextload</code> / <code>kextunload</code> against a fundamentally different module-loading kernel API. FreeBSD's <code>klds</code> are FreeBSD-only. Critical for boot &mdash; <code>mach.ko</code> itself is loaded via <code>kldload</code>.</td></tr>
-<tr><td><strong>Storage glue</strong></td><td><code>sbin/swapon</code> (installs <code>swapoff</code>), <code>sbin/mdconfig</code>, <code>sbin/mdmfs</code>, <code>sbin/geom</code> (gpart/glabel/&hellip;), <code>sbin/devfs</code>, <code>sbin/dumpon</code>, <code>sbin/savecore</code></td><td>FreeBSD-specific subsystems: GEOM stack, devfs rulesets, memory-disk framework, swap layout, dump format. Apple has no equivalents that target these subsystems.</td></tr>
-<tr><td><strong>Boot &amp; init (until Phase I3)</strong></td><td><code>sbin/init</code>, <code>sbin/halt</code> (installs <code>reboot</code>) *</td><td><code>init</code> stays until <code>launchd-842</code> is PID 1 (Phase I3). <code>halt</code> we don't port from <code>system_cmds</code> &mdash; Apple's wraps Apple-specific power-mgmt; FreeBSD's is enough. <code>reboot</code> + <code>shutdown</code> ARE in our PORT list (system_cmds, with launchd-coordination + IOPMLib stubs).</td></tr>
-<tr><td><strong>Networking we explicitly didn't port</strong></td><td><em>(none built from src &mdash; <code>dhclient</code>, <code>mountd</code>, <code>nfsd</code>, <code>nfsiod</code>, <code>traceroute</code>, <code>traceroute6</code>, <code>rtsold</code> are all replaced or skipped: IPConfiguration supersedes <code>dhclient</code>, NFS userland is out of scope, <code>traceroute(6)</code> are audit-SKIP)</em></td><td>&mdash;</td></tr>
-<tr><td><strong>POSIX file ops we audit-skipped</strong></td><td><code>bin/chflags</code>, <code>usr.bin/chown</code>, <code>bin/dd</code>, <code>usr.bin/ipcrm</code>, <code>usr.bin/ipcs</code>, <code>bin/ln</code>, <code>bin/mkdir</code>, <code>usr.bin/mkfifo</code>, <code>sbin/mknod</code>, <code>bin/pax</code> <em>(not skipped &mdash; in PORT list)</em>, <code>bin/rm</code>, <code>bin/rmdir</code>, <code>usr.bin/shar</code>, <code>usr.bin/stat</code>, <code>usr.bin/touch</code>, <code>usr.bin/truncate</code></td><td>Apple's <code>file_cmds</code> versions have zero integration advantage; FreeBSD's are equivalent. We deliberately don't port these (see <a href="#file_cmds">&sect;4</a>).</td></tr>
-<tr><td><strong>POSIX shell tools we audit-skipped</strong></td><td><code>usr.bin/basename</code>, <code>usr.sbin/chroot</code>, <code>bin/date</code>, <code>usr.bin/dirname</code>, <code>bin/echo</code>, <code>usr.bin/env</code>, <code>bin/expr</code>, <code>usr.bin/false</code>, <code>usr.bin/find</code>, <code>usr.bin/getopt</code>, <code>usr.bin/hexdump</code>, <code>bin/hostname</code>, <code>usr.bin/jot</code>, <code>bin/kill</code>, <code>usr.bin/mktemp</code>, <code>usr.bin/nice</code>, <code>usr.bin/nohup</code>, <code>usr.bin/printenv</code>, <code>usr.bin/printf</code>, <code>bin/pwd</code>, <code>bin/realpath</code>, <code>usr.bin/renice</code>, <code>usr.bin/script</code>, <code>usr.bin/seq</code>, <code>bin/sh</code>, <code>bin/sleep</code>, <code>usr.bin/tee</code>, <code>bin/test</code>, <code>usr.bin/time</code>, <code>usr.bin/true</code>, <code>usr.bin/tty</code>, <code>usr.bin/uname</code>, <code>usr.bin/users</code>, <code>usr.bin/w</code>, <code>usr.bin/who</code>, <code>usr.bin/xargs</code>, <code>usr.bin/yes</code>, <code>bin/cat</code></td><td>Apple's <code>shell_cmds</code> for these have no Apple-stack integration. FreeBSD's are equivalent. We deliberately don't port these (see <a href="#shell_cmds">&sect;5</a>).</td></tr>
-<tr><td><strong>System sysctl + login glue</strong></td><td><code>sbin/sysctl</code>, <code>usr.bin/login</code>, <code>libexec/getty</code></td><td>Apple's analogues live in <code>system_cmds</code> but the audit either skipped them (sysctl plain POSIX) or marked PARTIAL with BSM dependencies (login). FreeBSD versions suffice.</td></tr>
-<tr><td><strong>Tracing / introspection FreeBSD does its own way</strong></td><td><em>(not built from src in this manifest &mdash; ktrace/kdump/top/vmstat/iostat/ps/pstat/systat/dtrace/dmesg ship via separate pkgbase pkgs or are out of scope for the live ISO)</em></td><td>Apple's analogues (<code>fs_usage</code>, <code>sc_usage</code>, <code>latency</code>) audit SKIP &mdash; they depend on Apple's <code>kdebug</code> infrastructure. FreeBSD has <code>dtrace</code>; replicating <code>kdebug</code> is not worth it.</td></tr>
+<tr><th>Category</th><th><code>/usr/src</code> directories</th><th>Why no Apple-vendored replacement (yet)</th></tr>
+<tr><td><strong>Kernel module management</strong></td><td><code>sbin/kldload</code>, <code>sbin/kldunload</code>, <code>sbin/kldstat</code>, <code>sbin/kldconfig</code>, <code>usr.sbin/kldxref</code></td><td>Apple's equivalents (<code>kextload</code>/<code>kextunload</code>/<code>kextstat</code> from IOKitTools) drive a different loader (IOKit <code>OSKext</code> + kernelmanagerd) and parse <code>.kext</code> bundles, not <code>.ko</code> files. Real port requires vendoring XNU <code>OSKext</code> into <code>mach.ko</code> &mdash; see &sect;13.</td></tr>
+<tr><td><strong>Memory disk</strong></td><td><code>sbin/mdconfig</code>, <code>sbin/mdmfs</code></td><td>Apple's <code>hdiutil</code>/<code>hdik</code> + DiskImages.framework are <strong>closed-source</strong>. Real port = darling-dmg-style fresh-write &mdash; see &sect;13.</td></tr>
+<tr><td><strong>GEOM stack</strong></td><td><code>sbin/geom</code> (gpart/glabel/gnop/gmirror/graid/geli/gjournal/gcache/&hellip;)</td><td>No Apple analogue exists at any level. CoreStorage was Apple's vaguely-similar block-composition layer but it was never open-sourced and is deprecated for APFS. Future option: vendor FreeBSD source into <code>src/freebsd-vendored/geom/</code>.</td></tr>
+<tr><td><strong><code>devfs</code> rules tool</strong></td><td><code>sbin/devfs</code></td><td>Both OSes have devfs; only FreeBSD has a ruleset subsystem (<code>devfs.rules(5)</code>). Apple has no equivalent tool to vendor. Future option: vendor FreeBSD source.</td></tr>
+<tr><td><strong>Kernel dump</strong></td><td><code>sbin/dumpon</code>, <code>sbin/savecore</code></td><td>Apple kernel cores go through CrashReporter, not a dump device. No equivalent binary or model.</td></tr>
+<tr><td><strong>Swap</strong></td><td><code>sbin/swapon</code> (installs <code>swapoff</code>)</td><td>Apple's swap is file-based via <code>dynamic_pager</code> (which IS in <code>system_cmds</code> &mdash; we port it). Decommissioning <code>swapon</code> means redesigning the install around swap files + <code>dynamic_pager</code>, not partition swap in <code>/etc/fstab</code>. Deferred until the install-model redesign is scoped.</td></tr>
+<tr><td><strong>Filesystem mount &amp; check</strong> (deferred &mdash; scoping ticket &sect;13)</td><td><code>sbin/mount</code>, <code>sbin/umount</code>, <code>sbin/mount_nullfs</code>, <code>sbin/mount_unionfs</code>, <code>sbin/mount_tmpfs</code>, <code>sbin/mount_msdosfs</code>, <code>sbin/mount_cd9660</code>, <code>sbin/fsck</code>, <code>sbin/fsck_ffs</code>, <code>sbin/fsck_msdosfs</code>, <code>sbin/newfs</code>, <code>sbin/newfs_msdos</code>, <code>sbin/tunefs</code></td><td>Apple historically open-sourced these in <code>diskdev_cmds</code> (~2009 era, pre-UFS-removal). Not yet vendored locally; needs Apple OSS archive fetch + UFS2/SU+J forward-port. Sequenced separately from this plan.</td></tr>
+<tr><td><strong>Boot &amp; init</strong> (transitional until Phase I3)</td><td><code>sbin/init</code></td><td>Replaced by <code>launchd-842</code> as PID 1 at Phase I3; not separately ported from Apple. Drops out once <code>launchd-842</code> takes over.</td></tr>
+<tr><td><strong>Tracing / introspection FreeBSD does its own way</strong></td><td><em>(not in manifest &mdash; <code>ktrace</code>/<code>kdump</code>/<code>top</code>/<code>vmstat</code>/<code>iostat</code>/<code>ps</code>/<code>pstat</code>/<code>systat</code>/<code>dtrace</code>/<code>dmesg</code> ship via other pkgbase pkgs or are out of scope)</em></td><td>Apple's analogues (<code>fs_usage</code>, <code>sc_usage</code>, <code>latency</code>) DO port from <code>system_cmds</code> under v3 (with <code>kdebug</code> stubs). FreeBSD <code>dtrace</code> stays in parallel for the kernel-tracing role.</td></tr>
 </table>
 
-<p>* <strong><code>FreeBSD-rc</code> is a separate pkg</strong>, dropped from <code>pkglist-base.txt</code> on 2026-05-16 (launchd replaces <code>/etc/rc</code>). Not in the manifest.</p>
+<p>* <strong><code>FreeBSD-rc</code> is dropped separately</strong> &mdash; from <code>pkglist-base.txt</code> on 2026-05-16 (launchd replaces <code>/etc/rc</code>); not in the manifest.</p>
 
-<p><strong>Bottom line:</strong> ~40 manifest entries replace the role <code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code> used to play, at the cost of per-tool <code>make</code>-loop time on the builder. The trade is: clean pkg DB, no overwrite-after-install dance, no risk of <code>pkg upgrade</code> silently reverting Apple ports on dev machines. <strong>Cost</strong>: builder CI time goes up by the cumulative <code>make</code>-loop wall-time of ~40 tiny <code>/usr/src</code> dirs &mdash; estimated 2&ndash;5 minutes per build. That's why this workstream is sequenced last (&sect;1.2).</p>
+<p><strong>Bottom line under v3:</strong> manifest entries that are FreeBSD-kernel-tied stay (~13 lines, plus the deferred-pending diskdev_cmds rows ~13 more = ~26 lines transitional). All POSIX-equivalent CLI work that v1/v2 had in the manifest (POSIX file ops, POSIX shell tools, sysctl/login/getty) leaves the manifest and gets covered by Apple-vendored repo ports below.</p>
 
-<h3>1.2. Sequencing &mdash; when the manifest build lands</h3>
+<h2 id="sequencing">3. Sequencing &mdash; when this lands</h2>
 
-<p>The Apple-userland-cmds port list + the gap-filler manifest are deferred until the high-iteration daemon ports inside <code>freebsd-launchd-mach</code> stabilize. The daemon ports iterate <em>heavily</em> (often 4&ndash;6 CI rounds per iter to chase BPF / MIG / SCDynamicStore quirks &mdash; see the IPConfiguration progress log for shape); adding 2&ndash;5 minutes per CI run on top of that is unnecessary drag.</p>
+<p>The Apple-userland-cmds port list + the transitional gap-filler manifest are deferred until the high-iteration daemon ports inside <code>freebsd-launchd-mach</code> stabilize. The daemon ports iterate <em>heavily</em> (often 4&ndash;6 CI rounds per iter); adding 9-repo userland-cmds churn on top is unnecessary drag.</p>
 
 <p><strong>Order of operations:</strong></p>
 
 <ol>
-  <li><strong>Finish the daemon roadmap.</strong> Configd remaining iters, IPConfiguration iter 7 (RA/SLAAC) + iter 7b (DHCPv6) + iter 8 (<code>ipconfig(8)</code> CLI), mDNSResponder port, notifyd, ASL, DiskArbitration, any other Phase K daemon work.</li>
-  <li><strong>Bootstrap MIG.</strong> Build + install Apple's <code>mig</code> + <code>migcom</code> from <code>bootstrap_cmds</code> (zero conflict &mdash; pure addition; no <code>/usr/src</code> dependency).</li>
-  <li><strong>Drop <code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code> from <code>pkglist-base.txt</code>.</strong> One PR. Boot will break until step 4 lands; that's expected.</li>
-  <li><strong>Land <code>pkglist-fbsdsrc-manifest.txt</code> + the <code>build.sh</code> iteration step.</strong> Same PR or immediate follow-up. Boot test green at the end of this step.</li>
-  <li><strong>Then iterate through the 28-binary Apple port list</strong> per &sect;9, in the order in &sect;10. Each binary either compiles + tests clean at its canonical path or doesn't &mdash; no overwrite dance.</li>
+  <li><strong>Finish the daemon roadmap.</strong> Configd remaining iters, IPConfiguration iter 7+ (RA/SLAAC, DHCPv6, <code>ipconfig(8)</code> CLI), mDNSResponder port, notifyd, ASL, DiskArbitration daemon side, any other Phase K daemon work.</li>
+  <li><strong>Bootstrap MIG.</strong> Build + install Apple's <code>mig</code> + <code>migcom</code> from <code>bootstrap_cmds</code> (zero conflict; pure addition).</li>
+  <li><strong>Drop <code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code> from <code>pkglist-base.txt</code>.</strong> One PR. Boot will break until step 4 lands.</li>
+  <li><strong>Land <code>pkglist-fbsdsrc-manifest.txt</code> + the <code>build.sh</code> iteration step</strong> (the contracted v3 manifest, ~26 lines). Boot green at the end of this step.</li>
+  <li><strong>Iterate through the 9-repo Apple port list</strong> per &sect;15, in the order in &sect;15. Per-repo PR; per-tool CI smoke marker. Each binary either compiles + tests clean at its canonical path or doesn't &mdash; no overwrite dance.</li>
+  <li><strong>Deferred scoping tickets</strong> (hdiutil, diskdev_cmds, kext substrate; &sect;16) land in later phases. Manifest shrinks further as each lands.</li>
 </ol>
 
-<p>Until step 3, the existing approach stays: <code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code> installed via pkgbase. Apple's <code>ipconfig(8)</code> in IPConfiguration iter 8 installs at <code>/usr/sbin/ipconfig</code> (no conflict &mdash; FreeBSD has no such tool), so the IPConfiguration story closes before this workstream begins.</p>
-
-<h2 id="scoreboard">2. Scoreboard &mdash; total port count per repo</h2>
+<h2 id="scoreboard">4. Scoreboard</h2>
 
 <table>
-<tr><th>Repo</th><th>Binaries total</th><th><span class="pill pill-good">PORT</span></th><th><span class="pill pill-warn">PARTIAL</span></th><th><span class="pill pill-bad">SKIP</span></th><th>Net "advantage" driver</th></tr>
-<tr><td><code>bootstrap_cmds</code></td><td>~4 files</td><td>4</td><td>0</td><td>0</td><td>MIG. Pre-req for launchd-842 + every future MIG-using daemon.</td></tr>
-<tr><td><code>file_cmds</code></td><td>27</td><td>7</td><td>3</td><td>17</td><td>ACL + xattr + clonefile + fcopyfile preservation across cp/mv/ls/etc.</td></tr>
-<tr><td><code>shell_cmds</code></td><td>~45</td><td>2</td><td>2</td><td>~41</td><td>Open Directory (id), BSM audit (su).</td></tr>
-<tr><td><code>system_cmds</code></td><td>~40</td><td>4</td><td>5</td><td>~31</td><td>Mach IPC introspection (lsmp/hostinfo/stackshot) + IOKit NVRAM.</td></tr>
-<tr><td><code>network_cmds</code></td><td>15</td><td>10</td><td>1</td><td>4</td><td>SystemConfiguration parity, IFSCOPE routing, LQM, IPv6 secure ND.</td></tr>
-<tr><td><code>text_cmds</code></td><td>34</td><td>1</td><td>0</td><td>33</td><td>Only <code>sort</code> uses Mach semaphores for parallel sorting.</td></tr>
-<tr><td><strong>Total</strong></td><td><strong>~165</strong></td><td><strong>28</strong></td><td><strong>11</strong></td><td><strong>~126</strong></td><td>&mdash;</td></tr>
+<tr><th>Repo</th><th>Binaries</th><th>v3 verdict</th><th>Key Apple-specific integration to preserve / shim</th></tr>
+<tr><td><code>bootstrap_cmds</code></td><td>~4 files</td><td><span class="pill pill-good">PORT</span> all</td><td>MIG. Pre-req for every MIG-using daemon.</td></tr>
+<tr><td><code>file_cmds</code></td><td>27</td><td><span class="pill pill-good">PORT</span> all</td><td>ACL + xattr + clonefile + fcopyfile preservation across <code>cp</code>/<code>mv</code>/<code>ls</code>/<code>install</code>/<code>gzip</code>/<code>pax</code>.</td></tr>
+<tr><td><code>shell_cmds</code></td><td>~45</td><td><span class="pill pill-good">PORT</span> all</td><td>Open Directory (<code>id</code>, libopendirectory shim), BSM audit (<code>su</code>), KERN_PROCARGS2 (<code>killall</code>).</td></tr>
+<tr><td><code>system_cmds</code></td><td>~50</td><td><span class="pill pill-good">PORT</span> all</td><td>Mach IPC introspection (<code>lsmp</code>/<code>hostinfo</code>/<code>stackshot</code>), IOKit NVRAM (<code>nvram</code>), launchd-coordinated reboot/shutdown, BSM audit (<code>login</code>), <code>kdebug</code> stubs (<code>fs_usage</code>/<code>sc_usage</code>/<code>latency</code>), <code>dynamic_pager</code> swap, <code>getty</code>, <code>sysctl</code>, <code>dmesg</code>.</td></tr>
+<tr><td><code>network_cmds</code></td><td>15</td><td><span class="pill pill-good">PORT</span> all</td><td>SystemConfiguration parity (configd consumes this output), IFSCOPE routing, LQM, IPv6 secure ND, <code>kdumpd</code> launchd-managed-socket-activation worked example.</td></tr>
+<tr><td><code>text_cmds</code></td><td>34</td><td><span class="pill pill-good">PORT</span> all</td><td><code>sort</code> uses Mach semaphores for parallelism. Rest are POSIX stream processors (pure vendor).</td></tr>
+<tr><td><code>adv_cmds</code></td><td>15</td><td><span class="pill pill-good">PORT</span> all</td><td>NEW in v3. <code>pkill</code>/<code>ps</code> with macOS proc-info layout, <code>stty</code>/<code>tty</code>, locale tools, <code>finger</code>/<code>last</code>/<code>whois</code>, <code>lsvfs</code>, <code>cap_mkdb</code>, <code>gencat</code>, <code>tabs</code>.</td></tr>
+<tr><td><code>PowerManagement</code></td><td>~6</td><td><span class="pill pill-good">PORT</span> all</td><td>NEW in v3. <code>pmset</code>/<code>pmtool</code>/<code>caffeinate</code>/<code>pmconfigd</code>/<code>ioupsd</code>/<code>swd</code>. Drives IOPMLib (which <code>reboot</code>/<code>shutdown</code> also use). Heavy IOKit stubs.</td></tr>
+<tr><td><code>DiskArbitration</code></td><td>~4</td><td><span class="pill pill-good">PORT</span> all</td><td>NEW in v3. <code>diskarbitrationd</code>, <code>autodiskmount</code>, <code>DiskArbitrationAgent</code>, <code>datest</code>. DiskArbitration.framework is the system-service consumer for hdiutil/diskutil events &mdash; daemon-side port is independent of those userland tools.</td></tr>
+<tr><td><strong>Total</strong></td><td><strong>~155</strong></td><td>&mdash;</td><td>&mdash;</td></tr>
 </table>
 
-<p>Roughly <strong>17% of Apple's userland</strong> is worth replacing on FreeBSD. The remaining 83% is BSD-derived plain-POSIX code with no integration advantage; FreeBSD's existing versions are as good or better.</p>
+<p>Per-binary audit detail follows in &sect;5&ndash;&sect;13. The audit columns ("Apple-stack integration", "Apple-specific feature", file:line citations) are still authoritative as the rationale for what to preserve / shim in each port; the SKIP / PARTIAL pills <em>in</em> those tables are <span class="historical">historical (v1/v2 verdicts)</span> and superseded by the all-PORT scoreboard above.</p>
 
-<h2 id="bootstrap_cmds">3. <code>bootstrap_cmds</code> &mdash; install table</h2>
+<h2 id="bootstrap_cmds">5. <code>bootstrap_cmds</code> &mdash; install table</h2>
 
 <table>
 <tr><th>Apple binary</th><th>Source path</th><th>FreeBSD path today</th><th>Install path</th><th>Conflict</th></tr>
@@ -148,201 +167,268 @@
 <tr><td><code>mig.1</code>, <code>migcom.1</code></td><td><code>migcom.tproj/*.1</code></td><td><em>(not present)</em></td><td><code>/usr/share/man/man1/</code></td><td><span class="pill pill-good">none</span></td></tr>
 </table>
 
-<p>Zero conflicts; pure addition. Smoke marker: <code>MIG-BUILD-OK</code> &mdash; <code>mig --help</code> exits 0, <code>migcom</code> emits help on stderr. Once installed, generate the seven <code>launchd-842</code> <code>.defs</code> stubs into a vendored <code>mig-output/</code> tree.</p>
+<p>Zero conflicts; pure addition. Smoke marker: <code>MIG-BUILD-OK</code> &mdash; <code>mig --help</code> exits 0, <code>migcom</code> emits help on stderr.</p>
 
-<h2 id="file_cmds">4. <code>file_cmds</code> audit</h2>
+<h2 id="file_cmds">6. <code>file_cmds</code> audit</h2>
+
+<p class="historical">Note: SKIP / PARTIAL pills below are v1/v2 audit verdicts; v3 ports all binaries. Audit-rationale columns still apply as porting context.</p>
 
 <table>
-<tr><th>Binary</th><th>Apple-stack integration</th><th>Apple-specific feature</th><th>FreeBSD path</th><th>Verdict</th></tr>
+<tr><th>Binary</th><th>Apple-stack integration</th><th>Apple-specific feature</th><th>FreeBSD path</th><th>v1/v2 verdict</th></tr>
 <tr><td><code>cp</code></td><td><code>fcopyfile</code>, <code>clonefile</code>, ACL + xattr (<code>cp/utils.c:138-491</code>)</td><td>APFS clonefile COW; resource-fork + ACL preservation</td><td><code>/bin/cp</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>chmod</code></td><td>Apple libacl (<code>chmod_acl.c:121-854</code>)</td><td>Extended ACL manipulation (ACL_EXTENDED_ALLOW/DENY)</td><td><code>/bin/chmod</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>ls</code></td><td><code>getxattr</code>, <code>acl_get_link_np</code>, SF_DATALESS (<code>ls/ls.c:1113-1147</code>)</td><td>ACL display (<code>-e</code>), xattr count, dataless-file awareness</td><td><code>/bin/ls</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>mv</code></td><td><code>fcopyfile</code> for ACL+xattr (<code>mv/mv.c:443</code>)</td><td>Cross-FS move preserves permissions+xattr</td><td><code>/bin/mv</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>install</code></td><td><code>fcopyfile</code> ACL+xattr (<code>install/xinstall.c:1201-1203</code>)</td><td>ACL preservation in <code>install(1)</code></td><td><code>/usr/bin/install</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>gzip</code></td><td><code>fgetattrlist</code>, <code>fsetattrlist</code>, <code>fcopyfile</code> (<code>gzip/gzip.c:1385-1507</code>)</td><td>Preserves ACLs+xattrs across compression</td><td><code>/usr/bin/gzip</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>pax</code></td><td><code>fcopyfile</code>, <code>setattrlist</code> (<code>pax/file_subs.c:845-852</code>)</td><td>Precise timestamp + ACL+xattr in archives</td><td><code>/bin/pax</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>df</code></td><td><code>getattrlist</code> for ATTR_VOL_SPACEUSED (<code>df/df.c:542-553</code>)</td><td>Volume metadata without traversal</td><td><code>/bin/df</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
-<tr><td><code>du</code></td><td><code>getattrlist</code> for SF_DATALESS (<code>du/du.c:595</code>)</td><td>Accurate dataless-file accounting</td><td><code>/usr/bin/du</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
-<tr><td><code>mtree</code></td><td>libdispatch (<code>mtree/commoncrypto.c:35-84</code>)</td><td>GCD-parallel hashing</td><td><code>/usr/sbin/mtree</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
-<tr><td>17 others<br/><small>chflags, chown, cksum, compress, dd, ipcrm, ipcs, ln, mkdir, mkfifo, mknod, pathchk, rm, rmdir, shar, stat, touch, truncate, xattr</small></td><td>None</td><td>Standard POSIX</td><td>various</td><td><span class="pill pill-bad">SKIP</span></td></tr>
+<tr><td><code>chmod</code></td><td>Apple libacl (<code>chmod_acl.c:121-854</code>)</td><td>Extended ACL manipulation</td><td><code>/bin/chmod</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>ls</code></td><td><code>getxattr</code>, <code>acl_get_link_np</code>, SF_DATALESS</td><td>ACL display (<code>-e</code>), xattr count, dataless-file awareness</td><td><code>/bin/ls</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>mv</code></td><td><code>fcopyfile</code> for ACL+xattr</td><td>Cross-FS move preserves permissions+xattr</td><td><code>/bin/mv</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>install</code></td><td><code>fcopyfile</code> ACL+xattr</td><td>ACL preservation in <code>install(1)</code></td><td><code>/usr/bin/install</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>gzip</code></td><td><code>fgetattrlist</code>, <code>fsetattrlist</code>, <code>fcopyfile</code></td><td>Preserves ACLs+xattrs across compression</td><td><code>/usr/bin/gzip</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>pax</code></td><td><code>fcopyfile</code>, <code>setattrlist</code></td><td>Precise timestamp + ACL+xattr in archives</td><td><code>/bin/pax</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>df</code></td><td><code>getattrlist</code> for ATTR_VOL_SPACEUSED</td><td>Volume metadata without traversal</td><td><code>/bin/df</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
+<tr><td><code>du</code></td><td><code>getattrlist</code> for SF_DATALESS</td><td>Accurate dataless-file accounting</td><td><code>/usr/bin/du</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
+<tr><td><code>mtree</code></td><td>libdispatch</td><td>GCD-parallel hashing</td><td><code>/usr/sbin/mtree</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
+<tr><td>17 others<br/><small>chflags, chown, cksum, compress, dd, ipcrm, ipcs, ln, mkdir, mkfifo, mknod, pathchk, rm, rmdir, shar, stat, touch, truncate, xattr</small></td><td>None &mdash; pure POSIX</td><td>Standard POSIX</td><td>various</td><td><span class="pill pill-bad">SKIP</span></td></tr>
 </table>
 
-<p><strong>Driver:</strong> Apple's <code>cp/mv/ls/install/gzip/pax</code> preserve ACLs + extended attributes + APFS clonefile semantics through file operations. FreeBSD's POSIX.1e ACLs and <code>extattr(2)</code> overlap but the userland tools don't preserve them uniformly. Porting the seven essentials makes the toolchain Apple-metadata-aware.</p>
+<p><strong>Driver:</strong> Apple's <code>cp</code>/<code>mv</code>/<code>ls</code>/<code>install</code>/<code>gzip</code>/<code>pax</code> preserve ACLs + extended attributes + APFS clonefile semantics through file operations. <code>clonefile(2)</code> is APFS-only; on FreeBSD UFS/ZFS it falls back to byte-copy &mdash; benign. <code>xattr</code>: Apple's <code>xattr(2)</code> API diverges from FreeBSD's <code>extattr(2)</code>; shim layer maps the calls in our libSystem.</p>
 
-<p><strong>Risks:</strong> libacl + libdispatch dependencies for chmod/ls/install/mtree. <code>clonefile(2)</code> is APFS-only; Apple's <code>cp</code> falls back to byte-copy on non-clone-capable filesystems &mdash; benign on FreeBSD's UFS/ZFS. <code>xattr</code> the tool is SKIP because Apple's <code>xattr(2)</code> API diverges from FreeBSD's <code>extattr(2)</code> too sharply; the wrapper underneath libxpc/launchd uses Apple's API directly so we ship a shim there, not here.</p>
+<p><strong>Risks:</strong> libacl + libdispatch dependencies. We already ship libdispatch (<code>/usr/lib/system/libdispatch.so</code>); libacl shim needed.</p>
 
-<h2 id="shell_cmds">5. <code>shell_cmds</code> audit</h2>
+<h2 id="shell_cmds">7. <code>shell_cmds</code> audit</h2>
+
+<p class="historical">Note: SKIP / PARTIAL pills below are v1/v2 audit verdicts; v3 ports all binaries.</p>
 
 <table>
-<tr><th>Binary</th><th>Apple-stack integration</th><th>Apple-specific feature</th><th>FreeBSD path</th><th>Verdict</th></tr>
-<tr><td><code>id</code></td><td>CoreFoundation + Open Directory (<code>id/open_directory.c:11-93</code>)</td><td>OD-backed identity lookups for enterprise LDAP/NIS</td><td><code>/usr/bin/id</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>su</code></td><td>BSM audit session (<code>su.c:219-222</code>; <code>bsm/audit_session.h</code>)</td><td>Audit-session-aware privilege escalation</td><td><code>/usr/bin/su</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><th>Binary</th><th>Apple-stack integration</th><th>Apple-specific feature</th><th>FreeBSD path</th><th>v1/v2 verdict</th></tr>
+<tr><td><code>id</code></td><td>CoreFoundation + Open Directory</td><td>OD-backed identity lookups for enterprise LDAP/NIS</td><td><code>/usr/bin/id</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>su</code></td><td>BSM audit session</td><td>Audit-session-aware privilege escalation</td><td><code>/usr/bin/su</code></td><td><span class="pill pill-good">PORT</span></td></tr>
 <tr><td><code>path_helper</code></td><td>None (file I/O only)</td><td>Reads <code>/etc/paths</code> + <code>/etc/paths.d/</code> to build PATH</td><td><em>(not present)</em></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
-<tr><td><code>killall</code></td><td>KERN_PROCARGS2 sysctl (<code>killall.c:414</code>)</td><td>Full-argv match vs FreeBSD's truncated <code>ki_comm</code></td><td><code>/usr/bin/killall</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
+<tr><td><code>killall</code></td><td>KERN_PROCARGS2 sysctl</td><td>Full-argv match vs FreeBSD's truncated <code>ki_comm</code></td><td><code>/usr/bin/killall</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
 <tr><td>~40 others<br/><small>basename, chroot, date, dirname, echo, env, expr, false, find, getopt, hexdump, hostname, jot, kill, lastcomm, lockf, logname, mktemp, nice, nohup, printenv, printf, pwd, realpath, renice, script, seq, sh, shlock, sleep, stdbuf, tee, test, time, true, tty, uname, w, who, xargs, yes, &hellip;</small></td><td>None</td><td>Standard POSIX</td><td>various</td><td><span class="pill pill-bad">SKIP</span></td></tr>
 </table>
 
-<p><strong>Driver:</strong> two narrow wins. <code>id</code> grows enterprise-directory awareness (Open Directory); <code>su</code> grows BSM audit-session tracking. Everything else is plain BSD/POSIX with no integration value.</p>
+<p><strong>Risk callout:</strong> Apple <code>id</code> requires <strong>libopendirectory</strong>, which has no FreeBSD equivalent. Ship a no-op libopendirectory shim and let <code>id</code> fall back to <code>/etc/passwd</code>. Real OD work is a separate, far-future phase.</p>
 
-<p><strong>Risk callout:</strong> Apple <code>id</code> requires <strong>libopendirectory</strong>, which has no FreeBSD equivalent. Two paths: (a) ship a no-op libopendirectory shim and let <code>id</code> fall back to <code>/etc/passwd</code>; (b) defer the <code>id</code> port until Open Directory or an equivalent enterprise-directory shim lands. Recommendation: ship the no-op shim and defer real OD work to a separate phase.</p>
+<h2 id="system_cmds">8. <code>system_cmds</code> audit</h2>
 
-<h2 id="system_cmds">6. <code>system_cmds</code> audit</h2>
+<p class="historical">Note: SKIP / PARTIAL pills below are v1/v2 audit verdicts; v3 ports all binaries.</p>
 
-<p>This is the most Mach-IPC-heavy of the six repos. The PORT candidates require kernel-side mach.ko work; the SKIP list calls out which tools depend on Apple's <code>kdebug</code> infrastructure (FreeBSD has <code>dtrace</code> instead) and aren't worth replicating.</p>
+<p>This is the most Mach-IPC-heavy of the in-scope repos. Many ports depend on new <code>mach.ko</code> traps (see callout below).</p>
 
 <table>
-<tr><th>Binary</th><th>Apple-stack integration</th><th>Apple-specific feature</th><th>FreeBSD path</th><th>Verdict</th></tr>
-<tr><td><code>lsmp</code></td><td>Mach IPC introspection (<code>task_read_for_pid</code>, <code>mach_port_space_info</code>, <code>host_processor_sets</code>)</td><td>Mach port enumeration &mdash; no FreeBSD equivalent</td><td><em>(not present)</em></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>hostinfo</code></td><td>Mach: <code>host_info HOST_BASIC_INFO</code>, processor sets (<code>hostinfo.c:65-104</code>)</td><td>Reports Mach kernel version, processor-set state</td><td><em>(not present)</em></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><th>Binary</th><th>Apple-stack integration</th><th>Apple-specific feature</th><th>FreeBSD path</th><th>v1/v2 verdict</th></tr>
+<tr><td><code>lsmp</code></td><td>Mach IPC introspection (<code>task_read_for_pid</code>, <code>mach_port_space_info</code>)</td><td>Mach port enumeration &mdash; no FreeBSD equivalent</td><td><em>(not present)</em></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>hostinfo</code></td><td>Mach: <code>host_info HOST_BASIC_INFO</code>, processor sets</td><td>Reports Mach kernel version, processor-set state</td><td><em>(not present)</em></td><td><span class="pill pill-good">PORT</span></td></tr>
 <tr><td><code>nvram</code></td><td>IOKit (IORegistry, IORegistryEntryCreateCFProperty)</td><td>Firmware-parameter R/W via IOKit</td><td><em>(not present)</em></td><td><span class="pill pill-good">PORT</span></td></tr>
 <tr><td><code>stackshot</code></td><td>Mach + stackshot syscall</td><td>Kernel stack snapshots</td><td><em>(not present)</em></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>lskq</code></td><td>EVFILT_MACHPORT in kqueue (<code>lskq.c:100</code>)</td><td>Mach-aware kqueue analysis</td><td><code>/usr/bin/lskq</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
-<tr><td><code>reboot</code></td><td>Bootstrap + IOKit kextmanager (<code>reboot.c:67-75</code>)</td><td>launchd-coordinated reboot, kext locking</td><td><code>/sbin/reboot</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
-<tr><td><code>shutdown</code></td><td>IOKit IOPMLib + BSM audit (<code>shutdown.c:64-66, 838</code>)</td><td>Power-management-aware shutdown, audit-logged</td><td><code>/sbin/shutdown</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
+<tr><td><code>lskq</code></td><td>EVFILT_MACHPORT in kqueue</td><td>Mach-aware kqueue analysis</td><td><code>/usr/bin/lskq</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
+<tr><td><code>reboot</code></td><td>Bootstrap + IOKit kextmanager</td><td>launchd-coordinated reboot, kext locking</td><td><code>/sbin/reboot</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
+<tr><td><code>shutdown</code></td><td>IOKit IOPMLib + BSM audit</td><td>Power-management-aware shutdown, audit-logged</td><td><code>/sbin/shutdown</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
+<tr><td><code>halt</code></td><td>IOPMLib stubs</td><td>Power-management-aware halt</td><td><code>/sbin/halt</code></td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong></td></tr>
 <tr><td><code>gcore</code></td><td>Mach-image introspection</td><td>Core dumps with Mach thread-state notes</td><td><code>/usr/bin/gcore</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
-<tr><td><code>login</code></td><td>BSM audit (<code>bsm/audit_session.h</code>)</td><td>Audit-aware session creation</td><td><code>/bin/login</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
+<tr><td><code>login</code></td><td>BSM audit</td><td>Audit-aware session creation</td><td><code>/bin/login</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
 <tr><td><code>taskpolicy</code></td><td>Mach <code>task_policy_set/get</code></td><td>QoS + CPU-limit management</td><td><code>/usr/bin/taskpolicy</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
-<tr><td><code>fs_usage</code>, <code>sc_usage</code>, <code>latency</code></td><td>kdebug + Mach timing</td><td>kdebug-based tracing</td><td>various</td><td><span class="pill pill-bad">SKIP</span></td></tr>
-<tr><td><code>kpgo</code>, <code>memory_pressure</code>, <code>vm_stat</code>, <code>vm_purgeable_stat</code></td><td>Apple-only kernel features (PGO, jetsam, purgeable VM)</td><td>n/a on FreeBSD</td><td>various</td><td><span class="pill pill-bad">SKIP</span></td></tr>
-<tr><td>~25 others<br/><small>arch, at, atrun, accton, chpass, cpuctl, dmesg, dynamic_pager, getconf, getty, hostinfo*, iostat, mean, mkfile, newgrp, nologin, passwd, pagesize, proc_uuid_policy, purge, sa, sync, sysctl, vipw, wait4path, zdump, zic, zlog, zprint, &hellip;</small></td><td>None or trivial</td><td>Standard POSIX</td><td>various</td><td><span class="pill pill-bad">SKIP</span></td></tr>
+<tr><td><code>getty</code></td><td>BSM audit (modest)</td><td>Audit-aware tty login spawn</td><td><code>/usr/libexec/getty</code></td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong></td></tr>
+<tr><td><code>sysctl</code></td><td>None significant</td><td>POSIX-style sysctl(8); Apple-shape options</td><td><code>/sbin/sysctl</code></td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong></td></tr>
+<tr><td><code>dmesg</code></td><td>None significant</td><td>kmsg buffer reader</td><td><code>/sbin/dmesg</code></td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong></td></tr>
+<tr><td><code>dynamic_pager</code></td><td>Mach + vnode pager</td><td>Swap-file pager (Apple's swap model)</td><td><em>(not present)</em></td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong> (also unlocks future <code>swapon</code> retirement)</td></tr>
+<tr><td><code>fs_usage</code>, <code>sc_usage</code>, <code>latency</code></td><td><code>kdebug</code> + Mach timing</td><td>kdebug-based tracing</td><td>various</td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong> (with no-op <code>kdebug</code> stubs)</td></tr>
+<tr><td><code>kpgo</code>, <code>memory_pressure</code>, <code>vm_stat</code>, <code>vm_purgeable_stat</code></td><td>Apple-only kernel features (PGO, jetsam, purgeable VM)</td><td>n/a on FreeBSD</td><td>various</td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong> (stub returns &ldquo;feature not available&rdquo; gracefully)</td></tr>
+<tr><td>~20 others<br/><small>ac, accton, arch, at, atrun, chkpasswd, chpass, cpuctl, getconf, iosim, iostat, ltop, mean, mkfile, mslutil, newgrp, nologin, pagesize, passwd, proc_uuid_policy, purge, pwd_mkdb, sa, sync, vifs, vipw, wait4path, wordexp-helper, zdump, zic</small></td><td>None or trivial</td><td>Standard POSIX / BSD heritage</td><td>various</td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong></td></tr>
 </table>
 
 <div class="callout callout-warn">
-<p><strong>Kernel-side mach.ko work this implies.</strong> Porting the four strong PORTs requires new mach.ko traps:</p>
+<p><strong>Kernel-side mach.ko work this implies.</strong></p>
 <ul>
   <li><code>lsmp</code> &rarr; <code>task_read_for_pid</code>, <code>mach_port_space_info</code>, <code>host_processor_sets</code>, <code>processor_set_tasks_with_flavor</code> (4 new traps)</li>
   <li><code>hostinfo</code> &rarr; <code>host_info HOST_BASIC_INFO</code> flavor + processor info (1 new trap, multiple flavors)</li>
   <li><code>stackshot</code> &rarr; kernel <code>stackshot</code> syscall (1 new syscall, large)</li>
   <li><code>nvram</code> &rarr; IOKit NVRAM driver (different track entirely; EFI device-tree walker)</li>
+  <li><code>dynamic_pager</code> &rarr; vnode-backed pager hooks; requires VM-system thinking</li>
+  <li><code>fs_usage</code>/<code>sc_usage</code>/<code>latency</code> &rarr; <code>kdebug</code> stubs (return empty trace or wire to dtrace; stub-first)</li>
 </ul>
-<p>The first three fit our existing multiplexer slot 219 pattern. IOKit NVRAM is its own subsystem and probably waits.</p>
+<p>The trap-based items fit our existing multiplexer slot 219 pattern. IOKit NVRAM and <code>dynamic_pager</code> are separate, much bigger tracks.</p>
 </div>
 
-<h2 id="network_cmds">7. <code>network_cmds</code> audit</h2>
+<h2 id="network_cmds">9. <code>network_cmds</code> audit</h2>
 
-<p>Highest port ratio of any repo &mdash; 10 of 15. Not because these tools have heavy Mach integration (they don't), but because they're the <strong>system-of-record for network state</strong> that <code>configd</code> will read. Apple's struct layouts and tool output formats differ from FreeBSD's; for <code>configd</code> to work later, these tools must produce Apple-shaped output.</p>
+<p class="historical">Note: SKIP / PARTIAL pills below are v1/v2 audit verdicts; v3 ports all binaries.</p>
+
+<p>Highest port ratio in v1/v2 (10/15); under v3 all 15. These tools are the <strong>system-of-record for network state</strong> that <code>configd</code> reads. Apple-shaped output is required for the SC store.</p>
 
 <table>
-<tr><th>Binary</th><th>Apple-stack integration</th><th>Apple-specific feature</th><th>FreeBSD path</th><th>Verdict</th></tr>
-<tr><td><code>ifconfig</code></td><td>IFEF_* flags, LQM (<code>ifconfig.c:2090-3036</code>)</td><td>AWDL/cellular/companion interface types, LQM quality state</td><td><code>/sbin/ifconfig</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>route</code></td><td>RTF_IFSCOPE parsing (<code>route.c:130, 814-818, 1776-1778</code>)</td><td>Interface-scoped routes, RTF_PINNED/RTF_IFREF</td><td><code>/sbin/route</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>arp</code></td><td>IFSCOPE, IFNET_LQM_THRESH_* (<code>arp.c:1127-1136</code>)</td><td>Interface-scoped ARP for multi-homed mDNS</td><td><code>/usr/sbin/arp</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><th>Binary</th><th>Apple-stack integration</th><th>Apple-specific feature</th><th>FreeBSD path</th><th>v1/v2 verdict</th></tr>
+<tr><td><code>ifconfig</code></td><td>IFEF_* flags, LQM</td><td>AWDL/cellular/companion interface types, LQM quality state</td><td><code>/sbin/ifconfig</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>route</code></td><td>RTF_IFSCOPE parsing</td><td>Interface-scoped routes, RTF_PINNED/RTF_IFREF</td><td><code>/sbin/route</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>arp</code></td><td>IFSCOPE, IFNET_LQM_THRESH_*</td><td>Interface-scoped ARP for multi-homed mDNS</td><td><code>/usr/sbin/arp</code></td><td><span class="pill pill-good">PORT</span></td></tr>
 <tr><td><code>ndp</code></td><td>ND6_IFF_* flags, prefix list sysctl</td><td>SEND (secure ND), proxy prefixes, NUD state machine</td><td><code>/usr/sbin/ndp</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>ping</code></td><td>IP_NO_IFT_CELLULAR, DSCP marking (<code>ping.c:754-756</code>)</td><td>Cellular exclusion, QoS class</td><td><code>/sbin/ping</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>ping6</code></td><td>IPV6_NO_IFT_CELLULAR, DSCP marking (<code>ping6.c:850-852</code>)</td><td>IPv6 variant of ping with cellular/QoS</td><td><code>/sbin/ping6</code> <em>(symlink)</em></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>ping</code></td><td>IP_NO_IFT_CELLULAR, DSCP marking</td><td>Cellular exclusion, QoS class</td><td><code>/sbin/ping</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>ping6</code></td><td>IPV6_NO_IFT_CELLULAR, DSCP marking</td><td>IPv6 variant of ping with cellular/QoS</td><td><code>/sbin/ping6</code> <em>(symlink)</em></td><td><span class="pill pill-good">PORT</span></td></tr>
 <tr><td><code>rtadvd</code></td><td>RDNSS/DNSSL + PVD config</td><td>IPv6 prefix advertisement with Apple extras</td><td><code>/usr/sbin/rtadvd</code></td><td><span class="pill pill-good">PORT</span></td></tr>
 <tr><td><code>rtsol</code></td><td>IPv6 router-solicitation daemon</td><td>Auto IPv6 prefix solicitation</td><td><code>/usr/sbin/rtsold</code></td><td><span class="pill pill-good">PORT</span></td></tr>
 <tr><td><code>kdumpd</code></td><td>launchd plist + socket activation</td><td>Establishes launchd-managed-daemon pattern</td><td><em>(not present)</em></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td><code>netstat</code></td><td>LQM thresholds, NSTAT cellular link status (<code>if.c:1328-2261</code>)</td><td>LQM + cellular display</td><td><code>/usr/bin/netstat</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
-<tr><td><code>traceroute</code></td><td>None</td><td>None Apple-specific</td><td><code>/usr/sbin/traceroute</code></td><td><span class="pill pill-bad">SKIP</span></td></tr>
-<tr><td><code>traceroute6</code></td><td>None</td><td>None Apple-specific</td><td><code>/usr/sbin/traceroute6</code></td><td><span class="pill pill-bad">SKIP</span></td></tr>
-<tr><td><code>dnctl</code></td><td>Apple dummynet control</td><td>Apple-specific QoS scheduling</td><td><em>(not present; FreeBSD-ipfw omitted)</em></td><td><span class="pill pill-bad">SKIP</span></td></tr>
-<tr><td><code>rarpd</code></td><td>None</td><td>Legacy RARP server</td><td><em>(not present)</em></td><td><span class="pill pill-bad">SKIP</span></td></tr>
-<tr><td><code>spray</code></td><td>None</td><td>Sun-RPC bandwidth measurement</td><td><em>(not present)</em></td><td><span class="pill pill-bad">SKIP</span></td></tr>
+<tr><td><code>netstat</code></td><td>LQM thresholds, NSTAT cellular link status</td><td>LQM + cellular display</td><td><code>/usr/bin/netstat</code></td><td><span class="pill pill-warn">PARTIAL</span></td></tr>
+<tr><td><code>traceroute</code></td><td>None</td><td>None Apple-specific</td><td><code>/usr/sbin/traceroute</code></td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong></td></tr>
+<tr><td><code>traceroute6</code></td><td>None</td><td>None Apple-specific</td><td><code>/usr/sbin/traceroute6</code></td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong></td></tr>
+<tr><td><code>dnctl</code></td><td>Apple dummynet control</td><td>Apple-specific QoS scheduling</td><td><em>(not present)</em></td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong> (FreeBSD has its own ipfw-dummynet; Apple's dnctl ships as a separate diagnostic tool)</td></tr>
+<tr><td><code>rarpd</code></td><td>None</td><td>Legacy RARP server</td><td><em>(not present)</em></td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong></td></tr>
+<tr><td><code>spray</code></td><td>None</td><td>Sun-RPC bandwidth measurement</td><td><em>(not present)</em></td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong></td></tr>
 </table>
 
-<p><strong>Driver:</strong> SystemConfiguration parity. <code>configd</code>'s job &mdash; coming in a later phase &mdash; is to read <code>ifconfig -a</code>, <code>route -n get</code>, <code>ndp -pr</code>, <code>arp -a</code>, <code>netstat -i</code> output and turn it into the SC store. Those tools have to emit Apple-shaped state, or configd's parser breaks. <code>kdumpd</code>'s launchd plist is independently useful: it's the <strong>worked example</strong> for launchd-managed-socket-activation we'll copy when we add ntpd, mDNSResponder, etc.</p>
+<p><strong>Driver:</strong> SystemConfiguration parity. <code>configd</code>'s job is to read <code>ifconfig -a</code>, <code>route -n get</code>, <code>ndp -pr</code>, <code>arp -a</code>, <code>netstat -i</code> output and turn it into the SC store. <code>kdumpd</code>'s launchd plist is the <strong>worked example</strong> for launchd-managed-socket-activation we copy when adding ntpd, mDNSResponder, etc.</p>
 
-<h2 id="text_cmds">8. <code>text_cmds</code> audit</h2>
+<h2 id="text_cmds">10. <code>text_cmds</code> audit</h2>
+
+<p class="historical">Note: SKIP pill below is v1/v2 audit verdict; v3 ports all binaries.</p>
 
 <table>
-<tr><th>Binary</th><th>Apple-stack integration</th><th>Apple-specific feature</th><th>FreeBSD path</th><th>Verdict</th></tr>
-<tr><td><code>sort</code></td><td>Mach semaphores (<code>sort/file.c:140-159</code>)</td><td>Multi-threaded sort via Mach IPC</td><td><code>/usr/bin/sort</code></td><td><span class="pill pill-good">PORT</span></td></tr>
-<tr><td>33 others<br/><small>banner, bintrans, cat, col, colrm, column, comm, csplit, cut, ed, expand, fmt, fold, grep, head, jq, join, lam, look, md5, nl, paste, pr, rev, rs, sed, split, tail, tr, ul, unexpand, uniq, unvis, vis, wc, &hellip;</small></td><td>None &mdash; pure POSIX stream processors</td><td>Locale and encoding edge cases only</td><td>various</td><td><span class="pill pill-bad">SKIP</span></td></tr>
+<tr><th>Binary</th><th>Apple-stack integration</th><th>Apple-specific feature</th><th>FreeBSD path</th><th>v1/v2 verdict</th></tr>
+<tr><td><code>sort</code></td><td>Mach semaphores</td><td>Multi-threaded sort via Mach IPC</td><td><code>/usr/bin/sort</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td>33 others<br/><small>banner, bintrans, cat, col, colrm, column, comm, csplit, cut, ed, expand, fmt, fold, grep, head, jq, join, lam, look, md5, nl, paste, pr, rev, rs, sed, split, tail, tr, ul, unexpand, uniq, unvis, vis, wc, &hellip;</small></td><td>None &mdash; POSIX stream processors</td><td>Locale and encoding edge cases only</td><td>various</td><td><span class="pill pill-bad">SKIP</span> &rarr; <strong>now PORT</strong></td></tr>
 </table>
 
-<p><strong>Driver:</strong> <code>sort</code> alone uses Mach semaphores for parallelism. Everything else is BSD stream processing with no integration story.</p>
+<h2 id="adv_cmds">11. <code>adv_cmds</code> audit (NEW in v3)</h2>
 
-<h2 id="aggregated">9. Aggregated port list</h2>
-
-<p>28 binaries to port across all six repos, ordered by where they land in the build pipeline:</p>
+<p>Not in v1/v2 plan; added in v3. Sister repo to <code>shell_cmds</code> containing 15 more userland tools, several with Apple-specific integration.</p>
 
 <table>
-<tr><th>#</th><th>Binary</th><th>Source repo</th><th>Install path</th><th>Conflict pkg</th></tr>
-<tr><td>1</td><td><code>mig</code></td><td>bootstrap_cmds</td><td><code>/usr/bin/mig</code></td><td>&mdash;</td></tr>
-<tr><td>2</td><td><code>migcom</code></td><td>bootstrap_cmds</td><td><code>/usr/libexec/migcom</code></td><td>&mdash;</td></tr>
-<tr><td>3</td><td><code>arp</code></td><td>network_cmds</td><td><code>/usr/sbin/arp</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>4</td><td><code>ifconfig</code></td><td>network_cmds</td><td><code>/sbin/ifconfig</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>5</td><td><code>ndp</code></td><td>network_cmds</td><td><code>/usr/sbin/ndp</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>6</td><td><code>netstat</code> (PARTIAL)</td><td>network_cmds</td><td><code>/usr/bin/netstat</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>7</td><td><code>ping</code></td><td>network_cmds</td><td><code>/sbin/ping</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>8</td><td><code>ping6</code></td><td>network_cmds</td><td><code>/sbin/ping6</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>9</td><td><code>route</code></td><td>network_cmds</td><td><code>/sbin/route</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>10</td><td><code>rtadvd</code></td><td>network_cmds</td><td><code>/usr/sbin/rtadvd</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>11</td><td><code>rtsol</code></td><td>network_cmds</td><td><code>/usr/sbin/rtsol</code></td><td>none (name differs from FreeBSD's <code>rtsold</code>)</td></tr>
-<tr><td>12</td><td><code>kdumpd</code></td><td>network_cmds</td><td><code>/usr/libexec/kdumpd</code></td><td>&mdash;</td></tr>
-<tr><td>13</td><td><code>cp</code></td><td>file_cmds</td><td><code>/bin/cp</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>14</td><td><code>chmod</code></td><td>file_cmds</td><td><code>/bin/chmod</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>15</td><td><code>ls</code></td><td>file_cmds</td><td><code>/bin/ls</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>16</td><td><code>mv</code></td><td>file_cmds</td><td><code>/bin/mv</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>17</td><td><code>install</code></td><td>file_cmds</td><td><code>/usr/bin/install</code></td><td>FreeBSD-utilities</td></tr>
-<tr><td>18</td><td><code>gzip</code></td><td>file_cmds</td><td><code>/usr/bin/gzip</code></td><td>FreeBSD-utilities</td></tr>
-<tr><td>19</td><td><code>pax</code></td><td>file_cmds</td><td><code>/bin/pax</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>20</td><td><code>id</code></td><td>shell_cmds</td><td><code>/usr/bin/id</code></td><td>FreeBSD-utilities</td></tr>
-<tr><td>21</td><td><code>su</code></td><td>shell_cmds</td><td><code>/usr/bin/su</code></td><td>FreeBSD-utilities</td></tr>
-<tr><td>22</td><td><code>lsmp</code></td><td>system_cmds</td><td><code>/usr/bin/lsmp</code></td><td>&mdash;</td></tr>
-<tr><td>23</td><td><code>hostinfo</code></td><td>system_cmds</td><td><code>/usr/bin/hostinfo</code></td><td>&mdash;</td></tr>
-<tr><td>24</td><td><code>nvram</code></td><td>system_cmds</td><td><code>/usr/sbin/nvram</code></td><td>&mdash;</td></tr>
-<tr><td>25</td><td><code>stackshot</code></td><td>system_cmds</td><td><code>/usr/bin/stackshot</code></td><td>&mdash;</td></tr>
-<tr><td>26</td><td><code>reboot</code> (PARTIAL)</td><td>system_cmds</td><td><code>/sbin/reboot</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>27</td><td><code>shutdown</code> (PARTIAL)</td><td>system_cmds</td><td><code>/sbin/shutdown</code></td><td>FreeBSD-runtime</td></tr>
-<tr><td>28</td><td><code>sort</code></td><td>text_cmds</td><td><code>/usr/bin/sort</code></td><td>FreeBSD-utilities</td></tr>
+<tr><th>Binary</th><th>Apple-stack integration / note</th><th>FreeBSD path</th><th>v3 verdict</th></tr>
+<tr><td><code>pkill</code></td><td>Mach + macOS proc-info layout</td><td><code>/bin/pkill</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>ps</code></td><td>Mach + macOS proc-info layout; -Z for sandbox label</td><td><code>/bin/ps</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>stty</code></td><td>BSD; Apple keeps minor option additions</td><td><code>/bin/stty</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>tty</code></td><td>POSIX</td><td><code>/usr/bin/tty</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>finger</code></td><td>BSD heritage</td><td><code>/usr/bin/finger</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>last</code></td><td>BSD; reads <code>/var/log/wtmp</code></td><td><code>/usr/bin/last</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>whois</code></td><td>BSD</td><td><code>/usr/bin/whois</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>locale</code></td><td>Apple locale database layout</td><td><code>/usr/bin/locale</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>localedef</code></td><td>Apple locale database layout</td><td><code>/usr/bin/localedef</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>cap_mkdb</code></td><td>BSD termcap-style DB</td><td><code>/usr/bin/cap_mkdb</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>gencat</code></td><td>POSIX catopen(3)</td><td><code>/usr/bin/gencat</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>genwrap</code></td><td>Apple build helper</td><td><code>/usr/bin/genwrap</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>lsvfs</code></td><td>VFS-mount-table introspection (Apple-shape)</td><td><code>/usr/sbin/lsvfs</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>tabs</code></td><td>POSIX terminal control</td><td><code>/usr/bin/tabs</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>colldef</code></td><td>Locale collation-rule compiler</td><td><code>/usr/bin/colldef</code></td><td><span class="pill pill-good">PORT</span></td></tr>
 </table>
 
-<p>Conditional PARTIALs deferred until after the first 28 are stable: <code>df</code>, <code>du</code>, <code>mtree</code> (file_cmds); <code>path_helper</code>, <code>killall</code> (shell_cmds); <code>lskq</code>, <code>gcore</code>, <code>taskpolicy</code>, <code>login</code> (system_cmds).</p>
+<p><strong>Driver:</strong> consistency with the other "shell-like" repos. <code>ps</code>/<code>pkill</code> matter most &mdash; they read macOS-shape <code>kinfo_proc</code> layout; FreeBSD's layout differs, so without these the rest of the userland gets confused-looking <code>ps</code> output. <code>locale</code>/<code>localedef</code> matter for the locale database to match Apple's expected paths.</p>
 
-<h2 id="install-order">10. Install order in <code>build.sh</code></h2>
+<h2 id="powermanagement">12. <code>PowerManagement</code> audit (NEW in v3)</h2>
 
-<p>Order assumes the &sect;1.2 sequencing precondition: all <code>freebsd-launchd-mach</code> daemon ports (configd, IPConfiguration through iter 8, mDNSResponder, notifyd, ASL, DiskArbitration, &hellip;) have already shipped.</p>
+<p>Not in v1/v2 plan; added in v3. Daemon (<code>pmconfigd</code>) + CLIs that drive IOPMLib.</p>
+
+<table>
+<tr><th>Binary</th><th>Apple-stack integration</th><th>Install path</th><th>v3 verdict</th></tr>
+<tr><td><code>pmset</code></td><td>IOPMLib (config R/W); SCDynamicStore</td><td><code>/usr/bin/pmset</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>pmtool</code></td><td>IOPMLib diagnostics / scheduling</td><td><code>/usr/bin/pmtool</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>caffeinate</code></td><td>IOPMAssertion API (prevent-sleep)</td><td><code>/usr/bin/caffeinate</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>pmconfigd</code></td><td>Long-running daemon, IOKit notification consumer</td><td><code>/usr/libexec/pmconfigd</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>ioupsd</code></td><td>UPS protocol over HID</td><td><code>/usr/libexec/ioupsd</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>swd</code></td><td>System watchdog / panic handler</td><td><code>/usr/libexec/swd</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+</table>
+
+<p><strong>Driver:</strong> <code>reboot</code> and <code>shutdown</code> (from <code>system_cmds</code>) both link IOPMLib; we already need IOPMLib stubs for those. Porting the PowerManagement repo's CLIs costs little extra given the shared dep, and gives us Apple-shape power UX.</p>
+
+<p><strong>Risk:</strong> IOPMLib stubs need to cover the breadth of pmset commands (sleep schedules, hibernate modes, display assertions). Mostly stub-to-no-op acceptable on FreeBSD; real power management can come later as a separate phase.</p>
+
+<h2 id="diskarbitration">13. <code>DiskArbitration</code> audit (NEW in v3)</h2>
+
+<p>Not in v1/v2 plan; added in v3. Daemon + agent + test tool. Independent of <code>hdiutil</code>/<code>diskutil</code> (those are the CLI consumers; this is the framework + daemon).</p>
+
+<table>
+<tr><th>Binary</th><th>Apple-stack integration</th><th>Install path</th><th>v3 verdict</th></tr>
+<tr><td><code>diskarbitrationd</code></td><td>IOKit disk-arrival events &rarr; mount dispatcher; launchd-managed</td><td><code>/usr/libexec/diskarbitrationd</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>autodiskmount</code></td><td>Auto-mounter (consumes DA events)</td><td><code>/usr/sbin/autodiskmount</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>DiskArbitrationAgent</code></td><td>Per-user agent for DA events</td><td><code>/System/Library/CoreServices/DiskArbitrationAgent</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+<tr><td><code>datest</code></td><td>DA test harness</td><td><code>/usr/bin/datest</code></td><td><span class="pill pill-good">PORT</span></td></tr>
+</table>
+
+<p><strong>Driver:</strong> DiskArbitration is the framework Apple-shape userland consumers (Finder, hdiutil, diskutil, etc.) use for mount/unmount/eject coordination. Porting it now means we have the framework ready when hdiutil/diskutil scoping tickets land later.</p>
+
+<p><strong>Risk:</strong> needs IOKit disk-arrival events from <code>mach.ko</code> &mdash; or a FreeBSD-devd bridge that emits the same notifications. Bridge work is meaningful but tractable.</p>
+
+<h2 id="aggregated">14. Aggregated port list</h2>
+
+<p>~155 binaries across 9 repos, ordered for build pipeline integration (full per-binary list in source-tree manifest; summary here):</p>
+
+<table>
+<tr><th>Phase</th><th>Repo (count)</th><th>What lands</th></tr>
+<tr><td>1</td><td><code>bootstrap_cmds</code> (4)</td><td>mig + migcom + man pages. Zero conflict.</td></tr>
+<tr><td>2</td><td><code>network_cmds</code> (15)</td><td>All 15. Heavy ABI-drift risk on ifconfig/route/netstat &mdash; Apple struct fields not in FreeBSD will fail gracefully.</td></tr>
+<tr><td>3</td><td><code>file_cmds</code> (27)</td><td>All 27. libdispatch + libacl shims.</td></tr>
+<tr><td>4</td><td><code>shell_cmds</code> (~45)</td><td>All ~45. libopendirectory shim for <code>id</code>.</td></tr>
+<tr><td>5</td><td><code>adv_cmds</code> (15)</td><td>All 15. <code>ps</code>/<code>pkill</code> need <code>kinfo_proc</code> shim layer.</td></tr>
+<tr><td>6</td><td><code>text_cmds</code> (34)</td><td>All 34. <code>sort</code> needs Mach semaphores; others are pure POSIX.</td></tr>
+<tr><td>7</td><td><code>system_cmds</code> (~50)</td><td>All ~50. Heaviest Mach trap dependency &mdash; some tools wait on mach.ko traps landing first (lsmp/hostinfo/stackshot/dynamic_pager). IOPMLib shim covers reboot/shutdown/halt.</td></tr>
+<tr><td>8</td><td><code>PowerManagement</code> (~6)</td><td>All ~6. IOPMLib already shimmed from system_cmds work.</td></tr>
+<tr><td>9</td><td><code>DiskArbitration</code> (~4)</td><td>All ~4. Daemon + agent + autodiskmount. Needs IOKit disk-arrival event bridge.</td></tr>
+</table>
+
+<h2 id="install-order">15. Install order in <code>build.sh</code></h2>
+
+<p>Pre-req: all <code>freebsd-launchd-mach</code> daemon ports (configd remaining iters, IPConfiguration iter 7+, mDNSResponder, notifyd, ASL, &hellip;) shipped.</p>
 
 <ol>
-  <li><code>pkg install</code> the trimmed pkgbase set (<code>pkglist-base.txt</code> with <code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code> <em>removed</em>; <code>FreeBSD-clibs</code>, <code>FreeBSD-rescue</code>, <code>FreeBSD-ufs</code>, <code>FreeBSD-geom</code>, <code>FreeBSD-pam*</code>, &hellip; remain).</li>
-  <li><strong>Build the BSD gap-fillers from <code>/usr/src</code></strong> per <code>pkglist-fbsdsrc-manifest.txt</code> (&sect;1.1). For each line, <code>(cd /usr/src/$DIR &amp;&amp; make obj &amp;&amp; make &amp;&amp; make install DESTDIR=$WORK/rootfs MK_MAN=no MK_TESTS=no)</code>. Marker: <code>FBSDSRC-MANIFEST-OK</code> on a clean iteration. Boot test green at this point with just BSD + the daemon stack &mdash; no Apple userland-cmds yet.</li>
-  <li>Build <code>bootstrap_cmds</code>; install <code>mig</code> + <code>migcom</code>. Marker: <code>MIG-BUILD-OK</code>. (Note: <code>mig</code> bootstrap can actually move earlier if a daemon port needs it &mdash; it's pure addition, no FreeBSD conflict.)</li>
-  <li>Run <code>mig</code> against the seven <code>launchd-842</code> <code>.defs</code> files; cache output in <code>src/launchd/mig-output/</code>.</li>
-  <li>Build + install <code>network_cmds</code> tools (10 binaries). One smoke marker per tool: <code>NETCMD-IFCONFIG-OK</code>, <code>NETCMD-PING-OK</code>, <code>NETCMD-ROUTE-OK</code>, &hellip;</li>
-  <li>Build + install <code>file_cmds</code> tools (7 binaries). Markers: <code>FILECMD-CP-OK</code>, &hellip;</li>
-  <li>Build + install <code>shell_cmds</code> tools (<code>id</code>, <code>su</code>). Ship a no-op libopendirectory shim so <code>id</code> falls back to <code>/etc/passwd</code>.</li>
-  <li>Build + install <code>system_cmds</code> tools that don't need new kernel traps yet. Defer <code>lsmp</code> / <code>hostinfo</code> / <code>stackshot</code> until the mach.ko-side traps land.</li>
-  <li>Build + install <code>sort</code> from text_cmds. Last because it adds Mach-semaphore use to a generic stream tool &mdash; isolation matters.</li>
+  <li><code>pkg install</code> the trimmed pkgbase set (<code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code> removed; <code>FreeBSD-clibs</code>, <code>FreeBSD-rescue</code>, <code>FreeBSD-ufs</code>, <code>FreeBSD-geom</code>, &hellip; remain).</li>
+  <li><strong>Build the v3 contracted gap-filler manifest</strong> from <code>/usr/src</code> (~13 lines + ~13 deferred = ~26 lines transitional). Marker <code>FBSDSRC-MANIFEST-OK</code>. Boot test green at this point.</li>
+  <li>Build <code>bootstrap_cmds</code>; install <code>mig</code> + <code>migcom</code>. Marker <code>MIG-BUILD-OK</code>. May move earlier if a daemon port needs it &mdash; pure addition, zero conflict.</li>
+  <li>Run <code>mig</code> against <code>launchd-842</code>'s seven <code>.defs</code> files; cache output.</li>
+  <li>Build + install <code>network_cmds</code> (15 binaries). Per-tool smoke markers: <code>NETCMD-IFCONFIG-OK</code>, &hellip;</li>
+  <li>Build + install <code>file_cmds</code> (27). Markers <code>FILECMD-CP-OK</code>, &hellip;</li>
+  <li>Build + install <code>shell_cmds</code> (~45). Ship libopendirectory shim; <code>id</code> falls back to <code>/etc/passwd</code>.</li>
+  <li>Build + install <code>adv_cmds</code> (15). Ship <code>kinfo_proc</code>-shape shim; <code>ps</code>/<code>pkill</code> read FreeBSD's layout via the shim.</li>
+  <li>Build + install <code>text_cmds</code> (34).</li>
+  <li>Build + install <code>system_cmds</code> (~50). Defer <code>lsmp</code>/<code>hostinfo</code>/<code>stackshot</code> binaries that need new <code>mach.ko</code> traps; everything else lands now.</li>
+  <li>Build + install <code>PowerManagement</code> (~6). IOPMLib shim already in place from system_cmds.</li>
+  <li>Build + install <code>DiskArbitration</code> (~4). Needs IOKit disk-arrival event bridge (or stub).</li>
+  <li>Backfill <code>mach.ko</code> traps for the Mach-IPC-deep <code>system_cmds</code> binaries (<code>lsmp</code>, <code>hostinfo</code>, <code>stackshot</code>); rebuild those.</li>
 </ol>
 
-<h2 id="risks">11. Risks &amp; known sharp edges</h2>
+<h2 id="deferred">16. Deferred scoping tickets</h2>
+
+<p>Three workstreams the v3 plan explicitly defers. Each gets its own scoping ticket in the repo, sequenced after the 9-repo port roadmap stabilizes.</p>
+
+<table>
+<tr><th>Workstream</th><th>Apple-source status</th><th>What deferral means</th><th>Scoping ticket scope</th></tr>
+<tr><td><code>hdiutil</code> / <code>hdik</code> / DiskImages.framework</td><td><strong>Closed-source.</strong> Apple never published.</td><td>Live ISO uses <code>mdconfig</code> from <code>/usr/src</code>. No <code>hdiutil</code>-shape CLI shipped.</td><td>Compare three paths: (a) fresh-write Apple-shape CLI in <code>src/hdiutil/</code> matching man-page semantics, drives <code>md(4)</code>; (b) vendor <code>darling-dmg</code> (GPL-3.0, read-only, FUSE-based); (c) hybrid &mdash; fresh-write front-end + darling-dmg-shaped DMG parser. License + scope tradeoff.</td></tr>
+<tr><td><code>diskdev_cmds</code> (<code>mount</code>/<code>fsck</code>/<code>newfs</code> family)</td><td><strong>Apple-open, not vendored locally.</strong> Need fetch from Apple OSS archive (~2009 era, pre-UFS-removal).</td><td>Live ISO uses FreeBSD <code>mount</code>/<code>fsck</code>/<code>newfs</code> from <code>/usr/src</code>. Manifest carries ~13 transitional rows.</td><td>Fetch + vendor + UFS2/SU+J/snapshot forward-port. Largest port of the three. Maybe additionally include Apple's <code>mount(8)</code> front-end with FreeBSD <code>mount_&lt;fs&gt;</code> back-ends as a smaller intermediate step.</td></tr>
+<tr><td><code>kextload</code> / kext loader substrate</td><td><strong>Apple-open</strong> (<code>IOKitTools</code>, needs fetching); <strong>kernel substrate is XNU <code>OSKext</code></strong>.</td><td>Live ISO uses <code>kldload</code> from <code>/usr/src</code> to load <code>mach.ko</code> and all FreeBSD modules.</td><td>Vendor XNU <code>OSKext</code> + <code>IOCatalogue</code> + <code>IOKextLib</code> into <code>mach.ko</code>. Vendor <code>kextload</code>/<code>kextunload</code>/<code>kextstat</code>/<code>kmutil</code> from IOKitTools. Decide whether to also repackage existing FreeBSD <code>.ko</code> modules (<code>if_em</code>, <code>ums</code>, &hellip;) as <code>.kext</code> bundles, or keep <code>kldload</code> as a parallel loader.</td></tr>
+</table>
+
+<h2 id="risks">17. Risks &amp; known sharp edges</h2>
 
 <h3>ABI drift between Apple and FreeBSD kernel structs</h3>
-<p>Worst in <code>ifconfig</code>, <code>netstat</code>, <code>route</code>, <code>arp</code>, <code>ndp</code>. Apple extends <code>struct ifreq</code>, <code>struct ifmediareq</code>, <code>struct rt_msghdr</code>; some Apple ioctls don't exist on FreeBSD. Apple-only feature paths will fail gracefully (ioctl returns -1, flag never set) &mdash; acceptable.</p>
+<p>Worst in <code>ifconfig</code>, <code>netstat</code>, <code>route</code>, <code>arp</code>, <code>ndp</code>, <code>ps</code>, <code>pkill</code>. Apple extends <code>struct ifreq</code>, <code>struct ifmediareq</code>, <code>struct rt_msghdr</code>, <code>kinfo_proc</code>; some Apple ioctls don't exist on FreeBSD. Apple-only feature paths fail gracefully (ioctl returns -1, flag never set).</p>
 
-<h3>Open Directory dependency for <code>id</code></h3>
-<p>Apple's <code>id</code> calls libopendirectory. FreeBSD has no equivalent. Ship a no-op shim; <code>id</code> falls back to <code>/etc/passwd</code> like FreeBSD's. Real OD work is a separate, far-future phase.</p>
+<h3>Stub libraries we'll need to ship</h3>
+<p>Aggregated across the 9 repos: <strong>libopendirectory</strong> (no-op fallback to <code>/etc/passwd</code>; <code>id</code>), <strong>IOPMLib</strong> (mostly no-op stubs; <code>reboot</code>/<code>shutdown</code>/<code>halt</code>/<code>pmset</code>/<code>caffeinate</code>/<code>pmconfigd</code>), <strong>libacl</strong> (BSD POSIX.1e bridge; <code>chmod</code>/<code>ls</code>/<code>cp</code>/<code>install</code>/<code>mtree</code>), <strong>BSM audit</strong> (no-op stub; <code>su</code>/<code>login</code>/<code>shutdown</code>/<code>getty</code>), <strong>kdebug</strong> (no-op stub; <code>fs_usage</code>/<code>sc_usage</code>/<code>latency</code>), <strong><code>kinfo_proc</code> shim</strong> (Apple-shape over FreeBSD's; <code>ps</code>/<code>pkill</code>). Most are <100 LOC each; lean on the OpenPAM-style shim pattern.</p>
 
-<h3>Mach traps needed before system_cmds Tier B</h3>
-<p>4 new traps for <code>lsmp</code> + <code>hostinfo</code> + <code>stackshot</code> (port-space introspection, host info flavors, stackshot syscall). All fit the multiplexer slot 219 pattern; ~600 LOC of mach.ko work. <code>nvram</code> needs an IOKit NVRAM driver &mdash; separate track, much bigger.</p>
+<h3>Mach traps needed before <code>system_cmds</code> Tier B lands</h3>
+<p>4 new traps for <code>lsmp</code> + <code>hostinfo</code> + <code>stackshot</code> (port-space introspection, host info flavors, stackshot syscall). All fit the multiplexer slot 219 pattern; ~600 LOC of <code>mach.ko</code> work. <code>nvram</code> needs an IOKit NVRAM driver &mdash; separate track. <code>dynamic_pager</code> needs vnode-pager hooks &mdash; another separate track.</p>
 
-<h3>CI time impact of the <code>/usr/src</code> manifest build</h3>
-<p>~40 per-tool <code>make obj &amp;&amp; make &amp;&amp; make install</code> loops add an estimated 2&ndash;5 minutes per build &mdash; non-trivial when the daemon ports iterate 4&ndash;6 CI rounds per iter. Mitigation is <em>sequencing</em>, not optimization: this workstream lands only after the daemon roadmap stabilizes (&sect;1.2). Once landed, build cache + parallel <code>make</code> can claw some of it back if needed.</p>
+<h3>IOKit disk-arrival event bridge for DiskArbitration</h3>
+<p><code>diskarbitrationd</code> consumes IOKit disk-arrival/removal events. On FreeBSD this needs either (a) a real IOKit event source from <code>mach.ko</code>, or (b) a <code>devd</code> bridge that translates FreeBSD devd events into IOKit-shape notifications. Stub-first: ship the daemon, get it running, file follow-up for the event bridge.</p>
+
+<h3>CI time impact of the 9-repo port pass</h3>
+<p>Per-repo build + per-tool smoke marker adds substantially to CI run time once the workstream is active. Mitigation is sequencing (&sect;3): land after the daemon roadmap, not during. Inside the workstream, group per-repo PRs so CI runs full-marker pass once per repo, not per binary.</p>
 
 <h3><code>/usr/src</code> availability on the builder</h3>
-<p>The manifest assumes a full <code>/usr/src</code> tree of the matching FreeBSD release on the builder chroot. Today the builder already has this (used for kmod compiles); the manifest just adds new directories to it. If the builder ever moves to a src-less chroot, the manifest workstream needs a paired <code>src.txz</code> fetch step or a switch to a single <code>buildworld</code>-style invocation.</p>
+<p>The transitional manifest assumes <code>/usr/src</code> on the builder chroot. Already there for kmod compiles; just adding new directories.</p>
 
-<h3><code>cp</code> <code>--reflink</code> semantics</h3>
-<p>Apple <code>cp</code> uses <code>clonefile(2)</code> automatically on supported filesystems. On FreeBSD UFS this no-ops to byte-copy. On ZFS we might want it to call <code>zfs_clone_range</code> eventually; not required.</p>
+<h3>Sequencing fragility around deferred items</h3>
+<p>If we never get to the deferred-scoping tickets, the transitional manifest stays. That's OK &mdash; the 9-repo port is independently valuable; deferred items are quality-of-life rather than blocking.</p>
 
-<h3>libdispatch dependency for <code>mtree</code> + <code>sort</code></h3>
-<p>Both use libdispatch. We already ship <code>/usr/lib/system/libdispatch.so</code>, so this is free.</p>
-
-<h2 id="out-of-scope">12. Out of scope</h2>
+<h2 id="out-of-scope">18. Out of scope (truly)</h2>
 
 <ul>
-  <li><strong><code>FreeBSD-rc</code> removal.</strong> Once <code>launchd-842</code> is PID 1, its plists own multi-user bring-up. Drop the pkg then. Gershwin Phase 2 reference.</li>
-  <li><strong><code>/sbin/init</code> replacement.</strong> Overwrite with <code>launchd-842</code> binary or symlink. Same overwrite-after-install model.</li>
-  <li><strong>IOKit NVRAM driver.</strong> Real EFI device-tree walker for <code>nvram</code>; separate kernel-side track.</li>
-  <li><strong>Open Directory framework.</strong> Real enterprise-directory backend for <code>id</code>, login, auth. Months of work.</li>
-  <li><strong>libopendirectory shim.</strong> The 30-line no-op version lands with <code>id</code>; the real one waits for OD.</li>
-  <li><strong>kdebug compat layer.</strong> Apple <code>fs_usage</code>, <code>latency</code>, <code>sc_usage</code> all SKIP. FreeBSD has dtrace; replicating kdebug is not worth it.</li>
-  <li><strong>The PARTIAL list above</strong> (~11 binaries: df/du/mtree, path_helper/killall, lskq/gcore/taskpolicy/login). Revisit after the 28-binary baseline lands.</li>
+  <li><strong>Real Open Directory framework.</strong> Enterprise-directory backend for <code>id</code>, login, auth. Stubbed by libopendirectory no-op for now. Separate multi-month effort.</li>
+  <li><strong>Real IOKit kext-loading kernel work.</strong> Deferred to &sect;16 scoping ticket; until then <code>kldload</code> persists.</li>
+  <li><strong>Real <code>hdiutil</code>/<code>diskutil</code>.</strong> Deferred to &sect;16 scoping ticket; <code>mdconfig</code> persists.</li>
+  <li><strong>UFS2 forward-port of Apple <code>diskdev_cmds</code>.</strong> Deferred to &sect;16 scoping ticket.</li>
+  <li><strong>FreeBSD-source vendoring into <code>src/freebsd-vendored/</code>.</strong> Option for Tier-4 items (<code>geom</code>/<code>devfs</code>-rules/<code>dumpon</code>/<code>savecore</code>) instead of <code>/usr/src</code> manifest carry-over. Not in current scope; revisit after 9-repo port lands.</li>
+  <li><strong>Repackaging existing FreeBSD <code>.ko</code> modules as <code>.kext</code> bundles.</strong> Only relevant if kext-substrate scoping ticket lands and we want full Apple-shape module model.</li>
+  <li><strong>Real <code>kdebug</code> tracing infrastructure.</strong> <code>fs_usage</code>/<code>sc_usage</code>/<code>latency</code> get stubbed for v3; real kdebug or kdebug-over-dtrace is a separate effort.</li>
+  <li><strong><code>FreeBSD-rc</code> removal.</strong> Once <code>launchd-842</code> is PID 1, its plists own multi-user bring-up. Drop the pkg then.</li>
 </ul>
 
-<p class="footnote">Drafted 2026-05-13 from five parallel agent passes across <code>/Users/jmaloney/Documents/launchd/{bootstrap,file,shell,system,network,text}_cmds/</code>. Companion to the <a href="freebsd-launchd-842-porting-plan.html">launchd-842 port plan</a>; filed under the <a href="freebsd-launchd-mach-plan.html">freebsd-launchd-mach (v2)</a> effort. All file:line citations link back to the verbatim Apple sources. <strong>Revision 2026-05-23</strong>: replaced the "install <code>FreeBSD-runtime</code> intact + overwrite the conflict paths" approach with Option C (drop <code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code>, build the gap-fillers per-tool from <code>/usr/src</code> via <code>pkglist-fbsdsrc-manifest.txt</code>). Workstream sequenced after the daemon-port roadmap (mDNSResponder etc.) to keep CI fast during high-iteration daemon work. See &sect;1, &sect;1.1, &sect;1.2.</p>
+<p class="footnote">Drafted 2026-05-13 (v1). <strong>Revision 2026-05-23 (v2)</strong>: Option C (drop <code>FreeBSD-runtime</code> + <code>FreeBSD-utilities</code>, build per-tool from <code>/usr/src</code>). <strong>Revision 2026-05-26 (v3)</strong>: retired the per-binary "port if Apple has integration advantage, skip otherwise" rule; new rule is "vendor every Apple userland repo we have open-source for, port all binaries, modify as needed." Scope expanded from 6 to 9 repos (<code>adv_cmds</code>, <code>PowerManagement</code>, <code>DiskArbitration</code> added). Apple-closed-source items (<code>hdiutil</code>/<code>diskutil</code>) and Apple-open-but-not-vendored items (<code>diskdev_cmds</code>, <code>IOKitTools</code> kext loader) split off to &sect;16 scoping tickets. Per-tool SKIP / PARTIAL pills in &sect;6&ndash;&sect;10 audit tables are historical (v1/v2) and superseded by the &sect;4 all-PORT scoreboard.</p>
 
 </div>
 </body>

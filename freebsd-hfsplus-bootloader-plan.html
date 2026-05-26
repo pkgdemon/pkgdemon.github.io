@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HFS+ bootloader plan for FreeBSD &mdash; boot-132 vs libsa vs UFS-for-/boot</title>
+<style>
+  :root {
+    --fg: #1a1a1a; --fg-muted: #555; --bg: #fafaf7; --accent: #b8472a;
+    --accent-soft: #f3e7df; --border: #d8d4c8; --code-bg: #f0ece2;
+    --table-stripe: #f4efe5; --warn: #8a5a00; --good: #2d6f3b; --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif; color: var(--fg); background: var(--bg); line-height: 1.55; margin: 0; padding: 0; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 32px 96px; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--border); letter-spacing: -0.005em; }
+  h3 { font-size: 1.15rem; margin: 32px 0 10px; color: var(--accent); }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin-bottom: 4px; }
+  code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); color: var(--fg); }
+  code { padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  pre { padding: 14px 18px; border-radius: 4px; overflow-x: auto; font-size: 0.86rem; line-height: 1.45; margin: 0 0 18px; }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+  .lede { font-size: 1.05rem; color: var(--fg-muted); margin-bottom: 32px; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 22px; font-size: 0.91rem; }
+  th, td { text-align: left; padding: 8px 10px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 18px 0 22px; border-radius: 0 4px 4px 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-good { border-left-color: var(--good); background: #e8f1e3; }
+  .callout-warn { border-left-color: var(--warn); background: #fbf3df; }
+  .callout-bad  { border-left-color: var(--bad);  background: #fbe6e6; }
+  .pill { display: inline-block; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 10px; margin-right: 6px; }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .toc { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 18px 24px 14px 36px; margin: 0 0 36px; font-size: 0.95rem; }
+  .toc h2 { margin: 0 0 8px; padding-top: 0; border-top: none; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-left: -14px; }
+  .toc ol { margin: 0 0 0 6px; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  @media (max-width: 600px) { .wrap { padding: 24px 18px 64px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>HFS+ bootloader plan for FreeBSD</h1>
+
+<p class="lede">Companion to the <a href="freebsd-hfsplus-port-plan.html">HFS+ kernel module port plan</a> and scopes <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/80">issue #80 (boot-132 / modern derivative)</a>. The HFS+ kmod gets us read/write of HFS+ data partitions <em>after</em> the kernel is up; this plan addresses the prior question: <strong>how does the bootloader find the kernel if the boot partition is HFS+?</strong> Three options reviewed; <strong>recommendation: Option C (UFS for <code>/boot</code>, HFS+ for data) &mdash; zero bootloader work, and matches how every modern FreeBSD installer already lays out disks.</strong></p>
+
+<div class="callout callout-good">
+<p><strong>TL;DR.</strong> Don't port boot-132 or OpenCore. They're Darwin-platform loaders &mdash; you'd have to rip out the kext-cache + Mach boot-args + xnu-handoff to point them at FreeBSD, which is more work than writing an HFS+ reader from scratch. Just keep UFS for <code>/boot</code> like FreeBSD already does, and put HFS+ on the data partitions where the kmod can mount it. If a real "boot directly from HFS+ root" use case emerges later, add HFS+ to <code>stand/libsa</code> (~2-3 weeks) using Clover's VBoxHfs reader as the source.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#problem">What we're solving</a></li>
+  <li><a href="#boot132">Apple boot-132 &mdash; what it is and what it can do</a></li>
+  <li><a href="#modern-forks">Modern descendants: OpenCore, Clover, Chameleon</a></li>
+  <li><a href="#freebsd-loader">FreeBSD's <code>stand/loader</code> today</a></li>
+  <li><a href="#option-a">Option A &mdash; Port boot-132 / OpenCore</a></li>
+  <li><a href="#option-b">Option B &mdash; Add HFS+ reader to <code>stand/libsa</code></a></li>
+  <li><a href="#option-c">Option C &mdash; UFS for <code>/boot</code>, HFS+ for data (recommended)</a></li>
+  <li><a href="#decision-matrix">Decision matrix</a></li>
+  <li><a href="#out-of-scope">Out of scope</a></li>
+</ol>
+</div>
+
+<h2 id="problem">1. What we're solving</h2>
+
+<p>FreeBSD's <code>stand/loader</code> (the second-stage bootloader that runs after <code>boot0</code>/<code>boot1</code>) can read UFS, ZFS, ext2fs, ISO 9660, FAT/msdosfs, and NFS. It cannot read HFS+. So an installation with HFS+ on <code>/boot</code> can't start &mdash; the loader physically can't find <code>kernel.bin</code> or <code>loader.conf</code> on disk.</p>
+
+<p>If we want HFS+ anywhere on a <code>freebsd-launchd-mach</code> system, three patterns satisfy that:</p>
+<ol>
+  <li>Replace FreeBSD's loader with an HFS+-capable one (boot-132 family).</li>
+  <li>Teach FreeBSD's loader to read HFS+ (add one file to <code>stand/libsa</code>).</li>
+  <li>Don't put HFS+ on <code>/boot</code> &mdash; use UFS for the boot partition, HFS+ for whatever data we want.</li>
+</ol>
+
+<p>The HFS+ kmod port (separate plan) handles all post-kernel HFS+ access regardless of which option we pick here.</p>
+
+<h2 id="boot132">2. Apple boot-132 &mdash; what it is and what it can do</h2>
+
+<table>
+<tr><th>Attribute</th><th>Status</th></tr>
+<tr><td>Repository</td><td><a href="https://github.com/apple-oss-distributions/boot">apple-oss-distributions/boot</a></td></tr>
+<tr><td>Last release</td><td><code>boot-132</code>, October 24, 2006. <strong>Final release Apple ever published.</strong> Seven tags total, nothing newer in ~20 years.</td></tr>
+<tr><td>License</td><td>APSL 2.0 (Aug 6, 2003)</td></tr>
+<tr><td>Architecture</td><td>i386 only. No x86_64, no PPC (PPC <code>BootX</code> was separate, also abandoned).</td></tr>
+<tr><td>Size</td><td>~30k LOC C + assembly (90% C, 6% asm)</td></tr>
+<tr><td>Boot model</td><td>3-stage BIOS chainloader. No UEFI. Pre-<code>boot.efi</code>.</td></tr>
+<tr><td>Partition table</td><td>MBR only. GPT support added by community forks (Chameleon, Clover), not Apple.</td></tr>
+<tr><td>Successor</td><td><code>boot.efi</code> (10.6+), <code>iBoot</code> (iOS/Apple Silicon). Both <strong>closed-source</strong>; never published.</td></tr>
+</table>
+
+<p><strong>What boot-132 actually does:</strong></p>
+<ol>
+  <li><code>boot0</code> &mdash; MBR sector-0 stub; finds the active partition.</li>
+  <li><code>boot1h</code> &mdash; HFS+ partition boot sector; locates <code>/boot</code> in the HFS+ catalog B-tree.</li>
+  <li><code>boot</code> (stage 2) &mdash; reads <code>mach_kernel</code> + <code>Extensions.mkext</code> (kext cache) from HFS+; parses <code>com.apple.Boot.plist</code> for kernel args; sets up the Mach boot-args page; switches to protected mode; jumps to xnu's entry.</li>
+</ol>
+
+<p>The handoff at the end of stage 2 is <strong>completely Darwin-specific</strong>: Mach boot-args page, kext cache pointer, specific xnu entry contract. Pointing this code at FreeBSD's <code>kernel.bin</code> means replacing the entire handoff and the kext-cache logic with FreeBSD's <code>elf_freebsd_exec</code>/loader interaction &mdash; at which point you've reimplemented <code>stand/loader</code>, just badly.</p>
+
+<h2 id="modern-forks">3. Modern descendants: OpenCore, Clover, Chameleon</h2>
+
+<table>
+<tr><th>Project</th><th>License</th><th>Status</th><th>FS support</th><th>Boot model</th></tr>
+<tr>
+  <td><a href="https://github.com/acidanthera/OpenCorePkg">OpenCorePkg</a></td>
+  <td>BSD-3-Clause</td>
+  <td>Active; v1.0.7 March 20, 2025; 5,005 commits</td>
+  <td>HFS+ via closed-Apple-derived <code>HfsPlus.efi</code> binary blob in <a href="https://github.com/acidanthera/OcBinaryData/blob/master/Drivers/HfsPlus.efi">OcBinaryData</a>; APFS via Apple's container-embedded driver; FAT native; ext4/btrfs via plug-ins</td>
+  <td>Pure UEFI</td>
+</tr>
+<tr>
+  <td><a href="https://github.com/CloverHackyColor/CloverBootloader">Clover</a></td>
+  <td>BSD-2-Clause</td>
+  <td>Active; release-5172g, March 22, 2026; 2,489 commits</td>
+  <td>HFS+ via <code>VBoxHfs.efi</code> (VirtualBox-derived, LGPL-compatible); APFS via Apple's driver; FAT, ext, NTFS</td>
+  <td>BIOS + UEFI</td>
+</tr>
+<tr>
+  <td>Chameleon (meklort fork)</td>
+  <td>APSL 2.0</td>
+  <td>Dormant since ~2014</td>
+  <td>HFS+, FAT32, ext2, GPT+MBR</td>
+  <td>BIOS (closest to boot-132)</td>
+</tr>
+</table>
+
+<p><strong>Architectural reality:</strong> all three exist to <em>boot macOS/Darwin</em>. Their reason for being is the Apple-specific bring-up dance (SMBIOS spoofing, ACPI patching, ApplePlatformInfo emulation, EfiBoot protocol, kext injection). For our purposes we'd be importing ~50&ndash;200k LOC of macOS-emulation work to use the ~3-5k LOC HFS+ reader buried inside. That's a maintenance trap.</p>
+
+<p><strong>What's useful from this ecosystem:</strong> the <strong>standalone HFS+ readers</strong> they each ship are extractable.</p>
+<ul>
+  <li><strong>Clover's <code>VBoxHfs</code></strong> &mdash; LGPL, EDK2-style EFI driver, ~3-5k LOC, derived from VirtualBox's HFS+ reader, read-only, byte-swappable, no Apple binary dependency. <strong>Best candidate</strong> for re-use as the basis of a libsa-side reader.</li>
+  <li><strong>OpenCore's <code>OpenHfsPlus</code></strong> &mdash; the open variant; acidanthera <a href="https://github.com/acidanthera/bugtracker/issues/659">bug #659</a> calls it slow and unaudited.</li>
+  <li><strong>GRUB's HFS+ module</strong> &mdash; GPLv3, used by rEFInd via <a href="https://efi.akeo.ie/">efi.akeo.ie</a>'s driver bundle. License-incompatible with our preferred posture.</li>
+  <li><strong>PureDarwin's <code>HFSPlus_EFI</code></strong> &mdash; sparse, 6 commits, unclear licensing.</li>
+  <li><strong>boot-132's own <code>i386/boot2/hfs.c</code></strong> &mdash; APSL 2.0, oldest, last touched 2006.</li>
+</ul>
+
+<h2 id="freebsd-loader">4. FreeBSD's <code>stand/loader</code> today</h2>
+
+<p>From <a href="https://github.com/freebsd/freebsd-src/tree/main/stand/libsa">freebsd-src/stand/libsa</a>:</p>
+
+<table>
+<tr><th>Filesystem</th><th>File</th><th>Approx LOC</th></tr>
+<tr><td>UFS</td><td><code>ufs.c</code>, <code>ufsread.c</code></td><td>~1500</td></tr>
+<tr><td>ext2fs</td><td><code>ext2fs.c</code></td><td>~1200</td></tr>
+<tr><td>ISO 9660</td><td><code>cd9660.c</code>, <code>cd9660read.c</code></td><td>~600</td></tr>
+<tr><td>FAT/msdosfs</td><td><code>dosfs.c</code></td><td>~1100</td></tr>
+<tr><td>NFS</td><td><code>nfs.c</code></td><td>~900</td></tr>
+<tr><td>ZFS</td><td><code>zfs/</code> subdir</td><td>~larger</td></tr>
+<tr><td>HFS+</td><td>(none, never has been)</td><td>&mdash;</td></tr>
+</table>
+
+<p>The loader's plug-in FS ABI is simple: each filesystem implements <code>fs_open/close/read/write/seek/stat/readdir</code> via a <code>struct fs_ops</code> exposed through <code>libsa</code>. Adding a new reader is a single C file. UFS is ~1500 LOC, ext2fs ~1200, cd9660 ~600 &mdash; an HFS+ read-only reader for libsa would fit in the same ~1.5&ndash;3 kLOC envelope, far smaller than the EDK2-style EFI drivers because libsa provides its own buffered-block I/O (no UEFI protocol marshalling).</p>
+
+<h2 id="option-a">5. Option A &mdash; Port boot-132 / OpenCore</h2>
+
+<p><strong>What it is:</strong> import Apple's <code>boot-132</code> source (or OpenCore) into our tree, modify the stage-2 handoff to point at FreeBSD's <code>kernel.bin</code> instead of <code>mach_kernel</code>, replace the kext-cache logic with whatever FreeBSD's loader does to find modules, and wire it as the live ISO's bootloader.</p>
+
+<p><strong>Effort:</strong> rough lower bound 3 person-months. Most of the work isn't the HFS+ reader (which is already wired) &mdash; it's gutting the Darwin handoff and replacing it with FreeBSD's loader contract. Boot-132's BIOS-only model and i386-only support also mean we'd be writing the EFI side too. OpenCore brings EFI for free but drags in vastly more macOS-emulation code we'd have to either disable or maintain.</p>
+
+<p><strong>Tradeoffs:</strong></p>
+<ul>
+  <li><span class="pill pill-good">+</span> HFS+ reader already wired (the only real "pro")</li>
+  <li><span class="pill pill-bad">&minus;</span> Massive code drag for Darwin-specific bring-up logic we don't want</li>
+  <li><span class="pill pill-bad">&minus;</span> No Apple upstream &mdash; we'd be maintaining ~30k LOC of bootloader by ourselves</li>
+  <li><span class="pill pill-bad">&minus;</span> Option A's effort is greater than writing the HFS+ reader from scratch into our existing loader (Option B)</li>
+  <li><span class="pill pill-bad">&minus;</span> Two parallel bootloader lineages (FreeBSD's existing loader stays for non-HFS+ setups) is a maintenance liability</li>
+</ul>
+
+<p><strong>Verdict: not recommended.</strong></p>
+
+<h2 id="option-b">6. Option B &mdash; Add HFS+ reader to <code>stand/libsa</code></h2>
+
+<p><strong>What it is:</strong> write a new <code>stand/libsa/hfs.c</code> that implements <code>fs_ops</code> for HFS+ read-only. Wire it into <code>stand/loader.mk</code> behind a <code>LOADER_HFSPLUS_SUPPORT</code> switch. Source material: port Clover's <code>VBoxFsDxe/VBoxHfs*</code> (LGPL, clean BSD/LGPL-compatible) into libsa's idiom, dropping the EDK2 protocol wrapping in favor of libsa's <code>fs_ops</code> ABI.</p>
+
+<p><strong>Effort:</strong> 2&ndash;3 weeks for someone experienced with libsa; ~1&ndash;1.5 person-months for a junior dev. Add a week if we also want an EFI-driver standalone version of the same reader for the ESP (<code>EFI_SIMPLE_FILE_SYSTEM_PROTOCOL</code> wrapping around the same core).</p>
+
+<p><strong>What it delivers:</strong></p>
+<ul>
+  <li><code>/boot/loader</code> can read kernel + modules + loader.conf from HFS+</li>
+  <li>Works for BIOS and EFI loaders identically (loader is FS-agnostic above libsa)</li>
+  <li>Tested by the same CI that tests every other libsa filesystem</li>
+  <li>Reuses VBoxHfs's well-tested read path</li>
+</ul>
+
+<p><strong>Tradeoffs:</strong></p>
+<ul>
+  <li><span class="pill pill-good">+</span> Tiny surface area (one C file)</li>
+  <li><span class="pill pill-good">+</span> Lives in the existing loader; no parallel bootloader to maintain</li>
+  <li><span class="pill pill-good">+</span> License-clean (LGPL via VBoxHfs, or APSL 2.0 if we instead clean-room from boot-132's <code>hfs.c</code>)</li>
+  <li><span class="pill pill-good">+</span> Read-only is fine for <code>/boot</code> &mdash; loader never writes</li>
+  <li><span class="pill pill-warn">~</span> Requires touching FreeBSD <code>stand/</code> code &mdash; if we want it upstream eventually, FreeBSD-src patch flow</li>
+  <li><span class="pill pill-bad">&minus;</span> ~2-3 weeks of work for a feature only needed if we want HFS+ <em>root</em>, which Option C avoids without the work</li>
+</ul>
+
+<p><strong>Verdict: the right answer if a real use case emerges.</strong> Don't write it preemptively.</p>
+
+<h2 id="option-c">7. Option C &mdash; UFS for <code>/boot</code>, HFS+ for data <span class="pill pill-good">recommended</span></h2>
+
+<p><strong>What it is:</strong> partition the disk so <code>/boot</code> is UFS (or ZFS, or msdosfs ESP). HFS+ lives on data partitions where the kmod can mount it post-kernel-load. Modern FreeBSD installers already do this &mdash; EFI System Partition (FAT) + freebsd-boot + freebsd-ufs (root) + freebsd-swap; HFS+ becomes another freebsd-data-style partition.</p>
+
+<p><strong>Effort:</strong> <strong>zero.</strong> Nothing to build, nothing to change in the loader.</p>
+
+<p><strong>What it delivers:</strong> the HFS+ kmod handles all post-boot HFS+ workflows (mount Apple DMG images, read/write external Apple drives, Time Machine sparsebundle inspection, etc.). The cost is one extra small partition for <code>/boot</code> &mdash; which is standard hygiene anyway.</p>
+
+<p><strong>Tradeoffs:</strong></p>
+<ul>
+  <li><span class="pill pill-good">+</span> Zero bootloader work</li>
+  <li><span class="pill pill-good">+</span> Matches FreeBSD's default install layout</li>
+  <li><span class="pill pill-good">+</span> Matches how Linux handled it for years (ext-on-/boot, anything-else on root)</li>
+  <li><span class="pill pill-good">+</span> Doesn't preclude Option B later if needed</li>
+  <li><span class="pill pill-warn">~</span> Means we can't say "freebsd-launchd-mach boots from an HFS+ root" &mdash; we'd have UFS-or-ZFS root with HFS+ as data</li>
+  <li><span class="pill pill-bad">&minus;</span> If we ever ship onto Mac hardware that came formatted as pure-HFS+, the user has to repartition</li>
+</ul>
+
+<h2 id="decision-matrix">8. Decision matrix</h2>
+
+<table>
+<tr><th>Dimension</th><th>A: Port boot-132/OpenCore</th><th>B: Add HFS+ to libsa</th><th>C: UFS for /boot</th></tr>
+<tr><td>Effort</td><td>3+ person-months</td><td>2-3 weeks</td><td>0</td></tr>
+<tr><td>Boots from HFS+ root</td><td>Yes</td><td>Yes</td><td>No (UFS root)</td></tr>
+<tr><td>HFS+ data works (with kmod)</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Mount Apple DMGs (with kmod + dmg2img)</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Maintenance burden</td><td>High (~30k LOC bootloader)</td><td>Low (~1.5-3k LOC libsa file)</td><td>None</td></tr>
+<tr><td>License posture</td><td>APSL 2.0 (Apple-aligned)</td><td>LGPL via VBoxHfs OR APSL 2.0 via boot-132</td><td>n/a</td></tr>
+<tr><td>Upstream-able to FreeBSD</td><td>No</td><td>Maybe (one-file libsa addition)</td><td>n/a</td></tr>
+</table>
+
+<h2 id="out-of-scope">9. Out of scope</h2>
+
+<ul>
+  <li><strong>Apple Silicon boot.</strong> iBoot, LocalPolicy, SEP are closed and architecturally incompatible. Asahi's <code>m1n1</code> is a separate universe.</li>
+  <li><strong>FileVault 2 unlock.</strong> Needs CoreStorage / APFS encryption stack. Not in HFS+ scope at all.</li>
+  <li><strong>APFS booting.</strong> Separate filesystem; OpenCore needs Apple's own embedded <code>apfs.efi</code> blob, not portable. Different effort.</li>
+  <li><strong>UEFI Secure Boot signature chain for Apple platforms.</strong> Apple boot policy is closed.</li>
+  <li><strong><code>boot.efi</code> compatibility / Apple boot picker.</strong> We're not emulating a Mac; FreeBSD's loader UI is fine.</li>
+  <li><strong>HFS+ write from the loader.</strong> <code>/boot</code> is read-only from loader's perspective.</li>
+  <li><strong>Journal replay in the loader.</strong> Only matters for writes; read-only reader ignores the journal.</li>
+</ul>
+
+<p class="footnote">Drafted 2026-05-26 from an agent research pass against Apple <code>boot-132</code>, OpenCore/Clover/Chameleon source repos, FreeBSD <code>stand/libsa</code> tree, and rEFInd/EDK2 HFS+ EFI driver ecosystem. Companion to <a href="freebsd-hfsplus-port-plan.html">HFS+ kernel module port plan</a> and <a href="freebsd-hdiutil-port-plan.html">hdiutil port plan</a>. Scopes <a href="https://github.com/pkgdemon/freebsd-launchd-mach/issues/80">issue #80</a>. Sources: <a href="https://github.com/apple-oss-distributions/boot">apple-oss-distributions/boot</a>, <a href="https://github.com/acidanthera/OpenCorePkg">OpenCorePkg</a>, <a href="https://github.com/CloverHackyColor/CloverBootloader">CloverBootloader</a>, <a href="https://github.com/freebsd/freebsd-src/tree/main/stand/libsa">FreeBSD stand/libsa</a>.</p>
+
+</div>
+</body>
+</html>

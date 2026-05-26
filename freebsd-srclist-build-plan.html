@@ -279,7 +279,18 @@ Stop.</code></pre>
 
 <div class="callout callout-bad">
 <p><strong>Major reframing (2026-05-26 evening):</strong> the v3 plan's "drop FreeBSD-runtime, ship interim FreeBSD-source from /usr/src" approach is wrong for the project's actual long-term goal. The user's ultimate goal is <strong>future Linux portability</strong> &mdash; the freebsd-launchd-mach stack should one day run on Linux too. FreeBSD-source binaries can't port to Linux; Apple-source binaries can (with platform-shim work, same pattern as macOS &rarr; FreeBSD already proven on libxpc/libdispatch/configd/PAM/etc.).</p>
-<p>So: <strong>port the Apple userland-cmds repos now</strong>, alongside #105, and only ship from <code>srclist-fbsdglue.txt</code> for the ~13 irreducibly-platform-specific items. The 47-KEEP / 21-REPLACE / 15-DEFER / 13-DROP breakdown in &sect;9.1 was scoped under the wrong assumption.</p>
+<p>So: <strong>port the Apple userland-cmds repos now</strong>, alongside #105, and only ship from <code>srclist-fbsdglue.txt</code> for the ~30-35 irreducibly-platform-specific items (combined runtime + utilities). The earlier 47-KEEP / 21-REPLACE / 15-DEFER / 13-DROP breakdown was scoped under the wrong assumption.</p>
+</div>
+
+<div class="callout callout-good">
+<p><strong>The single rule that drives every classification:</strong></p>
+<ul>
+  <li><strong>REPLACE</strong> = entry is in an Apple userland-cmds repo we're porting (file_cmds, shell_cmds, adv_cmds, text_cmds, system_cmds, network_cmds, PowerManagement, DiskArbitration). The whole repo gets vendored + ported &mdash; we never cherry-pick binaries from within a repo. Same build cost as FreeBSD-source; gets us closer to Linux portability.</li>
+  <li><strong>KEEP</strong> = entry has no Apple equivalent at all &mdash; either kernel-bound platform glue (kld*, UFS fsck, mount, devfs, ldconfig) or BSD-specific debug tooling with no Apple analogue (fstat, sockstat, procstat, ktrace, ldd, etc.). FreeBSD-source forever; becomes Linux-equivalent later (modprobe/util-linux/strace/lsof/...) on the Linux port.</li>
+  <li><strong>DEFER</strong> = useful eventually but not first-iter; not in <code>srclist-fbsdglue.txt</code> for now.</li>
+  <li><strong>DROP</strong> = irrelevant to our use case; never ships.</li>
+</ul>
+<p>Prior plan revisions distinguished "REPLACE-now (Apple value-add)" from "KEEP (Apple version is same)" &mdash; that distinction is gone. Whole-repo porting means whole-repo replacement.</p>
 </div>
 
 <h3>9.0. Irreducibly FreeBSD-only on the current ISO (becomes Linux-specific later)</h3>
@@ -353,10 +364,69 @@ Stop.</code></pre>
 
 <p><strong>The srclist mechanism (and srclist-rescue.txt's failed shape from PR #107) is no longer load-bearing.</strong> It's only needed for the final ~13-entry fbsdglue manifest at #105g, which is tiny and trivial.</p>
 
-<h2 id="action-105-old">9.5. (Historical) Action for #105 (runtime) &mdash; concrete trim list</h2>
+<h2 id="strict-verdicts">9.5. Strict-rule verdicts &mdash; consolidated runtime + utilities</h2>
+
+<p>Applying the simple two-bucket rule (REPLACE if Apple has it; KEEP only if kernel-bound or BSD-specific debug tool). Supersedes all prior per-tool verdict tables in this doc.</p>
+
+<h3>9.5.1. KEEP &mdash; truly FreeBSD-only (will become Linux-only later)</h3>
+
+<table>
+<tr><th>/usr/src dir</th><th>Why no Apple equivalent</th><th>Linux equivalent (future)</th></tr>
+<tr><td>bin/freebsd-version</td><td>FreeBSD release reporter</td><td><code>/etc/os-release</code></td></tr>
+<tr><td>bin/kenv</td><td>FreeBSD kernel env interface</td><td><code>/proc/cmdline</code></td></tr>
+<tr><td>sbin/camcontrol</td><td>FreeBSD CAM/SCSI</td><td><code>lsblk</code> + <code>smartctl</code></td></tr>
+<tr><td>sbin/devfs</td><td>FreeBSD devfs.rules subsystem</td><td><code>udev</code></td></tr>
+<tr><td>sbin/fsck</td><td>FreeBSD UFS fsck driver (UFS2 + SU+J port "too much work" per user)</td><td><code>fsck.ext4</code> / <code>e2fsck</code></td></tr>
+<tr><td>sbin/kldconfig, kldload, kldstat, kldunload</td><td>FreeBSD kld(4)</td><td><code>modprobe</code>/<code>lsmod</code>/<code>rmmod</code></td></tr>
+<tr><td>sbin/ldconfig</td><td>FreeBSD rtld hint cache</td><td>glibc ldconfig</td></tr>
+<tr><td>sbin/mount, umount</td><td>FreeBSD VFS</td><td>util-linux mount/umount</td></tr>
+<tr><td>usr.sbin/kldxref</td><td>FreeBSD kld(4) cache</td><td><code>depmod</code></td></tr>
+<tr><td>usr.sbin/pw</td><td>FreeBSD user/group mgmt</td><td><code>useradd</code>/<code>groupadd</code></td></tr>
+<tr><td colspan="3"><em>FreeBSD-specific debug tools (no Apple analogue):</em></td></tr>
+<tr><td>usr.bin/fstat, sockstat, procstat, fuser</td><td>FreeBSD-specific process/socket introspection (Apple uses <code>lsof</code> + <code>sample</code>)</td><td><code>lsof</code> / <code>ss</code> / <code>fuser</code> (procps)</td></tr>
+<tr><td>usr.bin/ktrace, kdump, truss, ktrdump</td><td>FreeBSD ktrace/truss (Apple uses dtrace/sample)</td><td><code>strace</code></td></tr>
+<tr><td>usr.bin/ldd</td><td>FreeBSD-specific rtld query (Apple uses <code>otool -L</code>)</td><td><code>ldd</code> (glibc)</td></tr>
+<tr><td>usr.bin/login_cap, getent, hostid, logname</td><td>BSD-specific helpers</td><td>various</td></tr>
+<tr><td>usr.bin/top, w, vmstat</td><td>BSD vmstat/top format</td><td>procps top/w/vmstat</td></tr>
+<tr><td>usr.sbin/devctl, diskinfo, fstyp, gstat, pciconf, crashinfo</td><td>FreeBSD-specific newbus/GEOM/PCI/crash tools</td><td>various (udev/lspci/...)</td></tr>
+<tr><td>libexec/save-entropy</td><td>FreeBSD entropy daemon</td><td>systemd-random-seed</td></tr>
+</table>
+
+<p><strong>Net KEEP set:</strong> ~25&ndash;30 entries combined runtime + utilities. This is <code>srclist-fbsdglue.txt</code>'s permanent content on FreeBSD; on Linux these get swapped 1:1 with the Linux equivalents above.</p>
+
+<h3>9.5.2. REPLACE &mdash; covered by Apple userland-cmds v3 ports</h3>
+
+<p>Every other entry from the original FreeBSD-runtime (187 binaries) + FreeBSD-utilities (604 binaries) inventory that's NOT DEFER or DROP. Per-repo mapping:</p>
+
+<table>
+<tr><th>Apple repo (v3 roadmap)</th><th>Sample entries it covers</th></tr>
+<tr><td><code>file_cmds</code> (27 binaries)</td><td>cat, chflags, chmod, chown, chgrp, cp, dd, df, du, gzip, install, ln, ls, mkdir, mkfifo, mknod, mtree, mv, pax, rm, rmdir, stat, sync, touch, truncate</td></tr>
+<tr><td><code>shell_cmds</code> (~45)</td><td>basename, chroot, date, dirname, echo, env, expr, find, getopt, hexdump, hostname, jot, kill, lastcomm, lockf, logname, mktemp, nice, nohup, pwd, realpath, renice, script, seq, sh, shlock, sleep, stdbuf, tee, test, time, true, false, tty, uname, w, who, xargs, yes, id, su, killall, path_helper, logger</td></tr>
+<tr><td><code>adv_cmds</code> (15)</td><td>cap_mkdb, finger, gencat, last, locale, localedef, lsvfs, pkill, ps, stty, tabs, tty, whois, colldef</td></tr>
+<tr><td><code>text_cmds</code> (34)</td><td>banner, bintrans, cat, col, colrm, column, comm, csplit, cut, ed, expand, fmt, fold, grep, head, join, lam, look, md5, nl, paste, pr, rev, rs, sed, sort, split, tail, tr, ul, unexpand, uniq, unvis, vis, wc</td></tr>
+<tr><td><code>system_cmds</code> (~50)</td><td>arch, at, atrun, accton, chkpasswd, chpass, cpuctl, dmesg, dynamic_pager, fs_usage, gcore, getconf, getty, hostinfo, iosim, iostat, kpgo, latency, login, lskq, lsmp, ltop, mean, memory_pressure, mkfile, mslutil, newgrp, nologin, nvram, pagesize, passwd, proc_uuid_policy, purge, pwd_mkdb, reboot, sa, sc_usage, shutdown, stackshot, sysctl, taskpolicy, vipw, wait4path, zdump, zic, halt(family)</td></tr>
+<tr><td><code>network_cmds</code> (15)</td><td>arp, dnctl, ifconfig, kdumpd, ndp, netstat, ping, ping6, rarpd, route, rtadvd, rtsol, spray, traceroute, traceroute6</td></tr>
+<tr><td><code>PowerManagement</code> (~6)</td><td>caffeinate, pmset, pmtool, pmconfigd, ioupsd, swd</td></tr>
+<tr><td><code>DiskArbitration</code> (~4)</td><td>diskarbitrationd, autodiskmount, DiskArbitrationAgent, datest</td></tr>
+<tr><td>Upstream contrib (vendored separately)</td><td>usr.bin/bsdtar (libarchive), less, ncurses (tic/tput/clear/&hellip;), tcpdump, mandoc/man/manpath, awk (one-true-awk), bmake</td></tr>
+</table>
+
+<p><strong>Net REPLACE set:</strong> ~175&ndash;200 binaries land via the seven sequential Apple-repo ports (#105a&ndash;#105g sequencing in &sect;9.2). Until each port lands, FreeBSD-runtime + utilities pkgs stay installed (overlay-overwrite pattern); after all ports land, those pkgs drop entirely in #105g.</p>
+
+<h3>9.5.3. DEFER &mdash; useful eventually but not first iter</h3>
+
+<p>~15 entries: <code>bin/ed</code>, <code>bin/getfacl</code>, <code>bin/setfacl</code>, <code>bin/nproc</code>, <code>bin/uuidgen</code>, <code>sbin/comcontrol</code>, <code>sbin/conscontrol</code>, <code>sbin/dumpon</code>, <code>sbin/fsck_msdosfs</code>, <code>sbin/mknod</code>, <code>sbin/mount_fusefs/msdosfs/nullfs</code>, <code>sbin/newfs_msdos</code>, <code>sbin/recoverdisk</code>, <code>sbin/swapon</code>, <code>usr.bin/bzip2-scripts</code>, <code>usr.bin/limits</code>, <code>usr.bin/what</code>, <code>usr.sbin/ip6addrctl</code>, plus the utilities DEFER list (BSM audit, cron/at, NTP suite, NFS bits, on-target compile toolchain, etc.). Re-evaluate when a real consumer surfaces.</p>
+
+<h3>9.5.4. DROP &mdash; never ships</h3>
+
+<p>Confirmed dead per build.sh inspection or superseded by in-repo daemons:</p>
+
+<p><code>sbin/adjkerntz</code> (UTC-only), <code>sbin/bsdlabel</code> + <code>sbin/fdisk</code> (GPT-only boot), <code>sbin/ddb</code> (in-kernel), <code>sbin/etherswitchcfg</code> (HW we don't have), <code>sbin/init</code> (launchd PID 1), <code>sbin/mdconfig</code> + <code>mdmfs</code> + <code>sbin/mount_mfs</code> + <code>sbin/mount_cd9660</code> + <code>sbin/mount_udf</code> + <code>sbin/mount_unionfs</code> (no memdisk/unionfs/UDF path), <code>sbin/routed</code> (no RIP), <code>sbin/savecore</code> (core dumps disabled), <code>bin/hostname</code> (covered by shell_cmds REPLACE actually &mdash; reclassify), <code>usr.sbin/service</code> (launchctl owns service lifecycle), <code>usr.sbin/services_mkdb</code> (rc.d-only; flat-file fallback works; no Apple equivalent in any v3 repo), <code>usr.sbin/sysrc</code> (no /etc/rc.conf), plus the utilities DROP list (mail, printer, NIS, UUCP, BSD games, floppy/tape, IPsec, embedded HW, HyperV/Mellanox, sendmail, etc. &mdash; ~190 entries).</p>
+
+<h2 id="action-105-old">9.6. (Historical &mdash; original agent verdicts, superseded by &sect;9.5)</h2>
 
 <div class="callout callout-warn">
-<p><strong>Scope clarification:</strong> FreeBSD-runtime and FreeBSD-utilities are <strong>separate pkgbase packages</strong>. The verdict table in &sect;9.6 covers <strong>FreeBSD-runtime only</strong> (96 dirs &rarr; 47 KEEP). FreeBSD-utilities is a separate effort (~330 dirs) covered in <a href="#action-105-utilities">&sect;10</a>. Superseded by &sect;9 above (2026-05-26 strategic shift).</p>
+<p>The per-tool verdict tables below are the original agent output before the 2026-05-26 strategic shift to "Apple-source whenever possible for Linux portability." The KEEP / REPLACE distinction shown is no longer authoritative &mdash; use &sect;9.5 above. Tables retained for the audit context column (Apple-stack integration, file:line citations).</p>
 </div>
 
 <p>Deep-scope agent verified every srcdir in FreeBSD-runtime against build.sh's actual boot path (build.sh:2130&ndash;2195 confirms GPT/UFS-only boot, no <code>mdconfig</code>, no unionfs, no <code>/etc/rc</code>, no memdisk pivot). The "init.sh uses /rescue/mdconfig" comment in <code>pkglist-base.txt</code> is stale history &mdash; not the current boot path.</p>

@@ -53,18 +53,18 @@ nextbsd-redux/freebsd-src          (fork, auto-synced daily)
   | changed? no --> stop
   | changed? yes --> repository_dispatch
   v
-nextbsd-redux/kernel-builder       (toolchain containers)
+nextbsd-redux/nextbsd-kernel-toolchain  (toolchain containers)
   |
-  | publishes ghcr.io/nextbsd-redux/kernel-builder:{amd64,aarch64}-latest
+  | publishes ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:{amd64,aarch64}-latest
   | --> repository_dispatch
   v
 nextbsd-redux/nextbsd-kernel       (kernel + patches + config)
   |
   | builds kernel (NO_MODULES), uploads artifact
-  | --> repository_dispatch ONLY if triggered by kernel-builder
+  | --> repository_dispatch ONLY if triggered by nextbsd-kernel-toolchain
   | (patch-only pushes build kernel but do NOT trigger modules)
   v
-nextbsd-redux/nextbsd-modules      (module builds, layered on kernel obj)
+nextbsd-redux/nextbsd-kernel-modules      (module builds, layered on kernel obj)
   |
   | builds modules, uploads artifact
   v
@@ -76,9 +76,9 @@ nextbsd-redux/nextbsd-modules      (module builds, layered on kernel obj)
 <table>
 <tr><th>Repo</th><th>Purpose</th><th>Triggers</th></tr>
 <tr><td><code>freebsd-src</code></td><td>GitHub fork of <code>freebsd/freebsd-src</code>, all branches</td><td>Scheduled daily sync</td></tr>
-<tr><td><code>kernel-builder</code></td><td>Dockerfile + workflow to build cross-compilation toolchain containers for amd64 and aarch64</td><td><code>repository_dispatch</code> from freebsd-src sync, or manual</td></tr>
-<tr><td><code>nextbsd-kernel</code></td><td>Kernel patches (<code>patches/</code>), custom kernel config (<code>config/NEXTBSD</code>), build workflow</td><td><code>repository_dispatch</code> from kernel-builder, push to <code>patches/**</code> or <code>config/**</code>, or manual</td></tr>
-<tr><td><code>nextbsd-modules</code></td><td>Module build workflow, consumes kernel obj artifact</td><td><code>repository_dispatch</code> from nextbsd-kernel</td></tr>
+<tr><td><code>nextbsd-kernel-toolchain</code></td><td>Dockerfile + workflow to build cross-compilation toolchain containers for amd64 and aarch64</td><td><code>repository_dispatch</code> from freebsd-src sync, or manual</td></tr>
+<tr><td><code>nextbsd-kernel</code></td><td>Kernel patches (<code>patches/</code>), custom kernel config (<code>config/NEXTBSD</code>), build workflow</td><td><code>repository_dispatch</code> from nextbsd-kernel-toolchain, push to <code>patches/**</code> or <code>config/**</code>, or manual</td></tr>
+<tr><td><code>nextbsd-kernel-modules</code></td><td>Module build workflow, consumes kernel obj artifact</td><td><code>repository_dispatch</code> from nextbsd-kernel</td></tr>
 </table>
 
 <h2>3. Design Decisions</h2>
@@ -108,10 +108,10 @@ nextbsd-redux/nextbsd-modules      (module builds, layered on kernel obj)
 <li>Each repo has a single responsibility and independent trigger conditions</li>
 <li>Toolchain rebuild (~15 min) doesn't block kernel builds that only changed patches</li>
 <li>Module builds only run when kernel obj actually changes</li>
-<li>Clean separation of concerns: infrastructure (kernel-builder) vs. code (nextbsd-kernel) vs. artifacts (nextbsd-modules)</li>
+<li>Clean separation of concerns: infrastructure (nextbsd-kernel-toolchain) vs. code (nextbsd-kernel) vs. artifacts (nextbsd-kernel-modules)</li>
 </ul>
 
-<h2>4. Repo: <code>kernel-builder</code></h2>
+<h2>4. Repo: <code>nextbsd-kernel-toolchain</code></h2>
 
 <h3>4.1 Dockerfile</h3>
 <pre>
@@ -183,8 +183,8 @@ jobs:
             TARGET_ARCH=${{ matrix.target_arch }}
             FREEBSD_BRANCH=${{ env.FREEBSD_BRANCH }}
           tags: |
-            ${{ env.REGISTRY }}/nextbsd-redux/kernel-builder:${{ matrix.target }}-latest
-            ${{ env.REGISTRY }}/nextbsd-redux/kernel-builder:${{ matrix.target }}-${{ github.sha }}
+            ${{ env.REGISTRY }}/nextbsd-redux/nextbsd-kernel-toolchain:${{ matrix.target }}-latest
+            ${{ env.REGISTRY }}/nextbsd-redux/nextbsd-kernel-toolchain:${{ matrix.target }}-${{ github.sha }}
 
       - name: Trigger downstream kernel build
         run: |
@@ -239,7 +239,7 @@ jobs:
       - name: Trigger toolchain rebuild
         if: steps.after.outputs.changed == 'true'
         run: |
-          gh api repos/nextbsd-redux/kernel-builder/dispatches \
+          gh api repos/nextbsd-redux/nextbsd-kernel-toolchain/dispatches \
             -f event_type=upstream-updated \
             -f "client_payload[sha]=${{ steps.after.outputs.sha }}" \
             -f "client_payload[branch]=releng/15.0"
@@ -293,7 +293,7 @@ jobs:
   kernel:
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/nextbsd-redux/kernel-builder:amd64-latest
+      image: ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:amd64-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -332,7 +332,7 @@ jobs:
       - name: Trigger module build (only when upstream/toolchain changed)
         if: github.event_name == 'repository_dispatch'
         run: |
-          gh api repos/nextbsd-redux/nextbsd-modules/dispatches \
+          gh api repos/nextbsd-redux/nextbsd-kernel-modules/dispatches \
             -f event_type=kernel-updated \
             -f "client_payload[sha]=${{ github.sha }}" \
             -f "client_payload[run_id]=${{ github.run_id }}"
@@ -340,7 +340,15 @@ jobs:
           GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
 </pre>
 
-<h2>7. Repo: <code>nextbsd-modules</code></h2>
+<h2>7. Repo: <code>nextbsd-kernel-modules</code></h2>
+
+<h3>7.0 Directory structure</h3>
+<pre>
+nextbsd-kernel-modules/
+  .github/
+    workflows/
+      build.yml
+</pre>
 
 <h3>7.1 Workflow: <code>.github/workflows/build.yml</code></h3>
 <pre>
@@ -359,7 +367,7 @@ jobs:
   modules:
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/nextbsd-redux/kernel-builder:amd64-latest
+      image: ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:amd64-latest
     steps:
       - name: Download kernel obj tree
         uses: actions/download-artifact@v4
@@ -402,7 +410,7 @@ jobs:
           tar czf /tmp/nextbsd-modules-amd64.tar.gz ./*/modules/
           gh release create "v$(date +%Y%m%d)-modules" \
             /tmp/nextbsd-modules-amd64.tar.gz \
-            --repo nextbsd-redux/nextbsd-modules \
+            --repo nextbsd-redux/nextbsd-kernel-modules \
             --title "NextBSD Modules $(date +%Y-%m-%d)" \
             --notes "Built against FreeBSD ${{ env.FREEBSD_BRANCH }}"
         env:
@@ -426,12 +434,12 @@ jobs:
 
 <ol>
 <li>Fork <code>freebsd/freebsd-src</code> into <code>nextbsd-redux/freebsd-src</code> (all branches)</li>
-<li>Create <code>nextbsd-redux/kernel-builder</code> with Dockerfiles + workflow</li>
+<li>Create <code>nextbsd-redux/nextbsd-kernel-toolchain</code> with Dockerfiles + workflow</li>
 <li>Create <code>nextbsd-redux/nextbsd-kernel</code> with patches, config, workflow</li>
-<li>Create <code>nextbsd-redux/nextbsd-modules</code> with workflow</li>
+<li>Create <code>nextbsd-redux/nextbsd-kernel-modules</code> with workflow</li>
 <li>Create a fine-grained Personal Access Token with <code>repo</code> scope for cross-repo <code>repository_dispatch</code></li>
 <li>Add the token as <code>DISPATCH_TOKEN</code> secret in all four repos</li>
-<li>Run <code>kernel-builder</code> workflow manually to bootstrap the first toolchain container</li>
+<li>Run <code>nextbsd-kernel-toolchain</code> workflow manually to bootstrap the first toolchain container</li>
 <li>Add initial patches and kernel config to <code>nextbsd-kernel</code>, push to trigger first build</li>
 </ol>
 

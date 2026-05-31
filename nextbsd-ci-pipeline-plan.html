@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD CI Pipeline Plan</title>
+<style>
+  body {
+    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    max-width: 760px;
+    margin: 40px auto;
+    padding: 0 20px;
+    color: #222;
+    line-height: 1.6;
+  }
+  h1 { font-size: 1.8em; margin-bottom: 4px; }
+  h2 { font-size: 1.35em; margin-top: 2em; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+  h3 { font-size: 1.1em; margin-top: 1.5em; }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #e1e4e8;
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    font-size: 0.88em;
+    line-height: 1.45;
+  }
+  code { font-family: "SF Mono", "Menlo", "Monaco", monospace; font-size: 0.92em; }
+  p code, li code { background: #f6f8fa; padding: 2px 6px; border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; }
+  a { color: #0366d6; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .back { margin-bottom: 1.5em; font-size: 0.92em; }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .diagram { font-family: monospace; white-space: pre; background: #f6f8fa; padding: 16px; border-radius: 6px; border: 1px solid #e1e4e8; overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<p class="back"><a href="index.html">&larr; Back</a></p>
+
+<h1>NextBSD CI Pipeline Plan</h1>
+<p>Automated FreeBSD kernel cross-build pipeline using GitHub Actions free-tier runners. No self-hosted runners, no open firewall ports, no paid plans required.</p>
+
+<h2>1. Architecture Overview</h2>
+
+<div class="diagram">
+nextbsd-redux/freebsd-src          (fork, auto-synced daily)
+  |
+  | changed? no --> stop
+  | changed? yes --> repository_dispatch
+  v
+nextbsd-redux/kernel-builder       (toolchain containers)
+  |
+  | publishes ghcr.io/nextbsd-redux/kernel-builder:{amd64,aarch64}-latest
+  | --> repository_dispatch
+  v
+nextbsd-redux/nextbsd-kernel       (kernel + patches + config)
+  |
+  | builds kernel (NO_MODULES), uploads artifact
+  | --> repository_dispatch
+  v
+nextbsd-redux/nextbsd-modules      (module builds, layered on kernel obj)
+  |
+  | builds modules, uploads artifact
+  v
+  release artifacts (tar.gz on GitHub Releases)
+</div>
+
+<h2>2. Repos</h2>
+
+<table>
+<tr><th>Repo</th><th>Purpose</th><th>Triggers</th></tr>
+<tr><td><code>freebsd-src</code></td><td>GitHub fork of <code>freebsd/freebsd-src</code>, all branches</td><td>Scheduled daily sync</td></tr>
+<tr><td><code>kernel-builder</code></td><td>Dockerfile + workflow to build cross-compilation toolchain containers for amd64 and aarch64</td><td><code>repository_dispatch</code> from freebsd-src sync, or manual</td></tr>
+<tr><td><code>nextbsd-kernel</code></td><td>Kernel patches (<code>patches/</code>), custom kernel config (<code>config/NEXTBSD</code>), build workflow</td><td><code>repository_dispatch</code> from kernel-builder, push to <code>patches/**</code> or <code>config/**</code>, or manual</td></tr>
+<tr><td><code>nextbsd-modules</code></td><td>Module build workflow, consumes kernel obj artifact</td><td><code>repository_dispatch</code> from nextbsd-kernel</td></tr>
+</table>
+
+<h2>3. Design Decisions</h2>
+
+<h3>3.1 Why <code>releng/15.0</code>?</h3>
+<ul>
+<li>Userland packages from <code>pkg</code> are built against 15.0-RELEASE ABI</li>
+<li>Custom kernel stays ABI-compatible &mdash; <code>pkg install</code> works for everything in userland</li>
+<li>Stable branch, fewer surprise breakages in patches</li>
+<li><code>make buildworld</code> / <code>make buildkernel</code> is self-hosting by design &mdash; the host OS version doesn't matter, the build bootstraps its own toolchain from the source tree</li>
+</ul>
+
+<h3>3.2 Why Linux runners for cross-building?</h3>
+<ul>
+<li>Docker support &mdash; macOS runners cannot run Docker</li>
+<li>Docker layer caching &mdash; toolchain layer cached, only rebuild when upstream changes</li>
+<li>20 concurrent jobs on free plan (vs 5 for macOS)</li>
+<li>1x cost multiplier if ever moving to paid (macOS is 10x)</li>
+<li>FreeBSD's own CI cross-builds on Ubuntu runners &mdash; proven path</li>
+</ul>
+
+<h3>3.3 Why kernel modules must be built (not from pkg)?</h3>
+<p>Kernel modules are linked against the exact kernel config and source they're built with. A custom kernel (even with small patches like increasing the Mach syscall limit) means stock <code>kmod</code> packages won't load reliably. Modules must be built from the same patched source.</p>
+
+<h3>3.4 Why separate repos instead of one monorepo?</h3>
+<ul>
+<li>Each repo has a single responsibility and independent trigger conditions</li>
+<li>Toolchain rebuild (~15 min) doesn't block kernel builds that only changed patches</li>
+<li>Module builds only run when kernel obj actually changes</li>
+<li>Clean separation of concerns: infrastructure (kernel-builder) vs. code (nextbsd-kernel) vs. artifacts (nextbsd-modules)</li>
+</ul>
+
+<h2>4. Repo: <code>kernel-builder</code></h2>
+
+<h3>4.1 Dockerfile</h3>
+<pre>
+FROM ubuntu:24.04
+
+ARG TARGET=amd64
+ARG TARGET_ARCH=amd64
+ARG FREEBSD_BRANCH=releng/15.0
+
+RUN apt-get update &amp;&amp; apt-get install -y \
+    clang-18 lld-18 bmake git libarchive-tools \
+    &amp;&amp; rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch ${FREEBSD_BRANCH} \
+    --filter=blob:none --sparse \
+    https://github.com/freebsd/freebsd-src.git /usr/src \
+    &amp;&amp; cd /usr/src \
+    &amp;&amp; git sparse-checkout set sys
+
+RUN cd /usr/src &amp;&amp; make -j$(nproc) kernel-toolchain \
+    TARGET=${TARGET} TARGET_ARCH=${TARGET_ARCH}
+</pre>
+
+<h3>4.2 Workflow: <code>.github/workflows/build-toolchain.yml</code></h3>
+<pre>
+name: Build Toolchain Containers
+on:
+  repository_dispatch:
+    types: [upstream-updated]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * 1'  # weekly fallback
+
+env:
+  REGISTRY: ghcr.io
+  FREEBSD_BRANCH: releng/15.0
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - target: amd64
+            target_arch: amd64
+          - target: arm64
+            target_arch: aarch64
+    permissions:
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.${{ matrix.target }}
+          push: true
+          build-args: |
+            TARGET=${{ matrix.target }}
+            TARGET_ARCH=${{ matrix.target_arch }}
+            FREEBSD_BRANCH=${{ env.FREEBSD_BRANCH }}
+          tags: |
+            ${{ env.REGISTRY }}/nextbsd-redux/kernel-builder:${{ matrix.target }}-latest
+            ${{ env.REGISTRY }}/nextbsd-redux/kernel-builder:${{ matrix.target }}-${{ github.sha }}
+
+      - name: Trigger downstream kernel build
+        run: |
+          gh api repos/nextbsd-redux/nextbsd-kernel/dispatches \
+            -f event_type=toolchain-updated \
+            -f "client_payload[sha]=${{ github.sha }}" \
+            -f "client_payload[target]=${{ matrix.target }}"
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+</pre>
+
+<h2>5. Repo: <code>freebsd-src</code> (fork sync)</h2>
+
+<h3>5.1 Workflow: <code>.github/workflows/sync-fork.yml</code></h3>
+<pre>
+name: Sync Fork
+on:
+  schedule:
+    - cron: '0 6 * * *'  # daily 6am UTC
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: releng/15.0
+          fetch-depth: 1
+
+      - name: Get current SHA
+        id: before
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Sync from upstream
+        run: gh repo sync ${{ github.repository }} --branch releng/15.0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if changed
+        id: after
+        run: |
+          git fetch origin releng/15.0
+          NEW_SHA=$(git rev-parse origin/releng/15.0)
+          echo "sha=$NEW_SHA" >> $GITHUB_OUTPUT
+          if [ "${{ steps.before.outputs.sha }}" != "$NEW_SHA" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Trigger toolchain rebuild
+        if: steps.after.outputs.changed == 'true'
+        run: |
+          gh api repos/nextbsd-redux/kernel-builder/dispatches \
+            -f event_type=upstream-updated \
+            -f "client_payload[sha]=${{ steps.after.outputs.sha }}" \
+            -f "client_payload[branch]=releng/15.0"
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+</pre>
+
+<h2>6. Repo: <code>nextbsd-kernel</code></h2>
+
+<h3>6.1 Directory structure</h3>
+<pre>
+nextbsd-kernel/
+  patches/
+    0001-increase-mach-syscall-limit.patch
+    series                # ordered list of patches to apply
+  config/
+    NEXTBSD               # custom kernel configuration
+  .github/
+    workflows/
+      build.yml
+</pre>
+
+<h3>6.2 Patch maintenance</h3>
+<p>Patches are plain <code>git format-patch</code> diffs, applied in the order listed in <code>patches/series</code>. To create a new patch:</p>
+<pre>
+# Make changes in a local FreeBSD checkout
+cd /usr/src
+# ... edit files ...
+git format-patch -1 -o /path/to/nextbsd-kernel/patches/
+# Add to series file
+echo "0002-my-change.patch" >> /path/to/nextbsd-kernel/patches/series
+# Push -- CI runs automatically
+</pre>
+
+<h3>6.3 Workflow: <code>.github/workflows/build.yml</code></h3>
+<pre>
+name: Build NextBSD Kernel
+on:
+  repository_dispatch:
+    types: [toolchain-updated]
+  push:
+    paths: ['patches/**', 'config/**']
+  workflow_dispatch:
+
+env:
+  TARGET: amd64
+  TARGET_ARCH: amd64
+  FREEBSD_BRANCH: releng/15.0
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/nextbsd-redux/kernel-builder:amd64-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply patches
+        run: |
+          cd /usr/src
+          for p in $(cat $GITHUB_WORKSPACE/patches/series); do
+            git apply $GITHUB_WORKSPACE/patches/$p
+          done
+
+      - name: Copy kernel config
+        run: cp $GITHUB_WORKSPACE/config/NEXTBSD /usr/src/sys/amd64/conf/
+
+      - name: Build kernel (no modules)
+        run: |
+          cd /usr/src
+          make -j$(nproc) buildkernel \
+            TARGET=${{ env.TARGET }} \
+            TARGET_ARCH=${{ env.TARGET_ARCH }} \
+            KERNCONF=NEXTBSD \
+            NO_MODULES=yes
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextbsd-kernel-amd64
+          path: /usr/obj/**/sys/NEXTBSD/
+
+      - name: Upload obj tree for modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-obj-amd64
+          path: /usr/obj/
+          compression-level: 6
+
+      - name: Trigger module build
+        run: |
+          gh api repos/nextbsd-redux/nextbsd-modules/dispatches \
+            -f event_type=kernel-updated \
+            -f "client_payload[sha]=${{ github.sha }}" \
+            -f "client_payload[run_id]=${{ github.run_id }}"
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+</pre>
+
+<h2>7. Repo: <code>nextbsd-modules</code></h2>
+
+<h3>7.1 Workflow: <code>.github/workflows/build.yml</code></h3>
+<pre>
+name: Build NextBSD Modules
+on:
+  repository_dispatch:
+    types: [kernel-updated]
+  workflow_dispatch:
+
+env:
+  TARGET: amd64
+  TARGET_ARCH: amd64
+  FREEBSD_BRANCH: releng/15.0
+
+jobs:
+  modules:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/nextbsd-redux/kernel-builder:amd64-latest
+    steps:
+      - name: Download kernel obj tree
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-obj-amd64
+          path: /usr/obj/
+          run-id: ${{ github.event.client_payload.run_id }}
+          github-token: ${{ secrets.DISPATCH_TOKEN }}
+
+      - name: Apply patches to source
+        run: |
+          cd /usr/src
+          # Re-apply patches (source tree in container is unpatched)
+          # Patches fetched from nextbsd-kernel repo
+          git clone --depth 1 https://github.com/nextbsd-redux/nextbsd-kernel.git /tmp/nk
+          for p in $(cat /tmp/nk/patches/series); do
+            git apply /tmp/nk/patches/$p
+          done
+          cp /tmp/nk/config/NEXTBSD /usr/src/sys/amd64/conf/
+
+      - name: Build modules
+        run: |
+          cd /usr/src
+          make -j$(nproc) buildkernel \
+            TARGET=${{ env.TARGET }} \
+            TARGET_ARCH=${{ env.TARGET_ARCH }} \
+            KERNCONF=NEXTBSD \
+            NO_KERNEL=yes
+
+      - name: Upload modules artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextbsd-modules-amd64
+          path: /usr/obj/**/modules/
+
+      - name: Create release
+        if: github.event.client_payload.release == 'true'
+        run: |
+          cd /usr/obj
+          tar czf /tmp/nextbsd-modules-amd64.tar.gz ./*/modules/
+          gh release create "v$(date +%Y%m%d)-modules" \
+            /tmp/nextbsd-modules-amd64.tar.gz \
+            --repo nextbsd-redux/nextbsd-modules \
+            --title "NextBSD Modules $(date +%Y-%m-%d)" \
+            --notes "Built against FreeBSD ${{ env.FREEBSD_BRANCH }}"
+        env:
+          GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+</pre>
+
+<h2>8. Estimated Build Times</h2>
+
+<table>
+<tr><th>Stage</th><th>First run</th><th>Cached run</th></tr>
+<tr><td>Fork sync + change detection</td><td>~1 min</td><td>~1 min</td></tr>
+<tr><td>Toolchain container build</td><td>~15 min</td><td>skipped (no upstream change)</td></tr>
+<tr><td>Kernel build (no modules)</td><td>~15-20 min</td><td>~15-20 min</td></tr>
+<tr><td>Module build (layered)</td><td>~15-20 min</td><td>~15-20 min</td></tr>
+<tr><td><strong>Total wall-clock (typical patch push)</strong></td><td colspan="2"><strong>~17-22 min to kernel artifact</strong></td></tr>
+</table>
+
+<p>When upstream hasn't changed and no patches are pushed, <strong>nothing runs</strong>. Zero wasted minutes.</p>
+
+<h2>9. Setup Checklist</h2>
+
+<ol>
+<li>Fork <code>freebsd/freebsd-src</code> into <code>nextbsd-redux/freebsd-src</code> (all branches)</li>
+<li>Create <code>nextbsd-redux/kernel-builder</code> with Dockerfiles + workflow</li>
+<li>Create <code>nextbsd-redux/nextbsd-kernel</code> with patches, config, workflow</li>
+<li>Create <code>nextbsd-redux/nextbsd-modules</code> with workflow</li>
+<li>Create a fine-grained Personal Access Token with <code>repo</code> scope for cross-repo <code>repository_dispatch</code></li>
+<li>Add the token as <code>DISPATCH_TOKEN</code> secret in all four repos</li>
+<li>Run <code>kernel-builder</code> workflow manually to bootstrap the first toolchain container</li>
+<li>Add initial patches and kernel config to <code>nextbsd-kernel</code>, push to trigger first build</li>
+</ol>
+
+<h2>10. GitHub Free Plan Limits</h2>
+
+<table>
+<tr><th>Resource</th><th>Limit</th><th>Impact</th></tr>
+<tr><td>GitHub Actions minutes</td><td>2,000/month (private) / unlimited (public)</td><td>Public repos recommended</td></tr>
+<tr><td>Concurrent jobs</td><td>20 (Linux) / 5 (macOS)</td><td>Plenty for this pipeline</td></tr>
+<tr><td>Artifact storage</td><td>500 MB per repo</td><td>Compress obj trees; use Releases for permanent storage</td></tr>
+<tr><td>GHCR (container registry)</td><td>Free for public repos</td><td>Toolchain containers stored here</td></tr>
+<tr><td>Job timeout</td><td>6 hours</td><td>Well within limits</td></tr>
+</table>
+
+<h2>11. Future Enhancements</h2>
+
+<ul>
+<li><strong>ccache in toolchain container</strong> &mdash; incremental kernel rebuilds could drop to 5-10 min when patches touch few files</li>
+<li><strong>Parallel module builds</strong> &mdash; fan out individual modules into separate jobs, each pulling the kernel obj artifact</li>
+<li><strong>aarch64 kernel builds</strong> &mdash; same pipeline, just reference the <code>aarch64-latest</code> container</li>
+<li><strong>libc builds</strong> &mdash; if Mach syscall patches require libc shims, add a <code>nextbsd-libc</code> repo consuming a world-builder container (~3-5 min build)</li>
+<li><strong>Selective module builds</strong> &mdash; use path filters to detect which module source changed and only rebuild affected modules</li>
+<li><strong>Weekly upstream validation</strong> &mdash; scheduled workflow that tests all patches against current upstream, alerts on breakage</li>
+</ul>
+
+</body>
+</html>

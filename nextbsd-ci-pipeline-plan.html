@@ -55,8 +55,10 @@ nextbsd-redux/freebsd-src          (fork, auto-synced daily)
   v
 nextbsd-redux/nextbsd-kernel-toolchain  (toolchain containers)
   |
-  | publishes ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:{amd64,aarch64}-latest
-  | --> repository_dispatch
+  | bakes the EXACT change-detected FreeBSD source into the image (FREEBSD_SHA)
+  | publishes ghcr.io/.../nextbsd-kernel-toolchain:{amd64,arm64}-latest
+  |       and :{amd64,arm64}-fbsd-<sha>   (the image IS the source artifact)
+  | --> repository_dispatch (amd64 leg only), forwarding the pinned image tag
   v
 nextbsd-redux/nextbsd-kernel       (kernel + patches + config)
   |
@@ -111,28 +113,57 @@ nextbsd-redux/nextbsd-kernel-modules      (module builds, layered on kernel obj)
 <li>Clean separation of concerns: infrastructure (nextbsd-kernel-toolchain) vs. code (nextbsd-kernel) vs. artifacts (nextbsd-kernel-modules)</li>
 </ul>
 
+<h3>3.5 Source pinning: the toolchain image <em>is</em> the source artifact</h3>
+<p>Rather than re-cloning <code>freebsd-src</code> in every downstream job (drift between stages) or shipping a ~300&ndash;400&nbsp;MB source tarball as a GitHub Actions artifact (which would nearly fill the 500&nbsp;MB/repo free cap and fight the kernel-obj artifact for space), the toolchain Dockerfile <strong>bakes</strong> the source into the image and pins it to the exact change-detected commit via the <code>FREEBSD_SHA</code> build-arg. The image is stored in <strong>GHCR</strong> (free and unlimited for public repos). Both the kernel and module jobs run <em>inside</em> that image, so they inherit the identical baked <code>/usr/src</code> &mdash; zero re-cloning, and the exact same source flows end-to-end. The pinned tag <code>amd64-fbsd-&lt;sha&gt;</code> is forwarded down the dispatch chain so a re-run rebuilds byte-identical source.</p>
+
+<h3>3.6 Shallow vs. sparse (why the clone is full-tree)</h3>
+<p>These are different axes. <code>--depth&nbsp;1</code> (<em>shallow</em>) drops git history &mdash; fine, <code>buildkernel</code> doesn't need it. <code>git sparse-checkout set sys</code> (<em>sparse</em>) materializes only <code>sys/</code> &mdash; this breaks the build, because <code>kernel-toolchain</code>/<code>buildkernel</code> need <code>share/mk</code>, <code>tools/build</code>, <code>usr.bin/</code>, <code>gnu/</code>, <code>lib/</code>, etc. The clone is therefore <strong>shallow but full-tree</strong> (not sparse), pulled from the fork.</p>
+
+<h3>3.7 Cross-build entry point: <code>tools/build/make.py</code></h3>
+<p>On Ubuntu, <code>make</code> is GNU make, which cannot parse BSD makefiles, and a bare <code>bmake</code> lacks the bootstrap environment. FreeBSD's supported way to cross-build on Linux &mdash; the &ldquo;proven path&rdquo; referenced in &sect;3.2 &mdash; is <code>./tools/build/make.py</code>, which bootstraps <code>bmake</code> and sets up the cross toolchain. All build steps (Dockerfile, kernel, modules) use it. The toolchain container also installs <code>gh</code> + <code>curl</code> so the in-container kernel/module jobs can fire <code>repository_dispatch</code>.</p>
+
+<h3>3.8 Fork hygiene: only our workflow runs</h3>
+<p>The <code>freebsd-src</code> fork inherits upstream's GitHub Actions (<code>checklist.yml</code>, <code>style.yml</code>, and crucially <code>cross-bootstrap-tools.yml</code>, which triggers a heavy matrix on every push to <code>main</code>). To stop these burning Actions minutes, the three upstream workflows are <strong>removed from <code>main</code></strong> and replaced with only <code>sync-fork.yml</code>. <code>main</code> may diverge freely because the pipeline only ever syncs <code>releng/15.0</code> (kept a clean upstream mirror so <code>gh repo sync</code> stays a fast-forward). A scheduled workflow must live on the default branch to fire, so <code>sync-fork.yml</code> lives on <code>main</code> but its job operates solely on <code>releng/15.0</code>. No upstream workflow listens to <code>releng/15.0</code> events, so the daily sync triggers nothing else.</p>
+
 <h2>4. Repo: <code>nextbsd-kernel-toolchain</code></h2>
 
-<h3>4.1 Dockerfile</h3>
+<h3>4.1 Dockerfile (<code>Dockerfile.amd64</code>; <code>Dockerfile.arm64</code> is identical bar ARG defaults <code>TARGET=arm64 TARGET_ARCH=aarch64</code>)</h3>
 <pre>
 FROM ubuntu:24.04
 
 ARG TARGET=amd64
 ARG TARGET_ARCH=amd64
 ARG FREEBSD_BRANCH=releng/15.0
+# Exact upstream commit to bake. Empty =&gt; branch tip (bootstrap/manual).
+ARG FREEBSD_SHA=
 
-RUN apt-get update &amp;&amp; apt-get install -y \
-    clang-18 lld-18 bmake git libarchive-tools \
+# Cross-build prereqs + make.py bootstrap (python3) + gh/curl so in-container
+# downstream jobs can fire repository_dispatch.
+RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
+        ca-certificates clang lld bmake git python3 \
+        curl gnupg libarchive-tools bsdmainutils \
+    &amp;&amp; curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | tee /usr/share/keyrings/githubcli-archive-keyring.gpg &gt; /dev/null \
+    &amp;&amp; echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        &gt; /etc/apt/sources.list.d/github-cli.list \
+    &amp;&amp; apt-get update &amp;&amp; apt-get install -y --no-install-recommends gh \
     &amp;&amp; rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 --branch ${FREEBSD_BRANCH} \
-    --filter=blob:none --sparse \
-    https://github.com/freebsd/freebsd-src.git /usr/src \
-    &amp;&amp; cd /usr/src \
-    &amp;&amp; git sparse-checkout set sys
+# Shallow (--depth 1) but FULL-TREE clone from the NextBSD fork (NOT sparse:
+# buildkernel needs share/mk, tools/build, usr.bin/, gnu/, lib/ ...).
+# FREEBSD_SHA pins the baked source to the change-detected commit.
+RUN git clone --depth 1 --branch "${FREEBSD_BRANCH}" \
+        https://github.com/nextbsd-redux/freebsd-src.git /usr/src \
+    &amp;&amp; if [ -n "${FREEBSD_SHA}" ]; then \
+         cd /usr/src \
+         &amp;&amp; git fetch --depth 1 origin "${FREEBSD_SHA}" \
+         &amp;&amp; git checkout -q "${FREEBSD_SHA}"; \
+       fi
 
-RUN cd /usr/src &amp;&amp; make -j$(nproc) kernel-toolchain \
-    TARGET=${TARGET} TARGET_ARCH=${TARGET_ARCH}
+# FreeBSD's supported cross-build-on-Linux entry point (bootstraps bmake).
+RUN cd /usr/src &amp;&amp; ./tools/build/make.py -j"$(nproc)" \
+        TARGET="${TARGET}" TARGET_ARCH="${TARGET_ARCH}" \
+        kernel-toolchain
 </pre>
 
 <h3>4.2 Workflow: <code>.github/workflows/build-toolchain.yml</code></h3>
@@ -147,12 +178,14 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  IMAGE: ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain
   FREEBSD_BRANCH: releng/15.0
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: amd64
@@ -164,6 +197,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve FreeBSD SHA + image tag
+        id: src
+        run: |
+          SHA="${{ github.event.client_payload.sha }}"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ matrix.target }}-fbsd-${SHA:-tip}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -182,15 +222,20 @@ jobs:
             TARGET=${{ matrix.target }}
             TARGET_ARCH=${{ matrix.target_arch }}
             FREEBSD_BRANCH=${{ env.FREEBSD_BRANCH }}
+            FREEBSD_SHA=${{ github.event.client_payload.sha }}
           tags: |
-            ${{ env.REGISTRY }}/nextbsd-redux/nextbsd-kernel-toolchain:${{ matrix.target }}-latest
-            ${{ env.REGISTRY }}/nextbsd-redux/nextbsd-kernel-toolchain:${{ matrix.target }}-${{ github.sha }}
+            ${{ env.IMAGE }}:${{ matrix.target }}-latest
+            ${{ env.IMAGE }}:${{ steps.src.outputs.tag }}
 
-      - name: Trigger downstream kernel build
+      # Only the amd64 leg drives the (amd64-only) kernel build, so the
+      # downstream dispatch does not fire twice.
+      - name: Trigger downstream kernel build (amd64 only)
+        if: matrix.target == 'amd64'
         run: |
           gh api repos/nextbsd-redux/nextbsd-kernel/dispatches \
             -f event_type=toolchain-updated \
-            -f "client_payload[sha]=${{ github.sha }}" \
+            -f "client_payload[image_tag]=${{ steps.src.outputs.tag }}" \
+            -f "client_payload[fbsd_sha]=${{ steps.src.outputs.sha }}" \
             -f "client_payload[target]=${{ matrix.target }}"
         env:
           GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
@@ -199,6 +244,7 @@ jobs:
 <h2>5. Repo: <code>freebsd-src</code> (fork sync)</h2>
 
 <h3>5.1 Workflow: <code>.github/workflows/sync-fork.yml</code></h3>
+<p>This is the <strong>only</strong> workflow on the fork (see &sect;3.8). It lives on <code>main</code> (required for <code>schedule</code>) but its job operates solely on <code>releng/15.0</code>. The upstream <code>checklist.yml</code>, <code>style.yml</code>, and <code>cross-bootstrap-tools.yml</code> are deleted from <code>main</code> so they never run.</p>
 <pre>
 name: Sync Fork
 on:
@@ -293,26 +339,29 @@ jobs:
   kernel:
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:amd64-latest
+      # repository_dispatch carries the SHA-pinned image tag; a patch-only push
+      # or manual run falls back to the newest amd64 image.
+      image: ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:${{ github.event.client_payload.image_tag || 'amd64-latest' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Apply patches
         run: |
           cd /usr/src
-          for p in $(cat $GITHUB_WORKSPACE/patches/series); do
-            git apply $GITHUB_WORKSPACE/patches/$p
+          for p in $(cat "$GITHUB_WORKSPACE/patches/series"); do
+            echo "Applying $p"
+            git apply "$GITHUB_WORKSPACE/patches/$p"
           done
 
       - name: Copy kernel config
-        run: cp $GITHUB_WORKSPACE/config/NEXTBSD /usr/src/sys/amd64/conf/
+        run: cp "$GITHUB_WORKSPACE/config/NEXTBSD" /usr/src/sys/amd64/conf/
 
       - name: Build kernel (no modules)
         run: |
           cd /usr/src
-          make -j$(nproc) buildkernel \
-            TARGET=${{ env.TARGET }} \
-            TARGET_ARCH=${{ env.TARGET_ARCH }} \
+          ./tools/build/make.py -j"$(nproc)" buildkernel \
+            TARGET="${{ env.TARGET }}" \
+            TARGET_ARCH="${{ env.TARGET_ARCH }}" \
             KERNCONF=NEXTBSD \
             NO_MODULES=yes
 
@@ -334,8 +383,10 @@ jobs:
         run: |
           gh api repos/nextbsd-redux/nextbsd-kernel-modules/dispatches \
             -f event_type=kernel-updated \
-            -f "client_payload[sha]=${{ github.sha }}" \
-            -f "client_payload[run_id]=${{ github.run_id }}"
+            -f "client_payload[image_tag]=${{ github.event.client_payload.image_tag }}" \
+            -f "client_payload[fbsd_sha]=${{ github.event.client_payload.fbsd_sha }}" \
+            -f "client_payload[run_id]=${{ github.run_id }}" \
+            -f "client_payload[sha]=${{ github.sha }}"
         env:
           GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
 </pre>
@@ -367,7 +418,8 @@ jobs:
   modules:
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:amd64-latest
+      # Same SHA-pinned image the kernel was built in, so module source matches.
+      image: ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:${{ github.event.client_payload.image_tag || 'amd64-latest' }}
     steps:
       - name: Download kernel obj tree
         uses: actions/download-artifact@v4
@@ -391,9 +443,12 @@ jobs:
       - name: Build modules
         run: |
           cd /usr/src
-          make -j$(nproc) buildkernel \
-            TARGET=${{ env.TARGET }} \
-            TARGET_ARCH=${{ env.TARGET_ARCH }} \
+          # NOTE: NO_KERNEL=yes is intended to build only modules against the
+          # existing kernel obj. If buildkernel does not honor it on
+          # releng/15.0, switch to a sys/modules build.
+          ./tools/build/make.py -j"$(nproc)" buildkernel \
+            TARGET="${{ env.TARGET }}" \
+            TARGET_ARCH="${{ env.TARGET_ARCH }}" \
             KERNCONF=NEXTBSD \
             NO_KERNEL=yes
 
@@ -434,14 +489,18 @@ jobs:
 
 <ol>
 <li>Fork <code>freebsd/freebsd-src</code> into <code>nextbsd-redux/freebsd-src</code> (all branches)</li>
-<li>Create <code>nextbsd-redux/nextbsd-kernel-toolchain</code> with Dockerfiles + workflow</li>
-<li>Create <code>nextbsd-redux/nextbsd-kernel</code> with patches, config, workflow</li>
+<li>On the fork's <code>main</code>: delete the upstream workflows (<code>checklist.yml</code>, <code>style.yml</code>, <code>cross-bootstrap-tools.yml</code>) and add only <code>sync-fork.yml</code> (see &sect;3.8). <code>releng/15.0</code> stays an untouched mirror.</li>
+<li>Create <code>nextbsd-redux/nextbsd-kernel-toolchain</code> with <code>Dockerfile.amd64</code>, <code>Dockerfile.arm64</code> + workflow</li>
+<li>Create <code>nextbsd-redux/nextbsd-kernel</code> with patches (empty <code>series</code> to start), config (<code>NEXTBSD</code>), workflow</li>
 <li>Create <code>nextbsd-redux/nextbsd-kernel-modules</code> with workflow</li>
-<li>Create a fine-grained Personal Access Token with <code>repo</code> scope for cross-repo <code>repository_dispatch</code></li>
-<li>Add the token as <code>DISPATCH_TOKEN</code> secret in all four repos</li>
+<li>Create a Personal Access Token with <code>repo</code> scope for cross-repo <code>repository_dispatch</code></li>
+<li>Add the token as <code>DISPATCH_TOKEN</code> secret in all four repos (the <code>freebsd-src</code> fork + the three NextBSD repos)</li>
 <li>Run <code>nextbsd-kernel-toolchain</code> workflow manually to bootstrap the first toolchain container</li>
+<li>After the first toolchain build, set the GHCR package <code>nextbsd-kernel-toolchain</code> visibility to <strong>public</strong> so the kernel/module <code>container:</code> jobs can pull it without credentials</li>
 <li>Add initial patches and kernel config to <code>nextbsd-kernel</code>, push to trigger first build</li>
 </ol>
+
+<p><strong>Note on cross-building:</strong> all build steps use <code>./tools/build/make.py</code> (not bare <code>make</code>) &mdash; FreeBSD's supported Linux cross-build entry point, which bootstraps <code>bmake</code>. See &sect;3.7.</p>
 
 <h2>10. GitHub Free Plan Limits</h2>
 

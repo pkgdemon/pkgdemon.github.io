@@ -137,11 +137,21 @@ ARG FREEBSD_BRANCH=releng/15.0
 # Exact upstream commit to bake. Empty =&gt; branch tip (bootstrap/manual).
 ARG FREEBSD_SHA=
 
-# Cross-build prereqs + make.py bootstrap (python3) + gh/curl so in-container
-# downstream jobs can fire repository_dispatch.
+# MAKEOBJDIRPREFIX must be in the ENV (the build refuses it as a make arg).
+# CROSS_BINDIR points make.py at the system clang-18 so it does NOT bootstrap
+# its own LLVM. Both inherited by the downstream kernel/module jobs.
+ENV MAKEOBJDIRPREFIX=/usr/obj
+ENV CROSS_BINDIR=/usr/lib/llvm-18/bin
+
+# A minimal ubuntu base lacks host deps the GitHub runner ships implicitly.
+# Empirically required to bootstrap bmake + build kernel-toolchain on releng/15.0:
+#   build-essential (host cc), bc + flex + bison (bmake tests / kbdcontrol),
+#   time (host-symlinks), libssl-dev (certctl), libarchive-dev,
+#   bmake clang-18 lld-18 (FreeBSD's recipe), git/python3 (make.py),
+#   gh/curl (in-container repository_dispatch).
 RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
-        ca-certificates clang lld bmake git python3 \
-        curl gnupg libarchive-tools bsdmainutils \
+        ca-certificates build-essential bc time flex bison bmake \
+        libarchive-dev libssl-dev clang-18 lld-18 git python3 curl gnupg \
     &amp;&amp; curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | tee /usr/share/keyrings/githubcli-archive-keyring.gpg &gt; /dev/null \
     &amp;&amp; echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
@@ -160,10 +170,13 @@ RUN git clone --depth 1 --branch "${FREEBSD_BRANCH}" \
          &amp;&amp; git checkout -q "${FREEBSD_SHA}"; \
        fi
 
-# FreeBSD's supported cross-build-on-Linux entry point (bootstraps bmake).
-RUN cd /usr/src &amp;&amp; ./tools/build/make.py -j"$(nproc)" \
+# Build ONLY the kernel toolchain (this image's single purpose), using the
+# system clang via --cross-bindir so make.py doesn't bootstrap its own LLVM.
+RUN mkdir -p "${MAKEOBJDIRPREFIX}" \
+    &amp;&amp; cd /usr/src &amp;&amp; ./tools/build/make.py \
+        --cross-bindir="${CROSS_BINDIR}" \
         TARGET="${TARGET}" TARGET_ARCH="${TARGET_ARCH}" \
-        kernel-toolchain
+        kernel-toolchain -j"$(nproc)"
 </pre>
 
 <h3>4.2 Workflow: <code>.github/workflows/build-toolchain.yml</code></h3>

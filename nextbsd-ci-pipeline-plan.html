@@ -125,6 +125,14 @@ nextbsd-redux/nextbsd-kernel-modules      (module builds, layered on kernel obj)
 <h3>3.8 Fork hygiene: only our workflow runs</h3>
 <p>The <code>freebsd-src</code> fork inherits upstream's GitHub Actions (<code>checklist.yml</code>, <code>style.yml</code>, and crucially <code>cross-bootstrap-tools.yml</code>, which triggers a heavy matrix on every push to <code>main</code>). To stop these burning Actions minutes, the three upstream workflows are <strong>removed from <code>main</code></strong> and replaced with only <code>sync-fork.yml</code>. <code>main</code> may diverge freely because the pipeline only ever syncs <code>releng/15.0</code> (kept a clean upstream mirror so <code>gh repo sync</code> stays a fast-forward). A scheduled workflow must live on the default branch to fire, so <code>sync-fork.yml</code> lives on <code>main</code> but its job operates solely on <code>releng/15.0</code>. No upstream workflow listens to <code>releng/15.0</code> events, so the daily sync triggers nothing else.</p>
 
+<h3>3.9 Compiler (Clang 19), arm64 parity, and tag-gating</h3>
+<ul>
+<li><strong>Clang 19, external.</strong> FreeBSD 15.0's own compiler is Clang&nbsp;19, and its newest module sources need it (e.g. <code>iwlwifi</code> uses <code>__builtin_popcountg</code>, a Clang&nbsp;19 builtin). Ubuntu 24.04 only ships clang-18, so the toolchain pulls <strong>clang-19/lld-19 from apt.llvm.org</strong> and points <code>--cross-bindir</code> at it. Building FreeBSD's <em>in-tree</em> Clang instead (dropping <code>--cross-bindir</code>) is a dead end on Linux: <code>make.py</code> errors <code>Could not infer value for $XCC</code> — it requires an external toolchain. The in-tree clang would be a throwaway build tool anyway, so external stock Clang&nbsp;19 (same version) is the right call: fast, lean, builds every module.</li>
+<li><strong>arm64 = cross-build, not emulation.</strong> The arm64 legs run on the <strong>x86_64 runner</strong>; clang is a native cross-compiler, so it emits aarch64 at full native speed (the arm64 legs finish alongside amd64 — no QEMU, no penalty). The kernel and module workflows are matrices over <code>{amd64, arm64}</code>; each leg pulls its per-arch image and uploads per-arch artifacts. Native arm64 runners are only needed to <em>run/boot/test</em> aarch64 artifacts, not to build them.</li>
+<li><strong>Compiler-agnostic downstream.</strong> The kernel/module build steps pass <code>--cross-bindir="$CROSS_BINDIR"</code>, and <code>CROSS_BINDIR</code> is baked into the image ENV. The image drives the compiler, so bumping clang means rebuilding only the toolchain image — no downstream workflow changes.</li>
+<li><strong>Tag-gating (merge = promote).</strong> Branch/PR toolchain builds publish only a branch-scoped tag (<code>:&lt;arch&gt;-&lt;branch&gt;</code>) and never touch production; only <code>main</code> builds publish <code>:&lt;arch&gt;-latest</code> + <code>:&lt;arch&gt;-fbsd-&lt;sha&gt;</code> and cascade downstream. Since <code>docker/build-push-action</code> pushes only on success and there is no <code>pull_request</code> trigger, opening a PR never builds or touches images. So merging a PR (then the <code>main</code> build) is what promotes a change to production.</li>
+</ul>
+
 <h2>4. Repo: <code>nextbsd-kernel-toolchain</code></h2>
 
 <h3>4.1 Dockerfile (<code>Dockerfile.amd64</code>; <code>Dockerfile.arm64</code> is identical bar ARG defaults <code>TARGET=arm64 TARGET_ARCH=aarch64</code>)</h3>
@@ -138,25 +146,32 @@ ARG FREEBSD_BRANCH=releng/15.0
 ARG FREEBSD_SHA=
 
 # MAKEOBJDIRPREFIX must be in the ENV (the build refuses it as a make arg).
-# CROSS_BINDIR points make.py at the system clang-18 so it does NOT bootstrap
-# its own LLVM. Both inherited by the downstream kernel/module jobs.
+# CROSS_BINDIR points make.py at the EXTERNAL Clang 19 cross toolchain (make.py
+# requires an external toolchain on Linux). Clang 19 == FreeBSD 15.0's own
+# compiler, so every module builds (e.g. iwlwifi needs the Clang 19 builtin
+# __builtin_popcountg). Both inherited by the downstream kernel/module jobs.
 ENV MAKEOBJDIRPREFIX=/usr/obj
-ENV CROSS_BINDIR=/usr/lib/llvm-18/bin
+ENV CROSS_BINDIR=/usr/lib/llvm-19/bin
 
 # A minimal ubuntu base lacks host deps the GitHub runner ships implicitly.
 # Empirically required to bootstrap bmake + build kernel-toolchain on releng/15.0:
 #   build-essential (host cc), bc + flex + bison (bmake tests / kbdcontrol),
-#   time (host-symlinks), libssl-dev (certctl), libarchive-dev,
-#   bmake clang-18 lld-18 (FreeBSD's recipe), git/python3 (make.py),
-#   gh/curl (in-container repository_dispatch).
+#   time (host-symlinks), libssl-dev (certctl), libarchive-dev, bmake,
+#   git/python3 (make.py), gh/curl (in-container repository_dispatch).
+# Clang 19 / lld 19 from apt.llvm.org (Ubuntu 24.04 only ships clang-18).
 RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
-        ca-certificates build-essential bc time flex bison bmake \
-        libarchive-dev libssl-dev clang-18 lld-18 git python3 curl gnupg \
+        ca-certificates curl gnupg \
+    &amp;&amp; curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+        | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
+    &amp;&amp; echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" \
+        &gt; /etc/apt/sources.list.d/llvm.list \
     &amp;&amp; curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | tee /usr/share/keyrings/githubcli-archive-keyring.gpg &gt; /dev/null \
     &amp;&amp; echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         &gt; /etc/apt/sources.list.d/github-cli.list \
-    &amp;&amp; apt-get update &amp;&amp; apt-get install -y --no-install-recommends gh \
+    &amp;&amp; apt-get update &amp;&amp; apt-get install -y --no-install-recommends \
+        build-essential bc time flex bison bmake \
+        libarchive-dev libssl-dev clang-19 lld-19 git python3 gh \
     &amp;&amp; rm -rf /var/lib/apt/lists/*
 
 # Shallow (--depth 1) but FULL-TREE clone from the NextBSD fork (NOT sparse:
@@ -170,8 +185,10 @@ RUN git clone --depth 1 --branch "${FREEBSD_BRANCH}" \
          &amp;&amp; git checkout -q "${FREEBSD_SHA}"; \
        fi
 
-# Build ONLY the kernel toolchain (this image's single purpose), using the
-# system clang via --cross-bindir so make.py doesn't bootstrap its own LLVM.
+# Build ONLY the kernel toolchain, using the external Clang 19 via --cross-bindir
+# so make.py doesn't bootstrap its own LLVM (fast + lean). NB: dropping
+# --cross-bindir to build FreeBSD's in-tree clang FAILS on Linux ("Could not
+# infer value for $XCC") - make.py requires an external toolchain.
 RUN mkdir -p "${MAKEOBJDIRPREFIX}" \
     &amp;&amp; cd /usr/src &amp;&amp; ./tools/build/make.py \
         --cross-bindir="${CROSS_BINDIR}" \
@@ -211,12 +228,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve FreeBSD SHA + image tag
+      - name: Resolve image tags
         id: src
         run: |
           SHA="${{ github.event.client_payload.sha }}"
+          BRANCH="${{ github.ref_name }}"
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
-          echo "tag=${{ matrix.target }}-fbsd-${SHA:-tip}" >> "$GITHUB_OUTPUT"
+          if [ "$BRANCH" = "main" ]; then
+            echo "image_tag=${{ matrix.target }}-fbsd-${SHA:-tip}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image_tag=${{ matrix.target }}-${BRANCH}" >> "$GITHUB_OUTPUT"
+          fi
+          # BRANCH builds publish ONLY a branch-scoped tag (never touch prod);
+          # only main publishes :latest + :fbsd-<sha>.
+          {
+            echo "tags<<EOF"
+            echo "${{ env.IMAGE }}:${{ matrix.target }}-${BRANCH}"
+            if [ "$BRANCH" = "main" ]; then
+              echo "${{ env.IMAGE }}:${{ matrix.target }}-latest"
+              echo "${{ env.IMAGE }}:${{ matrix.target }}-fbsd-${SHA:-tip}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -236,18 +269,16 @@ jobs:
             TARGET_ARCH=${{ matrix.target_arch }}
             FREEBSD_BRANCH=${{ env.FREEBSD_BRANCH }}
             FREEBSD_SHA=${{ github.event.client_payload.sha }}
-          tags: |
-            ${{ env.IMAGE }}:${{ matrix.target }}-latest
-            ${{ env.IMAGE }}:${{ steps.src.outputs.tag }}
+          tags: ${{ steps.src.outputs.tags }}
 
-      # Only the amd64 leg drives the (amd64-only) kernel build, so the
-      # downstream dispatch does not fire twice.
-      - name: Trigger downstream kernel build (amd64 only)
-        if: matrix.target == 'amd64'
+      # Fire once (amd64 leg), and only on main - branch/PR builds are for
+      # testing and must not cascade or touch prod. fbsd_sha lets the kernel
+      # derive its per-arch image tag (:<arch>-fbsd-<sha>).
+      - name: Trigger downstream kernel build (amd64, main only)
+        if: matrix.target == 'amd64' &amp;&amp; github.ref_name == 'main'
         run: |
           gh api repos/nextbsd-redux/nextbsd-kernel/dispatches \
             -f event_type=toolchain-updated \
-            -f "client_payload[image_tag]=${{ steps.src.outputs.tag }}" \
             -f "client_payload[fbsd_sha]=${{ steps.src.outputs.sha }}" \
             -f "client_payload[target]=${{ matrix.target }}"
         env:
@@ -344,17 +375,24 @@ on:
   workflow_dispatch:
 
 env:
-  TARGET: amd64
-  TARGET_ARCH: amd64
   FREEBSD_BRANCH: releng/15.0
 
 jobs:
   kernel:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: amd64
+            target_arch: amd64
+          - target: arm64
+            target_arch: aarch64
     container:
-      # repository_dispatch carries the SHA-pinned image tag; a patch-only push
-      # or manual run falls back to the newest amd64 image.
-      image: ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:${{ github.event.client_payload.image_tag || 'amd64-latest' }}
+      # Per-arch toolchain image. fbsd_sha (dispatch) -> :&lt;arch&gt;-fbsd-&lt;sha&gt;;
+      # patch-only push / manual run -> :&lt;arch&gt;-latest. Both arches CROSS-build
+      # on the x86_64 runner (clang cross-compiles; no emulation).
+      image: ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:${{ matrix.target }}-${{ github.event.client_payload.fbsd_sha &amp;&amp; format('fbsd-{0}', github.event.client_payload.fbsd_sha) || 'latest' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -367,36 +405,40 @@ jobs:
           done
 
       - name: Copy kernel config
-        run: cp "$GITHUB_WORKSPACE/config/NEXTBSD" /usr/src/sys/amd64/conf/
+        run: cp "$GITHUB_WORKSPACE/config/NEXTBSD" /usr/src/sys/${{ matrix.target }}/conf/
 
       - name: Build kernel (no modules)
         run: |
           cd /usr/src
-          ./tools/build/make.py -j"$(nproc)" buildkernel \
-            TARGET="${{ env.TARGET }}" \
-            TARGET_ARCH="${{ env.TARGET_ARCH }}" \
+          # MAKEOBJDIRPREFIX + CROSS_BINDIR inherited from the toolchain image ENV.
+          ./tools/build/make.py \
+            --cross-bindir="${CROSS_BINDIR}" \
+            TARGET="${{ matrix.target }}" \
+            TARGET_ARCH="${{ matrix.target_arch }}" \
             KERNCONF=NEXTBSD \
-            NO_MODULES=yes
+            NO_MODULES=yes \
+            buildkernel -j"$(nproc)"
 
       - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nextbsd-kernel-amd64
+          name: nextbsd-kernel-${{ matrix.target }}
           path: /usr/obj/**/sys/NEXTBSD/
 
       - name: Upload obj tree for modules
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-obj-amd64
+          name: kernel-obj-${{ matrix.target }}
           path: /usr/obj/
           compression-level: 6
 
-      - name: Trigger module build (only when upstream/toolchain changed)
-        if: github.event_name == 'repository_dispatch'
+      # Fire once (amd64 leg) on a real source/toolchain change. run_id is shared
+      # across matrix legs, so the module job can fetch BOTH arch obj artifacts.
+      - name: Trigger module build
+        if: github.event_name == 'repository_dispatch' &amp;&amp; matrix.target == 'amd64'
         run: |
           gh api repos/nextbsd-redux/nextbsd-kernel-modules/dispatches \
             -f event_type=kernel-updated \
-            -f "client_payload[image_tag]=${{ github.event.client_payload.image_tag }}" \
             -f "client_payload[fbsd_sha]=${{ github.event.client_payload.fbsd_sha }}" \
             -f "client_payload[run_id]=${{ github.run_id }}" \
             -f "client_payload[sha]=${{ github.sha }}"
@@ -421,65 +463,81 @@ on:
   repository_dispatch:
     types: [kernel-updated]
   workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'nextbsd-kernel run ID that uploaded the kernel-obj-&lt;arch&gt; artifacts'
+        required: true
+      fbsd_sha:
+        description: 'Pinned FreeBSD SHA for the toolchain image tag (blank = latest)'
+        required: false
+        default: ''
 
 env:
-  TARGET: amd64
-  TARGET_ARCH: amd64
   FREEBSD_BRANCH: releng/15.0
 
 jobs:
   modules:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: amd64
+            target_arch: amd64
+          - target: arm64
+            target_arch: aarch64
     container:
-      # Same SHA-pinned image the kernel was built in, so module source matches.
-      image: ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:${{ github.event.client_payload.image_tag || 'amd64-latest' }}
+      # Same per-arch toolchain image the kernel was built in. Cross-builds on
+      # the x86_64 runner (no emulation). repository_dispatch OR manual input.
+      image: ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:${{ matrix.target }}-${{ (github.event.client_payload.fbsd_sha || inputs.fbsd_sha) &amp;&amp; format('fbsd-{0}', github.event.client_payload.fbsd_sha || inputs.fbsd_sha) || 'latest' }}
     steps:
       - name: Download kernel obj tree
         uses: actions/download-artifact@v4
         with:
-          name: kernel-obj-amd64
+          name: kernel-obj-${{ matrix.target }}
           path: /usr/obj/
-          run-id: ${{ github.event.client_payload.run_id }}
+          # The run lives in the kernel repo, not here; without repository:
+          # download-artifact looks in the current repo and 404s.
+          repository: nextbsd-redux/nextbsd-kernel
+          run-id: ${{ github.event.client_payload.run_id || inputs.run_id }}
           github-token: ${{ secrets.DISPATCH_TOKEN }}
 
       - name: Apply patches to source
         run: |
           cd /usr/src
-          # Re-apply patches (source tree in container is unpatched)
-          # Patches fetched from nextbsd-kernel repo
           git clone --depth 1 https://github.com/nextbsd-redux/nextbsd-kernel.git /tmp/nk
           for p in $(cat /tmp/nk/patches/series); do
             git apply /tmp/nk/patches/$p
           done
-          cp /tmp/nk/config/NEXTBSD /usr/src/sys/amd64/conf/
+          cp /tmp/nk/config/NEXTBSD /usr/src/sys/${{ matrix.target }}/conf/
 
       - name: Build modules
         run: |
           cd /usr/src
-          # NOTE: NO_KERNEL=yes is intended to build only modules against the
-          # existing kernel obj. If buildkernel does not honor it on
-          # releng/15.0, switch to a sys/modules build.
-          ./tools/build/make.py -j"$(nproc)" buildkernel \
-            TARGET="${{ env.TARGET }}" \
-            TARGET_ARCH="${{ env.TARGET_ARCH }}" \
+          # NO_KERNEL=yes builds modules against the already-built kernel obj.
+          ./tools/build/make.py \
+            --cross-bindir="${CROSS_BINDIR}" \
+            TARGET="${{ matrix.target }}" \
+            TARGET_ARCH="${{ matrix.target_arch }}" \
             KERNCONF=NEXTBSD \
-            NO_KERNEL=yes
+            NO_KERNEL=yes \
+            buildkernel -j"$(nproc)"
 
       - name: Upload modules artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nextbsd-modules-amd64
+          name: nextbsd-modules-${{ matrix.target }}
           path: /usr/obj/**/modules/
 
       - name: Create release
         if: github.event.client_payload.release == 'true'
         run: |
           cd /usr/obj
-          tar czf /tmp/nextbsd-modules-amd64.tar.gz ./*/modules/
-          gh release create "v$(date +%Y%m%d)-modules" \
-            /tmp/nextbsd-modules-amd64.tar.gz \
+          tar czf /tmp/nextbsd-modules-${{ matrix.target }}.tar.gz $(find . -type d -name modules)
+          gh release create "v$(date +%Y%m%d)-modules-${{ matrix.target }}" \
+            /tmp/nextbsd-modules-${{ matrix.target }}.tar.gz \
             --repo nextbsd-redux/nextbsd-kernel-modules \
-            --title "NextBSD Modules $(date +%Y-%m-%d)" \
+            --title "NextBSD Modules ${{ matrix.target }} $(date +%Y-%m-%d)" \
             --notes "Built against FreeBSD ${{ env.FREEBSD_BRANCH }}"
         env:
           GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
@@ -488,13 +546,13 @@ jobs:
 <h2>8. Estimated Build Times</h2>
 
 <table>
-<tr><th>Stage</th><th>First run</th><th>Cached run</th></tr>
-<tr><td>Fork sync + change detection</td><td>~1 min</td><td>~1 min</td></tr>
-<tr><td>Toolchain container build</td><td>~15 min</td><td>skipped (no upstream change)</td></tr>
-<tr><td>Kernel build (no modules)</td><td>~15-20 min</td><td>~15-20 min</td></tr>
-<tr><td>Module build (layered)</td><td>~15-20 min</td><td>~15-20 min</td></tr>
-<tr><td><strong>Total wall-clock (typical patch push)</strong></td><td colspan="2"><strong>~17-22 min to kernel artifact</strong></td></tr>
+<tr><th>Stage</th><th>Measured (both arches, external Clang 19)</th></tr>
+<tr><td>Fork sync + change detection</td><td>~1 min</td></tr>
+<tr><td>Toolchain container build (amd64 + arm64, external clang)</td><td>~6-8 min; skipped when no upstream change</td></tr>
+<tr><td>Kernel build, <code>NO_MODULES</code> (per arch)</td><td>~6-7 min</td></tr>
+<tr><td>Module build, layered (per arch, full module tree)</td><td>~17-20 min</td></tr>
 </table>
+<p>Measured on standard <code>ubuntu-24.04</code> runners. The toolchain stays ~6-8 min because we use external clang-19 (no in-tree LLVM build). arm64 legs run in parallel with amd64 at the same speed (cross-compile, no emulation).</p>
 
 <p>When upstream hasn't changed and no patches are pushed, <strong>nothing runs</strong>. Zero wasted minutes.</p>
 
@@ -529,11 +587,13 @@ jobs:
 <h2>11. Future Enhancements</h2>
 
 <ul>
-<li><strong>ccache in toolchain container</strong> &mdash; incremental kernel rebuilds could drop to 5-10 min when patches touch few files</li>
+<li><strong>aarch64 kernel + module builds</strong> &mdash; <em>done.</em> kernel and modules are matrices over <code>{amd64, aarch64}</code>, cross-built on the x86_64 runner (see &sect;3.9).</li>
+<li><strong>gha layer cache + ccache</strong> &mdash; add <code>cache-to/from: type=gha</code> so an unchanged-source toolchain rebuild is instant, and <code>WITH_CCACHE_BUILD</code> (with a persisted ccache) to speed partial-source rebuilds.</li>
+<li><strong>Native arm64 runners</strong> &mdash; only if/when CI needs to <em>boot/test</em> aarch64 artifacts (building stays cross on x86_64).</li>
+<li><strong>Third-party kmods (drm-kmod, nvidia)</strong> &mdash; build from source against the kernel <code>obj</code> artifact to stay KBI-safe; pkg kmods load as long as <code>NEXTBSD</code> stays KBI-compatible with stock 15.0.</li>
 <li><strong>Parallel module builds</strong> &mdash; fan out individual modules into separate jobs, each pulling the kernel obj artifact</li>
-<li><strong>aarch64 kernel builds</strong> &mdash; same pipeline, just reference the <code>aarch64-latest</code> container</li>
-<li><strong>libc builds</strong> &mdash; if Mach syscall patches require libc shims, add a <code>nextbsd-libc</code> repo consuming a world-builder container (~3-5 min build)</li>
-<li><strong>Selective module builds</strong> &mdash; use path filters to detect which module source changed and only rebuild affected modules</li>
+<li><strong>libc builds</strong> &mdash; if Mach syscall patches require libc shims, add a <code>nextbsd-libc</code> repo consuming a world-builder container</li>
+<li><strong>Selective module builds</strong> &mdash; path filters to rebuild only affected modules</li>
 <li><strong>Weekly upstream validation</strong> &mdash; scheduled workflow that tests all patches against current upstream, alerts on breakage</li>
 </ul>
 

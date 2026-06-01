@@ -43,35 +43,36 @@
 <p class="back"><a href="index.html">&larr; Back</a></p>
 
 <h1>NextBSD CI Pipeline Plan</h1>
-<p>Automated FreeBSD kernel cross-build pipeline using GitHub Actions free-tier runners. No self-hosted runners, no open firewall ports, no paid plans required.</p>
+<p>NextBSD builds its <strong>entire base from source</strong> on GitHub Actions free-tier runners &mdash; <strong>no pkgbase base packages at all</strong>. Four repos cross-build the kernel, modules, and the full base userland and publish them as artifacts; a fifth repo (<code>nextbsd</code>) ingests those, mixes in the Apple-shaped base (Mach + launchd + the Apple system libraries), and assembles an ISO. No self-hosted runners, no open ports, no paid plans.</p>
 
 <h2>1. Architecture Overview</h2>
 
 <div class="diagram">
 nextbsd-redux/freebsd-src          (fork, auto-synced daily)
-  |
-  | changed? no --> stop
-  | changed? yes --> repository_dispatch
+  |  changed? no --> stop.   changed? yes --> repository_dispatch
   v
-nextbsd-redux/nextbsd-kernel-toolchain  (toolchain containers)
+nextbsd-kernel-toolchain  (cross-toolchain image: baked source + clang-19)
+  |  bakes the EXACT change-detected source (FREEBSD_SHA) into the image
+  |  publishes ghcr.io/.../nextbsd-kernel-toolchain:{amd64,arm64}-{latest,fbsd-<sha>}
+  |  the image IS the source artifact; every consumer runs INSIDE it
   |
-  | bakes the EXACT change-detected FreeBSD source into the image (FREEBSD_SHA)
-  | publishes ghcr.io/.../nextbsd-kernel-toolchain:{amd64,arm64}-latest
-  |       and :{amd64,arm64}-fbsd-<sha>   (the image IS the source artifact)
-  | --> repository_dispatch (amd64 leg only), forwarding the pinned image tag
+  +--> nextbsd-kernel            --> kernel + kernel-obj artifacts (both arches)
+  +--> nextbsd-kernel-modules    --> module .ko artifacts (layered on kernel-obj)
+  +--> nextbsd-freebsd-compat    --> FULL base userland artifact
+  |                                  (buildworld WITHOUT_TOOLCHAIN: libc + everything,
+  |                                   NO compiler in base -> replaces ALL base packages
+  |                                   AND the old srclist-fbsdglue.txt)
   v
-nextbsd-redux/nextbsd-kernel       (kernel + patches + config)
-  |
-  | builds kernel (NO_MODULES), uploads artifact
-  | --> repository_dispatch ONLY if triggered by nextbsd-kernel-toolchain
-  | (patch-only pushes build kernel but do NOT trigger modules)
+nextbsd  (the ASSEMBLER -- ingests the 4 artifacts above)
+  |  1. lay down the from-source base (kernel + modules + base userland) = zero base packages
+  |  2. + a few NON-base build deps (buildpkgs.txt)
+  |  3. + Apple-shaped base (mach.ko + launchd/libxpc/configd/notifyd/asl/...)
+  |  4. + pkglist.txt (kmods etc. not worth rebuilding in CI)
   v
-nextbsd-redux/nextbsd-kernel-modules      (module builds, layered on kernel obj)
-  |
-  | builds modules, uploads artifact
-  v
-  release artifacts (tar.gz on GitHub Releases)
+  ISO
 </div>
+
+<p>The four upstream repos are <strong>artifact producers</strong>; <code>nextbsd</code> is the <strong>assembler</strong>. The result is a minimal FreeBSD base built entirely from source, mixed with an Apple-shaped userland, packaged as an ISO. This eliminates <code>srclist-fbsdglue.txt</code> and <code>buildpkgs-base.txt</code> (no curated FreeBSD subset, no pkgbase base); <code>buildpkgs.txt</code> (non-base build deps) and <code>pkglist.txt</code> (kmods) remain.</p>
 
 <h2>2. Repos</h2>
 
@@ -81,6 +82,8 @@ nextbsd-redux/nextbsd-kernel-modules      (module builds, layered on kernel obj)
 <tr><td><code>nextbsd-kernel-toolchain</code></td><td>Dockerfile + workflow to build cross-compilation toolchain containers for amd64 and aarch64</td><td><code>repository_dispatch</code> from freebsd-src sync, or manual</td></tr>
 <tr><td><code>nextbsd-kernel</code></td><td>Kernel patches (<code>patches/</code>), custom kernel config (<code>config/NEXTBSD</code>), build workflow</td><td><code>repository_dispatch</code> from nextbsd-kernel-toolchain, push to <code>patches/**</code> or <code>config/**</code>, or manual</td></tr>
 <tr><td><code>nextbsd-kernel-modules</code></td><td>Module build workflow, consumes kernel obj artifact</td><td><code>repository_dispatch</code> from nextbsd-kernel</td></tr>
+<tr><td><code>nextbsd-freebsd-compat</code></td><td><strong>Full base userland</strong> &mdash; <code>buildworld WITHOUT_TOOLCHAIN</code> (libc + all base libs/bins, no compiler). Replaces all base packages and the old fbsdglue subset.</td><td><code>repository_dispatch</code> from nextbsd-kernel-toolchain, or manual</td></tr>
+<tr><td><code>nextbsd</code></td><td><strong>Assembler</strong> &mdash; ingests the four producers' artifacts, mixes the Apple-shaped base, builds the ISO. Cross-repo consumer (needs <code>DISPATCH_TOKEN</code> + <code>repository:</code> to pull artifacts).</td><td>(CI not yet wired)</td></tr>
 </table>
 
 <h2>3. Design Decisions</h2>
@@ -132,6 +135,19 @@ nextbsd-redux/nextbsd-kernel-modules      (module builds, layered on kernel obj)
 <li><strong>Compiler-agnostic downstream.</strong> The kernel/module build steps pass <code>--cross-bindir="$CROSS_BINDIR"</code>, and <code>CROSS_BINDIR</code> is baked into the image ENV. The image drives the compiler, so bumping clang means rebuilding only the toolchain image — no downstream workflow changes.</li>
 <li><strong>Tag-gating (merge = promote).</strong> Branch/PR toolchain builds publish only a branch-scoped tag (<code>:&lt;arch&gt;-&lt;branch&gt;</code>) and never touch production; only <code>main</code> builds publish <code>:&lt;arch&gt;-latest</code> + <code>:&lt;arch&gt;-fbsd-&lt;sha&gt;</code> and cascade downstream. Since <code>docker/build-push-action</code> pushes only on success and there is no <code>pull_request</code> trigger, opening a PR never builds or touches images. So merging a PR (then the <code>main</code> build) is what promotes a change to production.</li>
 </ul>
+
+<h3>3.10 Base from source: no base packages</h3>
+<p>NextBSD does <strong>not</strong> install pkgbase base packages. The kernel, modules, and the <em>entire</em> base userland are built from source by the four producer repos and shipped as artifacts. <code>nextbsd-freebsd-compat</code> runs a <strong><code>buildworld WITHOUT_TOOLCHAIN</code></strong> &mdash; this builds libc and every base library/binary but deliberately <strong>omits the compiler</strong> (clang/lld/lldb). That keeps the base lean and out of the &ldquo;build a whole LLVM into base&rdquo; trap; anyone who wants to compile on-device runs <code>pkg install llvm19</code> from ports. Clang only ever exists as the <em>cross build compiler inside the toolchain image</em> &mdash; never in the shipped base.</p>
+<p>This replaces two things from the old <code>nextbsd</code> build: <code>srclist-fbsdglue.txt</code> (the curated &ldquo;irreducibly-FreeBSD-only&rdquo; subset &mdash; now we just build the whole base) and <code>buildpkgs-base.txt</code> (pkgbase base packages &mdash; now from our artifacts). <code>buildpkgs.txt</code> survives for <em>non-base</em> build-time dependencies, and <code>pkglist.txt</code> for kmods and other things not worth rebuilding in CI. <code>nextbsd</code> then mixes this minimal from-source base with the Apple-shaped base (Mach + launchd + the Apple system libraries) and builds the ISO.</p>
+<p><strong>Why this matters for the pipeline:</strong> <code>nextbsd-freebsd-compat</code> is a full <code>buildworld</code> &mdash; the heaviest compile in the whole system. Fast iteration on it depends entirely on the caching strategy below. It cross-builds exactly like the kernel/modules (same container, <code>--cross-bindir</code>, <code>WITHOUT_*</code> trims) &mdash; the only difference is that userland links against the target libc, so the build stages <code>_includes</code>/<code>_libraries</code> first.</p>
+
+<h3>3.11 Caching strategy (per build shape)</h3>
+<p>Two different caches, matched to two different build shapes:</p>
+<ul>
+<li><strong>Toolchain image &rarr; Docker layer cache.</strong> The toolchain is the only repo that runs <code>docker build</code>. With <code>docker/setup-buildx-action</code> + <code>cache-to/from: type=gha</code> (per-arch scope), an identical-source rebuild reuses the whole <code>kernel-toolchain</code> layer. <em>Measured: ~6.5&nbsp;min cold &rarr; ~13&nbsp;sec warm (~30&times;).</em> Helps same-source re-runs; a new <code>FREEBSD_SHA</code> still rebuilds (keeps the cached apt layer).</li>
+<li><strong>Kernel / modules / compat &rarr; ccache.</strong> These compile <em>inside</em> the toolchain image as <code>container:</code> jobs, so <code>actions/cache</code> persists <code>CCACHE_DIR</code> cleanly. Catch: FreeBSD's <code>WITH_CCACHE_BUILD</code> does <strong>not</strong> wrap an external <code>XCC</code> (the cross clang from <code>--cross-bindir</code>) &mdash; it leaves the cache empty. Fix: the toolchain image ships a <strong>ccache wrapper bindir</strong> (<code>/opt/ccache-cross</code>, exposed as <code>CCACHE_CROSS_BINDIR</code>) that mirrors <code>llvm-19/bin</code> but routes <code>clang</code>/<code>clang++</code> through <code>ccache &lt;real&gt;</code>. Consumers set <code>--cross-bindir=$CCACHE_CROSS_BINDIR</code> + persist <code>CCACHE_DIR</code>. A 1-file (or no-op) rebuild then mostly cache-hits; a <em>compiler bump</em> invalidates everything (different key).</li>
+</ul>
+<p>Net: the layer cache makes toolchain re-runs near-instant, and ccache makes the kernel/module/world compiles cheap when little changed &mdash; which is what makes iterating on the full base-world build (and the Mach + Apple work that feeds the ISO) practical.</p>
 
 <h2>4. Repo: <code>nextbsd-kernel-toolchain</code></h2>
 
@@ -543,7 +559,42 @@ jobs:
           GH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
 </pre>
 
-<h2>8. Estimated Build Times</h2>
+<h2>8. Repo: <code>nextbsd-freebsd-compat</code> (the base userland)</h2>
+<p>Produces the <strong>entire base userland</strong> from source as an artifact &mdash; the replacement for all pkgbase base packages and the old <code>srclist-fbsdglue.txt</code>. It runs inside the same toolchain image as the kernel/modules and cross-builds the same way; it is simply pointed at <code>buildworld</code> instead of <code>buildkernel</code>.</p>
+<h3>8.1 Build shape</h3>
+<pre>
+cd /usr/src
+# Cross-build the base WITHOUT the compiler toolchain (no clang/lld in base).
+# Trim everything not needed to run launchd + the Apple components.
+./tools/build/make.py \
+    --cross-bindir="${CCACHE_CROSS_BINDIR}" \    # ccache-wrapped cross clang
+    TARGET="${TARGET}" TARGET_ARCH="${TARGET_ARCH}" \
+    WITHOUT_TOOLCHAIN=yes \                       # no clang/lld/lldb in base -> pkg install llvm19
+    WITHOUT_TESTS=yes WITHOUT_DEBUG_FILES=yes \   # trims (extend as needed)
+    buildworld -j"$(nproc)"
+# Stage into a chroot-able tree and tar it as the base artifact:
+make.py installworld distribution DESTDIR=/stage ...   # -> nextbsd-base-&lt;arch&gt;.tar
+</pre>
+<ul>
+<li><strong>Same cross-build as kernel/modules</strong> &mdash; container + <code>--cross-bindir</code> + <code>WITHOUT_*</code>. The one extra cost: userland links against the target <code>libc</code>, so the build stages <code>_includes</code> + <code>_libraries</code> before the binaries (the kernel links nothing, which is why it was simpler).</li>
+<li><strong>No compiler in base</strong> (<code>WITHOUT_TOOLCHAIN</code>) keeps the artifact lean; <code>pkg install llvm19</code> covers on-device compilation. Clang stays only in the toolchain image.</li>
+<li><strong>ccache</strong> via <code>CCACHE_CROSS_BINDIR</code> + persisted <code>CCACHE_DIR</code> &mdash; essential here, since <code>buildworld</code> is the heaviest compile in the pipeline.</li>
+<li>Matrix amd64 + aarch64, like the others; emits <code>nextbsd-base-&lt;arch&gt;</code> artifacts for <code>nextbsd</code> to ingest.</li>
+</ul>
+
+<h2>9. Repo: <code>nextbsd</code> (the assembler)</h2>
+<p>Not a producer &mdash; the <strong>integrator</strong>. It ingests the four producers' artifacts and builds the ISO. Roughly:</p>
+<ol>
+<li>Download the from-source base: <code>nextbsd-base-&lt;arch&gt;</code> + kernel + modules (cross-repo artifacts &mdash; needs <code>DISPATCH_TOKEN</code> + <code>repository:</code>, same pattern the module job uses for <code>kernel-obj</code>).</li>
+<li>Lay them into a chroot &mdash; <strong>zero base packages</strong>.</li>
+<li>Install a few <em>non-base</em> build-time dependencies (<code>buildpkgs.txt</code>).</li>
+<li>Mix in the <strong>Apple-shaped base</strong> &mdash; <code>mach.ko</code> + launchd, libxpc, configd, notifyd, asl, etc. (today built in <code>nextbsd</code>'s <code>build.sh</code>; could become their own producer repos later).</li>
+<li>Install <code>pkglist.txt</code> (kmods and things not worth rebuilding in CI).</li>
+<li>Build the ISO.</li>
+</ol>
+<p>Its own work is mostly assembly/packaging, so its speedup is <em>artifact reuse</em> (skip a component whose artifact didn't change), not ccache &mdash; the compile caching lives in the producers.</p>
+
+<h2>10. Estimated Build Times</h2>
 
 <table>
 <tr><th>Stage</th><th>Measured (both arches, external Clang 19)</th></tr>
@@ -556,7 +607,7 @@ jobs:
 
 <p>When upstream hasn't changed and no patches are pushed, <strong>nothing runs</strong>. Zero wasted minutes.</p>
 
-<h2>9. Setup Checklist</h2>
+<h2>11. Setup Checklist</h2>
 
 <ol>
 <li>Fork <code>freebsd/freebsd-src</code> into <code>nextbsd-redux/freebsd-src</code> (all branches)</li>
@@ -573,7 +624,7 @@ jobs:
 
 <p><strong>Note on cross-building:</strong> all build steps use <code>./tools/build/make.py</code> (not bare <code>make</code>) &mdash; FreeBSD's supported Linux cross-build entry point, which bootstraps <code>bmake</code>. See &sect;3.7.</p>
 
-<h2>10. GitHub Free Plan Limits</h2>
+<h2>12. GitHub Free Plan Limits</h2>
 
 <table>
 <tr><th>Resource</th><th>Limit</th><th>Impact</th></tr>
@@ -584,7 +635,7 @@ jobs:
 <tr><td>Job timeout</td><td>6 hours</td><td>Well within limits</td></tr>
 </table>
 
-<h2>11. Future Enhancements</h2>
+<h2>13. Future Enhancements</h2>
 
 <ul>
 <li><strong>aarch64 kernel + module builds</strong> &mdash; <em>done.</em> kernel and modules are matrices over <code>{amd64, aarch64}</code>, cross-built on the x86_64 runner (see &sect;3.9).</li>

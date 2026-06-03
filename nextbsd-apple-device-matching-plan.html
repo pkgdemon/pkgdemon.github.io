@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Eliminating standalone hwregd — Apple-shaped device matching &amp; autoload (convergence plan)</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; ties together <a href="freebsd-hwregd-busystate-waitquiet-options.html">#67 hwregd settle</a>, <a href="freebsd-hwregd-busystate-impl-plan.html">#176 busyState/waitQuiet</a>, and #168 (EVFILT_MACHPORT / configd fold)</p>
+
+<h1>Eliminating standalone <code>hwregd</code> &mdash; Apple-shaped device matching &amp; autoload</h1>
+<p class="lede">How to converge NextBSD&rsquo;s device-matching + driver-autoload off a standalone devctl-socket + timer daemon toward Apple&rsquo;s event-driven model. <strong>The honest framing first:</strong> Apple does <em>not</em> have &ldquo;no daemon&rdquo; &mdash; it keeps a userland loader (<code>kextd</code> &rarr; <code>kernelmanagerd</code>) under launchd. What makes Apple &ldquo;better than FreeBSD&rsquo;s <code>devd</code>&rdquo; isn&rsquo;t the absence of a process; it&rsquo;s that <strong>matching is in-kernel, match events + quiescence reach userland over Mach (not a socket + poll), and the loader is launchd-Mach-service-activated and <code>waitQuiet</code>-driven rather than a busy loop.</strong> So the goal here is to retire the standalone <em>polling</em> <code>hwregd</code> and re-home its work into that event-driven shape &mdash; not to chase zero daemons.</p>
+<p class="meta">2026-06-03. Synthesized from a 3-agent scope: Apple&rsquo;s XNU/IOKit + kext_tools model, a NextBSD <code>hwregd</code>/configd/launchd/mach.ko audit, and an <code>EVFILT_MACHPORT</code> feasibility study. Citations are to XNU/Apple sources and <code>nextbsd-redux/nextbsd</code> / <code>freebsd-src@releng/15.0</code>.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#apple">What Apple actually does</a></li>
+  <li><a href="#now">What NextBSD does today (and what hwregd really owns)</a></li>
+  <li><a href="#blocks">The building blocks (and which exist)</a></li>
+  <li><a href="#options">Convergence options</a></li>
+  <li><a href="#rec">Recommendation</a></li>
+  <li><a href="#roadmap">Phased roadmap</a></li>
+  <li><a href="#risks">Caveats</a></li>
+</ol>
+</div>
+
+<h2 id="apple">1. What Apple actually does</h2>
+<ul>
+  <li><strong>Matching is entirely in-kernel.</strong> <code>IOService::registerService()</code> &rarr; <code>startMatching()</code> &rarr; <code>doServiceMatch()</code> &rarr; <code>probeCandidates()</code> runs probe/score/start in kernel config threads. <span class="cite">(XNU <code>iokit/Kernel/IOService.cpp</code>)</span></li>
+  <li><strong>Quiescence is a kernel primitive.</strong> <code>_adjustBusy()</code> tracks busyState and <em>propagates to the provider</em> up to the root; <code>waitQuiet()</code> / <code>IOServiceWaitQuiet</code> / <code>IORegistryEntryGetBusyState</code> block/read it. (NextBSD&rsquo;s #176 work is the analog.)</li>
+  <li><strong>Match events reach userland over Mach, not a socket.</strong> <code>IOServiceAddMatchingNotification</code> delivers <code>kIOFirstPublishNotification</code>/<code>kIOMatchedNotification</code>/<code>kIOTerminatedNotification</code> as Mach messages on an <code>IONotificationPort</code> &mdash; this is Apple&rsquo;s <code>devctl</code> analog, but Mach-native. <span class="cite">(IOKitLib; <code>IONotificationPortGetMachPort</code>)</span></li>
+  <li><strong>The loader daemon exists but is event-driven.</strong> <code>kextd</code>/<code>kernelmanagerd</code> runs under launchd, declared with a <code>MachService</code> bound to a host special port (<code>HostSpecialPort 15</code>), <code>RunAtLoad</code> + <code>KeepAlive={Crashed}</code> &mdash; <em>not</em> a poll loop. The kernel queues a load request and <strong>pings it over a Mach host special port</strong> (<code>pingIOKitDaemon</code> &rarr; <code>kextd_ping</code>) only when a needed binary isn&rsquo;t in-kernel; the daemon loads it and tells <code>IOCatalogue</code>, which re-drives in-kernel matching. <span class="cite">(XNU <code>OSKext.cpp</code>, <code>kext_tools</code>)</span></li>
+</ul>
+<p><strong>Takeaway:</strong> the &ldquo;better than FreeBSD&rdquo; deltas are (1) Mach match-notifications instead of a <code>/dev/devctl</code> socket, (2) kernel busyState/<code>waitQuiet</code> instead of a wall-clock settle, and (3) a launchd-Mach-activated loader instead of an always-running poll daemon.</p>
+
+<h2 id="now">2. What NextBSD does today (and what <code>hwregd</code> really owns)</h2>
+<p><code>hwregd</code> is a standalone two-thread daemon that is doing <em>three</em> jobs at once &mdash; all of which must survive if the process goes away <span class="cite">(<code>src/hwregd/hwregd.c</code>)</span>:</p>
+<ol>
+  <li><strong>Autoload:</strong> drains <code>/dev/devctl</code>, runs the linker.hints matcher (the dropped-<code>devmatch</code> replacement), and <code>kldload</code>s under <code>devctl_freeze()</code>/<code>devctl_thaw()</code>; the backlog&rarr;live flip is a 250&nbsp;ms timer today (#67/#176 replace that with quiescence).</li>
+  <li><strong>The hardware registry tree:</strong> builds an in-memory newbus/IORegistry tree from <code>hw.bus.*</code> + PCI enrichment (its own tree, not configd&rsquo;s SCDynamicStore).</li>
+  <li><strong>A Mach serving surface</strong> (<code>org.freebsd.hwregd</code>, MIG subsystem 30000): raw <code>SUBSCRIBE</code> pub/sub + <code>get_root/children/node/properties/lookup</code> + <code>watch/unwatch</code> + <code>load_driver</code>. Consumers: <strong>libIOKit</strong> (its <code>IOServiceAddMatchingNotification</code> facade calls <code>hwreg_watch</code>) and <strong>DiskArbitration</strong> (raw subscribe). launchd <code>HardwareMatch</code> is a planned (iter-2) consumer.</li>
+</ol>
+<p>Constraints found in-tree: <strong>configd&rsquo;s loop is a single <code>mach_msg</code> over a port set</strong> and <em>cannot</em> also watch a device-event fd without <code>EVFILT_MACHPORT</code> (the #168 blocker, documented verbatim in <code>KernelEventMonitor</code>). <strong>launchd has Mach on-demand activation</strong> (a job starts when its <code>MachService</code> is messaged) but the <code>HardwareMatch</code> device-event driver is unimplemented. <strong>mach.ko</strong> has the event-bell pset&rarr;fd bridge and now the busyState hook + <code>mach_wait_quiet</code> (#176), but <em>no kernel-native match-notification surface</em> &mdash; today the IOKit notifications are synthesized in userland by <code>hwregd</code>.</p>
+
+<h2 id="blocks">3. The building blocks (and which exist)</h2>
+<table>
+  <thead><tr><th>Block</th><th>Apple equivalent</th><th>NextBSD status</th></tr></thead>
+  <tbody>
+    <tr><td>In-kernel matching</td><td><code>IOService</code> match engine</td><td>✅ newbus already matches in-kernel (loading is userland on both)</td></tr>
+    <tr><td>Quiescence (busyState/<code>waitQuiet</code>)</td><td><code>_adjustBusy</code>/<code>waitQuiet</code></td><td>🟡 <strong>#176 in flight</strong> — kernel hook merged; mach.ko <code>bus_busy</code> + <code>mach_wait_quiet</code> + libIOKit APIs is the pending consumer PR</td></tr>
+    <tr><td>One event loop over Mach + fds</td><td>kqueue + <code>EVFILT_MACHPORT</code></td><td>❌ <strong>#168</strong> — needs ~5-line <code>event.h</code> base patch (define <code>EVFILT_MACHPORT</code> + bump <code>EVFILT_SYSCOUNT</code>) + a mach.ko-registered filter (<code>kqueue_add_filteropts</code>, reusing the event-bell pset seam). mach.ko event-bell bridge is a working stopgap.</td></tr>
+    <tr><td>Match events over Mach</td><td><code>IOServiceAddMatchingNotification</code></td><td>❌ synthesized in userland by hwregd today; no kernel-native delivery</td></tr>
+    <tr><td>Event-driven loader under launchd</td><td><code>kextd</code> Mach-service-activated</td><td>🟡 launchd has Mach on-demand activation; <code>HardwareMatch</code> dispatch unimplemented</td></tr>
+  </tbody>
+</table>
+
+<h2 id="options">4. Convergence options</h2>
+<table>
+  <thead><tr><th>Option</th><th>What it is</th><th>Apple-fidelity</th><th>Cost / verdict</th></tr></thead>
+  <tbody>
+    <tr><td><strong>A. Fold hwregd into configd</strong> (in-process plugin)</td><td>Move the matcher + registry + notification-serving into configd; <code>EVFILT_MACHPORT</code> lets its one loop watch its Mach service port + the device-event source. Apple hosts comparable plumbing inside configd.</td><td><span class="pill pill-good">High</span></td><td>Needs <code>EVFILT_MACHPORT</code> (#168). Removes the standalone process; preserves the serving surface. <span class="pill pill-good">Lead route</span></td></tr>
+    <tr><td><strong>B. launchd-activated loader</strong> (kextd-analog)</td><td>Replace the long-lived loop with a launchd Mach-service-activated loader, woken by a kernel ping / match-notification; no resident poller.</td><td><span class="pill pill-good">High</span> (this <em>is</em> kextd)</td><td>Needs kernel match-notifications-over-Mach + launchd <code>HardwareMatch</code> iter-2. Complements A (A hosts matching/registry; B does on-demand loads).</td></tr>
+    <tr><td><strong>C. In-kernel matcher + loader</strong></td><td>Push autoload into the kernel itself.</td><td><span class="pill pill-bad">Not even Apple</span> (Apple loads in userland)</td><td><span class="pill pill-bad">Reject</span> — more kernel surface than warranted; diverges from Apple.</td></tr>
+  </tbody>
+</table>
+
+<h2 id="rec">5. Recommendation</h2>
+<div class="callout callout-good">
+<p>Converge to the Apple shape as a <strong>blend of A + B over shared kernel building blocks</strong>, not a single big rewrite:</p>
+<ol>
+<li><strong>Keep matching in-kernel</strong> (newbus already does) and add the two kernel signals Apple has and we lack: <strong>busyState/<code>waitQuiet</code></strong> (#176) and <strong>kernel-native match-notifications over Mach</strong> (a mach.ko surface emitting publish/matched/terminated, replacing hwregd&rsquo;s userland synthesis).</li>
+<li><strong>Add <code>EVFILT_MACHPORT</code></strong> (#168) so a single kqueue loop can watch a Mach service port + device events — the prerequisite for hosting matching anywhere but a dedicated daemon.</li>
+<li><strong>Fold hwregd&rsquo;s matcher + registry + serving into configd</strong> (Option A) using <code>EVFILT_MACHPORT</code>, and make the actual driver <strong>load a launchd-Mach-activated step</strong> (Option B) instead of an in-loop <code>kldload</code> poll. The standalone <code>hwregd</code> <em>process</em> goes away; every responsibility it owns (autoload, registry, libIOKit + DiskArbitration serving) is preserved, now event-driven.</li>
+</ol>
+<p>Net result: device appears &rarr; kernel matches &rarr; busyState/quiesce + match-notification over Mach &rarr; configd-hosted logic (or a launchd-activated loader) reacts and loads on demand &mdash; no devctl-socket poll daemon, no wall-clock settle. That is &ldquo;better than FreeBSD&rdquo; and faithful to Apple.</p>
+</div>
+
+<h2 id="roadmap">6. Phased roadmap</h2>
+<p>Each phase follows the established pattern (kernel hook first as a <code>nextbsd-kernel</code> patch &rarr; consumer PR in <code>nextbsd</code> &rarr; boot-test gate), and each lands value on its own.</p>
+<ol>
+  <li><strong>Phase 0 — busyState/<code>waitQuiet</code> (#176).</strong> Kernel <code>device_match_start/end</code> hook is <strong>merged</strong> (nextbsd-kernel #8). The consumer PR (mach.ko <code>bus_busy</code> + <code>mach_wait_quiet</code> + hwregd quiescence-flip + libIOKit APIs) is staged. <em>Land it as the foundation</em> — every later phase&rsquo;s loader uses <code>waitQuiet</code>.</li>
+  <li><strong>Phase 1 — <code>EVFILT_MACHPORT</code> (#168).</strong> <code>nextbsd-kernel</code>: ~5-line <code>sys/sys/event.h</code> patch (define <code>EVFILT_MACHPORT</code>, bump <code>EVFILT_SYSCOUNT</code>). <code>nextbsd</code>: mach.ko registers the filter at load (<code>kqueue_add_filteropts</code>) reusing the pset-signal seam; notify-only semantics. Unblocks single-loop multiplexing in configd.</li>
+  <li><strong>Phase 2 — kernel-native match notifications over Mach.</strong> mach.ko emits publish/matched/terminated for newbus attach/detach/nomatch over a Mach notification port (the <code>IOServiceAddMatchingNotification</code> analog), so userland stops synthesizing them from <code>/dev/devctl</code>.</li>
+  <li><strong>Phase 3 — retire standalone hwregd.</strong> Fold its matcher + registry + serving into configd (Option A, on <code>EVFILT_MACHPORT</code>); make autoload a launchd-Mach-activated loader (Option B, driven by Phase 2 notifications + <code>waitQuiet</code>). Migrate the libIOKit + DiskArbitration consumers to the new host. Remove the <code>hwregd</code> process.</li>
+</ol>
+
+<h2 id="risks">7. Caveats</h2>
+<ul>
+  <li><strong>&ldquo;No daemon&rdquo; is not the goal (or Apple).</strong> Apple keeps <code>kextd</code>/<code>kernelmanagerd</code>. The win is event-driven + launchd-activated, not zero processes. Phase 3 may end with a launchd-activated loader job rather than literally nothing.</li>
+  <li><strong>hwregd owns more than loading.</strong> Its registry tree, PCI enrichment, and the <code>org.freebsd.hwregd</code> serving surface back <strong>libIOKit</strong> and <strong>DiskArbitration</strong> today — Phase 3 must re-home all of it (into configd) before the process can be deleted, or those consumers break.</li>
+  <li><strong>Sequencing.</strong> Phases 1–3 each depend on the prior kernel hook; Phase 0 (busyState) and Phase 1 (<code>EVFILT_MACHPORT</code>) are independent and can proceed in parallel. This is a multi-week effort; the value is incremental (each phase is shippable).</li>
+  <li><strong>Kernel surface stays minimal.</strong> Every kernel piece is a small <code>nextbsd-kernel</code> patch or a mach.ko-registered hook (the match hook, the ~5-line <code>EVFILT_MACHPORT</code> reservation, the notification emitter) — no in-kernel module loader (Option C), consistent with Apple keeping loads in userland.</li>
+</ul>
+
+<p class="footnote">Convergence plan, 2026-06-03. Umbrella over #67 (settle-window), #176 (busyState/waitQuiet), and #168 (EVFILT_MACHPORT / configd fold). Built from a 3-agent scope of Apple XNU/IOKit + kext_tools, the NextBSD hwregd/configd/launchd/mach.ko tree, and FreeBSD <code>releng/15.0</code> kqueue internals.</p>
+
+</div>
+</body>
+</html>

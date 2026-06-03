@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD: cross-build the Apple userland + image on native Linux (single-PR plan)</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-muted: #555;
+    --bg: #fafaf7;
+    --accent: #b8472a;
+    --accent-soft: #f3e7df;
+    --border: #d8d4c8;
+    --code-bg: #f0ece2;
+    --table-stripe: #f4efe5;
+    --warn: #8a5a00;
+    --good: #2d6f3b;
+    --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    line-height: 1.55;
+    margin: 0;
+    padding: 0;
+  }
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+  h1 {
+    font-size: 2.1rem;
+    line-height: 1.2;
+    margin: 0 0 8px;
+    letter-spacing: -0.01em;
+  }
+  h2 {
+    font-size: 1.45rem;
+    margin: 56px 0 12px;
+    padding-top: 18px;
+    border-top: 2px solid var(--border);
+    letter-spacing: -0.005em;
+  }
+  h3 {
+    font-size: 1.15rem;
+    margin: 32px 0 10px;
+    color: var(--accent);
+  }
+  h4 {
+    font-size: 1rem;
+    margin: 24px 0 6px;
+    color: var(--fg);
+  }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin: 0 0 6px; }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  pre {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.86em;
+    line-height: 1.5;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 0 0 14px;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit;
+  }
+  .lede {
+    font-size: 1rem;
+    color: var(--fg-muted);
+    margin: 0 0 28px;
+  }
+  .meta {
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    margin: 0 0 24px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 12px 0 22px;
+    font-size: 0.94rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    background: var(--accent-soft);
+    font-weight: 600;
+  }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 14px 18px;
+    margin: 18px 0 22px;
+    border-radius: 0 4px 4px 0;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn {
+    border-left-color: var(--warn);
+    background: #fbf3df;
+  }
+  .callout-good {
+    border-left-color: var(--good);
+    background: #e8f1e3;
+  }
+  .pill {
+    display: inline-block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-right: 8px;
+  }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad);  }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 18px 24px 14px 36px;
+    margin: 0 0 36px;
+    font-size: 0.95rem;
+  }
+  .toc h2 {
+    margin: 0 0 8px;
+    padding-top: 0;
+    border-top: none;
+    font-size: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--fg-muted);
+    margin-left: -14px;
+  }
+  .toc ol { margin: 0 0 0 6px; }
+  .toc li { margin-bottom: 4px; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .footnote {
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    border-top: 1px solid var(--border);
+    margin-top: 48px;
+    padding-top: 16px;
+  }
+  .pros-cons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin: 14px 0 18px;
+  }
+  .pros, .cons {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 16px;
+    background: white;
+  }
+  .pros { border-left: 3px solid var(--good); }
+  .cons { border-left: 3px solid var(--bad); }
+  .pros h4, .cons h4 { margin-top: 0; }
+  .verdict {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 8px 0 14px;
+  }
+  .verdict-go { color: var(--good); }
+  .verdict-warn { color: var(--warn); }
+  .verdict-no { color: var(--bad); }
+  .twocol {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin: 14px 0 18px;
+  }
+  .twocol > div {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px 16px;
+    background: white;
+  }
+  .twocol h4 { margin-top: 0; }
+  @media (max-width: 600px) {
+    .pros-cons, .twocol { grid-template-columns: 1fr; }
+    .wrap { padding: 24px 18px 64px; }
+  }
+</style>
+
+</head>
+<body>
+<div class="wrap">
+
+<h1>NextBSD: Cross-Build the Apple/Darwin Userland on Native Linux — Single-PR Implementation Plan</h1>
+<p class="lede">A single-PR plan to move NextBSD's image build off the <code>vmactions/freebsd-vm</code> qemu VM (~17&nbsp;min) and onto a native <strong>Linux runner that cross-compiles the entire Apple/Darwin userland for FreeBSD with Clang&nbsp;19</strong> &mdash; zero FreeBSD packages installed, nothing built in a chroot, the bootable UFS image assembled on Linux, and <code>qemu</code> used only to boot-test. The approach is not speculative: four sibling repos (<code>nextbsd-kernel-toolchain</code>, <code>nextbsd-kernel</code>, <code>nextbsd-kernel-modules</code>, <code>nextbsd-freebsd-compat</code>) already cross-build the FreeBSD base, kernel, and modules on <code>ubuntu-24.04</code> with this exact pattern.</p>
+<p class="meta">Target repo: <a href="https://github.com/nextbsd-redux/nextbsd">nextbsd-redux/nextbsd</a>. Synthesized 2026-06-02 from a deep reverse-engineering pass over the four sibling repos' cross-build workflows and a component-by-component audit of <code>build.sh</code> (2788&nbsp;lines, 32 <code>src/</code> components + <code>mach.ko</code> + image assembly). The boot-test contract in <code>tests/boot-test.sh</code> (~80 expect markers) is the parity oracle throughout.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#1-executive-summary-why-one-pr-is-achievable">1. Executive Summary &amp; Why One PR Is Achievable</a></li>
+<li><a href="#2-the-proven-pattern-we-inherit">2. The Proven Pattern We Inherit</a></li>
+<li><a href="#3-architecture-of-the-new-build">3. Architecture of the New Build</a></li>
+<li><a href="#4-componentbycomponent-crossbuild-plan">4. Component-by-Component Cross-Build Plan</a></li>
+<li><a href="#5-the-two-hard-nuts-libdispatch-and-icu">5. The Two Hard Nuts: libdispatch and ICU</a></li>
+<li><a href="#6-image-assembly-on-linux">6. Image Assembly on Linux</a></li>
+<li><a href="#7-ci-workflow-rewrite-vmactions-deletion-dispatch-rewiring">7. CI Workflow Rewrite + vmactions Deletion + Dispatch Rewiring</a></li>
+<li><a href="#8-bootcontract-parity-validation-strategy-the-oracle">8. Boot-Contract Parity &amp; Validation Strategy (The Oracle)</a></li>
+<li><a href="#9-ordered-buildup-within-the-single-branch-failures-localize">9. Ordered Build-Up Within the Single Branch (Failures Localize)</a></li>
+<li><a href="#10-risk-register">10. Risk Register</a></li>
+<li><a href="#11-concrete-filebyfile-change-list">11. Concrete File-by-File Change List</a></li>
+<li><a href="#12-definition-of-done">12. Definition of Done</a></li>
+</ol>
+</div>
+
+<h2 id="1-executive-summary-why-one-pr-is-achievable">1. Executive Summary &amp; Why One PR Is Achievable</h2>
+<p>NextBSD today assembles its bootable image by running <code>build.sh</code> inside a <code>vmactions/freebsd-vm</code> qemu VM (~17 min). The two genuine blockers are (a) the in-chroot <code>pkg</code> bootstrap of <code>cmake/ninja/llvm19</code> (build.sh:195-340) and (b) the two in-chroot <code>cmake</code>/<code>ninja</code> builds — libdispatch (build.sh:874) and swift-foundation-icu (build.sh:1203) — both of which <strong>execute FreeBSD binaries</strong>. The remaining 30 components already use bmake (<code>make -C src/&lt;comp&gt;</code>) and need only a cross wrapper, not a port.</p>
+<p><strong>The target end-state is not speculative — it is already proven in production by four sibling repos.</strong> <code>nextbsd-kernel-toolchain</code>, <code>nextbsd-kernel</code>, <code>nextbsd-kernel-modules</code>, and <code>nextbsd-freebsd-compat</code> *already* cross-build the FreeBSD base, kernel, and modules on a native <code>ubuntu-24.04</code> runner using Clang 19 cross-compilation, <strong>zero FreeBSD packages, no chroot, no emulation</strong>. Critically, <code>nextbsd-freebsd-compat</code> already demonstrates the exact "world" pattern this PR needs: per-directory <code>make -C &lt;dir&gt;</code> wrapped in <code>make.py buildenv</code> with a Linux-safe <code>install -N -U -M METALOG</code>, producing a from-source FreeBSD sysroot. NextBSD already *consumes* that sysroot artifact (<code>nextbsd-base-&lt;arch&gt;.tar.gz</code>, extracted at build.sh:95).</p>
+<p>So the work decomposes into:</p>
+<ul>
+<li><strong>30 bmake components</strong>: copy compat's <code>buildenv</code> + curated-install pattern with path edits. <strong>Low/moderate risk — mechanically proven.</strong></li>
+<li><strong>mach.ko</strong>: copy the <code>nextbsd-kernel-modules</code> out-of-tree-kmod pattern verbatim. <strong>Low risk — it is a vanilla <code>bsd.kmod.mk</code> module.</strong></li>
+<li><strong>5 GNU-make cmd suites</strong>: same <code>buildenv</code> wrapper plus a one-time <code>cc</code>→<code>$(CC)</code> recipe sed (mechanical, gated by a static ELF check).</li>
+<li><strong>MIG codegen pipeline</strong>: a host-tool (migcom) + cross-<code>MIGCC</code> split — wiring, not invention.</li>
+<li><strong>libdispatch + ICU</strong>: the only *net-new engineering* — two CMake toolchain files. Both have detailed, de-risked plans below.</li>
+<li><strong>Image assembly</strong>: makefs/mkimg/kldxref/pwd_mkdb/cap_mkdb run <strong>offline on Linux</strong> (they are pure file/ELF/cdb processors; build.sh:119 already runs pwd_mkdb offline today).</li>
+<li><strong>Boot-test</strong>: <strong>unchanged</strong> — it already runs on <code>ubuntu-latest</code> + qemu + OVMF (it was never vmactions).</li>
+</ul>
+<p><strong>Why one PR.</strong> Every dependency is already built and published by the sibling chain; this PR *consumes* those artifacts and changes only (1) the nextbsd workflow, (2) <code>build.sh</code>'s front-half/tail, (3) a new <code>build-cross.sh</code> driver, (4) two CMake toolchain files, and (5) tiny edits to two CMakeLists. Nothing requires bootstrapping new infrastructure — the toolchain image, the sysroot artifact, the ccache wiring, the dispatch cascade, and the boot-test harness all exist. The boot-test contract (~80 expect markers) is a <strong>byte-identical oracle</strong>: the same harness that gates the vmactions image today gates the Linux-assembled image, so "green boot-test" *is* the definition of parity. Failures localize to the exact component being built, so the branch can be grown in dependency order with each step independently verifiable.</p>
+<h2 id="2-the-proven-pattern-we-inherit">2. The Proven Pattern We Inherit</h2>
+<p>The four sibling repos form a cascade <code>releng/15.0 → toolchain → {kernel → modules, compat} → nextbsd</code>. We reuse the following <strong>verbatim or near-verbatim</strong>:</p>
+<table>
+<thead><tr>
+<th>Asset</th>
+<th>Source repo</th>
+<th>What we reuse</th>
+</tr></thead>
+<tbody>
+<tr><td>Toolchain container image</td><td><code>nextbsd-kernel-toolchain</code></td><td><code>ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:&lt;arch&gt;-&lt;tag&gt;</code> — bakes clang-19/lld-19 (apt.llvm.org), llvm binutils, bmake, full <code>/usr/src</code> (releng/15.0 incl. <code>share/mk</code> + <code>tools/build/make.py</code>), ccache, and ENV <code>MAKEOBJDIRPREFIX=/usr/obj</code>, <code>CROSS_BINDIR=/usr/lib/llvm-19/bin</code>, <code>CCACHE_CROSS_BINDIR=/opt/ccache-cross</code>. We run the nextbsd build *inside this image* as a <code>container:</code> job.</td></tr>
+<tr><td><code>buildenv</code> curated-install template</td><td><code>nextbsd-freebsd-compat/.github/workflows/build.yml</code> + <code>srclist.txt</code></td><td>The <code>make.py … buildenv BUILDENV_SHELL=/tmp/curated.sh</code> loop doing per-dir <code>make -C $d obj/all/install</code> with <code>DESTDIR=/stage</code>, <code>METALOG</code>, and <code>INSTALL="install -N /usr/src/etc -U -M /stage/METALOG -D /stage"</code>. This is the exact wrapper our 30 bmake components need.</td></tr>
+<tr><td>Sysroot bootstrap pair</td><td>compat</td><td><code>make.py … WITHOUT_TOOLCHAIN/TESTS/LIB32/MAN=yes toolchain</code> then <code>_includes</code>, plus the bulk header stage <code>cp -RLp …/tmp/usr/include/. /stage/usr/include/</code> (the <code>-L</code> dereferences the symlinked headers).</td></tr>
+<tr><td>Base sysroot artifact</td><td>compat</td><td><code>nextbsd-base-&lt;arch&gt;.tar.gz</code> is a structurally complete clang <code>--sysroot</code>: full <code>/usr/include</code>, crt objects (csu), <code>libc_nonshared.a</code>, <code>libcompiler_rt.a</code>/<code>libgcc.a</code>, libthr, libc++/libcxxrt, every base <code>.so</code>. We extract it and pass <code>--sysroot=&lt;dir&gt;</code>.</td></tr>
+<tr><td>Out-of-tree kmod cross recipe</td><td><code>nextbsd-kernel-modules</code></td><td><code>make.py --cross-bindir=$CCACHE_CROSS_BINDIR TARGET=… NO_KERNEL=yes</code> against a downloaded kernel-obj tree — the direct precedent for mach.ko.</td></tr>
+<tr><td>ccache block</td><td>kernel/modules</td><td><code>env CCACHE_DIR=${{github.workspace}}/.ccache</code>; <code>actions/cache@v4</code> key <code>ccache-&lt;job&gt;-&lt;target&gt;-${{github.run_id}}</code> + restore-keys prefix; <code>ccache -o max_size=NG; ccache -z; ccache -s</code>.</td></tr>
+<tr><td>Matrix + image-tag expression</td><td>toolchain/kernel/modules</td><td><code>matrix.include:[{target:amd64,target_arch:amd64},{target:arm64,target_arch:aarch64}]</code> and the `:${{matrix.target}}-${{… &amp;&amp; format('fbsd-{0}', …)</td><td></td><td>'latest'}}` tag expr.</td></tr>
+<tr><td>Cross-repo artifact download</td><td>modules</td><td><code>actions/download-artifact@v4</code> with <code>repository:</code>, <code>run-id:</code>, <code>github-token: ${{secrets.DISPATCH_TOKEN}}</code> (all three required or it 404s).</td></tr>
+<tr><td>Dispatch cascade</td><td>toolchain/kernel/compat</td><td><code>gh api repos/…/dispatches -f event_type=… -f client_payload[fbsd_sha]=…</code>, gated <code>github.ref_name=='main' &amp;&amp; matrix.target=='amd64'</code>. nextbsd already consumes <code>base-updated</code>.</td></tr>
+</tbody></table>
+<p><strong>The key inheritance</strong>: compat proves you can cross-build FreeBSD *userland* directories on Linux into a <code>/stage</code> sysroot with correct ownership via METALOG. The 30 Apple bmake components are the same kind of <code>bsd.lib.mk</code>/<code>bsd.prog.mk</code> directories — so the pattern transfers directly.</p>
+<h2 id="3-architecture-of-the-new-build">3. Architecture of the New Build</h2>
+<pre><code> repository_dispatch base-updated  /  push main  /  workflow_dispatch
+                        │
+                        ▼
+ ┌──────────────────────────────────────────────────────────────────┐
+ │ build  (matrix: amd64, aarch64-gated)  runs-on: ubuntu-24.04      │
+ │ container: ghcr.io/.../nextbsd-kernel-toolchain:${target}-&lt;tag&gt;   │
+ │                                                                    │
+ │  1. checkout                                                       │
+ │  2. ccache restore + reset (10G)                                  │
+ │  3. download artifacts (cross-repo, by run-id + DISPATCH_TOKEN):  │
+ │       nextbsd-base-&lt;arch&gt;     → extract to $WORK/rootfs (sysroot) │
+ │       kernel-obj-&lt;arch&gt;       → /usr/obj   (for mach.ko KBI)      │
+ │       nextbsd-modules-&lt;arch&gt;  → modules-artifact/ (non-fatal)     │
+ │  4. build HOST tools (native x86_64-linux, NOT --target):        │
+ │       migcom/mig, makefs, mkimg, kldxref, pwd_mkdb, cap_mkdb      │
+ │  5. make.py toolchain &amp;&amp; _includes  (stage cross sysroot)        │
+ │  6. build-cross.sh: 30 bmake comps + mach.ko via make.py buildenv │
+ │  7. cross cmake: libdispatch + swift-foundation-icu              │
+ │  8. assemble image on Linux (METALOG → makefs/mkimg, offline db) │
+ │  9. ccache -s; upload NextBSD-&lt;arch&gt;-&lt;date&gt;.img.zip              │
+ └──────────────────────────────────────────────────────────────────┘
+                        │ needs: build
+                        ▼
+ ┌──────────────────────────────────────────────────────────────────┐
+ │ test  (matrix amd64→qemu-x86_64+OVMF; arm64→qemu-aarch64+AAVMF)   │
+ │ runs-on: ubuntu-latest (NOT a container — needs /dev/kvm)         │
+ │   download artifact → tests/boot-test.sh (UNCHANGED ~80 markers)  │
+ └──────────────────────────────────────────────────────────────────┘
+                        │ needs: [build, test], if push main
+                        ▼
+ ┌──────────────────────────────────────────────────────────────────┐
+ │ release  (single non-matrix job: gather both arches, publish once)│
+ └──────────────────────────────────────────────────────────────────┘</code></pre>
+<p><strong>Cross mechanism.</strong> No <code>--target</code>/<code>--sysroot</code> is hand-passed to bmake. We drive every FreeBSD <code>make -C</code> through <code>./tools/build/make.py --cross-bindir=$CCACHE_CROSS_BINDIR TARGET=$T TARGET_ARCH=$TA buildenv</code>, which sets <code>XCC</code>/<code>XCXX</code>/sysroot automatically from the staged cross-tools. The sysroot for per-dir builds is the buildenv-managed <code>/usr/obj/usr/src/&lt;machine&gt;.&lt;arch&gt;/tmp</code> *plus* the extracted compat base in <code>$WORK/rootfs</code> (which doubles as the incremental sysroot as components install headers the next consumes).</p>
+<p><strong>No packages, no chroot, no FreeBSD-binary execution at build time.</strong> clang/lld come from the image; cmake/ninja/byacc/flex come from apt (baked into the Dockerfile in a follow-up). Every chroot operation in build.sh is either deleted (pkg bootstrap, devfs, host-coreutils copy) or replaced with an offline host-tool invocation (kldxref, pwd_mkdb, cap_mkdb) or a static inspection (<code>llvm-readelf</code> for the old <code>ldd</code>/<code>ldconfig -r</code> self-tests).</p>
+<p><strong>amd64 first.</strong> compat is amd64-only today; <code>nextbsd-base-arm64</code> does not yet exist. The aarch64 build leg is wired but gated off until the compat arm64 base ships. arm64 is then a *matrix add*, not new engineering (the toolchain files are arch-parameterized).</p>
+<h2 id="4-componentbycomponent-crossbuild-plan">4. Component-by-Component Cross-Build Plan</h2>
+<p>Build order is dependency-driven: libmach → migcom(host) → libdispatch → libxpc → ICU → CoreFoundation → the MIG daemons → cmd suites → bootstrap/ssh-bonjour, with mach.ko independent. All 30 bmake components use the <strong>same</strong> <code>make.py buildenv</code> wrapper + <code>install -N -U -M METALOG</code>; the table notes only per-component specifics.</p>
+<table>
+<thead><tr>
+<th>#</th>
+<th>Component</th>
+<th>Build system</th>
+<th>Difficulty</th>
+<th>Action</th>
+</tr></thead>
+<tbody>
+<tr><td>1</td><td>libmach (libsystem_kernel)</td><td>bmake</td><td>moderate</td><td>First in chain. <code>buildenv</code> cross; pre-create <code>/usr/lib/system</code> + <code>/usr/include</code> (not auto-mkdir'd). Install <code>.defs</code> (std_types/mach_types/machine_types) FIRST — all downstream MIG consumes them. <code>LIBADD+=execinfo</code>.</td></tr>
+<tr><td>2</td><td>bootstrap_cmds (migcom + mig)</td><td>bmake</td><td>moderate</td><td><strong>HOST tool</strong> — build native (no <code>--target</code>) into <code>$WORK/hosttools/{libexec/migcom,bin/mig}</code>; apt byacc+flex. Drop chroot <code>mig -version</code>; verify natively.</td></tr>
+<tr><td>3</td><td>libdispatch</td><td>cmake</td><td><strong>hard</strong></td><td>See §5. Cross toolchain file, HAVE_MACH=ON, host migcom + cross MIGCC, post-install SONAME symlinks.</td></tr>
+<tr><td>4</td><td>libxpc</td><td>bmake</td><td>moderate</td><td><code>buildenv</code>; route <code>SYSROOT=$WORK/rootfs</code>. Do <strong>not</strong> pass CFLAGS/LDFLAGS on cmdline (bmake overrides <code>+=</code>, build.sh:1014 warns). Links libsystem_kernel.</td></tr>
+<tr><td>5</td><td>swift-foundation-icu</td><td>cmake</td><td><strong>hard</strong></td><td>See §5. Cross toolchain file, host-decoded data blob, default <code>-jN</code>, libicucore aliases. Build <strong>before</strong> CoreFoundation.</td></tr>
+<tr><td>6</td><td>libCoreFoundation</td><td>bmake</td><td>hard</td><td><code>buildenv</code>; SHLIB_MAJOR=6; pre-mkdir <code>/usr/include/CoreFoundation</code>. <code>-fblocks</code> pervasive (CF headers carry block typedefs → every consumer needs <code>-fblocks</code>). Depends on ICU+libdispatch+libsystem_kernel.</td></tr>
+<tr><td>7</td><td>launchd (liblaunch/src/support)</td><td>bmake</td><td>hard</td><td>3 subdirs. Pre-gen 7 <code>.defs</code> (job/job_forward/job_reply/internal/helper/mach_exc/notify) via cross-MIGCC+host-migcom into <code>$WORK/launchd-mig</code>; pass <code>MIGOUT=</code>. launchctl links CF+ICU → after CF.</td></tr>
+<tr><td>8</td><td>configd</td><td>bmake</td><td>hard</td><td>Gen <code>config.defs</code> (base id 20000) into <code>$WORK/configd-mig</code>. Ships <code>config_wire.c</code> reused by libSystemConfiguration. Drop host CLI self-tests or build them cross.</td></tr>
+<tr><td>9</td><td>libSystemConfiguration</td><td>bmake</td><td>hard</td><td>After configd; <code>MIGOUT=$CONFIGD_MIG</code>, reuses configUser.c+config_wire.c. CF-typed <code>-fblocks</code>.</td></tr>
+<tr><td>10</td><td>hwregd</td><td>bmake</td><td>moderate</td><td>Gen <code>hwreg.defs</code> into <code>$WORK/hwreg-mig</code>. hwregUser.c reused by libIOKit.</td></tr>
+<tr><td>11</td><td>libIOKit</td><td>bmake</td><td>moderate</td><td>After hwregd; <code>MIGOUT=$HWREG_MIG</code>. CF wrapper, <code>-fblocks</code>.</td></tr>
+<tr><td>12</td><td>Libnotify (lib + notifyd)</td><td>bmake</td><td>hard</td><td>Gen <code>notify_ipc.defs</code>+<code>notify_old_ipc.defs</code> into <code>$WORK/libnotify-mig</code>; <strong>symlink short names</strong> (subsystem <code>notify_ipc</code>, build.sh:1974). <code>MIGOUT=</code>.</td></tr>
+<tr><td>13</td><td>syslog (asl/syslogd/aslmanager/util)</td><td>bmake</td><td>hard</td><td>5 subdirs, no top Makefile. Gen <code>asl_ipc.defs</code> into <code>$WORK/asl-mig</code>; all four take <code>MIGOUT=</code>. Order: asl→syslogd→aslmanager→util.</td></tr>
+<tr><td>14</td><td>IPConfiguration</td><td>bmake</td><td>hard</td><td>Gen <code>ipconfig.defs</code> into <code>$WORK/ipcfg-mig</code>. CF/SC-typed. After libSystemConfiguration.</td></tr>
+<tr><td>15</td><td>KernelEventMonitor</td><td>bmake</td><td>moderate</td><td>No MIG. SC publisher. After libSystemConfiguration.</td></tr>
+<tr><td>16</td><td>mDNSResponder (daemon + libdns_sd)</td><td>bmake</td><td>moderate</td><td>No MIG. Verify <code>__APPLE__</code>/mDNSPosix guards pick FreeBSD path under cross-clang. dns_sd.h consumed by ssh-bonjour.</td></tr>
+<tr><td>17</td><td>DiskArbitration</td><td>bmake</td><td>moderate</td><td>No MIG. CF/SC, <code>-fblocks</code>.</td></tr>
+<tr><td>18</td><td>hostnamed</td><td>bmake</td><td>moderate</td><td>No MIG. CF/SC+libnotify. Drop/convert host self-tests.</td></tr>
+<tr><td>19</td><td>OpenPAM</td><td>bmake</td><td>moderate</td><td><code>CC?=cc</code> so <code>CC</code> override works. <code>-DHAVE_CONFIG_H</code> (vendored config.h, no live configure). Builds libpam.so.6 overlay. <code>SYSROOT=</code> staged.</td></tr>
+<tr><td>20</td><td>pam_modules</td><td>bmake</td><td>moderate</td><td>Uses <code>${CC}</code>. 5 <code>pam_*.so.6</code> overlays. Depends on OpenPAM headers.</td></tr>
+<tr><td>21</td><td>file_cmds</td><td>bmake (GNU-flavor)</td><td>hard</td><td><strong>17 recipes hardcode <code>cc</code>/<code>install</code></strong> — sed <code>cc</code>→<code>$(CC)</code>, <code>install</code>→<code>$(INSTALL)</code>. Links <code>-lutil</code>/<code>-lsbuf</code>.</td></tr>
+<tr><td>22</td><td>shell_cmds</td><td>bmake (GNU-flavor)</td><td>hard</td><td><strong>41 hardcoded <code>cc</code></strong> — same sed. <code>/bin/sh</code> load-bearing.</td></tr>
+<tr><td>23</td><td>text_cmds</td><td>bmake (GNU-flavor)</td><td>hard</td><td><strong>34 hardcoded <code>cc</code></strong> — same sed. Do NOT build the vendored <code>jq</code> subtree via its configure.</td></tr>
+<tr><td>24</td><td>adv_cmds</td><td>bmake (GNU-flavor)</td><td>moderate</td><td><strong>7 hardcoded <code>cc</code></strong> — same sed. Provides <code>cap_mkdb</code> (image-critical).</td></tr>
+<tr><td>25</td><td>system_cmds</td><td>bmake (GNU-flavor)</td><td>moderate</td><td><strong>11 hardcoded <code>cc</code></strong> — same sed. Provides <code>pwd_mkdb</code> (image-critical).</td></tr>
+<tr><td>26</td><td>bootstrap</td><td>inline cc</td><td>trivial</td><td>Replace inline host <code>cc</code> (build.sh:760-799) with cross-clang <code>--target/--sysroot</code>, <code>-lsystem_kernel -lpthread</code>.</td></tr>
+<tr><td>27</td><td>ssh-bonjour</td><td>inline cc</td><td>trivial</td><td>Single cross-clang compile (build.sh:2631), <code>-ldns_sd</code>. After mDNSResponder.</td></tr>
+<tr><td>28-32</td><td>(the 4 cmd-suite tools + bootstrap server are counted above; OpenSSH below)</td><td>autotools</td><td>hard</td><td>OpenSSH (build.sh:2594): cross-configure <code>--host=&lt;arch&gt;-unknown-freebsd15.0 CC=cross-clang --sysroot=</code>, with a cached <code>config.cache</code> for tests that try to <strong>run</strong> target binaries (classic autotools cross gotcha).</td></tr>
+<tr><td>—</td><td><strong>mach.ko</strong></td><td>bmake (<code>bsd.kmod.mk</code>)</td><td>hard</td><td>Vanilla out-of-tree kmod. <code>make -C src/mach_kmod SYSDIR=/usr/src/sys KMODDIR=/boot/kernel KERNBUILDDIR=&lt;kernel-obj&gt;/sys/NEXTBSD</code> inside <code>make.py buildenv --cross-bindir=$CCACHE_CROSS_BINDIR</code>. <strong>Highest-confidence hard piece</strong> — modules repo already proves this pattern. KERNBUILDDIR must come from the kernel-obj of the *matching fbsd_sha run* (KBI match).</td></tr>
+</tbody></table>
+<p><strong>Linux-install requirement (all bmake components):</strong> every install uses <code>install -N /usr/src/etc -U -M $WORK/rootfs/METALOG -D $WORK/rootfs</code> — <code>-N</code> supplies the FreeBSD user/group DB (no <code>wheel</code> on Linux), <code>-U</code> is metalog mode (Linux can't chown). The <code>chflags -R noschg</code> cleanup is replaced with plain <code>rm</code> (no schg on Linux).</p>
+<h2 id="5-the-two-hard-nuts-libdispatch-and-icu">5. The Two Hard Nuts: libdispatch and ICU</h2>
+<p>Both keep their upstream CMake builds (rewriting to bmake is enormous and pointless) and become <strong>native-Linux cross builds</strong> driven by a <code>CMAKE_TOOLCHAIN_FILE</code> pinned to FreeBSD. apt-install <code>cmake ninja-build</code> (bake into the Dockerfile). Shared toolchain file shape:</p>
+<pre><code># cmake/freebsd-cross-toolchain.cmake
+set(CMAKE_SYSTEM_NAME FreeBSD)
+set(CMAKE_SYSTEM_PROCESSOR x86_64)          # aarch64 for arm64
+set(_triple x86_64-unknown-freebsd15.0)     # aarch64-...-freebsd15.0
+set(CMAKE_C_COMPILER   /opt/ccache-cross/clang)    # ccache-wrapped
+set(CMAKE_CXX_COMPILER /opt/ccache-cross/clang++)
+set(CMAKE_ASM_COMPILER /opt/ccache-cross/clang)
+foreach(l C CXX ASM)
+  set(CMAKE_${l}_COMPILER_TARGET ${_triple})
+endforeach()
+add_link_options(-fuse-ld=lld)
+set(CMAKE_SYSROOT        $ENV{ROOTFS})       # = $WORK/rootfs (extracted base)
+set(CMAKE_FIND_ROOT_PATH ${CMAKE_SYSROOT})
+list(APPEND CMAKE_PROGRAM_PATH $ENV{HOSTTOOLS}/bin)   # host mig
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)  # mig is a HOST tool
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)   # system_kernel under sysroot
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)   # never host /usr/include
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)</code></pre>
+<p>Pointing <code>CMAKE_C/CXX_COMPILER</code> at the <strong>ccache-wrapped</strong> <code>/opt/ccache-cross/clang[++]</code> (not the raw <code>/usr/lib/llvm-19/bin</code>) is what makes ICU's ~600 C++ TUs cache across runs.</p>
+<h3>5.1 libdispatch (build.sh:864-918) — HAVE_MACH=ON</h3>
+<p>The cross challenge reduces to four mechanical things; the CMakeLists' ~200 <code>check_*</code> probes already give the correct FreeBSD answers *if they compile-test against the sysroot*.</p>
+<ol>
+<li><strong>Build mig/migcom as HOST tools</strong> into <code>$WORK/hosttools</code> (native clang, no <code>--target</code>; apt byacc+flex). Drop chroot <code>mig -version</code>.</li>
+<li><strong>Reverse the mach.h ordering.</strong> build.sh currently *defers* installing the <code>mach/mach.h</code> umbrella until after libdispatch (build.sh:995) precisely to keep HAVE_MACH off. For HAVE_MACH=ON we must install <code>mach/mach.h</code> + mach type headers into <code>$WORK/rootfs/usr/include</code> <strong>before</strong> configuring libdispatch, so <code>check_include_files(mach/mach.h)</code> → HAVE_MACH=ON. If the full umbrella over-includes Apple-internal paths, install a curated <code>mach.h</code> exposing only the libsystem_kernel surface.</li>
+<li><strong>MIG split for <code>protocol.defs</code>:</strong> <code>MIGCOM=$WORK/hosttools/libexec/migcom</code>, <code>MIGCC='/usr/lib/llvm-19/bin/clang --target=&lt;triple&gt; --sysroot=$WORK/rootfs'</code> (so mig's internal <code>cc -E</code> resolves mach <code>.defs</code> imports from the sysroot).</li>
+<li><strong>Configure/build/install natively</strong> (no chroot):</li>
+</ol>
+<p>   ``<code>bash    cmake -G Ninja -S src/libdispatch -B $WORK/libdispatch-build \      -DCMAKE_TOOLCHAIN_FILE=cmake/freebsd-cross-toolchain.cmake \      -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib/system \      -DINSTALL_DISPATCH_HEADERS_DIR=/usr/include/dispatch \      -DINSTALL_OS_HEADERS_DIR=/usr/include/os \      -DHAVE_MACH:BOOL=ON -DCMAKE_BUILD_TYPE=Release    cmake --build $WORK/libdispatch-build    DESTDIR=$WORK/rootfs cmake --install $WORK/libdispatch-build    </code>``</p>
+<p><strong>Post-configure assert (hard gate):</strong> <code>grep -q '#define HAVE_MACH 1' $WORK/libdispatch-build/config/config_ac.h</code> — fail loudly if the sysroot's <code>mach/mach.h</code> was missing. <strong>Post-build assert:</strong> <code>protocolServer.h</code> + <code>protocolUser.c</code> exist non-empty (proves MIG fired).</p>
+<p><strong>Keep verbatim</strong> the SONAME symlink block (build.sh:894-918): <code>libdispatch.so.0</code>, <code>libBlocksRuntime.so.0</code>, <code>libsystem_dispatch.so[.0]</code>, <code>libsystem_blocks.so[.0]</code> (libdispatch installs unversioned; FreeBSD ldconfig only indexes <code>lib*.so.[0-9]+</code>). BlocksRuntime cross-builds from <code>src/BlocksRuntime</code> (<code>if(NOT APPLE)</code> add_subdirectory) — plain C, no host tooling. <code>find_library(system_kernel … PATHS /usr/lib/system NO_DEFAULT_PATH)</code> (src/CMakeLists ~199): if <code>NO_DEFAULT_PATH</code> defeats sysroot rerooting, patch PATHS to <code>${CMAKE_SYSROOT}/usr/lib/system</code>. Rebuild test_libdispatch/test_libdispatch_mach with cross-clang; replace chroot <code>ldd</code>/<code>ldconfig -r</code> with <code>llvm-readelf -d</code> DT_NEEDED checks.</p>
+<h3>5.2 swift-foundation-icu (build.sh:1194-1250)</h3>
+<p><strong>The hard ICU problems are already engineered away in this fork.</strong> Grep confirms: no genrb/pkgdata/icupkg/genccode, no <code>--with-cross-build</code>, no <code>try_run</code>, no <code>CMAKE_CROSSCOMPILING</code> branch. CLDR data is pre-baked into 4 committed hex chunks. The OOM TU (<code>icu_packaged_data.cpp</code>) is already removed from all source lists; the <code>.incbin</code>/<code>.S</code> path bounds peak RSS to ~150 MB, so <strong>drop the stale <code>-j2</code> cap</strong> and use default <code>-jN</code>.</p>
+<p><strong>The one cross fix: <code>freebsd_decode_icu_chunks</code></strong> (icuSources/common/CMakeLists.txt:268) — a ~100-line host C program that decodes the hex chunks to a 40 MB binary blob the <code>.incbin</code> embeds. Under a cross toolchain file, <code>add_executable</code> would build it as a FreeBSD ELF that can't run on the Linux runner (<code>Exec format error</code>). <strong>Recommended (option iii, lowest-risk):</strong> decode the blob with native <code>cc</code> in a shell step <strong>before</strong> cmake, pass <code>-DICU_PACKAGED_BIN_PATH=…</code>, and delete the <code>add_executable</code> + <code>add_custom_command</code> + <code>add_custom_target</code> in common/CMakeLists.txt — keep only the <code>configure_file</code> of the <code>.S</code> template + <code>target_sources</code> of the generated <code>.c</code> + the uvernum.h symbol extraction.</p>
+<p>Configure/build/install:</p>
+<pre><code>cc src/swift-foundation-icu/icuSources/common/&lt;decoder&gt;.c -o $WORK/decode &amp;&amp; \
+  $WORK/decode … &gt; $WORK/icu_packaged_main_data.bin   # host pre-decode
+cmake -G Ninja -S src/swift-foundation-icu -B $WORK/icu-build \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/freebsd-cross-toolchain.cmake \
+  -DICU_PACKAGED_BIN_PATH=$WORK/icu_packaged_main_data.bin \
+  -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib/system \
+  -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build $WORK/icu-build          # default -jN
+DESTDIR=$WORK/rootfs cmake --install $WORK/icu-build</code></pre>
+<p><code>CMAKE_SYSTEM_NAME=FreeBSD</code> fires the <code>elseif(... FreeBSD)</code> branch (line 99, no U_TIMEZONE). <code>U_DISABLE_RENAMING=1</code> is forced unconditionally (line 61) so CF links <code>ucol_open</code>, not <code>icu_74_ucol_open</code>. cmake's plain-copy install needs no chown, so the Linux DESTDIR install Just Works (no <code>-N/-U</code> needed here). Recreate libicucore aliases (replacing build.sh:1225-1227): <code>ln -sf lib_FoundationICU.so {libicucore.so,libicucore.so.74,lib_FoundationICU.so.74}</code>. Build <strong>before</strong> CoreFoundation (CF <code>#include &lt;_foundation_unicode/uloc.h&gt;</code>).</p>
+<p><strong>ICU validation:</strong> <code>llvm-readelf -s lib_FoundationICU.so | grep icudt74_dat</code> shows a ~40 MB OBJECT (data embedded); <code>llvm-nm -D | grep -c 'T ucol_open'</code> == 1 and <code>grep icu_74_ucol_open</code> == 0; <code>llvm-readelf -h</code> shows OS/ABI FreeBSD + correct e_machine; DT_NEEDED lists FreeBSD <code>libc++.so.1</code>.</p>
+<h2 id="6-image-assembly-on-linux">6. Image Assembly on Linux</h2>
+<p>All image-time FreeBSD binaries are <strong>pure offline file/ELF/cdb processors</strong> — they read/write on-disk structures and never need a FreeBSD kernel. We cross-build them <strong>for the runner host</strong> (native x86_64-linux ELF, <strong>not</strong> <code>--target=freebsd</code>) and run them against the staged rootfs with <strong>no chroot</strong>.</p>
+<table>
+<thead><tr>
+<th>Step</th>
+<th>build.sh</th>
+<th>Linux replacement</th>
+</tr></thead>
+<tbody>
+<tr><td>pwd_mkdb (pwd.db/spwd.db)</td><td>2675</td><td>Offline <code>pwd_mkdb -p -d $WORK/rootfs/etc …/master.passwd</code> — <strong>same form build.sh:119 already uses today</strong> (proven).</td></tr>
+<tr><td>cap_mkdb (login.conf.db)</td><td>2676</td><td>Offline <code>cap_mkdb</code> writing into rootfs/etc. Trivial cdb writer.</td></tr>
+<tr><td>kldxref (linker.hints)</td><td>645,653</td><td>Offline host <code>kldxref $WORK/rootfs/boot/kernel</code> — parses each <code>.ko</code> MODULE_METADATA section (never executes). Already cross-used by nextbsd-kernel-modules.</td></tr>
+<tr><td>ldconfig hints (×12)</td><td>688,911,…</td><td>Drop (binaries bake <code>-Wl,-rpath,/usr/lib/system</code>) or one offline host <code>ldconfig</code> at the end.</td></tr>
+<tr><td>ldd/ldconfig-r self-tests</td><td>815-966,…</td><td>Static <code>llvm-readelf -d</code> DT_NEEDED checks (these never *ran* the binary — only inspected it).</td></tr>
+<tr><td>libscan ELF closure</td><td>2697-2715</td><td><code>readelf</code>→<code>llvm-readelf</code>. Diagnostic-only, never fatal.</td></tr>
+<tr><td>makefs FFS root</td><td>2718-2725</td><td><code>makefs -t ffs -B little -o version=2,label=ROOTFS,softupdates=1 -b 1500m -F $WORK/METALOG rootfs.ufs $WORK/rootfs</code></td></tr>
+<tr><td>makefs msdos ESP</td><td>2731-2746</td><td><code>makefs -t msdos -o fat_type=32 …</code> (FAT has no uid/gid → no metalog). BOOTX64.EFI (amd64) / BOOTAA64.EFI (arm64). loader from compat <code>/boot</code>.</td></tr>
+<tr><td>mkimg GPT</td><td>2763-2768</td><td><code>mkimg -s gpt -f raw -b rootfs/boot/pmbr -p freebsd-boot/bootfs:=…gptboot -p efi/efiboot0:=esp.img -p freebsd-ufs/ROOTFS:=rootfs.ufs -o NextBSD-${ARCH}-${IMG_DATE}.img</code> (arm64: drop freebsd-boot, UEFI-only).</td></tr>
+<tr><td>zip + sha256</td><td>2777-2780</td><td>Native Linux. Unchanged.</td></tr>
+</tbody></table>
+<p><strong>The ownership problem (non-root builder):</strong> the Linux runner cannot chown to root:wheel or set schg on disk. Solution — the <strong>FreeBSD <code>make release</code> pattern</strong>: feed makefs a <code>-F METALOG</code> mtree manifest so ownership/mode/flags are written into the UFS <strong>as metadata</strong> without ever chowning on disk. We preserve <code>$WORK/METALOG</code> across the whole assembly: every component install records into it via <code>install -M METALOG</code>; a reconciliation awk pass appends <code>uid=0 gid=0 mode=&lt;stat&gt;</code> defaults for overlay/base/db files lacking entries, with explicit overrides (<code>.ko</code> 0555, <code>linker.hints</code> 0444, <code>spwd.db</code> 0600, sshd privsep dirs). The db-regen outputs are appended to METALOG before makefs runs.</p>
+<p><strong>Tool sourcing:</strong> build makefs/mkimg/kldxref from <code>/usr/src</code> and host pwd_mkdb/cap_mkdb in the build job (first PR); <strong>strongly recommend a follow-up baking these into nextbsd-kernel-toolchain</strong> (compat wants them too) so nextbsd's PR stays workflow+script only.</p>
+<h2 id="7-ci-workflow-rewrite-vmactions-deletion-dispatch-rewiring">7. CI Workflow Rewrite + vmactions Deletion + Dispatch Rewiring</h2>
+<p><strong><code>build</code> job — full replacement.</strong> Delete the entire <code>vmactions/freebsd-vm</code> "build ISO inside FreeBSD VM" block plus the distfiles cache that existed only for the VM path. New job:</p>
+<ul>
+<li><code>runs-on: ubuntu-24.04</code>; <code>env: CCACHE_DIR: ${{github.workspace}}/.ccache</code>; <code>strategy.fail-fast:false</code>; matrix amd64 + (gated) aarch64.</li>
+<li><code>container.image: ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:${{matrix.target}}-${{(github.event.client_payload.fbsd_sha || inputs.fbsd_sha) &amp;&amp; format('fbsd-{0}', github.event.client_payload.fbsd_sha || inputs.fbsd_sha) || 'latest'}}</code>.</li>
+<li>Steps: checkout → compute date → ccache restore (key <code>ccache-nextbsd-${{matrix.target}}-${{github.run_id}}</code>, restore-keys <code>ccache-nextbsd-${{matrix.target}}-</code>) → <code>ccache -o max_size=10G; ccache -z</code> → download base/kernel-obj/modules (cross-repo, run-id + DISPATCH_TOKEN; modules <code>continue-on-error</code>) → build host tools → <code>make.py toolchain &amp;&amp; _includes</code> → <code>SKIP_VM=1 ARCH=$TARGET_ARCH sh build-cross.sh</code> → cross cmake (libdispatch+ICU) → assemble image → <code>ccache -s</code> → upload <code>NextBSD-${{matrix.target}}-${{steps.meta.outputs.date}}</code>.</li>
+</ul>
+<p><strong><code>test</code> job — extend, don't restructure.</strong> Already <code>ubuntu-latest</code> + qemu + expect + OVMF (never vmactions). Add a 2-cell matrix: amd64 → <code>qemu-system-x86</code> + <code>ovmf</code>; aarch64 → <code>qemu-system-arm</code> + <code>qemu-efi-aarch64</code> (AAVMF, gated). <code>tests/boot-test.sh</code> <strong>unchanged</strong>; pass <code>ARCH</code> to select the qemu binary/firmware.</p>
+<p><strong><code>release</code> job — collapse to single non-matrix job</strong> (the in-file NOTE warns of a matrix race on <code>gh release delete</code>): <code>needs:[build,test]</code>, <code>if: push main</code>, download all <code>NextBSD-*</code> artifacts merge-multiple, delete+publish <code>continuous</code> once via <code>softprops/action-gh-release@v2</code>.</p>
+<p><strong>Dispatch rewiring.</strong> nextbsd already consumes <code>base-updated</code>. Add <strong>one line</strong> to compat's <code>base-updated</code> dispatch: <code>-f "client_payload[compat_run_id]=${{github.run_id}}"</code> (and ideally <code>[kernel_run_id]</code>/<code>[modules_run_id]</code>) so nextbsd downloads the <strong>exact matching artifacts by run-id</strong> rather than <code>gh run list</code> latest-success (avoids ABI/KBI skew). Thread <code>fbsd_sha</code> through to pin the toolchain image tag to the same source the kernel/base were built from. Add <code>fbsd_sha</code>/run-id inputs to <code>workflow_dispatch</code> for manual pins.</p>
+<h2 id="8-bootcontract-parity-validation-strategy-the-oracle">8. Boot-Contract Parity &amp; Validation Strategy (The Oracle)</h2>
+<p>The parity oracle is <strong><code>tests/boot-test.sh</code>, unchanged</strong> — the ~80-marker expect contract that gates today's vmactions image. Because it is byte-identical and discovers the <code>.img</code> member purely by extension (boot-test.sh:30), <strong>a green run on the Linux-assembled image is definitionally boot parity</strong>: same firmware (OVMF), same expect markers, same image-name shape; the only variable changed is *where* the image was assembled.</p>
+<p><strong>Static gates (before the ~17-min qemu boot — fail fast):</strong></p>
+<ol>
+<li><code>gdisk -l</code>/<code>sgdisk -p</code> confirm the 3 GPT partitions (freebsd-boot, efi, freebsd-ufs/ROOTFS); <code>file -s</code> the ufs partition shows "Unix Fast File System"; mtools/loopback the ESP confirms <code>/EFI/BOOT/BOOTX64.EFI</code>.</li>
+<li><strong>ELF-ABI gate</strong> (catches the hardcoded-<code>cc</code> and cmake host-leak risks as *build* failures): <code>llvm-readelf -h</code> over <code>rootfs/{bin/sh, sbin/launchd, usr/sbin/pwd_mkdb, usr/lib/system/libsystem_kernel.so, lib/libdispatch.so.0, lib/libicucore.so.74}</code> asserting <code>EI_OSABI=FreeBSD</code> and <code>e_machine</code> matches target.</li>
+<li><strong>DT_NEEDED closure</strong> via <code>llvm-readelf -d</code> over the rootfs, resolving against <code>/usr/lib</code> + <code>/usr/lib/system</code> (replaces the deleted chroot <code>ldd</code> self-tests).</li>
+<li>HAVE_MACH=1 in libdispatch config_ac.h; ICU <code>icudt74_dat</code> symbol present; <code>ucol_open</code> unrenamed.</li>
+</ol>
+<p><strong>Dynamic gate (authoritative):</strong> boot the artifact under qemu+OVMF. Markers map precisely to assembly defects:</p>
+<table>
+<thead><tr>
+<th>Marker</th>
+<th>Proves</th>
+<th>A failure points to</th>
+</tr></thead>
+<tbody>
+<tr><td>loader OK prompt within 60s</td><td>UEFI ESP + loader.efi placement</td><td>mkimg / ESP</td></tr>
+<tr><td>FreeBSD banner + <code>login:</code></td><td>freebsd-ufs root mounts rw, label=ROOTFS, linker.hints/mach.ko preload</td><td>makefs/UFS/metalog</td></tr>
+<tr><td>MACH-SMOKE-OK (232)</td><td>mach.ko indexed + loaded</td><td>kldxref / linker.hints / KBI</td></tr>
+<tr><td>LIBSYSTEM-KERNEL-OK</td><td>libmach links</td><td>libmach cross</td></tr>
+<tr><td>LIBDISPATCH-OK (313)</td><td>dispatch roundtrip</td><td>libdispatch cross</td></tr>
+<tr><td>LIBDISPATCH-MACH-OK (324)</td><td>HAVE_MACH protocolServer + <code>-lsystem_kernel</code></td><td>MIG codegen</td></tr>
+<tr><td>PAM-LOGIN-OK</td><td>offline pwd_mkdb/cap_mkdb db format</td><td>offline db regen</td></tr>
+<tr><td><code>halt -p</code> → qemu exit 0, "boot-test PASSED"</td><td>full contract</td><td>—</td></tr>
+</tbody></table>
+<p><code>release</code> publishes only when build+test both pass on push to main.</p>
+<h2 id="9-ordered-buildup-within-the-single-branch-failures-localize">9. Ordered Build-Up Within the Single Branch (Failures Localize)</h2>
+<p>Land in dependency order so each step is independently green before the next. Use a per-component fallback flag so the two cmake nuts land <strong>last</strong>.</p>
+<ol>
+<li><strong>Skeleton + ingest.</strong> New <code>build</code> job container + matrix; ccache; download base/kernel-obj/modules; extract base to <code>$WORK/rootfs</code>. Add <code>SKIP_VM</code> guard to build.sh (skip pkg front-half 65-340, all chroot blocks). *Gate:* artifacts present, sysroot has <code>usr/include/stdint.h</code>.</li>
+<li><strong>Host tools.</strong> Build migcom/mig/makefs/mkimg/kldxref/pwd_mkdb/cap_mkdb native. *Gate:* <code>mig -version</code>, <code>makefs --help</code> run on the runner.</li>
+<li><strong>mach.ko</strong> (highest-confidence hard piece — copy modules pattern). *Gate:* <code>mach.ko</code> ELF for target via <code>llvm-readelf -h</code>; KERNBUILDDIR matched.</li>
+<li><strong>libmach</strong> (first userland). *Gate:* <code>libsystem_kernel.so</code> in <code>/usr/lib/system</code>; <code>.defs</code> staged.</li>
+<li><strong>The MIG-light bmake comps</strong> (libxpc) + <strong>the 5 cmd suites</strong> (sed <code>cc</code>→<code>$(CC)</code>, ELF-ABI gate per suite).</li>
+<li><strong>CoreFoundation chain</strong>: ICU → CoreFoundation → launchd → configd → libSystemConfiguration → hwregd → libIOKit → Libnotify → syslog → IPConfiguration → KernelEventMonitor → mDNSResponder → DiskArbitration → hostnamed (wire MIG host/cross split as each MIG comp lands).</li>
+<li><strong>OpenPAM + pam_modules + bootstrap + ssh-bonjour + OpenSSH</strong> (cross-configure with config.cache).</li>
+<li><strong>libdispatch</strong> (CMake toolchain file, HAVE_MACH gate). *Gate:* config_ac.h HAVE_MACH=1, protocolServer.h non-empty.</li>
+<li><strong>swift-foundation-icu</strong> (host-decoded blob, default <code>-jN</code>). *Gate:* icudt74_dat symbol, unrenamed ucol_open.</li>
+<li><strong>Image assembly + METALOG</strong> (makefs <code>-F</code>, offline db). *Gate:* static GPT/ESP/UFS checks.</li>
+<li><strong>Boot-test</strong> end-to-end on amd64. *Gate:* full marker chain green.</li>
+<li><strong>Dispatch rewiring + release collapse + arm64 leg wiring</strong> (gated off until compat arm64 base exists).</li>
+</ol>
+<h2 id="10-risk-register">10. Risk Register</h2>
+<table>
+<thead><tr>
+<th>Risk</th>
+<th>Likelihood</th>
+<th>Impact</th>
+<th>Mitigation</th>
+</tr></thead>
+<tbody>
+<tr><td>5 GNU-make suites silently emit Linux ELF (hardcoded <code>cc</code>) → unbootable load-bearing tools (/bin/sh, pwd_mkdb, cap_mkdb)</td><td>Med</td><td>High</td><td>sed <code>cc</code>→<code>$(CC)</code>/<code>install</code>→<code>$(INSTALL)</code> in build-cross.sh; <strong>per-suite <code>llvm-readelf -h</code> ELF-ABI gate</strong> turns a missed recipe into a *build* failure, not a boot failure.</td></tr>
+<tr><td>HAVE_MACH silently 0 (mach.h deferred) → libdispatch builds non-Mach stub, MIG never runs</td><td>Med</td><td>High</td><td>Install <code>mach/mach.h</code> <strong>before</strong> configure; hard post-configure <code>grep HAVE_MACH 1</code> assert; curated mach.h if umbrella over-includes.</td></tr>
+<tr><td>ICU decoder cross-compiled → <code>Exec format error</code> → empty data blob</td><td>Med</td><td>High</td><td>Option (iii): host pre-decode + <code>-DICU_PACKAGED_BIN_PATH</code>, delete <code>add_executable</code>. Validate <code>icudt74_dat</code> ~40 MB OBJECT post-install.</td></tr>
+<tr><td>MIG host/cross split wired backwards → empty *Server.c/*User.c, every daemon fails</td><td>Med</td><td>High</td><td>migcom native (no <code>--target</code>); <code>MIGCC='clang --target=… --sysroot=…'</code>; libmach <code>.defs</code> first; smoke-compile one generated <code>*User.c</code> for target before proceeding.</td></tr>
+<tr><td><code>find_library(system_kernel NO_DEFAULT_PATH)</code> bypasses sysroot reroot</td><td>Med</td><td>Med</td><td><code>FIND_ROOT_PATH_MODE_LIBRARY=ONLY</code>; if it trips, patch PATHS to <code>${CMAKE_SYSROOT}/usr/lib/system</code>. Verify at first configure.</td></tr>
+<tr><td>Cross-repo ABI mismatch (<code>gh run list</code> latest pulls wrong fbsd_sha) → KBI/libc-libthr skew</td><td>Med</td><td>High</td><td>Thread <code>fbsd_sha</code> + explicit run-ids through <code>base-updated</code>; pin image tag + download run-ids to them; mach.ko KERNBUILDDIR from matching kernel-obj.</td></tr>
+<tr><td>makefs <code>-F</code> metalog gaps → builder-owned root:wheel/0555 files → sshd/login/PAM misbehave at boot</td><td>Med</td><td>Med</td><td>Drive ALL installs through <code>install -M METALOG</code>; reconciliation awk pass for un-tracked paths; boot markers (PAM-LOGIN-OK) are the ownership oracle.</td></tr>
+<tr><td>makefs/mkimg cross-for-host endian/CRC bug → OVMF/loader rejects image (no serial marker)</td><td>Low</td><td>High</td><td>These are FreeBSD's OWN build-host tools (run during every buildworld/<code>make release</code>) — same config FreeBSD ships. Static <code>gdisk -l</code>/<code>file -s</code> gate before qemu.</td></tr>
+<tr><td>ICU C++17 picks up host libc++ → Linux-ABI object</td><td>Low</td><td>High</td><td><code>FIND_ROOT_PATH_MODE_INCLUDE=ONLY</code> + <code>--target=freebsd</code> confines to sysroot libc++. Validate DT_NEEDED = FreeBSD <code>libc++.so.1</code>.</td></tr>
+<tr><td>OpenSSH cross-configure runs target binaries in tests</td><td>Med</td><td>Med</td><td><code>--host=&lt;arch&gt;-unknown-freebsd15.0</code> + cached <code>config.cache</code> answers for run-tests.</td></tr>
+<tr><td>makefs/mkimg/kldxref not in image → per-run build time + failure surface</td><td>Low</td><td>Low</td><td>Build once from <code>/usr/src</code>; <strong>follow-up: bake into toolchain image</strong> (compat wants them too).</td></tr>
+<tr><td>arm64 has no compat base sysroot</td><td>High (today)</td><td>Low</td><td>Land amd64-first; gate aarch64 build leg until <code>nextbsd-base-arm64</code> ships. Toolchain files already arch-parameterized → matrix add.</td></tr>
+<tr><td>OOM regression if <code>icu_packaged_data.cpp</code> re-added</td><td>Low</td><td>High</td><td>Already removed from all source lists; <code>.incbin</code> bounds peak ~150 MB; keep the <code>-j2</code> cap *dropped* and monitor RSS.</td></tr>
+</tbody></table>
+<h2 id="11-concrete-filebyfile-change-list">11. Concrete File-by-File Change List</h2>
+<p><strong>nextbsd repo (<code>/tmp/nb</code>):</strong></p>
+<table>
+<thead><tr>
+<th>Path</th>
+<th>Change</th>
+</tr></thead>
+<tbody>
+<tr><td><code>.github/workflows/build.yml</code></td><td>Rewrite <code>build</code> job: drop <code>vmactions/freebsd-vm</code> + distfiles cache; add <code>container:</code> toolchain image + amd64/aarch64 matrix; ccache restore (kernel-repo key scheme); 3 cross-repo <code>download-artifact</code> steps (base/kernel-obj/modules, repository+run-id+DISPATCH_TOKEN); host-tool build step; <code>make.py toolchain/_includes</code>; <code>build-cross.sh</code> invocation; cross-cmake step; Linux image-assembly step; upload <code>NextBSD-&lt;arch&gt;-&lt;date&gt;.img.zip</code>. Extend <code>test</code> to per-arch qemu/firmware matrix. Collapse <code>release</code> to single non-matrix gather-and-publish. Add <code>fbsd_sha</code>/run-id <code>workflow_dispatch</code> inputs.</td></tr>
+<tr><td><code>build-cross.sh</code> (<strong>NEW</strong>)</td><td>Top-level driver: dependency-ordered component list; per-comp <code>make.py … buildenv BUILDENV_SHELL=&lt;script&gt;</code> with <code>DESTDIR=$WORK/rootfs</code> + <code>install -N -U -M METALOG</code>; MIGCOM(host)/MIGCC(cross) split; sed <code>cc</code>→<code>$(CC)</code> for the 5 GNU-make suites; cross-cmake invocation for the 2 cmake comps. Sources existing build.sh recipes minus every chroot/ldconfig/ldd/mig self-test.</td></tr>
+<tr><td><code>build.sh</code></td><td>Add <code>SKIP_VM</code> guard: skip pkg front-half (65-340) + all chroot blocks + in-chroot cmake; image-assembly tail (2675-2780) → host binaries, no chroot: <code>chroot kldxref</code>→offline <code>kldxref</code> (645,653); chroot pwd_mkdb/cap_mkdb→offline <code>-d</code>/<code>-p</code> (2675-2676); <code>readelf</code>→<code>llvm-readelf</code> (2705); makefs ffs <code>+ -F $WORK/METALOG</code> (2721); introduce <code>$WORK/METALOG</code> + reconciliation pass; parametrize ESP name (BOOTX64/BOOTAA64) + mkimg partition set on <code>$ARCH</code>; <code>chflags noschg</code>→<code>rm</code>. Drop host-coreutils/etc copy hacks (129-136,175-191).</td></tr>
+<tr><td><code>make-mach-kmod.sh</code></td><td>Host-cross mode: wrap <code>make -C src/mach_kmod SYSDIR=/usr/src/sys KMODDIR=/boot/kernel KERNBUILDDIR=&lt;kernel-obj&gt;/sys/NEXTBSD</code> in <code>make.py buildenv --cross-bindir=$CCACHE_CROSS_BINDIR</code>; drop chroot kldxref.</td></tr>
+<tr><td><code>cmake/freebsd-cross-toolchain.cmake</code> (<strong>NEW</strong>)</td><td>Shared CMake toolchain file (§5): <code>CMAKE_SYSTEM_NAME=FreeBSD</code>, arch-param <code>SYSTEM_PROCESSOR</code>/triple, ccache-wrapped clang-19, <code>CMAKE_SYSROOT</code>+<code>FIND_ROOT_PATH=$WORK/rootfs</code>, <code>FIND_ROOT_PATH_MODE</code> PROGRAM=NEVER / LIBRARY=ONLY / INCLUDE=ONLY, <code>CMAKE_PROGRAM_PATH+=hosttools/bin</code>, <code>-fuse-ld=lld</code>.</td></tr>
+<tr><td><code>src/libdispatch/src/CMakeLists.txt</code></td><td>Likely no change; patch only if <code>find_library(system_kernel … NO_DEFAULT_PATH)</code> (~199) defeats sysroot reroot → PATHS <code>${CMAKE_SYSROOT}/usr/lib/system</code>.</td></tr>
+<tr><td><code>src/swift-foundation-icu/icuSources/common/CMakeLists.txt</code></td><td>Fix <code>freebsd_decode_icu_chunks</code> split (option iii): delete <code>add_executable</code> (268) + <code>add_custom_command</code> (272-286) + <code>add_custom_target</code>/<code>add_dependencies</code> (295-297); accept <code>-DICU_PACKAGED_BIN_PATH</code>; keep uvernum.h extraction (304-312) + <code>configure_file</code> .S (315-318) + <code>target_sources</code> (334-335).</td></tr>
+<tr><td><code>src/swift-foundation-icu/PORTING_README.md</code></td><td>Update Build section: native cross cmake + pre-decoded blob; note <code>-j2</code>/8GB comments obsolete.</td></tr>
+</tbody></table>
+<p><strong>Sibling repos (small edits):</strong></p>
+<table>
+<thead><tr>
+<th>Path</th>
+<th>Change</th>
+</tr></thead>
+<tbody>
+<tr><td><code>nextbsd-freebsd-compat/.github/workflows/build.yml</code></td><td>One line: add <code>-f "client_payload[compat_run_id]=${{github.run_id}}"</code> (and ideally kernel/modules run-ids) to the <code>base-updated</code> dispatch.</td></tr>
+<tr><td><code>nextbsd-kernel-toolchain/Dockerfile.amd64</code> + <code>.arm64</code></td><td>Add <code>cmake ninja-build byacc flex</code> to apt install; <strong>follow-up:</strong> bake host-built makefs/mkimg/kldxref onto PATH.</td></tr>
+</tbody></table>
+<h2 id="12-definition-of-done">12. Definition of Done</h2>
+<p>The PR is <strong>done</strong> when, on <code>push</code> to <code>main</code>:</p>
+<ol>
+<li><strong>No vmactions, no pkg, no chroot, no FreeBSD-binary execution at build time.</strong> The <code>vmactions/freebsd-vm</code> step is deleted; <code>build.sh</code>'s pkg-bootstrap front-half and every chroot/ldconfig/ldd/mig self-test are removed under <code>SKIP_VM</code>; no <code>pkg install</code> anywhere; cmake/ninja come from apt, clang from the image.</li>
+<li>The <strong>amd64 <code>build</code> job</strong> runs to green inside <code>ghcr.io/nextbsd-redux/nextbsd-kernel-toolchain:amd64-fbsd-&lt;sha&gt;</code>, cross-building all 32 components + mach.ko + the two CMake libs, with <code>ccache -s</code> showing nonzero cached compiles.</li>
+<li><strong>Static gates pass:</strong> every sampled binary/lib in the rootfs is <code>EI_OSABI=FreeBSD</code> + correct <code>e_machine</code> (<code>llvm-readelf -h</code>); DT_NEEDED closure resolves; libdispatch config_ac.h <code>HAVE_MACH 1</code>; ICU <code>icudt74_dat</code> present + <code>ucol_open</code> unrenamed; <code>gdisk -l</code>/<code>file -s</code> confirm GPT(freebsd-boot+efi+freebsd-ufs/ROOTFS)+UFS+ESP/BOOTX64.EFI.</li>
+<li>The <strong>assembled <code>NextBSD-amd64-&lt;date&gt;.img.zip</code></strong> is byte-shape-identical (name/extension/zip+sha256) to the former vmactions output.</li>
+<li>The <strong>unchanged <code>tests/boot-test.sh</code></strong> boots that image under qemu-system-x86_64 + OVMF and emits the full marker chain — loader prompt → <code>login:</code> → MACH-SMOKE-OK → LIBSYSTEM-KERNEL-OK → LIBDISPATCH-OK → LIBDISPATCH-MACH-OK → … → PAM-LOGIN-OK → <code>halt -p</code> → qemu exit 0 → "boot-test PASSED".</li>
+<li><strong><code>release</code></strong> publishes the <code>continuous</code> release exactly once (single non-matrix job).</li>
+<li><strong>Dispatch cascade</strong> <code>releng/15.0 → toolchain → {kernel → modules, compat} → nextbsd</code> completes end-to-end with <code>fbsd_sha</code> + run-ids pinned so the ingested base/kernel/modules match the toolchain image tag.</li>
+<li><strong>arm64 is wired and gated off</strong>, ready to flip on once <code>nextbsd-freebsd-compat</code> ships <code>nextbsd-base-arm64</code> (toolchain files + matrix already arch-parameterized; test job's AAVMF path stubbed).</li>
+</ol>
+<p>Net result: everything builds on a native Linux runner via clang cross-compilation, zero FreeBSD packages, nothing in a chroot, the bootable UFS/GPT image assembled on Linux, and qemu used only to boot-test — with the proven sibling pattern carrying ~28 of 30 bmake components and mach.ko at low risk, and the two CMake nuts de-risked to mechanical toolchain-file + host-tool-split work.</p>
+
+<p class="footnote">Generated from a 9-agent analysis workflow (4 investigators reverse-engineering the proven cross-build pattern across toolchain/kernel/modules/compat + a full component map, 4 designers solving libdispatch, ICU, the CI rewrite, and Linux image assembly, 1 synthesizer). Feasibility is treated as proven by the sibling repos; the plan focuses on execution order, the two net-new CMake toolchain files (libdispatch, ICU), and boot-contract parity. Cross-repo <em>testing</em> improvements (kernel-PR validation, coupled changes) are deliberately out of scope &mdash; a separate follow-on effort.</p>
+</div>
+</body>
+</html>

@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mach.ko syscall slots &mdash; implementation plan (widen the band, drop the mux)</title>
+<style>
+  :root {
+    --fg: #1a1a1a; --fg-muted: #555; --bg: #fafaf7; --accent: #b8472a;
+    --accent-soft: #f3e7df; --border: #d8d4c8; --code-bg: #f0ece2;
+    --table-stripe: #f4efe5; --warn: #8a5a00; --good: #2d6f3b; --bad: #a23030;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, sans-serif;
+    color: var(--fg); background: var(--bg); line-height: 1.55; margin: 0; padding: 0; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 32px 96px; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.45rem; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--border); }
+  h3 { font-size: 1.15rem; margin: 32px 0 10px; color: var(--accent); }
+  h4 { font-size: 1rem; margin: 24px 0 6px; }
+  p { margin: 0 0 14px; }
+  ul, ol { margin: 0 0 14px 22px; padding: 0; }
+  li { margin: 0 0 6px; }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.9em; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  pre { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.84em; line-height: 1.5; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 14px 16px; overflow-x: auto; margin: 0 0 14px; }
+  pre code { background: none; padding: 0; border-radius: 0; font-size: inherit; }
+  .lede { font-size: 1rem; color: var(--fg-muted); margin: 0 0 28px; }
+  .meta { font-size: 0.85rem; color: var(--fg-muted); margin: 0 0 24px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 22px; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 9px 12px; border: 1px solid var(--border); vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  tr:nth-child(even) td { background: var(--table-stripe); }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 18px 0 22px; border-radius: 0 4px 4px 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-warn { border-left-color: var(--warn); background: #fbf3df; }
+  .callout-good { border-left-color: var(--good); background: #e8f1e3; }
+  .pill { display: inline-block; font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 10px; margin-right: 8px; }
+  .pill-good { background: #d6ead0; color: var(--good); }
+  .pill-warn { background: #f4dfbf; color: var(--warn); }
+  .pill-bad  { background: #f0c8c8; color: var(--bad); }
+  .pill-neutral { background: #ddd; color: #333; }
+  .toc { background: white; border: 1px solid var(--border); border-radius: 4px; padding: 18px 24px 14px 36px; margin: 0 0 36px; font-size: 0.95rem; }
+  .toc h2 { margin: 0 0 8px; padding-top: 0; border-top: none; font-size: 1rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-left: -14px; }
+  .toc ol { margin: 0 0 0 6px; }
+  .toc li { margin-bottom: 4px; }
+  .toc a { color: var(--fg); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .back { font-size: 0.9rem; margin-bottom: 18px; }
+  .back a { color: var(--accent); text-decoration: none; }
+  .footnote { font-size: 0.85rem; color: var(--fg-muted); border-top: 1px solid var(--border); margin-top: 48px; padding-top: 16px; }
+  .cite { font-size: 0.82em; color: var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; companion to the <a href="freebsd-mach-kmod-syscall-slots-spike.html">syscall-slot audit (spike)</a> and the <a href="nextbsd-ci-testing-strategy-plan.html">CI testing-strategy plan</a></p>
+
+<h1><code>mach.ko</code> syscall slots &mdash; implementation plan</h1>
+<p class="lede">Widen FreeBSD&rsquo;s dynamic syscall-slot band in the <strong>NextBSD custom kernel</strong> so <code>mach.ko</code> can give each Mach trap its own slot, then drop the single-slot multiplexor. The <a href="freebsd-mach-kmod-syscall-slots-spike.html">2026-05-13 audit</a> <em>disqualified</em> patching the kernel (its option&nbsp;4.4) because <code>mach.ko</code> had to load on stock FreeBSD. <strong>That constraint no longer holds:</strong> NextBSD now ships its own <code>NEXTBSD</code> kernel built from <code>nextbsd-kernel/patches/</code> against <code>releng/15.0</code>, so a <code>syscalls.master</code> patch is a first-class, boot-tested change. This plan supersedes spike&nbsp;&sect;4.4.</p>
+<p class="meta">2026-06-03. Synthesized from a 4-agent review of <code>nextbsd-redux/freebsd-src@releng/15.0</code> (syscall mechanism), <code>nextbsd-redux/nextbsd</code> (<code>mach.ko</code> demand), <code>nextbsd-redux/nextbsd-kernel</code> (patch mechanics), and ravynOS/XNU/Darling prior art. Source citations are <code>file:line</code> on <code>releng/15.0</code> unless noted.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-bad">Hard rule</span> <strong>We never modify or push to <code>nextbsd-redux/freebsd-src</code>.</strong> The fork stays a clean upstream mirror (synced only by <code>sync-fork.yml</code> on <code>releng/15.0</code>). Every kernel source change &mdash; including this one &mdash; lives <em>exclusively</em> as a <code>git format-patch</code> diff in <code>nextbsd-kernel/patches/</code>, applied with <code>git apply</code> at build time on the builder. Patches are authored against a <strong>throwaway local <code>releng/15.0</code> checkout</strong> used only to produce the diff &mdash; that checkout is never the fork and is never pushed.</p>
+</div>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">TL;DR</span> Add ~32&ndash;48 extra <code>lkmnosys</code> slots to the NextBSD kernel via a one-file <code>sys/kern/syscalls.master</code> patch (plus its regenerated companions), landed as a PR in <code>nextbsd-kernel</code> and boot-validated by the PR smoke test. <code>mach.ko</code> already auto-allocates slots and resolves them by <code>sysctl mach.syscall.&lt;name&gt;</code>, so once the band is wider it simply claims one slot per trap and the multiplexor (in <code>nextbsd</code>) can be removed in a follow-up PR. Measured need is <strong>~32 slots</strong>; the daemon set is overwhelmingly MIG (rides <code>mach_msg_trap</code>, needs no slots).</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#viable">Why kernel-patching is viable now</a></li>
+  <li><a href="#mechanism">The FreeBSD slot mechanism (what we patch)</a></li>
+  <li><a href="#demand">How many slots <code>mach</code> really needs</a></li>
+  <li><a href="#priorart">Prior art: Apple, NextBSD, ravynOS</a></li>
+  <li><a href="#decision">Decision: widen the band now, separate table later</a></li>
+  <li><a href="#effort">Effort scoping: the separate table, measured</a></li>
+  <li><a href="#patch">The kernel patch (concrete)</a></li>
+  <li><a href="#rollout">Two-PR rollout + ticket</a></li>
+  <li><a href="#risks">Risks &amp; open questions</a></li>
+</ol>
+</div>
+
+<h2 id="viable">1. Why kernel-patching is viable now</h2>
+<p>The spike disqualified option&nbsp;4.4 on a single hard constraint: <em>&ldquo;<code>mach.ko</code> must build/load on stock FreeBSD,&rdquo;</em> so the kernel could not be forked. NextBSD&rsquo;s architecture has since changed:</p>
+<ul>
+  <li><code>nextbsd-redux/nextbsd-kernel</code> builds a custom <code>NEXTBSD</code> kernel from <code>patches/</code> + <code>config/NEXTBSD</code> against pinned <code>releng/15.0</code>, and the <code>nextbsd</code> ISO ingests that kernel (it no longer ships a stock kernel).</li>
+  <li>The CI pipeline (see the <a href="nextbsd-ci-pipeline-plan.html">pipeline plan</a>) publishes the custom kernel to a <code>continuous</code> release; a PR-only <strong>boot smoke test</strong> already injects the PR&rsquo;s kernel into the latest NextBSD ISO and boots it under qemu.</li>
+</ul>
+<p>So a <code>syscalls.master</code> change is now exactly as legitimate as any other NextBSD kernel patch &mdash; and it is <em>boot-validated on the PR</em>. The spike&rsquo;s remaining options (RESERVED-slot claiming, multiplexor) were workarounds <em>for</em> the no-patch constraint; with the constraint gone, the direct fix &mdash; more slots &mdash; is cleanest.</p>
+
+<h2 id="mechanism">2. The FreeBSD slot mechanism (what we patch)</h2>
+<p>The dynamically-claimable band is <strong>exactly ten <code>lkmnosys</code> slots, syscalls 210&ndash;219</strong> <span class="cite">(<code>sys/kern/syscalls.master:1272&ndash;1283</code>; generated into <code>sys/kern/init_sysent.c:279&ndash;288</code>)</span>. Registration goes through <code>kern_syscall_register()</code> <span class="cite">(<code>sys/kern/kern_syscalls.c:124&ndash;156</code>)</span>:</p>
+<ul>
+  <li><strong>Auto-allocation</strong> (<code>offset == NO_SYSCALL</code>) linearly scans <code>sysent[]</code> for the first entry whose <code>sy_call == lkmnosys</code> and grabs it; when none remain it returns <code>ENFILE</code> <span class="cite">(<code>kern_syscalls.c:133&ndash;139</code>)</span>. This is the wall <code>mach.ko</code> hit at the 11th trap.</li>
+  <li><strong>Explicit offset</strong> is accepted only if the target slot is <code>lkmnosys</code> or <code>lkmressys</code>; an occupied/real slot &rarr; <code>EEXIST</code>, out of range &rarr; <code>EINVAL</code> <span class="cite">(<code>kern_syscalls.c:140&ndash;147</code>)</span>. RESERVED gaps compile to <code>nosys</code>, so they are <em>not</em> claimable without also patching them to <code>lkmnosys</code>.</li>
+</ul>
+<p>The table size is derived, not capped: <code>SYS_MAXSYSCALL</code> = highest syscall + 1 (currently <strong>599</strong>; highest real syscall is 598) <span class="cite">(generated by <code>sys/tools/syscalls/scripts/syscall_h.lua:75&ndash;76</code>)</span>, the sysentvec uses <code>.sv_size = SYS_MAXSYSCALL</code> <span class="cite">(<code>sys/amd64/amd64/elf_machdep.c:57</code>)</span>, and dispatch bounds-checks <code>code &gt;= sv_size</code> on both arches <span class="cite">(<code>sys/amd64/amd64/trap.c:1049&ndash;1052</code>, <code>sys/arm64/arm64/trap.c:156&ndash;159</code>)</span>. <strong>Growing the table via <code>syscalls.master</code> automatically grows the bound &mdash; there is no separate hard cap to bump.</strong></p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Critical build detail</span> In <code>releng/15.0</code> the generated files (<code>init_sysent.c</code>, <code>sys/sys/syscall.h</code>, <code>sysproto.h</code>, <code>syscalls.c</code>, <code>systrace_args.c</code>, <code>syscall.mk</code>) are <strong>checked into the tree</strong>. <code>buildkernel</code> compiles the committed <code>init_sysent.c</code>; it does <strong>not</strong> auto-run the generator. Regeneration is the explicit <code>make sysent</code> target <span class="cite">(<code>sys/conf/sysent.mk:24&ndash;41</code> &rarr; <code>sys/tools/syscalls/main.lua</code>; note 15.0 replaced the old <code>makesyscalls.lua</code>)</span>. <strong>Therefore the patch must edit <code>syscalls.master</code> AND include the regenerated companions</strong> (produced by running <code>make sysent</code> locally) &mdash; exactly how FreeBSD commits a syscall change. Editing <code>syscalls.master</code> alone would leave <code>buildkernel</code> compiling the old 10-slot table. This corrects an early assumption that <code>buildkernel</code> regenerates on its own.</p>
+</div>
+
+<h2 id="demand">3. How many slots <code>mach</code> really needs</h2>
+<p>Measured from <code>nextbsd-redux/nextbsd</code> <span class="cite">(<code>src/mach_kmod/src/mach_syscall_wire.c:531&ndash;568</code>, <code>src/mach_kmod/src/mach_traps.c</code>, <code>src/libmach/mach_traps.c</code>)</span>:</p>
+<ul>
+  <li><strong>10 slots wired today</strong> (210&ndash;219): <code>mach_reply_port</code>, <code>task_self_trap</code>, <code>thread_self_trap</code>, <code>host_self_trap</code>, <code>mach_msg_trap</code>, <code>mach_port_allocate</code>, <code>mach_port_deallocate</code>, <code>mach_port_insert_right</code>, <code>task_get_special_port</code>, and <code>mach_trap_mux</code> (slot 10 is the multiplexor itself).</li>
+  <li><strong>5 ops folded behind the mux</strong> (zero extra slots), <span class="cite">(<code>mach_traps.c:386&ndash;418</code>)</span>: <code>host_set_special_port</code> (op1), <code>task_set_special_port</code> (op2, evicted from its own slot to make room for the mux), <code>mach_port_move_member</code> (op3), <code>register_event_bell</code>/<code>unregister_event_bell</code> (op4/5). The mux exists <em>only</em> as the escape valve for the 10-slot cap.</li>
+  <li><strong>The daemon set is overwhelmingly MIG.</strong> configd, syslog/asl, mDNSResponder, IPConfiguration, and bootstrap talk over <code>mach_msg</code> (MIG RPC) &mdash; which rides the single <code>mach_msg_trap</code> slot and needs <strong>no</strong> additional slots. The whole <code>*_server.c</code> surface (task/thread/host/vm) is MIG-dispatched. Only a handful of wide, direct traps (<code>mach_port_construct/destruct</code>, <code>mach_port_request_notification</code>, <code>mach_msg_overwrite_trap</code>) genuinely need their own slot.</li>
+</ul>
+<p><strong>Measured target ≈ 32 dedicated slots</strong> (refines the spike&rsquo;s 30&ndash;40 estimate downward with code evidence): ~10 current + ~6&ndash;8 wide traps that cannot fold + headroom. The full XNU/ravynOS trap table is 59 entries, but ~40 of those are MIG-displaceable here, so the band need not approach 59. Recommendation: provision a <strong>48-slot band</strong> (comfortably above the 32 need, leaves ABI headroom so we never hit the wall again).</p>
+<p>Crucially, <code>mach.ko</code> registers with <code>NO_SYSCALL</code> (auto-allocate) and publishes each trap&rsquo;s assigned number at <code>sysctl mach.syscall.&lt;name&gt;</code>; <code>libmach</code> resolves by <em>name</em>, never by hardcoded number. <strong>So widening the band is sufficient &mdash; no fixed slot numbers are required, and no userland renumbering is needed.</strong></p>
+
+<h2 id="priorart">4. Prior art: Apple, NextBSD, ravynOS</h2>
+<table>
+  <thead><tr><th>System</th><th>How Mach traps are exposed</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Apple XNU</strong></td><td>A <em>separate</em> <code>mach_trap_table[]</code> (128 entries) indexed by <strong>negative</strong> trap numbers; x86_64 tags the syscall-number register with a class bit (<code>SYSCALL_CLASS_MACH</code>, <code>0x01000000</code>) so the trap dispatcher routes to the Mach table instead of the BSD <code>sysent</code>. <span class="cite">(<code>osfmk/kern/syscall_sw.c</code>, <code>osfmk/mach/i386/syscall_sw.h</code>)</span></td></tr>
+    <tr><td><strong>NextBSD (Macy, 2014&ndash;15)</strong></td><td><strong>Patched <code>syscalls.master</code></strong> to add a dedicated positive Mach band and flattened XNU&rsquo;s negative table into FreeBSD&rsquo;s <code>sysent</code> at a reserved offset. The implementations live in <code>sys/compat/mach/</code>. This is the direct ancestor of our approach.</td></tr>
+    <tr><td><strong>ravynOS &mdash; <code>main</code></strong></td><td>Inherited the original NextBSD code: <code>syscalls.master</code> reserves a <strong>~120-slot Mach band at 600&ndash;720</strong>, mapping XNU trap index <code>-N</code> &rarr; FreeBSD syscall <code>600 + N</code>; traps registered via a <code>syscall_helper_data</code> array in <code>sys/compat/mach/mach_module.c</code>. <span class="cite">(closest precedent to this plan)</span></td></tr>
+    <tr><td><strong>ravynOS &mdash; <code>darwin</code> (current)</strong></td><td>Pivoted to building <strong>real Apple XNU</strong> (<code>Kernel/xnu/</code>); FreeBSD demoted to userland. They abandoned Mach-on-FreeBSD for the canonical kernel.</td></tr>
+    <tr><td><strong>Darling</strong> (Linux)</td><td>Can&rsquo;t add host syscall slots, so it intercepts in userland and bounces to its own LKM + <code>darlingserver</code>, preserving XNU&rsquo;s negative-numbered table logically.</td></tr>
+  </tbody>
+</table>
+<p>Two signals matter for us: (1) <strong>the proven Mach-on-FreeBSD precedent (original NextBSD &amp; ravynOS-<code>main</code>) is exactly &ldquo;patch <code>syscalls.master</code> to add a dedicated Mach band&rdquo;</strong> &mdash; validating this plan&rsquo;s mechanism; and (2) the canonical-fidelity end state is XNU&rsquo;s <em>separate negative-numbered table</em>, which is where ravynOS ultimately went.</p>
+
+<h2 id="decision">5. Decision: widen the band now, separate table later</h2>
+<table>
+  <thead><tr><th>Approach</th><th>Apple-surface fidelity</th><th>Debuggability</th><th><code>releng</code>-bump churn</th><th>Complexity</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Widen the <code>lkmnosys</code> band</strong> (more auto-allocated slots; drop the mux)</td><td>Medium</td><td><span class="pill pill-good">High</span> (each trap named in <code>ktrace</code>/<code>dtrace</code>)</td><td>Low (pinned <code>releng/15.0</code>; tail-append is additive)</td><td><span class="pill pill-good">Low</span></td><td><span class="pill pill-good">Adopt now</span></td></tr>
+    <tr><td>Multiplexor in one slot (status quo, scaled)</td><td>Low</td><td><span class="pill pill-bad">Low</span> (one opaque syscall)</td><td>Low</td><td>Medium</td><td><span class="pill pill-bad">Reject</span> (the thing we&rsquo;re removing)</td></tr>
+    <tr><td>XNU-style separate class-tagged <code>mach_trap_table</code></td><td><span class="pill pill-good">High</span> &mdash; but <strong>moot</strong> (libmach resolves by name)</td><td>Medium&ndash;High</td><td><span class="pill pill-good">Lowest</span> (own file; tiny dispatch hook)</td><td>~1-day C-only core, <strong>but</strong> base-kernel patch + first-of-its-kind (&sect;6)</td><td><span class="pill pill-warn">Future / binary-compat only</span></td></tr>
+  </tbody>
+</table>
+<p><strong>Primary recommendation: widen the band now.</strong> It is what &ldquo;increase the limit to what Mach needs&rdquo; means, it matches the proven NextBSD/ravynOS-<code>main</code> precedent, it keeps per-trap debuggability, and it requires <em>zero</em> userland changes because <code>mach.ko</code> auto-allocates + resolves by <code>sysctl</code>. It directly unblocks dropping the multiplexor.</p>
+<p><strong>The XNU-style separate table is the documented ideal end state</strong> (Apple-canonical surface, lowest upstream coupling, where ravynOS landed) but it is a much larger kernel change &mdash; patching the arch syscall-dispatch path, reimplementing arg mungers, and building <code>libsystem_kernel</code> from XNU&rsquo;s <code>libsyscall</code>. Out of scope for &ldquo;raise the limit&rdquo;; tracked as a future decision. The band-widening work is not wasted if we later migrate &mdash; it keeps the stack shipping in the meantime.</p>
+<p><strong>Band placement &mdash; two clean options</strong> (both fine; pick at PR time): (a) <em>tail-append</em> ~48 <code>lkmnosys</code> rows at 599+ (simplest, ABI-additive, the auto-allocator scans the whole table so placement is irrelevant to <code>mach.ko</code>); or (b) <em>mirror ravynOS</em> with a labelled <code>600&ndash;647</code> Mach band. Option (a) is recommended for minimality; (b) buys nothing extra given we resolve by name, not number.</p>
+
+<h2 id="effort">6. Effort scoping: the separate table, measured</h2>
+<p>A follow-up 3-agent scope (2026-06-03) measured the separate-table option, since the &ldquo;HIGH effort&rdquo; cell above was an estimate. The work splits into a <strong>surprisingly cheap mechanical core</strong> and a <strong>real strategic cost</strong>.</p>
+<ul>
+  <li><strong>The kernel routing hook is C-only and small.</strong> Every syscall on both amd64 and arm64 funnels through the single C function <code>cpu_fetch_syscall_args</code> (amd64 reads <code>tf_rax</code>, arm64 reads <code>tf_x[8]</code>); the fast-path assembly (<code>fast_syscall_common</code>) only builds the trapframe and blindly <code>call</code>s <code>amd64_syscall</code> &mdash; <strong>no assembly changes needed</strong>. A ~10&ndash;20-line-per-arch class-tag check (XNU&rsquo;s <code>SYSCALL_CLASS_MACH&lt;&lt;24</code>, masked &amp; bounds-checked, indexing a <code>mach_trap_table</code>) inserted <em>before</em> the existing <code>code &gt;= sv_size</code> bound check routes Mach traps cleanly. Because that function is reached via the <code>sv_fetch_syscall_args</code> pointer in <code>struct sysentvec</code>, a Mach-specific sysentvec could even carry the hook with zero edits to upstream files. <strong>~1 day, both arches, low mechanical risk.</strong> <span class="cite">(<code>amd64/amd64/trap.c</code> <code>cpu_fetch_syscall_args:1084</code>; <code>arm64/arm64/trap.c:147,156</code>; <code>kern/subr_syscall.c</code>)</span></li>
+  <li><strong>Mungers are not needed.</strong> XNU&rsquo;s <code>munge_*</code> routines exist only to repack a <em>32-bit</em> process&rsquo;s args; on a 64-bit build XNU itself preprocesses the munge field away and loads args straight from registers (<code>mach_call_munger64</code>). NextBSD is amd64/arm64 and FreeBSD already marshals args, so the most laborious XNU component is <strong>zero work</strong>.</li>
+  <li><strong>~100% of the existing <code>mach.ko</code> handlers are reusable.</strong> The current <code>sys_*</code> handlers read args via <code>uap-&gt;field</code> (<code>*_args</code> structs). Pass <code>&amp;args</code> cast to the existing struct and the handler bodies are byte-for-byte unchanged; &ldquo;migrating to a table&rdquo; is mostly mechanical glue. <span class="cite">(<code>src/mach_kmod/src/mach_traps.c</code>, <code>mach_syscall_wire.c</code>)</span></li>
+</ul>
+<p><strong>Two designs people conflate &mdash; keep them apart:</strong></p>
+<table>
+  <thead><tr><th>Design</th><th>What it is</th><th>Cost</th><th>Each trap its own identity?</th></tr></thead>
+  <tbody>
+    <tr><td><strong>(A) Module-internal table</strong> (&ldquo;mux-as-table&rdquo;)</td><td>Convert the existing <code>sys_mach_trap_mux_trap</code> switch into an indexed <code>mach_trap_table[]</code> inside <code>mach.ko</code>, still in the one existing slot, op-dispatched.</td><td>~80&ndash;150 LOC, 1&ndash;3 days, <strong>zero kernel patch</strong></td><td><span class="pill pill-bad">No</span> &mdash; still one slot/op; tidies the mux, doesn&rsquo;t remove slot pressure for wide-arg traps</td></tr>
+    <tr><td><strong>(B) True kernel-hooked table</strong> (class-tagged)</td><td>The C hook above + a separate Mach number space.</td><td>~1-day core, but a <strong>base-kernel MD patch</strong>, first-of-its-kind</td><td><span class="pill pill-good">Yes</span> &mdash; unlimited room, Apple-shaped</td></tr>
+  </tbody>
+</table>
+<p><strong>Precedent gap is the real cost driver.</strong> No shipping FreeBSD-derived project has grafted a separate negative/class-tagged Mach table into the trap path: ravynOS-<code>main</code> flattened Mach into the ordinary positive <code>sysent</code> (the 600&ndash;720 band, <code>600 + &minus;(xnu index)</code>); ravynOS-<code>darwin</code> runs real XNU; Darling stays in userland with its own LKM. So (B) has no reference implementation and must independently clear FreeBSD-specific concerns (Capsicum syscall filtering, ptrace/audit syscall-number assumptions, KLD reload) plus a permanent per-<code>releng</code> rebase of MD code &mdash; turning the ~1-day core into <strong>multiple engineer-weeks</strong> of validation + ongoing maintenance.</p>
+<p><strong>And the headline benefit is moot for NextBSD.</strong> The separate table&rsquo;s signature payoff is an Apple-canonical number space so <em>unmodified Apple stubs / XNU <code>libsyscall</code></em> work. But NextBSD compiles Apple <strong>source</strong> against its <strong>own</strong> <code>libmach</code>, which resolves every trap <strong>by name</strong> via <code>sysctl mach.syscall.&lt;name&gt;</code> and never references a trap by number. So Apple-canonical numbers buy NextBSD nothing it can use &mdash; that benefit only matters for binary-compat projects running unmodified Apple dylibs (ravynOS-<code>darwin</code>, Darling). Under either kernel scheme the userland cost is ~one line (libmach already feeds whatever number the sysctl returns to <code>syscall()</code>; a class-tag scheme only needs the <code>num &lt; 0</code> guard relaxed). <span class="cite">(<code>src/libmach/mach_traps.c</code>)</span></p>
+
+<div class="callout">
+<p><span class="pill pill-neutral">Q &mdash; same effect? better way?</span> <strong>Skipping the limit-raise and doing only the separate table.</strong> Functionally both reach the same goal: each Mach trap gets its own identity and the multiplexor goes away. The true table (B) is the more Apple-shaped architecture &mdash; but for NextBSD <em>right now</em> it is <strong>not a better way</strong>: its defining benefit (Apple-canonical numbers / unmodified Apple stubs) is moot because <code>libmach</code> resolves by name, while it costs multiple weeks + first-of-its-kind base-kernel risk + a permanent MD rebase burden. The cheap variant (A) is only a tidier multiplexor &mdash; it does <em>not</em> give per-trap identity or remove slot pressure, so you&rsquo;d still want a few more slots anyway. Widening the band reaches the same functional effect in days with a <code>syscalls.master</code> patch and full per-trap <code>ktrace</code>/<code>dtrace</code> visibility. <strong>Recommendation stands: widen the band now;</strong> revisit (B) only if NextBSD later targets running <em>unmodified Apple binaries</em> (binary compat), where Apple-canonical numbers stop being moot.</p>
+</div>
+
+<div class="callout">
+<p><span class="pill pill-neutral">Q &mdash; <code>libsyscall</code> for IOKit?</span> <strong>No.</strong> Apple&rsquo;s IOKit user API (<code>IOServiceGetMatchingServices</code>, <code>IOConnectCallMethod</code>, &hellip;) is Mach IPC: <code>io_*</code> MIG routines carried over <code>mach_msg</code> to the kernel IOKit registry. It rides <code>mach_msg_trap</code> (already wired) plus the MIG-generated IOKit interface, and links against NextBSD&rsquo;s <code>libmach</code> like every other daemon &mdash; it does <strong>not</strong> require XNU&rsquo;s <code>libsyscall</code> trap stubs, and it is unaffected by the trap-table decision. (<code>libsyscall</code> sits <em>below</em> IOKit, supplying the raw <code>mach_msg</code>/BSD stubs that <code>libmach</code> already provides.) See the <a href="freebsd-hardware-registry-iokit-plan.html">hardware-registry / IOKit plan</a>.</p>
+</div>
+
+<h2 id="patch">7. The kernel patch (concrete)</h2>
+<p><code>nextbsd-kernel</code> is at a clean baseline: <code>patches/series</code> is <strong>empty</strong> and no Mach/syscall patch exists yet <span class="cite">(the <code>0001-increase-mach-syscall-limit.patch</code> named in the pipeline-plan doc was illustrative &mdash; it is not in the repo)</span>. Patches are plain <code>git format-patch</code> diffs applied with <code>git apply</code> over <code>patches/series</code> in <code>/usr/src</code> <span class="cite">(<code>.github/workflows/build.yml</code>, &ldquo;Apply patches&rdquo; step)</span>.</p>
+<h4>Authoring steps</h4>
+<p><strong>Never edit or push the <code>freebsd-src</code> fork.</strong> The clone below is a <em>throwaway local checkout</em> used only to generate the patch diff; nothing is ever committed or pushed to it. Use upstream FreeBSD (or a local mirror) at the same <code>releng/15.0</code> commit the toolchain image bakes.</p>
+<pre><code># 1. THROWAWAY local releng/15.0 checkout (never pushed; not the fork).
+#    Use git.freebsd.org or any local mirror at the pinned commit.
+git clone -b releng/15.0 https://git.freebsd.org/src.git /tmp/fbsd-src
+cd /tmp/fbsd-src && git checkout -b nextbsd-widen-syscall-band
+
+# 2. Edit ONLY syscalls.master: append ~48 lkmnosys rows at the tail (599+),
+#    copy-pasting the 210-219 pattern:
+#      599  AUE_NULL  NODEF|NOTSTATIC  lkmnosys lkmnosys nosys_args int
+#      ... through 646 ...
+
+# 3. Regenerate the committed companions (REQUIRED - buildkernel won't):
+make -C sys/kern sysent
+#    -> rewrites init_sysent.c, sys/sys/syscall.h (bumps SYS_MAXSYSCALL),
+#       sysproto.h, syscalls.c, systrace_args.c, syscall.mk
+
+# 4. Commit syscalls.master + ALL regenerated files together, then:
+git add sys/kern/syscalls.master sys/kern/init_sysent.c sys/kern/syscalls.c \
+        sys/kern/systrace_args.c sys/sys/syscall.h sys/sys/syscall.mk sys/sys/sysproto.h
+git commit -m "kernel: widen lkmnosys dynamic syscall band to 48 slots for mach.ko"
+git format-patch -1 -o /path/to/nextbsd-kernel/patches/
+
+# 5. In nextbsd-kernel: add the filename as the (first) line of patches/series
+echo "0001-kernel-widen-lkmnosys-dynamic-syscall-band...patch" >> patches/series
+
+# 6. Verify it applies the way CI will (clean releng/15.0 tree, throwaway):
+cd /tmp/fbsd-src && git stash && git checkout releng/15.0 \
+  && git apply --check /path/to/nextbsd-kernel/patches/0001-*.patch
+</code></pre>
+<p>No <code>config/NEXTBSD</code> change is needed (a <code>syscalls.master</code> edit requires no kernel <code>options</code>). On the PR: both the amd64 and arm64 legs build the kernel, and the amd64 <strong>boot smoke test</strong> injects it into the latest <code>continuous</code> ISO and boots it &mdash; so a regression that breaks boot is caught before merge.</p>
+
+<h2 id="rollout">8. Two-PR rollout + ticket</h2>
+<p>The two halves are coupled but must land in order, because the <code>nextbsd</code> mux-drop depends on the wider band existing in the kernel it runs on.</p>
+<ol>
+  <li><strong>Ticket</strong> in <code>nextbsd-redux/nextbsd</code> capturing the scope (kernel band-widen + mux-drop), acceptance markers, and linking #168 (which lists &ldquo;multiplexor removal&rdquo; as a prerequisite) and this plan.</li>
+  <li><strong>PR&nbsp;#1 &mdash; <code>nextbsd-kernel</code>: widen the band.</strong> The <code>syscalls.master</code> patch + regenerated files + <code>series</code> entry. Boot-smoke-validated on the PR. On merge, the kernel <code>continuous</code> release refreshes with the wider table.</li>
+  <li><strong>PR&nbsp;#2 &mdash; <code>nextbsd</code>: drop the multiplexor.</strong> Only after #1 merges. In <code>src/mach_kmod</code>: delete the <code>mach_trap_mux</code> sysent + <code>sys_mach_trap_mux_trap</code> switch (<code>mach_traps.c</code>), wire each former mux op as its own <code>NO_SYSCALL</code> registration (<code>mach_syscall_wire.c</code>); in <code>src/libmach/mach_traps.c</code>, resolve each by name (<code>resolve_syscall("task_set_special_port")</code>) instead of <code>mach_trap_mux</code>+op.</li>
+  <li><strong>Acceptance</strong> (the <code>nextbsd</code> boot test): <code>TASK-SPECIAL-PORT-OK</code> + <code>HOST-BOOTSTRAP-OK</code> + <code>BOOTSTRAP-REMOTE-OK</code>; and each of <code>mach.syscall.{task_set_special_port,host_set_special_port,mach_port_move_member}</code> resolves to a dedicated <code>&ge;0</code> slot while <code>mach.syscall.mach_trap_mux</code> is gone.</li>
+</ol>
+
+<h2 id="risks">9. Risks &amp; open questions</h2>
+<ul>
+  <li><strong>Regeneration (highest-leverage detail).</strong> The patch must carry the regenerated <code>init_sysent.c</code>/<code>syscall.h</code>/&hellip; (run <code>make sysent</code>), since <code>buildkernel</code> won&rsquo;t. Verify on PR&nbsp;#1 that <code>SYS_MAXSYSCALL</code> actually increased in the built kernel and that <code>mach.ko</code> auto-allocates past slot 219. <em>(If we ever prefer a tiny one-file patch, the alternative is adding a <code>make -C sys/kern sysent</code> step to the kernel workflow before <code>buildkernel</code> &mdash; but that needs <code>flua</code> in the toolchain image; defer unless desired.)</em></li>
+  <li><strong>Tail-append only.</strong> Never renumber existing syscalls &mdash; that is a userland ABI break. Adding numbers above 598 is additive and safe.</li>
+  <li><strong>arm64.</strong> Both arches build the widened kernel; only amd64 is boot-tested (no arm64 NextBSD ISO yet). The slot mechanism is arch-symmetric (<code>arm64/trap.c:156&ndash;159</code>), so amd64 boot coverage is a strong proxy.</li>
+  <li><strong>KBI.</strong> Pinned production <code>releng/15.0</code> keeps kernel KBI stable, so the ISO&rsquo;s shipped <code>mach.ko</code>/modules keep loading against the rebuilt kernel during the smoke test &mdash; the table grows additively, no struct/KBI change.</li>
+  <li><strong>Future: separate trap table.</strong> If/when Apple-canonical trap numbers + unmodified XNU <code>libsyscall</code> become a goal, revisit the XNU-style negative-numbered <code>mach_trap_table</code> (&sect;5). Band-widening does not block that migration.</li>
+</ul>
+
+<p class="footnote">Implementation plan, 2026-06-03. Supersedes the &ldquo;patch the kernel&rdquo; disqualification in the <a href="freebsd-mach-kmod-syscall-slots-spike.html">syscall-slot audit spike</a> (2026-05-13), which predated NextBSD&rsquo;s custom-kernel pipeline. Citations are against <code>nextbsd-redux/freebsd-src@releng/15.0</code>, <code>nextbsd-redux/nextbsd</code>, and <code>nextbsd-redux/nextbsd-kernel</code> as read by the research agents on 2026-06-03.</p>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IOKit busyState / waitQuiet — implementation plan (Apple-shape kmod autoload)</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.1rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.45rem; margin:56px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.15rem; margin:32px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; }
+  li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); }
+  .pill-warn { background:#f4dfbf; color:var(--warn); }
+  .pill-bad { background:#f0c8c8; color:var(--bad); }
+  .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; supersedes the deferred plan in <a href="freebsd-hwregd-busystate-waitquiet-options.html">hwregd busyState / waitQuiet — options (#67)</a> &middot; same rollout as the <a href="freebsd-mach-kmod-syscall-slots-impl-plan.html">syscall-slot plan</a></p>
+
+<h1>IOKit <code>busyState</code> / <code>waitQuiet</code> &mdash; implementation plan</h1>
+<p class="lede">The Apple-shape &ldquo;right way&rdquo; to drive kmod autoload: a real device-quiescence signal (<code>IOServiceWaitQuiet</code> / <code>IORegistryEntryGetBusyState</code> / <code>IOKitWaitQuiet</code>) delivered over Mach, replacing FreeBSD&rsquo;s devctl-and-a-timer heuristic. The <a href="freebsd-hwregd-busystate-waitquiet-options.html">2026 options doc (#67)</a> spec&rsquo;d this as a four-layer design but <strong>deferred it as &ldquo;requires a kernel fork&rdquo;</strong>. That constraint has lifted &mdash; NextBSD ships its own <code>NEXTBSD</code> kernel built from <code>nextbsd-kernel/patches/</code> (the same path we used to widen the syscall band), so the kernel hook is just another patch, boot-validated by the PR smoke test. This plan makes the deferred design concrete, with one material correction the scoping turned up.</p>
+<p class="meta">2026-06-03. Synthesized from a 3-agent scope against <code>nextbsd-redux/freebsd-src@releng/15.0</code> (newbus hook), <code>nextbsd-redux/nextbsd</code> (mach.ko + libIOKit + hwregd), and XNU IOService fidelity. Citations are <code>file:line</code>.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-bad">Hard rules</span> Never modify or push <code>nextbsd-redux/freebsd-src</code> (clean upstream mirror); the kernel hook ships as a <code>git format-patch</code> in <code>nextbsd-kernel/patches/</code>, authored against a throwaway upstream checkout. <code>nextbsd-kernel</code> carries patches only &mdash; no source tree, no generated files.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#why">Why it&rsquo;s viable now</a></li>
+  <li><a href="#correction">The correction: the counter must be balanced</a></li>
+  <li><a href="#layers">The four layers (concrete)</a></li>
+  <li><a href="#fidelity">Apple fidelity &amp; honest divergences</a></li>
+  <li><a href="#effort">Effort</a></li>
+  <li><a href="#rollout">Two-PR rollout</a></li>
+  <li><a href="#risks">Risks &amp; open questions</a></li>
+</ol>
+</div>
+
+<h2 id="why">1. Why it&rsquo;s viable now</h2>
+<p>The options doc deferred the exact-Apple path for one reason: <em>&ldquo;custom kernel build … dropping the kernel pkgbase package … forking the one file (<code>subr_bus.c</code>).&rdquo;</em> Every part of that cost is <strong>already paid</strong>: NextBSD builds the <code>NEXTBSD</code> kernel from patches against pinned <code>releng/15.0</code>, <code>FreeBSD-kernel-generic</code> is already dropped, and the <code>nextbsd-kernel</code> PR boot-smoke-test (built in the syscall-band work) validates kernel patches in the live ISO. So the <code>subr_bus.c</code> quiescence hook is just another boot-tested <code>nextbsd-kernel</code> patch &mdash; not a fork.</p>
+
+<h2 id="correction">2. The correction: the counter must be balanced</h2>
+<p>The options doc&rsquo;s sketch was &ldquo;increment on a match-START hook, decrement on the existing <code>device_attach</code>/<code>device_nomatch</code> eventhandlers.&rdquo; Scoping <code>subr_bus.c</code> shows <strong>that pair does not balance</strong> &mdash; the completion eventhandlers don&rsquo;t form a clean pair with a probe-entry hook:</p>
+<ul>
+  <li><strong>Multipass boot:</strong> a device that fails to match in an early pass returns from <code>device_probe()</code> with <em>no</em> <code>nomatch</code> (the invoke is guarded by <code>bus_current_pass == BUS_PASS_DEFAULT</code>), then re-probes next pass &mdash; N starts, 1 terminal event.</li>
+  <li><strong>Attach failure:</strong> <code>device_attach()</code>&rsquo;s early <code>ENXIO</code> (<code>resource_disabled</code>) and <code>DEVICE_ATTACH</code> failure both return <em>before</em> the <code>device_attach</code> eventhandler fires <span class="cite">(subr_bus.c ~2590, ~2612)</span> &mdash; matched, so no <code>nomatch</code> either: a leak.</li>
+  <li><strong>Driver deletion / frozen-thaw:</strong> <code>device_nomatch</code> also fires with <em>no</em> preceding start (<code>devclass_driver_deleted</code> ~811, <code>device_gen_nomatch</code> ~5673) &mdash; underflow.</li>
+  <li><code>DF_DONENOMATCH</code> suppresses repeat <code>nomatch</code> on re-probe &mdash; another unbalanced increment.</li>
+</ul>
+<div class="callout callout-good">
+<p><strong>Fix: wrap <code>device_probe_and_attach()</code> with a balanced start/end pair</strong> rather than pairing a probe-entry hook with the completion eventhandlers. <code>device_probe_and_attach()</code> is the single synchronous funnel (probe → attach) for every device that begins matching; emit <code>device_match_start</code> at entry and <code>device_match_end</code> at <em>every</em> return. Then the counter = &ldquo;devices currently inside probe+attach,&rdquo; balanced by construction (every start has exactly one end, regardless of attach-success / nomatch / multipass / attach-failure), and reaches 0 exactly when the tree quiesces. Nested/recursive probe (child buses) just nests start/end and still returns to 0. This is the right busy semantic for autoload and sidesteps every leak path above.</p>
+</div>
+
+<h2 id="layers">3. The four layers (concrete)</h2>
+
+<h3>Layer 1 &mdash; kernel hook (<code>nextbsd-kernel</code> patch)</h3>
+<p>Two files, no regeneration (plain <code>.c</code>/<code>.h</code>, compiled directly by <code>buildkernel</code> &mdash; unlike <code>syscalls.master</code>):</p>
+<ul>
+  <li><code>sys/sys/eventhandler.h</code>: declare a balanced pair near the existing newbus events <span class="cite">(eventhandler.h:311-322 declares <code>device_attach</code>/<code>detach</code>/<code>nomatch</code> &mdash; <strong>not</strong> <code>bus.h</code>)</span>: <code>typedef void (*device_match_start_fn)(void *, device_t);</code> + <code>EVENTHANDLER_DECLARE(device_match_start, …)</code>, and the same for <code>device_match_end</code>.</li>
+  <li><code>sys/kern/subr_bus.c</code>: <code>EVENTHANDLER_LIST_DEFINE</code> for both <span class="cite">(beside :173-176)</span>; <code>EVENTHANDLER_DIRECT_INVOKE(device_match_start, dev)</code> at the entry of <code>device_probe_and_attach()</code> <span class="cite">(~2549)</span> and <code>device_match_end</code> at every return.</li>
+</ul>
+<p>An out-of-tree module can <code>EVENTHANDLER_REGISTER(device_match_start, …)</code> for a newly base-declared eventhandler &mdash; <code>EVENTHANDLER_REGISTER</code> is a string-name runtime lookup, so the module needs only the <code>DECLARE</code> in scope (via the patched header); the list symbol lives in the base kernel. <span class="cite">(eventhandler.h:139-140)</span></p>
+
+<h3>Layer 2 &mdash; mach.ko busy counter + <code>mach_wait_quiet</code> (<code>nextbsd</code>)</h3>
+<p>New <code>src/mach_kmod/src/mach_busystate.c</code> (the <code>IOService::_adjustBusy</code> analog), modeled on the existing fork-eventhandler + SYSINIT pattern <span class="cite">(kern/task.c:1333,1344)</span> and the sysctl patterns <span class="cite">(mach_stats.c:31-57, mach_syscall_wire.c)</span>:</p>
+<ul>
+  <li><code>static volatile int bus_busy; static int bus_quiesce_gen;</code></li>
+  <li>Register <code>device_match_start</code> → <code>atomic_add(bus_busy, +1)</code>; <code>device_match_end</code> → on the 1→0 transition, bump <code>bus_quiesce_gen</code> and <code>wakeup(&amp;bus_busy)</code>. Register/deregister via <code>SYSINIT</code>/<code>SYSUNINIT</code> at <code>SI_SUB_KLD</code>, storing <code>eventhandler_tag</code>s.</li>
+  <li>Sysctls <code>mach.bus.busy</code> + <code>mach.bus.quiesce_gen</code> (under the existing <code>_mach</code> root &mdash; <strong>not</strong> <code>hw.bus</code>, which collides with stock newbus).</li>
+  <li><code>mach_wait_quiet(timeout)</code> as a <strong>dedicated blocking syscall</strong>, wired exactly like the traps we just added (arg struct in <code>_mach_sysproto.h</code>, guarded wrapper + sysent + <code>wire_one("mach_wait_quiet", …)</code> + <code>sysctl mach.syscall.mach_wait_quiet</code>): <code>tsleep(&amp;bus_busy, PCATCH, "mwquiet", timo)</code> looped until <code>atomic_load(&amp;bus_busy)==0</code>; timeout is a diagnostic backstop only.</li>
+</ul>
+
+<h3>Layer 3 &mdash; hwregd flip on quiescence (<code>nextbsd</code>)</h3>
+<p>Keep the freeze/thaw load batching verbatim (<code>devctl_freeze()</code> → <code>kldload</code> → <code>devctl_thaw()</code>, <code>hwregd.c</code> ~476-516). <strong>Replace only the flip trigger:</strong> today the backlog→live flip fires on a 250 ms <code>select</code> timeout (<code>HWREGD_BACKLOG_QUIET_MS</code>, ~105-116, flip ~1671-1687). Swap that for the mach.ko quiesced event &mdash; block on <code>mach_wait_quiet</code> (or read <code>mach.bus.quiesce_gen</code>) and flip when <code>bus_busy==0</code>. Edge-triggered on real kernel quiescence instead of a wall-clock guess; the 250 ms constant is deleted.</p>
+
+<h3>Layer 4 &mdash; libIOKit APIs (<code>nextbsd</code>)</h3>
+<p>Net-new in the facade (<code>src/libIOKit/IOKit/IOKitLib.h</code> + <code>IOKitLib.c</code>) &mdash; today <code>IOServiceWaitQuiet</code>/<code>IORegistryEntryGetBusyState</code> don&rsquo;t exist and <code>IOKitWaitQuiet</code> is only a no-op stub in the launchd shims <span class="cite">(src/launchd/freebsd-shims/IOKit/IOKitLib.h:56-60)</span>:</p>
+<ul>
+  <li><code>IOServiceWaitQuiet</code> / <code>IOKitWaitQuiet(mp, mach_timespec_t*)</code> → call <code>mach_wait_quiet(timeout)</code>; map to <code>kIOReturnSuccess</code>/timeout. Re-point the launchctl shim at the real impl.</li>
+  <li><code>IORegistryEntryGetBusyState(…, *busyState)</code> → read <code>mach.bus.busy</code> via <code>sysctlbyname</code> (or a new <code>hwreg_get_busy</code> MIG routine).</li>
+</ul>
+
+<h2 id="fidelity">4. Apple fidelity &amp; honest divergences</h2>
+<p><strong>Faithful:</strong> Apple&rsquo;s <code>IOService::_adjustBusy</code> increments busyState at match start and <code>waitQuiet</code> blocks until it reaches 0; our match-start/end wrap + <code>mach_wait_quiet</code>-until-0 is the direct analog, and gating hwregd on busyState→0 is <em>more</em> Apple-faithful than the 250 ms timer. Apple delivers device-match lifecycle as IOKit matching notifications over Mach, which the facade already mirrors (Publish/Matched/Terminate → hwregd watch events); this replaces the FreeBSD <code>devctl</code> tap with the IOKit-quiescence-over-Mach surface.</p>
+<p><strong>Divergences (documented in the header, like the facade&rsquo;s other compromises):</strong> (1) <strong>global vs per-entry</strong> &mdash; one kernel-global busy counter, so <code>IORegistryEntryGetBusyState(entry)</code> returns the global value regardless of <code>entry</code> (Apple propagates per-IOService busy up to providers); <code>waitQuiet</code> semantics stay close to faithful, per-entry queries are an approximation. (2) <code>io_object_t</code> is an opaque client handle here, not a live kernel Mach port; the <code>service</code>/<code>connection</code> arg is accepted-and-ignored. (3) no kernel IORegistry &mdash; &ldquo;quiescence&rdquo; is newbus settling surfaced via mach.ko.</p>
+
+<h2 id="effort">5. Effort</h2>
+<table>
+  <thead><tr><th>Layer</th><th>Work</th><th>Estimate</th></tr></thead>
+  <tbody>
+    <tr><td>Kernel hook</td><td>~6–12 LOC across <code>eventhandler.h</code> + <code>subr_bus.c</code>; the care is the <em>balanced</em> start/end placement across <code>device_probe_and_attach()</code>&rsquo;s return paths + recursion</td><td>~0.5 d hook, ~2–3 d for a provably-balanced counter + tests</td></tr>
+    <tr><td>mach.ko</td><td>new <code>mach_busystate.c</code> (counter, eventhandlers, sysctls, <code>mach_wait_quiet</code> via the established wiring)</td><td>~1–1.5 d, ~160–200 LOC, low risk (templates exist)</td></tr>
+    <tr><td>hwregd</td><td>swap the 250 ms flip for the quiesced event; freeze/thaw unchanged</td><td>~1–1.5 d</td></tr>
+    <tr><td>libIOKit</td><td>3 thin wrappers + <code>mach_timespec_t</code> typedef; re-point launchctl stub</td><td>~0.5–1 d</td></tr>
+  </tbody>
+</table>
+<p>Whole feature ≈ <strong>1–1.5 engineer-weeks</strong>; the dominant cost is the balanced-counter design, not the mechanics.</p>
+
+<h2 id="rollout">6. Two-PR rollout</h2>
+<p>Same shape as the syscall work &mdash; kernel capability first, then the consumer:</p>
+<ol>
+  <li><strong>PR #1 &mdash; <code>nextbsd-kernel</code>: the quiescence hook.</strong> The <code>eventhandler.h</code> + <code>subr_bus.c</code> patch (balanced <code>device_match_start</code>/<code>device_match_end</code> wrapping <code>device_probe_and_attach()</code>) in <code>patches/</code> + <code>series</code>. Boot-smoke-validated: the widened-kernel pattern proves the patched kernel still boots cleanly (the hook is inert without a consumer). On merge, kernel <code>continuous</code> refreshes.</li>
+  <li><strong>PR #2 &mdash; <code>nextbsd</code>: consume it.</strong> After PR #1 merges + <code>continuous</code> refreshes: <code>mach_busystate.c</code> (counter + <code>mach_wait_quiet</code>), the hwregd flip swap, and the libIOKit APIs. Boot-test asserts the new behavior &mdash; e.g. <code>mach.bus.busy</code> returns to 0, a <code>mach_wait_quiet</code> client returns, autoload still produces <code>HWREG-AUTOLOAD-OK</code>, and <code>IOKitWaitQuiet</code> works.</li>
+</ol>
+
+<h2 id="risks">7. Risks &amp; open questions</h2>
+<ul>
+  <li><strong>Counter balance (the crux).</strong> Wrapping <code>device_probe_and_attach()</code> entry/exit is the design that balances; verify against the enumerated paths (multipass, attach-failure, driver-deletion, recursion). A leak would hang <code>waitQuiet</code>; the timeout backstop prevents a permanent stall but a leak must not happen in steady state.</li>
+  <li><strong>Global vs per-entry busyState</strong> — accepted approximation; document it. Sufficient for the autoload use case (the real consumer).</li>
+  <li><strong>hwregd race</strong> — between a <code>mach_wait_quiet</code> return and the next attach; the <code>quiesce_gen</code> counter is the re-sync guard.</li>
+  <li><strong>arm64</strong> builds the patched kernel; only amd64 is boot-tested (no arm64 ISO yet). The hook is arch-independent.</li>
+  <li><strong>Pairs with #168</strong> (configd in-process KernelEventMonitor needs <code>EVFILT_MACHPORT</code> — another mach.ko kernel hook + Mach delivery, also now viable on the same custom-kernel basis).</li>
+</ul>
+
+<p class="footnote">Implementation plan, 2026-06-03. Makes concrete (and corrects the counter-balance design of) the deferred four-layer plan in <a href="freebsd-hwregd-busystate-waitquiet-options.html">hwregd busyState / waitQuiet — options (#67)</a>, now that NextBSD ships its own kernel. Citations against <code>nextbsd-redux/freebsd-src@releng/15.0</code>, <code>nextbsd-redux/nextbsd</code>, and Apple XNU IOService as read by the scoping agents.</p>
+
+</div>
+</body>
+</html>

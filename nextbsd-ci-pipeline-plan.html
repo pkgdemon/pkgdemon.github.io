@@ -45,6 +45,18 @@
 <h1>NextBSD CI Pipeline Plan</h1>
 <p>NextBSD builds its <strong>entire base from source</strong> on GitHub Actions free-tier runners &mdash; <strong>no pkgbase base packages at all</strong>. Four repos cross-build the kernel, modules, and the full base userland and publish them as artifacts; a fifth repo (<code>nextbsd</code>) ingests those, mixes in the Apple-shaped base (Mach + launchd + the Apple system libraries), and assembles an ISO. No self-hosted runners, no open ports, no paid plans.</p>
 
+<h2>0. Implementation status &mdash; June 2026</h2>
+<p><strong>The pipeline is live end-to-end and has been refactored around CI-gated rolling <code>continuous</code> releases.</strong> The section-by-section design below is the original blueprint and its embedded workflow YAML <em>predates</em> the changes summarized here &mdash; the five repos themselves are now the source of truth. What changed since the blueprint:</p>
+<ul>
+<li><strong>Producers publish to a rolling <code>continuous</code> GitHub release on every green <code>main</code> build</strong>, and consumers ingest from those releases instead of scraping <code>gh run list --branch main --status success --limit 1</code>. kernel &rarr; <code>kernel-obj-&lt;arch&gt;.tar.gz</code> + <code>nextbsd-kernel-&lt;arch&gt;.tar.gz</code>; modules &rarr; <code>nextbsd-modules-&lt;arch&gt;.tar.gz</code>; compat &rarr; <code>nextbsd-base-&lt;arch&gt;.tar.gz</code>. The toolchain's GHCR <code>:&lt;arch&gt;-latest</code> tag is its continuous pointer (no release needed).</li>
+<li><strong><code>nextbsd</code> CI is now wired</strong> (the table in &sect;2 below still says &ldquo;not yet wired&rdquo; for historical reference): it ingests base/kernel/modules from their <code>continuous</code> releases and publishes the ISO to its own rolling <code>continuous</code> release on push-to-<code>main</code> <em>or</em> an upstream cascade.</li>
+<li><strong>Every repo validates pull requests</strong> (toolchain runs build-only, <code>push: false</code>). <strong>Core invariant: a PR never updates <code>continuous</code> anywhere</strong> &mdash; every publish/release job requires <code>github.ref == 'refs/heads/main'</code> (a PR's ref is <code>refs/pull/&lt;N&gt;/merge</code>), so nothing downstream can ingest in-flight PR work.</li>
+<li><strong><code>nextbsd-kernel</code> has a PR-only boot smoke test</strong>: it drops the PR's freshly-built kernel into the latest <code>continuous</code> NextBSD ISO (via a FreeBSD VM, since the root is UFS), boots it under qemu, and runs nextbsd's <code>boot-test.sh</code> marker suite. Runs only on <code>pull_request</code>; does <em>not</em> gate <code>publish</code> or the cascade.</li>
+<li><strong>arm64 base is done</strong> &mdash; <code>nextbsd-freebsd-compat</code> is now a <code>{amd64, arm64}</code> matrix like the others, so all four producers emit per-arch <code>continuous</code> assets. The <code>nextbsd</code> ISO stays amd64-only (vmactions limitation); the arm64 assets are ready for a future arm64 ISO runner.</li>
+<li><strong>Downstream cascade verified end-to-end</strong>: <code>repository_dispatch</code> from the toolchain flows <code>toolchain &rarr; {kernel, compat} &rarr; {modules, nextbsd}</code>, each trigger gated on <code>main</code> and fired from the <em>publish</em> job (after <code>continuous</code> is refreshed, so consumers ingest this run's output, not the prior one).</li>
+<li><strong>Gotcha worth keeping:</strong> obj-tree tarballs are created <em>in-container</em>, not by re-taring a downloaded artifact &mdash; <code>upload-artifact</code> strips the exec bit, which left <code>bmake</code> at <code>0644</code> in the kernel obj and crashed the modules build (<code>make.py</code> PermissionError) until fixed.</li>
+</ul>
+
 <h2>1. Architecture Overview</h2>
 
 <div class="diagram">
@@ -83,7 +95,7 @@ nextbsd  (the ASSEMBLER -- ingests the 4 artifacts above)
 <tr><td><code>nextbsd-kernel</code></td><td>Kernel patches (<code>patches/</code>), custom kernel config (<code>config/NEXTBSD</code>), build workflow</td><td><code>repository_dispatch</code> from nextbsd-kernel-toolchain, push to <code>patches/**</code> or <code>config/**</code>, or manual</td></tr>
 <tr><td><code>nextbsd-kernel-modules</code></td><td>Module build workflow, consumes kernel obj artifact</td><td><code>repository_dispatch</code> from nextbsd-kernel</td></tr>
 <tr><td><code>nextbsd-freebsd-compat</code></td><td><strong>Full base userland</strong> &mdash; <code>buildworld WITHOUT_TOOLCHAIN</code> (libc + all base libs/bins, no compiler). Replaces all base packages and the old fbsdglue subset.</td><td><code>repository_dispatch</code> from nextbsd-kernel-toolchain, or manual</td></tr>
-<tr><td><code>nextbsd</code></td><td><strong>Assembler</strong> &mdash; ingests the four producers' artifacts, mixes the Apple-shaped base, builds the ISO. Cross-repo consumer (needs <code>DISPATCH_TOKEN</code> + <code>repository:</code> to pull artifacts).</td><td>(CI not yet wired)</td></tr>
+<tr><td><code>nextbsd</code></td><td><strong>Assembler</strong> &mdash; ingests the four producers' artifacts, mixes the Apple-shaped base, builds the ISO. Cross-repo consumer (needs <code>DISPATCH_TOKEN</code> to pull the producers' <code>continuous</code> releases).</td><td>Wired (see &sect;0) &mdash; <code>repository_dispatch</code> (base-updated) from compat, push to <code>main</code>, or manual</td></tr>
 </table>
 
 <h2>3. Design Decisions</h2>

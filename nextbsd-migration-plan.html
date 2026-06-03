@@ -1,0 +1,505 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NextBSD migration plan</title>
+<style>
+:root{--fg:#1d1d1f;--mut:#6e6e73;--line:#d2d2d7;--ok:#1a7f37;--bad:#c0392b;--rec:#0b5fff;--card:#fafafa}
+*{box-sizing:border-box} body{font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--fg);margin:0;padding:0 20px 80px}
+.wrap{max-width:960px;margin:0 auto} h1{font-size:30px;margin:32px 0 4px} .sub{color:var(--mut);margin:0 0 22px}
+h2{font-size:21px;margin:34px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
+.rec-box{background:#f3fff5;border:1px solid #bfe9c6;border-radius:12px;padding:16px 18px;margin:18px 0}
+.note{background:#f0f7ff;border:1px solid #cfe4ff;border-radius:12px;padding:16px 18px;margin:18px 0}
+.warn-box{background:#fff7f2;border:1px solid #f3d6c0;border-radius:12px;padding:16px 18px;margin:18px 0}
+ol,ul{padding-left:22px} li{margin:6px 0}
+code{background:#f0f0f2;border-radius:5px;padding:1px 5px;font:13px ui-monospace,SFMono-Regular,Menlo,monospace}
+pre{background:#0f1115;color:#e6e6e6;border-radius:10px;padding:14px 16px;overflow:auto;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+pre.small{background:#f6f6f8;color:#222;font-size:12px}
+details{border:1px solid var(--line);border-radius:10px;padding:8px 14px;margin:10px 0;background:#fff} summary{cursor:pointer;font-size:15px}
+.cites{font-size:12.5px;color:var(--mut)} .tag{font-size:11px;font-weight:700;background:var(--rec);color:#fff;border-radius:6px;padding:2px 7px;margin-left:6px}
+footer{color:var(--mut);font-size:13px;margin-top:40px;border-top:1px solid var(--line);padding-top:14px}
+</style></head><body><div class="wrap">
+<h1>NextBSD migration plan</h1>
+<p class="sub">Three tracks — pkgbase-free base-from-src · CI-built NextBSD <code>kernel.txz</code> on a rolling <code>continuous</code> tag · rework the image to consume it. Grounded in the repo + freebsd-src. <b>Draft for review — nothing pushed yet.</b></p>
+
+<div class="rec-box"><b>Do this first <span class="tag">START HERE</span></b>
+<ul><li>Stand up the nextbsd-kernel CI repo and commit the provided build-kernel.yml. It builds in its own repo and publishes kernel.txz to a `continuous` tag, touching NOTHING in this image — zero boot risk. Validate the produced kernel.txz has uname -i = NEXTBSD before any consumption work.</li><li>Add the NEXTBSD kernel config via the config(5) include form (`printf &#x27;include GENERIC\nident NEXTBSD\n&#x27; &gt; sys/${ARCH}/conf/NEXTBSD`). Pure branding, ident-only, no ostype patch — inert until something does `make buildkernel KERNCONF=NEXTBSD`, so it cannot destabilize the current pkgbase-kernel image.</li><li>Parameterize the kernel source URL/rev as env (NEXTBSD_KERNEL_URL, NEXTBSD_KERNEL_REV) in build.sh WITHOUT yet wiring the fetch into the boot path — lets the consumption step be flipped on later with a one-line change and keeps the current FreeBSD-kernel-generic path intact.</li><li>In a throwaway branch only, add the targeted buildworld step 3a1 that stages runtime artifacts OVER the still-present FreeBSD-clibs (overlay-on-top, identical ABI, FreeBSD-clibs still in pkglist). Boot-test. This proves the from-src libc works before any pkglist line is dropped, keeping the mainline image bootable.</li></ul>
+<p style="margin:6px 0 0"><b>Recommendation:</b> the <b>kernel CI workflow</b> (Track B) is the safe, isolated first move — it builds in its own repo and touches nothing in the current image, while unblocking everything downstream.</p></div>
+
+<h2>Sequenced roadmap</h2>
+<ol><li>TRACK A (base-from-src) and TRACK B (kernel CI) run in PARALLEL; TRACK C (consume kernel.txz) depends on B and should land after A&#x27;s libc work is at least underway. Do NOT do them as one mega-PR.</li><li>Step 0 (safe-now, no boot impact): In a throwaway branch, copy GENERIC-&gt;NEXTBSD in the extracted src tree at build time and add `ident NEXTBSD` (config-include form). This is the cheapest branding lever and does not affect the current pkgbase kernel path yet. Land it together with Track B because it only matters once we self-build the kernel.</li><li>TRACK B FIRST DELIVERABLE (parallel, low risk to this image): Stand up the nextbsd-kernel CI repo + build-kernel.yml (provided below). It builds in its OWN repo and publishes kernel.txz to a `continuous` rolling tag. It touches NOTHING in this image, so it is 100% safe to land immediately. Validate it produces a kernel.txz whose `uname -i`==NEXTBSD before any consumption work.</li><li>TRACK A STEP 1 (parallel, RISKY - do behind a flag/branch, verify boot each iter): Add the targeted buildworld -&gt; world-stage step (new step 3a1 in build.sh, BEFORE the existing fbsdglue per-dir loop 3a2 and BEFORE the build-pkg purge). Stage ONLY the runtime artifacts (libc.so.7, ld-elf.so.1, libthr, libm, libgcc_s, libc++, libcxxrt, libcompiler_rt) into rootfs OVER the pkgbase ones. Keep FreeBSD-clibs in pkglist for now (overlay-on-top, identical ABI = no behavior change). Boot-test. This is the safe intermediate: our bytes win on disk but the manifest still exists so nothing is deleted.</li><li>TRACK A STEP 2 (RISKY - the actual pkgbase drop): Only after Step 1 boots green, comment out FreeBSD-clibs in pkglist-base.txt (same pattern as the already-dropped FreeBSD-runtime/-utilities). Keep pkg autoremove DISABLED (it already is). Because FreeBSD-pkg-bootstrap transitively re-pulls FreeBSD-runtime/-clibs into the pkg DB, the manifest may still exist; rely on the no-pkgbase-for-apple-replaced pattern (our overlaid bytes win, autoremove off). Boot-test PID-1 launchd again.</li><li>TRACK C (depends on B green + a published kernel.txz; sequence AFTER Track A step 1 so libc churn and kernel churn are not entangled in one boot regression): Add the kernel.txz fetch+extract step to build.sh between the pkgbase install (build.sh:106) and the mach.ko build (build.sh:514). Add a kldxref pass after BOTH the txz extract and the mach.ko install. Comment out FreeBSD-kernel-generic in pkglist-base.txt (KEEP FreeBSD-bootloader). Add the KPI-match assertion.</li><li>TRACK C HARDENING: Make NextBSD CI also publish a matching src/sysdir tarball (or pin NEXTBSD_KERNEL_REV to a known FreeBSD src rev) so make-mach-kmod.sh builds mach.ko against the SAME __FreeBSD_version as the shipped kernel. Without this, kldload rejects mach.ko on version mismatch.</li><li>FINAL: once Track A+C both boot green independently, allow them on the same image. The kernel.txz now carries the NEXTBSD-branded kernel (uname -i=NEXTBSD), libc/rtld come from src, and the only remaining pkgbase items are bootloader + data packages (vt-data, caroot, zoneinfo) + pkg-bootstrap chain.</li></ol>
+
+<h2>NEXTBSD kernel config &amp; uname branding</h2>
+<p>RECOMMENDED LEAST-BREAKING OPTION: ident-only branding (Option (a) from research). Set `uname -i`/`kern.ident` and the `uname -v` version string to NEXTBSD; LEAVE `uname -s`/ostype as &quot;FreeBSD&quot;. Do NOT patch sys/conf/newvers.sh TYPE= — that rewrites ostype[] and the version TYPE prefix simultaneously and has a huge blast radius (base rc, bsd.*.mk, pkg, and many ports/configure scripts gate on `uname -s == FreeBSD`).</p><p>WHY ident-only is enough: the research confirms `ident` must be a valid C identifier (uppercase, no dashes), so the literal must be NEXTBSD, not &quot;NextBSD&quot;/&quot;Next-BSD&quot;. newvers.sh emits `const char kern_ident[] = &quot;NEXTBSD&quot;` into vers.c, which surfaces as `sysctl kern.ident` = `uname -i`, and is appended into the version[] string (uname -v: &quot;...#0 NEXTBSD:...&quot;). Zero kernel-source patches; nothing breaks. The mixed-case &quot;NextBSD&quot; product name can only come from ostype/TYPE, which we deliberately avoid. If the user later insists `uname -s` literally reads &quot;NextBSD&quot;, that is a follow-up, opt-in, behind-a-flag change scoped so OSVERSION/osreldate/MACHINE stay FreeBSD (ABI markers unchanged).</p><p>FILE CHANGES (in the nextbsd-kernel repo and/or the build that extracts src.txz):
+- Create sys/amd64/conf/NEXTBSD. Use the config(5) include form so we inherit GENERIC verbatim and only override ident:
+    printf &#x27;include GENERIC\nident NEXTBSD\n&#x27; &gt; $SRC/sys/amd64/conf/NEXTBSD
+  (equivalently `cp sys/amd64/conf/GENERIC sys/amd64/conf/NEXTBSD` then change the literal `ident\t\tGENERIC` line to `ident NEXTBSD`; the include form is preferred because it stays auto-synced to upstream GENERIC).
+- No edits to sys/conf/newvers.sh, sys/kern/kern_mib.c, or the ostype[] global.</p><p>WHERE THIS HAPPENS IN THE BUILD: the kernel is built from the extracted src tree ($WORK/freebsd-src/usr/src/sys in this repo; /usr/src in the CI VM). The NEXTBSD config file is dropped into sys/${MACHINE}/conf/NEXTBSD and `make buildkernel KERNCONF=NEXTBSD` is run. mach.ko (build.sh:514-518, --sysdir pointed at the SAME sys tree) must be built against the same NEXTBSD/GENERIC opt_*.h so its module version matches.</p><p>VERIFICATION: after boot, `uname -i` =&gt; NEXTBSD, `uname -v` contains &quot;#0 NEXTBSD:&quot;, `uname -s` stays FreeBSD (ABI/ports stay happy), `sysctl kern.ident` =&gt; NEXTBSD.</p>
+
+<h2>Kernel CI workflow (nextbsd-kernel) — <code>build-kernel.yml</code></h2>
+<p>Ready-to-review GitHub Actions workflow: builds the NextBSD kernel in a FreeBSD VM and publishes <code>kernel.txz</code> to a rolling <code>continuous</code> release.</p>
+<pre>name: build-kernel
+
+# Builds a NextBSD-branded FreeBSD kernel inside a FreeBSD VM on an
+# ubuntu-latest runner (same vmactions model as the ISO repo&#x27;s build.yml),
+# packages boot/kernel into kernel.txz, and publishes it to a rolling
+# &quot;continuous&quot; prerelease tag via softprops/action-gh-release (chunked,
+# retrying upload — gh release create single-PUTs and wedges on large assets).
+#
+# vmactions `release` MUST be a bare version (&quot;15.0&quot;); it rejects -RELEASE/
+# -STABLE suffixes. We append -RELEASE ourselves when building the mirror URL.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build NextBSD kernel (${{ matrix.variant }} ${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - freebsd: &#x27;15.0&#x27;          # bare version for vmactions
+            variant: &#x27;15.0-RELEASE&#x27;  # used to build the mirror URL
+            arch: &#x27;amd64&#x27;
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: false
+          swap-storage: false
+
+      # src.txz is ~200MB and download-bound; cache it across runs. Path is
+      # under the workspace mount so the guest can read/write it and copyback
+      # returns it. Key pins the release so a version bump invalidates.
+      - name: cache src.txz
+        uses: actions/cache@v4
+        with:
+          path: distfiles
+          key: src-${{ matrix.variant }}-${{ matrix.arch }}
+
+      # ccache turns warm rebuilds into ~5-10 min. Must live under the
+      # workspace so copyback returns it for the next run&#x27;s cache save.
+      - name: cache ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.variant }}-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.variant }}-${{ matrix.arch }}-
+
+      - name: build NextBSD kernel in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: ${{ matrix.freebsd }}
+          mem: 8192
+          cpu: 4
+          usesh: true
+          sync: rsync
+          copyback: true
+          envs: &#x27;ARCH VARIANT FREEBSD&#x27;
+          prepare: |
+            pkg install -y git ccache
+          run: |
+            set -eu
+            ARCH=&#x27;${{ matrix.arch }}&#x27;
+            VARIANT=&#x27;${{ matrix.variant }}&#x27;
+            FREEBSD=&#x27;${{ matrix.freebsd }}&#x27;
+            MIRROR=&quot;https://download.freebsd.org/ftp/releases/${ARCH}/${VARIANT}&quot;
+            mkdir -p distfiles out
+
+            # Fetch (cache-guarded) and extract src.txz to /usr/src. fetch(1)
+            # is in FreeBSD base; src.txz roots at usr/src so -C / lands it at
+            # /usr/src. -p preserves perms/flags.
+            if [ ! -f distfiles/src.txz ]; then
+              fetch -o distfiles/src.txz &quot;${MIRROR}/src.txz&quot;
+            fi
+            tar -xpJf distfiles/src.txz -C /
+
+            # NextBSD branding: NEXTBSD KERNCONF via config(5) include so we
+            # inherit GENERIC and only override ident (uname -i / kern.ident /
+            # the version[] string =&gt; NEXTBSD; ostype/uname -s stays FreeBSD).
+            # If this repo carries its own sys/ overlay, rsync it onto /usr/src
+            # here BEFORE writing the config (placeholder for repo layout):
+            #   [ -d kernel/sys ] &amp;&amp; cp -a kernel/sys/. /usr/src/sys/
+            if [ -f kernel/NEXTBSD ]; then
+              cp kernel/NEXTBSD &quot;/usr/src/sys/${ARCH}/conf/NEXTBSD&quot;
+            else
+              printf &#x27;include GENERIC\nident NEXTBSD\n&#x27; \
+                &gt; &quot;/usr/src/sys/${ARCH}/conf/NEXTBSD&quot;
+            fi
+
+            export WITH_CCACHE_BUILD=YES CCACHE_DIR=&quot;$PWD/.ccache&quot;
+            JOBS=$(sysctl -n hw.ncpu)
+
+            # buildkernel + installkernel into a scratch DESTDIR so we never
+            # touch the running VM&#x27;s /boot and get a clean tree to tar.
+            make -C /usr/src buildkernel \
+              KERNCONF=NEXTBSD -j&quot;$JOBS&quot; \
+              SRCCONF=/dev/null __MAKE_CONF=/dev/null \
+              MK_TESTS=no MK_MAN=no
+            make -C /usr/src installkernel \
+              KERNCONF=NEXTBSD DESTDIR=&quot;$PWD/stage&quot; \
+              MK_KERNEL_SYMBOLS=no MK_DEBUG_FILES=no
+
+            # Sanity: branding actually took.
+            strings &quot;$PWD/stage/boot/kernel/kernel&quot; | grep -q &#x27;NEXTBSD&#x27; \
+              || { echo &quot;FAIL: kernel not NEXTBSD-branded&quot;; exit 1; }
+
+            # A stock kernel.txz contains exactly the boot/kernel/ subtree:
+            # the kernel binary + every in-tree *.ko. Package it.
+            tar -cJf out/kernel.txz -C &quot;$PWD/stage/boot&quot; kernel
+            (cd out &amp;&amp; sha256sum kernel.txz &gt; kernel.txz.sha256)
+            ls -lh out/
+
+      - name: upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.variant }}-${{ matrix.arch }}
+          path: out/
+          if-no-files-found: error
+
+  release:
+    name: publish continuous kernel.txz
+    needs: build
+    if: github.event_name == &#x27;push&#x27; &amp;&amp; github.ref == &#x27;refs/heads/main&#x27;
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel-15.0-RELEASE-amd64
+          path: out/
+
+      # Pre-delete keeps stale assets from piling up (matches the ISO repo&#x27;s
+      # release job). With a fixed kernel.txz name softprops overwrite would
+      # suffice, but the cleanup-tag delete is the safest belt-and-suspenders.
+      - name: delete previous continuous release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete continuous --yes --cleanup-tag --repo &quot;$GITHUB_REPOSITORY&quot; || true
+
+      - name: publish continuous release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: Continuous NextBSD kernel build
+          body: |
+            Rolling NextBSD kernel build (uname -i = NEXTBSD).
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Commit: ${{ github.sha }}
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          fail_on_unmatched_files: true
+          files: |
+            out/kernel.txz
+            out/kernel.txz.sha256</pre>
+
+<h2>Track A — drop base pkgbase &amp; build from src</h2>
+<div class="warn-box"><b>Highest-risk track</b> — do incrementally behind a branch, boot-test each step.</div>
+<p>DECISION: a CURATED SUBSET is NOT sufficient for the core C runtime — libc + rtld + libc++/libthr need buildworld&#x27;s bootstrap-tools/build-tools/cross-tools/_includes/_libraries sequencing (codegen: syscall stubs from sys/kern/syscalls.master, jemalloc, FreeBSD-version, soft-float tables). The existing per-dir `make obj &amp;&amp; make &amp;&amp; make install` loop (build.sh:275-314) already failed on a far smaller codegen-prereq case (lib/libifconfig, the path that defeated PR #107 per srclist:244-248). So for the runtime set the plan is a TARGETED FULL buildworld, then cherry-pick install. Everything ELSE that already works stays on the cheap per-dir loop.</p><p>ORDERED PLAN:
+1. KEEP the existing fbsdglue per-dir loop (step 3a2) for the ~50 leaf tools + simple shlibs it already builds (libcasper, libbsm, ncurses, libmd, libutil, libnv, libarchive, libelf, libedit, etc., srclist:111-172). Don&#x27;t touch what works.</p><p>2. ADD a new step 3a1 BEFORE 3a2 and BEFORE the build-pkg purge (the purge at build.sh:2359-2370 removes FreeBSD-clang/lld/toolchain/*-dev which buildworld needs, so 3a1 must run while those are still installed). In that step, against the already-extracted tree at $WORK/freebsd-src/usr/src, reuse the repo&#x27;s exact isolation env:
+     cd $WORK/freebsd-src/usr/src
+     env MAKEOBJDIRPREFIX=$WORK/world-obj SRCCONF=/dev/null __MAKE_CONF=/dev/null \
+       make -j$(nproc) buildworld MK_MAN=no MK_TESTS=no MK_DEBUG_FILES=no
+     make installworld DESTDIR=$WORK/world-stage SRCCONF=/dev/null __MAKE_CONF=/dev/null MK_MAN=no MK_TESTS=no
+   Do NOT try SUBDIR_OVERRIDE=lib to shortcut it — that skips the bootstrap/build-tools phases and libc&#x27;s generated headers won&#x27;t exist (fails the PR #107 way).</p><p>3. From $WORK/world-stage cp ONLY the runtime artifacts into $WORK/rootfs (this is the &quot;fbsdglue-libc&quot; stage), replacing FreeBSD-clibs bytes on disk:
+     /libexec/ld-elf.so.1   (THE loader — every dynamic binary incl. /sbin/launchd PID 1; losing it = panic &quot;Going nowhere without my init!&quot;, build.sh:2371-2378)
+     /lib/libc.so.7  /lib/libthr.so.3  /lib/libm.so.5  /lib/libgcc_s.so.1
+     /lib/libcompiler_rt.so*  /usr/lib/libc++.so.1  /usr/lib/libcxxrt.so.1
+   plus the dev/.so symlinks anything links against. Build from the SAME src.txz RELEASE as the pkgbase ABI (PKG_ABI) so sonames/symbol-versions stay identical and the pkgbase openssl/pkg/fetch binaries still resolve.</p><p>4. INTERMEDIATE SAFE STATE (verify boot here): with our libc overlaid but FreeBSD-clibs STILL listed in pkglist-base.txt, the manifest still exists, our bytes win, nothing is deleted, behavior is unchanged. Boot-test PID-1 launchd.</p><p>5. Only after step 4 is green: comment out FreeBSD-clibs in pkglist-base.txt:55 (same pattern as the already-commented FreeBSD-runtime:52 / FreeBSD-utilities:56). Keep pkg autoremove DISABLED (it already is, build.sh:2371-2394). NOTE: FreeBSD-clibs is still transitively pulled into the pkg DB by FreeBSD-pkg-bootstrap, so dropping the pkglist line does NOT remove it from the DB — it removes it from the EXPLICIT install set; the no-pkgbase-for-apple-replaced pattern (our overlaid bytes + autoremove off) is what keeps our libc on disk. True pkg-DB removal requires the deferred shadow-manifest local-repo / drop-pkg-from-image workstream (build.sh:2385) and is OUT OF SCOPE for &quot;bytes-from-src&quot;.</p><p>WHAT STAYS PKGBASE (intentionally): FreeBSD-bootloader (kernel.txz/world don&#x27;t carry loader/pmbr/gptboot), FreeBSD-vt-data / FreeBSD-caroot / FreeBSD-zoneinfo (pure data), and the pkg-bootstrap chain (FreeBSD-pkg-bootstrap/-fetch/-libsqlite3/-libucl) needed to run pkg in the chroot. openssl/zlib/bzip2 can move to from-src in the same buildworld later but are a separate track per the goal text.</p>
+
+<h2>Track C — consume the kernel.txz</h2>
+<p>GOAL: stop getting /boot/kernel from FreeBSD-kernel-generic (pkglist-base.txt:30) and instead extract the NextBSD CI kernel.txz, keeping mach.ko layered on top.</p><p>build.sh CHANGES (ordering is load-bearing):</p><p>1. pkglist-base.txt: comment out line 30 `FreeBSD-kernel-generic` (same pattern as the already-commented FreeBSD-runtime/-utilities). KEEP `FreeBSD-bootloader` (line 29) — kernel.txz does NOT contain loader/pmbr/gptboot, and the image assembly at build.sh:2543-2573 (ESP from loader.efi, mkimg with pmbr/gptboot) needs them; dropping bootloader makes mkimg fail. Add a comment pointing at NEXTBSD_KERNEL_URL.</p><p>2. NEW STEP in build.sh placed AFTER the pkgbase install (ends build.sh:106) and BEFORE the mach.ko build (build.sh:514), mirroring the existing src.txz fetch idiom (build.sh:55-58):
+     : &quot;${NEXTBSD_KERNEL_URL:=https://github.com/nextbsd-redux/nextbsd-kernel/releases/download/continuous/kernel.txz}&quot;
+     if [ ! -f &quot;$DIST/kernel.txz&quot; ]; then
+         echo &quot;==&gt; downloading NextBSD kernel.txz&quot;
+         fetch -o &quot;$DIST/kernel.txz&quot; &quot;$NEXTBSD_KERNEL_URL&quot;
+     fi
+     echo &quot;==&gt; extracting NextBSD kernel.txz into rootfs&quot;
+     tar -xJf &quot;$DIST/kernel.txz&quot; -C &quot;$WORK/rootfs&quot;     # roots at boot/kernel/...
+     test -f &quot;$WORK/rootfs/boot/kernel/kernel&quot; || { echo &quot;FAIL: kernel.txz had no boot/kernel/kernel&quot;; exit 1; }
+   Cache kernel.txz in distfiles/ alongside src.txz (it&#x27;s covered by the existing actions/cache distfiles step). This MUST run before build.sh:514 so mach.ko lands ON TOP, and before makefs (build.sh:2532) so the kernel is inside rootfs.ufs. If extracted AFTER mach.ko, tar clobbers the freshly-built mach.ko.</p><p>3. mach.ko KPI-MATCHING CONSTRAINT (the hard coupling): mach.ko is built by make-mach-kmod.sh against --sysdir=$WORK/freebsd-src/usr/src/sys (the src.txz, build.sh:516) and bsd.kmod.mk stamps it with that source&#x27;s __FreeBSD_version/module-version. At kldload the kernel REJECTS a module whose version/KPI != the running kernel (&quot;module mach version mismatch&quot;). Therefore the NextBSD kernel.txz and the src.txz fed to make-mach-kmod.sh MUST be the IDENTICAL source revision. Two options:
+     (a) PREFERRED: NextBSD CI also publishes a matching src/sysdir tarball in the same `continuous` release; build.sh fetches THAT for $WORK/freebsd-src instead of the freebsd.org src.txz. KPI-safe by construction.
+     (b) FALLBACK: ship only kernel.txz, pin NEXTBSD_KERNEL_REV to a known FreeBSD src rev, and fetch the matching freebsd.org src.txz. Fragile — breaks the moment NextBSD&#x27;s continuous kernel drifts ahead of the RELEASE src.txz.
+   Add a guard BEFORE the expensive mach.ko compile: compare the kernel&#x27;s __FreeBSD_version (strings rootfs/boot/kernel/kernel | grep &#x27;@(#)FreeBSD&#x27;, or read sys/sys/param.h from $WORK/freebsd-src) against the src tree and FAIL on mismatch.</p><p>4. kldxref / linker.hints: the pkg used to prebake /boot/kernel/linker.hints; kldxref is currently run NOWHERE in build.sh. After switching to txz, run kldxref AFTER BOTH the txz extract AND the mach.ko install, before makefs:
+     chroot &quot;$WORK/rootfs&quot; kldxref /boot/kernel
+   This makes the index cover mach.ko + the txz&#x27;s actual module set, which the loader.conf driver *_load=YES lines and any runtime kldload(8) use. mach_load=YES itself still works without hints (loader resolves /boot/kernel/mach.ko by path). /sbin/kldxref IS already built — srclist-fbsdglue.txt:89 `usr.sbin/kldxref` (verified), so no srclist addition is needed (chroot finds it at /usr/sbin/kldxref; adjust the chroot PATH or call /usr/sbin/kldxref explicitly).</p><p>5. No pkg pin / autoremove change needed: once FreeBSD-kernel-generic is dropped from pkglist-base.txt the pkg DB has no manifest for /boot/kernel/*, so nothing can delete the extracted txz files (it&#x27;s not a transitive dep of anything, unlike clibs). autoremove is already disabled (build.sh:2371-2394). This is the no-pkgbase-for-apple-replaced pattern applied to the kernel.</p><p>6. Update the standalone mach.ko release tarball README/basename (build.sh:2592-2614) — its &quot;Built against: FreeBSD ${FREEBSD_VERSION}&quot; string becomes misleading once the kernel is NextBSD; reflect the NextBSD kernel rev.</p><p>7. Confirm the loader.conf preload set matches the NextBSD GENERIC: overlays/boot/loader.conf.d/freebsd-launchd-mach.conf preloads ahci/nvme/virtio*/mfi via *_load=YES. Since NEXTBSD = `include GENERIC`, the same in-tree modules ship in kernel.txz, so these resolve; if NextBSD ever trims its config, drop the missing *_load lines to avoid loader warnings.</p>
+
+<h2>Risks &amp; unknowns</h2>
+<ul><li>mach.ko KPI lockstep is the single biggest risk: kernel.txz and the src.txz used for make-mach-kmod.sh (--sysdir, build.sh:516) MUST be the identical source rev or kldload rejects mach.ko with a version mismatch. NextBSD&#x27;s `continuous` kernel will drift from the freebsd.org RELEASE src.txz, so NextBSD CI almost certainly must ALSO publish a matching src/sysdir tarball in the same release. This is an open dependency on the nextbsd-kernel repo.</li><li>buildworld cost: a full targeted buildworld is ~30-60 min and dwarfs nothing-currently-requires-it. Per the prioritize-real-consumers memory, NOTHING functionally needs from-src libc today (the phantom-pkg overlay already gives our-libc-on-disk for everything except pure pkg-DB hygiene); the only payoff is true pkgbase removal + Linux-portability prep. Weigh whether to gate it behind a flag or cache it as a separate artifact rather than rebuild every CI run.</li><li>ABI soname risk: a from-src libc built from a different rev than the pkgbase ABI could change sonames/symbol versions and break every pkgbase binary (openssl, pkg, fetch). Must build libc from the SAME src.txz RELEASE as PKG_ABI.</li><li>pkg-DB vs on-disk: dropping FreeBSD-clibs/FreeBSD-kernel-generic from pkglist removes them from the EXPLICIT install set but FreeBSD-pkg-bootstrap transitively re-pulls runtime/clibs into the DB. True pkg-DB removal needs the deferred shadow-manifest local-repo / drop-pkg-from-image workstream (build.sh:2385) — out of scope here; we rely on autoremove-disabled + our-bytes-win.</li><li>UNKNOWN nextbsd-kernel repo layout (not in cwd): where the NextBSD sys/ tree and NEXTBSD config live, whether it&#x27;s an overlay onto stock /usr/src or a self-contained sys/ tree, and whether NextBSD needs buildworld first (modified toolchain/headers) or buildkernel against stock 15.0 src suffices. The CI workflow&#x27;s source-overlay step is a placeholder.</li><li>UNKNOWN kernel.txz asset naming + tar root: per-arch asset name under the `continuous` tag, and whether the txz roots at ./boot/kernel/ (FreeBSD release convention, assumed) or ./kernel/ — determines the tar -C target. Verify against the first published artifact.</li><li>ostype/uname -s ambiguity: the user said &#x27;show up with uname&#x27; but the safe ident-only path leaves uname -s = FreeBSD (only uname -i/-v show NEXTBSD). If the user actually wants uname -s = NextBSD, that&#x27;s the high-blast-radius ostype/TYPE patch (breaks ports/rc/bsd.mk/pkg uname==FreeBSD gates) and must be a deliberate, separately-verified opt-in.</li><li>If NextBSD ever trims its GENERIC, the loader.conf *_load=YES driver preloads (ahci/nvme/virtio*/mfi) could reference modules the txz doesn&#x27;t contain, producing loader warnings or unbootable disk; keep NEXTBSD = include GENERIC until proven otherwise.</li></ul>
+
+<h2>Research evidence (with citations)</h2>
+<details><summary><b>Custom NextBSD-branded kernel build + kernel.txz packaging, replacing stock FreeBSD-kernel-generic pkgbase.</b></summary>
+    <p><b>Summary.</b> The project currently pulls the prebuilt kernel from pkgbase (pkglist-base.txt:30 = FreeBSD-kernel-generic), and only builds mach.ko out-of-tree from the src.txz it already extracts to work/freebsd-src/usr/src (build.sh:227-229, make-mach-kmod.sh). To ship a custom &quot;NextBSD&quot; kernel you stop relying on FreeBSD-kernel-generic and instead buildkernel+installkernel from that same extracted source tree into a staging DESTDIR, then package boot/kernel as kernel.txz. Branding splits into two independent levers: `ident NEXTBSD` in the config file (cheap, safe; shows in uname -i and the uname -v version string) versus patching the kernel `ostype[]` global so `uname -s` becomes &quot;NextBSD&quot; (invasive, breaks tools/ports that test `uname -s == FreeBSD`). Recommendation: ident-only for uname -i/-v branding; do NOT change ostype.</p>
+    <p><b>Mechanism.</b></p><pre class="small">WHERE THINGS LIVE IN THIS REPO
+- build.sh:55-58 fetches src.txz; build.sh:227-229 extracts it: `tar -xJf &quot;$DIST/src.txz&quot; -C &quot;$WORK/freebsd-src&quot;` giving the tree at `$WORK/freebsd-src/usr/src` (so sys is `$WORK/freebsd-src/usr/src/sys`).
+- build.sh:514-518 builds mach.ko via make-mach-kmod.sh with `--sysdir=$WORK/freebsd-src/usr/src/sys --prefix=$WORK/rootfs`; mach.ko lands at `$WORK/rootfs/boot/kernel/mach.ko`.
+- The kernel itself is NOT built today — it comes from pkgbase: pkglist-base.txt:30 `FreeBSD-kernel-generic` (installed by `pkg install` at build.sh:101-106). That is the line to drop when self-building.
+- mach.ko standalone tarball: build.sh:2596-2614 (`tar -czf $OUT/mach.ko-FreeBSD-&lt;ver&gt;-&lt;arch&gt;.tar.gz boot README`).
+
+1) KERNEL CONFIG (amd64 confirmed: sys/amd64/conf/GENERIC exists)
+  SRC=$WORK/freebsd-src/usr/src
+  cp $SRC/sys/amd64/conf/GENERIC $SRC/sys/amd64/conf/NEXTBSD
+  then edit the `ident GENERIC` line (it is line ~24 of GENERIC, literal `ident\t\tGENERIC`) to `ident NEXTBSD`.
+  Or non-interactively (config(5) supports include):
+    printf &#x27;include GENERIC\nident NEXTBSD\n&#x27; &gt; $SRC/sys/amd64/conf/NEXTBSD
+  `ident` is the KERN_IDENT / KERNCONF name. It must be a valid C identifier (uppercase, no dashes). It sets the build object dir (sys/amd64/compile/NEXTBSD), is emitted as `const char kern_ident[] = &quot;NEXTBSD&quot;` into vers.c by newvers.sh, surfaces as `sysctl kern.ident` = `uname -i`, and is appended into the `version[]` string (uname -v). It does NOT change ostype.
+
+2) UNAME BRANDING — exact field mapping
+  - uname -s (kern.ostype): the global `const char ostype[] = &quot;${TYPE}&quot;` emitted by sys/conf/newvers.sh from `TYPE=&quot;FreeBSD&quot;`; sysctl wired in sys/kern/kern_mib.c (`SYSCTL_CONST_STRING(_kern, KERN_OSTYPE, ostype, ..., ostype, ...)`). Default &quot;FreeBSD&quot;.
+  - uname -r (kern.osrelease): osrelease, e.g. &quot;16.0-CURRENT&quot;.
+  - uname -v (kern.version): the `version[]` string built by newvers.sh = &quot;FreeBSD &lt;rel&gt; #v &lt;ident&gt;: &lt;date&gt; ...user@host:objdir&quot;. It embeds BOTH ostype (TYPE) and the ident.
+  - uname -i (kern.ident): kern_ident = the config `ident` = NEXTBSD.
+  Option (a) RECOMMENDED — `ident NEXTBSD` only: zero kernel-source patches. uname -i = NEXTBSD; uname -v contains &quot;...#0 NEXTBSD:...&quot;; uname -s stays &quot;FreeBSD&quot;. Nothing breaks.
+  Option (b) ostype patch — set uname -s = &quot;NextBSD&quot;: change `TYPE=&quot;FreeBSD&quot;` to `TYPE=&quot;NextBSD&quot;` in sys/conf/newvers.sh (this rewrites `ostype[]` AND the version string TYPE prefix). This is the single source-of-truth line. RISK: huge surface — base rc scripts, bsd.*.mk, pkg, many ports and 3rd-party configure scripts gate on `uname -s` == FreeBSD; OS detection in libc/uname(3) and `sysctl kern.ostype` consumers will see NextBSD. Avoid. If absolutely required, scope it so ABI markers (OSVERSION/osreldate, MACHINE) stay FreeBSD; only TYPE changes. Recommended branding = (a) ident-only.
+
+3) BUILD + INSTALL (run on the FreeBSD build VM, against the extracted tree)
+  SRC=$WORK/freebsd-src/usr/src ; STAGE=$WORK/kernel-stage
+  make -C $SRC buildkernel  KERNCONF=NEXTBSD
+  make -C $SRC installkernel KERNCONF=NEXTBSD DESTDIR=$STAGE
+  installkernel lands files under $STAGE/boot/kernel/ : the `kernel` binary plus all in-tree `*.ko` modules (and, unless MK_KERNEL_SYMBOLS=no / MK_DEBUG_FILES=no, kernel.debug + per-module .debug under $STAGE/usr/lib/debug/boot/kernel/). Add MODULES_OVERRIDE=... to trim modules. This replaces the FreeBSD-kernel-generic content; drop pkglist-base.txt:30 so pkg doesn&#x27;t reinstall/overwrite it.
+
+4) kernel.txz PACKAGING
+  FreeBSD&#x27;s own path (release/Makefile -&gt; Makefile.inc1):
+    distributekernel: runs the kernel install target into ${DISTDIR}/kernel writing a metalog (kernel.premeta/kernel.meta).
+    packagekernel: `cd $DESTDIR/$DISTDIR/kernel; tar cvf - --exclude &#x27;*.debug&#x27; @kernel.meta | xz &gt; kernel.txz` (and a kernel-dbg.txz when MK_DEBUG_FILES!=no).
+  Reproduce the metalog path:
+    make -C $SRC distributekernel KERNCONF=NEXTBSD DESTDIR=$WORK/dist DISTDIR=. &amp;&amp; make -C $SRC packagekernel KERNCONF=NEXTBSD DESTDIR=$WORK/dist DISTDIR=.
+  Simpler manual path (sufficient here — no metalog needed for an overlay/uzip workflow):
+    make -C $SRC installkernel KERNCONF=NEXTBSD DESTDIR=$STAGE MK_KERNEL_SYMBOLS=no
+    tar -cJf $OUT/kernel.txz -C $STAGE boot/kernel
+  A stock kernel.txz contains exactly the `boot/kernel/` subtree: `boot/kernel/kernel` + every `boot/kernel/*.ko`.
+  mach.ko placement: it is out-of-tree. Two clean choices —
+    (i) Keep separate (current model): leave the standalone mach.ko-*.tar.gz (build.sh:2596-2614) and keep make-mach-kmod.sh installing into $WORK/rootfs/boot/kernel; do NOT touch kernel.txz. Cleanest separation; mach.ko can be rebuilt independently.
+    (ii) Fold into kernel.txz: run make-mach-kmod.sh with --prefix=$STAGE (instead of $WORK/rootfs) BEFORE the `tar -cJf kernel.txz -C $STAGE boot/kernel`, so mach.ko sits in boot/kernel alongside the in-tree modules and ships in one kernel.txz. Recommended if you want a single self-contained NextBSD kernel package. Either way mach.ko must be built against the SAME NEXTBSD/GENERIC opt_*.h (make-mach-kmod.sh already points SYSDIR at the same source tree).</pre>
+    <p><b>Gotchas.</b> - `ident` must be a C identifier: use NEXTBSD (uppercase), not &quot;NextBSD&quot;/&quot;Next-BSD&quot; — dashes/lowercase break config(5)/KERN_IDENT. The mixed-case &quot;NextBSD&quot; branding can only come from ostype/TYPE, not ident.
+- Changing ostype (`uname -s`) is the high-blast-radius option: base rc, bsd.*.mk, pkg, and countless ports test `uname -s == FreeBSD`. Recommended branding is ident-only; ostype change only if the product truly must report NextBSD as the OS type, and even then leave OSVERSION/osreldate/MACHINE untouched so ABI stays FreeBSD.
+- Must drop pkglist-base.txt:30 `FreeBSD-kernel-generic` when self-building, otherwise pkgbase reinstalls a stock /boot/kernel and (per the user&#x27;s own MEMORY rule &quot;No pkgbase for Apple-replaced components&quot;) pkg autoremove/manifest can clobber the custom kernel at the same paths.
+- buildkernel/installkernel must run on a FreeBSD host (the vmactions build VM), not on this darwin workstation — same constraint already true for make-mach-kmod.sh.
+- The manual `tar -cJf kernel.txz -C $STAGE boot/kernel` skips the metalog; that&#x27;s fine for an overlay/uzip rootfs but a metalog-driven kernel.txz (packagekernel) is needed if you want it consumable by `pkg`/bsdinstall distribution semantics.
+- Build the kernel and mach.ko against the SAME config&#x27;s opt_*.h (GENERIC-derived NEXTBSD); a mach.ko built against different kernel options can fail to load.
+- newvers.sh is the single source of truth for both ostype and the version string — one file (sys/conf/newvers.sh, `TYPE=`) controls uname -s and the TYPE prefix in uname -v simultaneously.</p>
+    <ul class="cites"><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/build.sh:55-58 (fetch src.txz)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/build.sh:227-229 (extract src.txz to work/freebsd-src/usr/src)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/build.sh:514-518 (mach.ko build, --sysdir/--prefix)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/build.sh:2596-2614 (standalone mach.ko tarball)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/make-mach-kmod.sh:58,69,76 (KMODDIR=/boot/kernel, install into DESTDIR/boot/kernel)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/pkglist-base.txt:29-30 (FreeBSD-bootloader, FreeBSD-kernel-generic)</code></li><li><code>FreeBSD sys/amd64/conf/GENERIC (ident GENERIC, cpu HAMMER) — github.com/freebsd/freebsd-src/blob/main/sys/amd64/conf/GENERIC</code></li><li><code>FreeBSD sys/conf/newvers.sh: TYPE=&quot;FreeBSD&quot;; const char ostype[] = &quot;${TYPE}&quot;; const char version[...] = VERSTR; i=$(make -V KERN_IDENT); const char kern_ident[] = &quot;${i}&quot;</code></li><li><code>FreeBSD sys/kern/kern_mib.c: SYSCTL_CONST_STRING(_kern, KERN_OSTYPE, ostype,...), KERN_VERSION version, OID_AUTO ident kern_ident</code></li><li><code>FreeBSD Makefile.inc1: distributekernel (install into DISTDIR/kernel + kernel.premeta metalog) and packagekernel (tar cvf - --exclude &#x27;*.debug&#x27; @kernel.meta | xz &gt; kernel.txz)</code></li><li><code>FreeBSD release/Makefile: kernel.txz target -&gt; distributekernel + packagekernel, mv DISTDIR/kernel*.txz .</code></li></ul></details><details><summary><b>nextbsd-kernel CI</b></summary>
+    <p><b>Summary.</b> A GitHub Actions workflow for nextbsd-redux/nextbsd-kernel can build a NextBSD kernel inside a FreeBSD VM on an ubuntu-latest runner using vmactions/freebsd-vm@v1 (exactly as this repo&#x27;s .github/workflows/build.yml does), fetch+extract the pinned-release src.txz, run make buildkernel KERNCONF=NEXTBSD, tar the installed kernel into kernel.txz, copy it back to the host, and publish it to a fixed moving &quot;continuous&quot; tag via softprops/action-gh-release@v2. The model is fully grounded in this repo&#x27;s working CI.</p>
+    <p><b>Mechanism.</b></p><pre class="small">HOW build.yml RUNS STEPS IN A FreeBSD VM (the model to copy):
+- The job runs on `runs-on: ubuntu-latest` (.github/workflows/build.yml:23). The FreeBSD guest is provided by `uses: vmactions/freebsd-vm@v1` (build.yml:61). Its inputs (build.yml:62-88): `release` = bare version string like &#x27;15.0&#x27; (NO -RELEASE suffix — vmactions rejects suffixes; see the matrix comment build.yml:28-34), `mem: 8192`, `cpu: 4`, `usesh: true` (sh instead of tcsh), `sync: rsync`, `copyback: true`.
+- `prepare:` (build.yml:80-81) runs IN-GUEST as root and installs pkgs: `pkg install -y bash git rsync zip`.
+- `run:` (build.yml:82-88) runs IN-GUEST too, with the checked-out repo mounted at the same working dir as the host (the action rsyncs the host tree into the VM). It exports env and invokes `sh build.sh`. Per the vmactions README: &quot;All the source code tree in the Host machine are mounted into the VM&quot;; GITHUB_* vars and CI=true cross automatically, and extra host env is passed via `envs: &#x27;VAR1 VAR2&#x27;`.
+- `copyback: true` rsyncs guest-modified files back to the host runner AFTER `run:` completes, so anything `build.sh` writes under the workspace (e.g. out/) is visible to subsequent host-side steps (upload-artifact at build.yml:98-107 reads out/ on the host).
+
+2. FETCH/EXTRACT SRC + buildkernel (this repo&#x27;s exact pattern, build.sh:31,55-58,227-229):
+- Mirror URL: `MIRROR=&quot;https://download.freebsd.org/ftp/releases/${ARCH}/${FREEBSD_VERSION}-RELEASE&quot;` (build.sh:31).
+- Fetch once (cache-guarded): `if [ ! -f &quot;$DIST/src.txz&quot; ]; then fetch -o &quot;$DIST/src.txz&quot; &quot;$MIRROR/src.txz&quot;; fi` (build.sh:55-58). `fetch(1)` is in FreeBSD base — no pkg needed.
+- Extract: `tar -xJf &quot;$DIST/src.txz&quot; -C &quot;$WORK/freebsd-src&quot;` yields `$WORK/freebsd-src/usr/src` (build.sh:227-229). For a kernel build the canonical location is /usr/src, so the NextBSD workflow should extract to / (the src.txz top dir is `usr/src`): `tar -xpJf src.txz -C /`.
+- Build: with NextBSD kernel sources overlaid onto /usr/src and a KERNCONF file NEXTBSD placed in /usr/src/sys/${MACHINE}/conf/NEXTBSD, run in-guest:
+    `make -C /usr/src buildkernel KERNCONF=NEXTBSD -j$(sysctl -n hw.ncpu)`
+    then stage it: `make -C /usr/src installkernel KERNCONF=NEXTBSD DESTDIR=$PWD/stage`
+  (installkernel into a DESTDIR avoids clobbering the VM&#x27;s running /boot and gives a clean tree to tar.)
+
+3. PACKAGE kernel.txz + PUBLISH TO MOVING &quot;continuous&quot; TAG (this repo&#x27;s release job, build.yml:157-233):
+- Package in-guest after installkernel: `tar -cJf out/kernel.txz -C stage/boot kernel` (xz = .txz, FreeBSD-native). Write it under the mounted workspace (e.g. out/) so copyback brings it to the host.
+- Publish on the HOST in a separate job (build.yml grants `permissions: contents: write` on the release job, build.yml:164-165; only on push to main, build.yml:162). Two complementary techniques this repo uses:
+    (a) Pre-delete to keep assets from piling up: `gh release delete continuous --yes --cleanup-tag --repo &quot;$GITHUB_REPOSITORY&quot; || true` with `GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}` (build.yml:207-212).
+    (b) Recreate via softprops/action-gh-release@v2 (build.yml:214-233): `tag_name: continuous`, `name`, `body` (with run URL + commit), `prerelease: true`, `target_commitish: ${{ github.sha }}`, `fail_on_unmatched_files: true`, `files:` newline list. action-gh-release UPDATES an existing release for a reused tag and (with overwrite_files default true) replaces same-named assets — so the pre-delete is optional belt-and-suspenders; the canonical &quot;continuous&quot; pattern is simply a fixed `tag_name` + `prerelease: true` + fixed file globs, which keeps one rolling prerelease whose tag is force-moved to the new commit each run.
+  NOTE build.yml:198-201 documents WHY softprops over `gh release create`: gh&#x27;s single-PUT upload wedges on large assets; action-gh-release uses Octokit chunked upload with retries — relevant for a multi-MB kernel.txz too.
+
+4. BUILD TIME / CACHING:
+- buildkernel alone is far cheaper than this repo&#x27;s full ISO (build.yml sets `timeout-minutes: 120`); a kernel-only build is ~20-40 min on the 4-CPU VM. Set `timeout-minutes: 60` and pass `-j$(sysctl -n hw.ncpu)`.
+- Cache src.txz across runs exactly as this repo does: host-side `actions/cache@v4` keyed on the pinned version, path `distfiles` (build.yml:54-58). src.txz is ~200MB and download-bound, so caching it removes the biggest fixed cost.
+- ccache: install `ccache` in `prepare:` and `export WITH_CCACHE_BUILD=YES CCACHE_DIR=$PWD/.ccache` before buildkernel (FreeBSD src.conf-native knob). Persist `.ccache` with a second actions/cache entry (it must live under the mounted workspace so copyback returns it). ccache turns warm rebuilds into ~5-10 min.
+- Caching /usr/obj between runs is possible but fragile: it is large, lives outside the workspace mount (so needs explicit copy into the workspace before copyback), and is invalidated by any toolchain/src change — ccache + cached src.txz is the better cost/benefit and matches this repo&#x27;s existing distfiles-cache approach.
+
+DRAFT WORKFLOW (.github/workflows/build-kernel.yml):
+---
+name: build-kernel
+on:
+  push: { branches: [main] }
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - freebsd: &#x27;15.0&#x27;    # bare version; vmactions rejects -RELEASE
+            arch: &#x27;amd64&#x27;
+    steps:
+      - uses: actions/checkout@v4
+      - name: cache src.txz
+        uses: actions/cache@v4
+        with:
+          path: distfiles
+          key: src-${{ matrix.freebsd }}-${{ matrix.arch }}
+      - name: cache ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.freebsd }}-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.freebsd }}-${{ matrix.arch }}-
+      - name: build NextBSD kernel in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: ${{ matrix.freebsd }}
+          mem: 8192
+          cpu: 4
+          usesh: true
+          sync: rsync
+          copyback: true
+          prepare: |
+            pkg install -y git ccache
+          run: |
+            set -eu
+            ARCH=${{ matrix.arch }}
+            VER=${{ matrix.freebsd }}
+            MIRROR=&quot;https://download.freebsd.org/ftp/releases/${ARCH}/${VER}-RELEASE&quot;
+            mkdir -p distfiles out
+            [ -f distfiles/src.txz ] || fetch -o distfiles/src.txz &quot;$MIRROR/src.txz&quot;
+            tar -xpJf distfiles/src.txz -C /          # populates /usr/src
+            # overlay NextBSD kernel sources + KERNCONF onto /usr/src
+            cp -a kernel/sys/.       /usr/src/sys/     # adjust to repo layout
+            cp kernel/NEXTBSD        /usr/src/sys/${ARCH}/conf/NEXTBSD
+            export WITH_CCACHE_BUILD=YES CCACHE_DIR=$PWD/.ccache
+            make -C /usr/src buildkernel  KERNCONF=NEXTBSD -j$(sysctl -n hw.ncpu)
+            make -C /usr/src installkernel KERNCONF=NEXTBSD DESTDIR=$PWD/stage
+            tar -cJf out/kernel.txz -C stage/boot kernel
+            (cd out &amp;&amp; sha256sum kernel.txz &gt; kernel.txz.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.freebsd }}-${{ matrix.arch }}
+          path: out/
+          if-no-files-found: error
+  release:
+    needs: build
+    if: github.event_name == &#x27;push&#x27; &amp;&amp; github.ref == &#x27;refs/heads/main&#x27;
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: kernel-15.0-amd64, path: out/ }
+      - name: delete previous continuous release
+        env: { GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} }
+        run: gh release delete continuous --yes --cleanup-tag --repo &quot;$GITHUB_REPOSITORY&quot; || true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: Continuous kernel build
+          body: |
+            Rolling NextBSD kernel build.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Commit: ${{ github.sha }}
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          fail_on_unmatched_files: true
+          files: |
+            out/kernel.txz
+            out/kernel.txz.sha256
+---</pre>
+    <p><b>Gotchas.</b> - vmactions `release` MUST be a bare version (&#x27;15.0&#x27;), NOT &#x27;15.0-RELEASE&#x27; — the action rejects -RELEASE/-STABLE suffixes (build.yml:28-34). Build the mirror URL by appending -RELEASE yourself (build.sh:31).
+- `prepare:` and `run:` execute INSIDE the guest as root; the host workspace is rsync-mounted at the same path. Anything you want back on the host MUST be written under that mounted workspace AND `copyback: true` set — files written elsewhere (e.g. /usr/obj, /boot) do NOT return. That&#x27;s why kernel.txz, distfiles/, and .ccache are all written under $PWD.
+- actions/cache runs on the HOST, before/after the VM step. For the cache to populate/restore the guest&#x27;s distfiles and .ccache, those dirs must be inside the workspace mount (they are in the draft). The cache key should pin the FreeBSD version (and ideally a src hash) so a release bump invalidates it.
+- src.txz extracts with a top-level `usr/src` prefix; extract with `-C /` to land at /usr/src (build.sh extracts to a subdir instead, build.sh:227-229, because it needs an isolated tree — choose based on whether you overlay onto the live /usr/src or a private copy). Use `tar -xpJf` to preserve perms/flags.
+- installkernel into a DESTDIR (not the live VM /boot) so you tar a clean tree and don&#x27;t perturb the running guest.
+- For releases: this repo pre-deletes the continuous release (build.yml:207-212) to stop stale assets accumulating, THEN recreates via softprops. With action-gh-release&#x27;s `overwrite_files: true` (default) reusing the tag already replaces same-named assets, so the pre-delete is mainly needed if asset NAMES change between runs (e.g. dated filenames as in build.yml:182-196). For a fixed `kernel.txz` name you can drop the delete and rely on overwrite — but keeping it matches this repo and is safest.
+- The release job needs `permissions: contents: write` (build.yml:164-165); the default `GITHUB_TOKEN` suffices for both `gh release delete` and softprops.
+- `gh release create` is avoided for large assets (single PUT, wedges/no-retry) — softprops/action-gh-release uses chunked Octokit upload with retries (build.yml:198-201). Use softprops for the kernel.txz upload.
+- The draft&#x27;s `cp -a kernel/sys/.` and KERNCONF path are PLACEHOLDERS — they depend on nextbsd-kernel&#x27;s actual repo layout (where the NextBSD sys/ tree and the NEXTBSD config file live), which I could not inspect since that repo isn&#x27;t present here.</p>
+    <ul class="cites"><li><code>.github/workflows/build.yml:23 (runs-on ubuntu-latest)</code></li><li><code>.github/workflows/build.yml:61-88 (vmactions/freebsd-vm@v1 inputs, prepare, run)</code></li><li><code>.github/workflows/build.yml:28-34 (release must be bare version, no -RELEASE)</code></li><li><code>.github/workflows/build.yml:54-58 (actions/cache@v4 distfiles)</code></li><li><code>.github/workflows/build.yml:157-233 (release job: contents:write, gh release delete --cleanup-tag, softprops/action-gh-release@v2 continuous tag)</code></li><li><code>.github/workflows/build.yml:198-201 (why softprops over gh release create for large assets)</code></li><li><code>.github/workflows/build.yml:207-212 (pre-delete continuous release)</code></li><li><code>.github/workflows/build.yml:214-233 (tag_name continuous, prerelease, target_commitish, fail_on_unmatched_files, files)</code></li><li><code>build.sh:31 (MIRROR url releases/${ARCH}/${FREEBSD_VERSION}-RELEASE)</code></li><li><code>build.sh:55-58 (fetch -o src.txz, cache-guarded)</code></li><li><code>build.sh:227-229 (tar -xJf src.txz extract to freebsd-src)</code></li><li><code>https://github.com/vmactions/freebsd-vm (README: run/prepare execute in-guest, host tree mounted, envs/copyback)</code></li><li><code>https://github.com/softprops/action-gh-release (reused tag updates existing release; overwrite_files default true; contents:write + GITHUB_TOKEN)</code></li></ul></details><details><summary><b>FreeBSD base-from-src (pkgbase removal / fbsdglue extension)</b></summary>
+    <p><b>Summary.</b> The image still installs ~17 FreeBSD-* pkgbase packages at runtime (pkglist-base.txt) plus ~10 build-only ones (buildpkgs-base.txt). The genuinely load-bearing runtime ones are FreeBSD-clibs (libc + libc++ + libthr + compiler_rt + libm + libgcc_s — the dynamic loader ld-elf.so.1 actually lives in FreeBSD-clibs/-runtime), plus FreeBSD-openssl-lib, FreeBSD-zlib, FreeBSD-bzip2, FreeBSD-libsqlite3/-libucl (for pkg), FreeBSD-fetch, FreeBSD-caroot, FreeBSD-vt-data, FreeBSD-zoneinfo, and the bootloader+kernel. FreeBSD-runtime and FreeBSD-utilities are ALREADY commented out (dropped #105h/PR #140) — their userland paths are covered by ~109 Apple-source overlays + ~30 fbsdglue /usr/src builds, but FreeBSD-runtime still gets dragged into the pkg DB transitively (via FreeBSD-pkg-bootstrap&#x27;s libmd shlib dep) so libc.so.7 + ld-elf.so.1 ON DISK still come from that phantom pkg&#x27;s manifest, not from src. So &quot;remove ALL base pkgbase except kernel&quot; is NOT yet done: the core C runtime (libc, rtld, libc++, libthr) is still pkgbase-supplied even where the pkg is nominally &quot;dropped.&quot; Building these from /usr/src is the missing piece. RECOMMENDATION: this is the one place a curated-subset fbsdglue extension is NOT sufficient — libc + rtld + the C++/threading runtime have a buildworld bootstrap-header/legacy-lib chain that the current per-dir `make -C dir obj &amp;&amp; make &amp;&amp; make install` loop cannot satisfy. The pragmatic path is a one-time `make buildworld` of the extracted src tree into a private DESTDIR, then cherry-pick/install ONLY the runtime artifacts (libc, libc++, libthr, libcxxrt, libcompiler_rt, libm, libgcc_s, ld-elf.so.1) as a new &quot;fbsdglue-libc&quot; staging step — keep the cheap per-dir loop for everything else.</p>
+    <p><b>Mechanism.</b></p><pre class="small">INVENTORY — runtime pkgbase still installed (pkglist-base.txt, /Users/jmaloney/Documents/launchd/freebsd-launchd-mach/pkglist-base.txt):
+- FreeBSD-bootloader (line 29) — boot1/loader; OUT OF SCOPE here (boot, not userland), but not the kernel either.
+- FreeBSD-kernel-generic (line 30) — EXCLUDED per goal.
+- FreeBSD-clibs (line 55) — THE CORE: /lib/libc.so.7, libc++.so.1, libcxxrt.so.1, libthr.so.3, libm.so.5, libgcc_s.so.1, libcompiler_rt.so (comment line 146-147 confirms runtime libcompiler_rt.so is bundled here, no separate runtime pkg). NOTE the ELF dynamic loader /libexec/ld-elf.so.1 is provided by the FreeBSD-clibs/FreeBSD-runtime pair — this is the single most load-bearing file on the image (every dynamic binary, including /sbin/launchd PID 1, needs it; build.sh line 2377 explicitly notes losing these files → kernel panic &quot;Going nowhere without my init!&quot;).
+- FreeBSD-vt-data (line 66) — vt(4) console keymaps/fonts. Data only.
+- FreeBSD-pkg-bootstrap (line 90), FreeBSD-fetch (line 91), FreeBSD-libsqlite3 (line 92), FreeBSD-libucl (line 93) — for pkg(8)/fetch(1) in the in-chroot bootstrap. FreeBSD-pkg-bootstrap is ALSO the transitive route that re-pulls FreeBSD-runtime + FreeBSD-pam-lib into the pkg DB (build.sh line 2381-2382).
+- FreeBSD-openssl + FreeBSD-openssl-lib (lines 102-103) — libcrypto/libssl for sshd, pkg, dhcpcd; openssl(1) bin.
+- FreeBSD-caroot (line 104) — CA bundle data.
+- FreeBSD-zlib (line 111), FreeBSD-bzip2 (line 116) — libz/libbz2.
+- FreeBSD-zoneinfo (line 156) — /usr/share/zoneinfo data.
+Already-dropped (commented) in pkglist-base.txt: FreeBSD-rescue (51), FreeBSD-runtime (52), FreeBSD-utilities (56), FreeBSD-csh (60), FreeBSD-vi (63), FreeBSD-ufs (73), FreeBSD-geom (78), FreeBSD-mtree (82), FreeBSD-libarchive (99), FreeBSD-certctl (108), FreeBSD-xz (115), FreeBSD-pam-lib/-pam (132-133), FreeBSD-libcasper (145), FreeBSD-libexecinfo (152).
+
+BUILD-ONLY pkgbase (buildpkgs-base.txt, /Users/jmaloney/Documents/launchd/freebsd-launchd-mach/buildpkgs-base.txt) — purged before mkuzip (build.sh line 2366-2369): FreeBSD-clang (13), FreeBSD-lld (14), FreeBSD-toolchain (17 — also supplies byacc/flex/lex for migcom per lines 51-56), FreeBSD-clang-dev (22), FreeBSD-runtime-dev (23), FreeBSD-clibs-dev (24), FreeBSD-libcompiler_rt-dev (25), FreeBSD-libcompat-dev (26), FreeBSD-libexecinfo-dev (27), FreeBSD-openssl-dev (42), FreeBSD-audit-dev (49). These provide the /usr/include headers + toolchain that BOTH the fbsdglue /usr/src builds AND any future buildworld depend on.
+
+WHAT&#x27;S ALREADY BUILT FROM SRC (srclist-fbsdglue.txt + build.sh step 3a2, /Users/jmaloney/Documents/launchd/freebsd-launchd-mach/srclist-fbsdglue.txt): ~50 entries. Mechanism (build.sh lines 297-314): for each dir, `env MAKEOBJDIRPREFIX=$WORK/srcbuild-obj make -C usr/src/$DIR obj`, then `make`, then `make install DESTDIR=$WORK/rootfs`, with flags `__MAKE_CONF=/dev/null SRCCONF=/dev/null MK_MAN=no MK_TESTS=no` (lines 277-278). It pre-creates /usr/include subdirs the lib installs assume (lines 290-295). Iterated in FILE ORDER so prereq libs precede consumers (line 243). Already builds shlibs: lib/libcasper, lib/libbsm, lib/ncurses, lib/libmd, lib/libutil, lib/libnv, lib/libarchive, lib/libexecinfo, lib/libufs, lib/liblzma, lib/libnetbsd, lib/libcrypt, lib/libedit, lib/libelf, lib/libjail, lib/libgeom, lib/libexpat, lib/libdevctl (srclist lines 111-172). Crucially it does NOT build lib/libc, lib/libc++, lib/libthr, lib/msun(libm), libexec/rtld-elf — the core runtime.
+
+CAN THE PER-DIR LOOP BUILD libc/rtld? Partially, but NOT reliably with the current loop, because FreeBSD&#x27;s lib/libc + libexec/rtld-elf depend on the buildworld &quot;bootstrap&quot; phase that (a) generates headers (libc has codegen: syscall stubs from sys/kern/syscalls.master, *.h from tools, gd_qsort, jemalloc, soft-float tables) and (b) builds legacy bootstrap libraries first. The existing loop already hit the analogous codegen-prereq problem and solved it only by careful ordering (srclist lines 244-247 cite lib/libsysdecode mktables + lib/libifconfig codegen as &quot;the path that defeated PR #107&quot;). libc&#x27;s prereqs are far deeper than one mktables run — it needs the in-tree generated headers tree (`make -C lib/libc obj &amp;&amp; make` will try to build the syscall stubs which need `usr/src/sys` syscall master + the bootstrap tools in usr.bin/xinstall, lib/build-tools, etc.). rtld-elf links against the just-built libc/csu. This is precisely what buildworld&#x27;s `_bootstrap-tools`, `_cleanobj`, `_obj`, `_build-tools`, `_cross-tools`, `_includes`, `_libraries` stages exist to sequence.
+
+FROM-SRC BUILD PLAN (pragmatic, recommended):
+1. Keep the existing cheap per-dir loop (step 3a2) for everything that already works (the ~50 leaf tools + simple shlibs).
+2. Add ONE new step (call it 3a1, BEFORE 3a2) that runs a real but TARGETED buildworld of the already-extracted tree at $WORK/freebsd-src/usr/src into a throwaway DESTDIR, then installs only the runtime set. Concretely:
+   a. `cd $WORK/freebsd-src/usr/src &amp;&amp; env MAKEOBJDIRPREFIX=$WORK/world-obj make -j$(nproc) buildworld` (with `SRCCONF=/dev/null __MAKE_CONF=/dev/null MK_MAN=no MK_TESTS=no MK_DEBUG_FILES=no WITHOUT_TOOLCHAIN=... ` to trim). This is the unavoidable ~30-60min cost ONCE. (Optionally scope with `SUBDIR_OVERRIDE=lib` to build only lib/, but rtld-elf is under libexec/ and csu under lib/csu, and the bootstrap-tools/cross-tools phases still run — SUBDIR_OVERRIDE skips bootstrap, so a full buildworld is the safe baseline.)
+   b. `make installworld DESTDIR=$WORK/world-stage` into a scratch dir.
+   c. cp ONLY the runtime artifacts from $WORK/world-stage into $WORK/rootfs: /libexec/ld-elf.so.1, /lib/libc.so.7, /lib/libthr.so.3, /lib/libm.so.5, /lib/libgcc_s.so.1, /usr/lib/libc++.so.1, /usr/lib/libcxxrt.so.1, /lib/libcompiler_rt.so* — and their dev symlinks if anything links them. This replaces FreeBSD-clibs on disk.
+   d. Then DROP FreeBSD-clibs from pkglist-base.txt (comment it out, same pattern as runtime/utilities).
+3. Alternatively (lower-risk middle path the codebase already trusts): build the specific dirs via the existing loop but ADD a manual bootstrap pre-pass: build lib/csu, then lib/libc (after `make -C usr/src/lib/libc obj` succeeds against an installed FreeBSD-clibs-dev header tree), then libexec/rtld-elf, then lib/msun, lib/libthr, lib/libcxxrt, lib/libc++. This MIGHT work because buildpkgs-base.txt already installs FreeBSD-clibs-dev + FreeBSD-runtime-dev + FreeBSD-libcompat-dev headers into the rootfs, so the generated-header dependency is partly pre-satisfied. But libc&#x27;s own codegen (syscall stubs, jemalloc, FreeBSD-version) is NOT in the -dev headers and would still need the in-tree build-tools — so this path is fragile and likely to fail the way PR #107 did. The buildworld path (option 2) is the robust recommendation.</pre>
+    <p><b>Gotchas.</b> 1. pkg-autoremove-wipes-overlay (the standing hazard, build.sh lines 2371-2394 + memory no-pkgbase-for-apple-replaced): autoremove is currently DISABLED precisely because FreeBSD-runtime still lives in the pkg DB and owns the manifest entries for /lib/libutil.so.10, libmd, libnv, libelf, AND libc.so.7 + ld-elf.so.1. If you build libc from src and overlay it, then re-enable autoremove (or `pkg delete FreeBSD-clibs`), pkg deletes the FILES BY MANIFEST regardless of whose bytes are on disk → boot panic &quot;Going nowhere without my init!&quot; (build.sh line 2378). So removing FreeBSD-clibs from pkglist-base.txt is necessary but NOT sufficient: it&#x27;ll still be transitively pulled by FreeBSD-pkg-bootstrap (build.sh line 2381). You must EITHER keep autoremove disabled (phantom pkg, our bytes win — the current pattern) OR solve the &quot;shadow-manifest local repo / drop pkg from the booted image&quot; workstream that build.sh line 2385-2391 and srclist line 144-150 both defer as out-of-scope.
+2. ORDERING: libc + rtld must be staged into the rootfs BEFORE any other fbsdglue binary tries to link, and before the chroot pkg-bootstrap step runs (chroot needs a working ld-elf.so.1). If you overlay a from-src libc.so.7 with a different soname/symbol set than what FreeBSD-clibs binaries linked against, every pkgbase binary (openssl, pkg, fetch) could break. Build libc from the SAME src.txz release as the pkgbase ABI (PKG_ABI) to keep sonames/symbol versions identical.
+3. THE LOADER LIVES IN clibs/runtime, not a separate pkg — there is no &quot;FreeBSD-rtld&quot; package. ld-elf.so.1 ships inside FreeBSD-clibs (and FreeBSD-runtime). So &quot;drop FreeBSD-clibs&quot; is the action that removes the loader; you cannot drop it without first staging a from-src ld-elf.so.1.
+4. buildworld needs the TOOLCHAIN + headers that buildpkgs-base.txt provides (FreeBSD-clang, FreeBSD-lld, FreeBSD-toolchain, *-dev). Those are purged at step 3z — so the buildworld step must run BEFORE the purge (it does if you place it at 3a1, before 3a2). Also buildworld by default wants /usr/obj writable and a clean env; the codebase already isolates with MAKEOBJDIRPREFIX + SRCCONF=/dev/null __MAKE_CONF=/dev/null (build.sh line 277) — reuse that exact isolation.
+5. SUBDIR_OVERRIDE=lib does NOT run the bootstrap-tools/build-tools/cross-tools phases, so libc&#x27;s generated headers won&#x27;t exist → it fails the same way PR #107 did (cited srclist lines 246-247). Don&#x27;t try to shortcut buildworld with SUBDIR_OVERRIDE for libc.
+6. Time/CI budget: a full buildworld is ~30-60 min and dwarfs the current build. The feedback memory (prioritize-real-consumers / no CI gold-plating) suggests weighing whether the on-disk-bytes-from-src goal is worth that cost when the phantom-pkg overlay already gives functionally-our-libc for everything EXCEPT pure pkg-DB hygiene. Right now NOTHING actually requires from-src libc to function; the only payoff is true pkgbase removal + Linux-portability prep (srclist lines 124-135 articulate exactly this &quot;build shape stays the same&quot; rationale).</p>
+    <ul class="cites"><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/pkglist-base.txt:29-30 (bootloader+kernel)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/pkglist-base.txt:55 (FreeBSD-clibs = libc/libc++/libthr/compiler_rt)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/pkglist-base.txt:52,56 (FreeBSD-runtime + utilities already commented out)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/pkglist-base.txt:90-93,101-104,111,116,156 (pkg/fetch/openssl/caroot/zlib/bzip2/zoneinfo still installed)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/pkglist-base.txt:146-147 (libcompiler_rt.so bundled in FreeBSD-clibs, no runtime pkg)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/buildpkgs-base.txt:13-49 (clang/lld/toolchain/*-dev build-only set, incl. byacc/flex in toolchain)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/srclist-fbsdglue.txt:111-172 (lib shlibs already built from src; libc/libc++/libthr/rtld absent)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/srclist-fbsdglue.txt:124-135 (libmd/libutil/libnv rationale: on-disk-from-src + Linux-portability)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/srclist-fbsdglue.txt:144-150 (FreeBSD-runtime still pulled via pkg; shadow-manifest deferred)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/srclist-fbsdglue.txt:244-248 (codegen-prereq ordering; lib/libifconfig path that defeated PR #107)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/build.sh:97-106 (host-side pkg install of BASE_PKGS+BASE_BUILD_PKGS into rootfs)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/build.sh:227-229 (src.txz extracted to $WORK/freebsd-src/usr/src)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/build.sh:275-314 (fbsdglue per-dir obj/build/install loop + isolation flags + include-dir prep)</code></li><li><code>/Users/jmaloney/Documents/launchd/freebsd-launchd-mach/build.sh:2359-2394 (build-pkg purge + autoremove DISABLED rationale: deleting runtime manifest wipes libc/rtld → panic)</code></li></ul></details><details><summary><b>kernel-txz-consumption</b></summary>
+    <p><b>Summary.</b> build.sh currently gets /boot/kernel from the FreeBSD-kernel-generic pkgbase package (pkglist-base.txt:30), installed host-side via `pkg -R config -r rootfs install` into $WORK/rootfs (build.sh:101-106). mach.ko is built out-of-tree against src.txz kernel sources and dropped on top into $WORK/rootfs/boot/kernel/mach.ko (build.sh:514-518). To consume a NextBSD CI-built kernel.txz instead: drop FreeBSD-kernel-generic from pkglist-base.txt, fetch+extract the kernel.txz into $WORK/rootfs after the pkg install but before the mach.ko build, and run kldxref to regenerate linker.hints. The hard coupling constraint is that the kernel.txz and the src.txz used for the mach.ko build MUST be the same FreeBSD source revision (__FreeBSD_version / KPI), else mach.ko fails the module version check at kldload.</p>
+    <p><b>Mechanism.</b></p><pre class="small">CURRENT STATE (what to change):
+
+1. Where the kernel comes from today. pkglist-base.txt:29-30 lists `FreeBSD-bootloader` and `FreeBSD-kernel-generic`. These are installed host-side into $WORK/rootfs by the curated pkgbase install at build.sh:97-106 (`env ABI=... pkg -R &quot;$PKG_CONFIG&quot; -r &quot;$WORK/rootfs&quot; install -y -r FreeBSD-base $BASE_PKGS $BASE_BUILD_PKGS`). FreeBSD-kernel-generic owns /boot/kernel/kernel, the in-tree .ko modules (ahci.ko, nvme.ko, virtio*.ko, mfi.ko — all preloaded by loader.conf.d, see below), and /boot/kernel/linker.hints (the kldxref index rtld_kld uses to resolve module names + deps).
+
+2. mach.ko today. build.sh:221-229 extracts src.txz into $WORK/freebsd-src (kernel sources). build.sh:509-518 calls make-mach-kmod.sh --sysdir=$WORK/freebsd-src/usr/src/sys --prefix=$WORK/rootfs, which builds src/mach_kmod against those sources with bsd.kmod.mk and installs into $WORK/rootfs/boot/kernel/mach.ko (make-mach-kmod.sh:58 KMODDIR=/boot/kernel, :76 make install DESTDIR). So mach.ko ALREADY lives on top of the pkg-provided kernel; it is NOT in the pkg. This is the model to preserve.
+
+3. Disk image assembly. No cd9660/uzip. build.sh:2532-2536 makefs -t ffs of $WORK/rootfs into rootfs.ufs (label ROOTFS). build.sh:2543-2558 builds the ESP from rootfs/boot/loader*.efi. build.sh:2564-2573 mkimg -s gpt with pmbr/gptboot + ESP + freebsd-ufs/ROOTFS. The kernel + mach.ko both ride inside $WORK/rootfs (they are just files at /boot/kernel/* before makefs runs). loader.conf is overlays/boot/loader.conf.d/freebsd-launchd-mach.conf (applied at build.sh:2497-2499), which sets mach_load=YES, vfs.root.mountfrom=ufs:/dev/ufs/ROOTFS, init_path=/sbin/launchd, and the driver *_load=YES lines.
+
+CONCRETE CHANGE OUTLINE:
+
+(1) pkglist-base.txt: comment out FreeBSD-kernel-generic (line 30), exactly like the FreeBSD-runtime/FreeBSD-ufs drops already in that file. Keep FreeBSD-bootloader (it provides loader/pmbr/gptboot/loader.efi that build.sh:2547-2570 needs; NextBSD&#x27;s kernel.txz won&#x27;t carry those). Add a comment pointing at the NextBSD fetch.
+
+(2) build.sh: add a new step between the pkgbase install (ends build.sh:106) and the src.txz extraction at build.sh:221, OR more precisely it must land before the mach.ko build (build.sh:514) since mach.ko installs INTO /boot/kernel and would be clobbered if the txz extraction ran later. Recommended placement: immediately after step 2 (after build.sh:106), mirroring the existing src.txz fetch idiom (build.sh:55-58) and OpenSSH fetch idiom (build.sh:2425-2434):
+
+    : &quot;${NEXTBSD_KERNEL_URL:=https://github.com/nextbsd-redux/nextbsd-kernel/releases/download/continuous/kernel-amd64.txz}&quot;
+    if [ ! -f &quot;$DIST/kernel.txz&quot; ]; then
+        echo &quot;==&gt; downloading NextBSD kernel.txz&quot;
+        fetch -o &quot;$DIST/kernel.txz&quot; &quot;$NEXTBSD_KERNEL_URL&quot;   # curl -L -o on a non-FreeBSD runner
+    fi
+    echo &quot;==&gt; extracting NextBSD kernel.txz into rootfs/boot/kernel&quot;
+    tar -xJf &quot;$DIST/kernel.txz&quot; -C &quot;$WORK/rootfs&quot;           # pkgbase/release kernel.txz roots at ./boot/kernel/...
+    test -f &quot;$WORK/rootfs/boot/kernel/kernel&quot; || { echo &quot;FAIL: kernel.txz had no /boot/kernel/kernel&quot;; exit 1; }
+
+Ordering vs pkg autoremove: autoremove is DISABLED in this tree (build.sh:2371-2394, commented out), and even when build pkgs are pkg-deleted (build.sh:2359-2370) that delete is by manifest. Because FreeBSD-kernel-generic is no longer installed, the pkg DB has NO manifest entry for /boot/kernel/* — so nothing can delete the extracted txz files. This is the no-pkgbase-for-apple-replaced pattern applied to the kernel: drop the pkg entirely so its manifest never exists, then own the path with the tarball. (Unlike the PAM/runtime cases, the kernel txz isn&#x27;t a transitive dep of anything, so no `pkg set -A 0` pin is needed — kernel-generic simply won&#x27;t be pulled in.) The extraction must run BEFORE build.sh:514 mach.ko install so mach.ko lands on top, and BEFORE build.sh:2532 makefs so the kernel is inside rootfs.ufs.
+
+(3) linker.hints / kldxref. FreeBSD-kernel-generic&#x27;s pkg post-install runs kldxref to produce /boot/kernel/linker.hints; the kernel.txz from a CI release MAY already contain a linker.hints, but it will NOT include mach.ko (built afterward). Since mach.ko is preloaded by exact path via loader.conf (mach_load=YES → loader resolves /boot/kernel/mach.ko by filename, not by hints), boot does not strictly require regenerating hints for mach to load. BUT the driver modules (ahci_load etc. in the loader.conf) and any kldload(8) at runtime DO use linker.hints. Add a kldxref pass after BOTH the kernel.txz extraction and the mach.ko install, before makefs:
+
+    chroot &quot;$WORK/rootfs&quot; kldxref /boot/kernel    # regenerates linker.hints to include mach.ko + txz modules
+
+Note kldxref is currently NOT run anywhere in build.sh (confirmed: grep found none) because the pkg shipped a prebaked linker.hints and mach.ko was loaded by path. Adding kldxref makes the index authoritative and tolerant of whatever module set the txz ships. /sbin/kldxref is already in the rootfs via srclist-fbsdglue.txt (build.sh:320 lists /sbin/kldload as a fbsdglue key-bin; kldxref is in the same usr.sbin/kldxref build — verify it&#x27;s in srclist-fbsdglue.txt and add if missing).
+
+(4) mach.ko coexistence + KPI matching. mach.ko stays built+installed HERE on top of the extracted kernel (do NOT put it in the upstream txz). The coupling: bsd.kmod.mk stamps mach.ko with the __FreeBSD_version / module-version of the SYSDIR it built against (build.sh:516 --sysdir=$WORK/freebsd-src/usr/src/sys, i.e. src.txz). At kldload the kernel rejects a module whose version/KPI doesn&#x27;t match the running kernel. So the NextBSD kernel.txz and the src.txz fed to make-mach-kmod.sh MUST be the same source rev. Two options:
+  (a) NextBSD also publishes a matching src.txz (or a sysdir tarball) in the same continuous release, and build.sh fetches THAT for $WORK/freebsd-src instead of the freebsd.org src.txz at build.sh:55-58. This is the correct, KPI-safe option.
+  (b) If only kernel.txz ships, you must pin the NextBSD release tag to a known FreeBSD source rev and fetch the corresponding freebsd.org src.txz — fragile, breaks the moment NextBSD&#x27;s continuous kernel moves ahead of the RELEASE src.txz.
+
+(5) Version pinning. Today build.sh pins via FREEBSD_VERSION (build.sh:15, default 15.0; CI sets it from the matrix at .github/workflows/build.yml:84). That drives the pkgbase ABI (build.sh:22-23 PKG_MAJOR/PKG_ABI) AND the src.txz mirror URL (build.sh:31 MIRROR, fetched at :57). For the NextBSD path you must add a NEXTBSD_KERNEL_REV (or reuse the release tag `continuous`) and assert that the kernel.txz&#x27;s __FreeBSD_version matches the src.txz&#x27;s. Practical assertion: after extracting both, compare `strings rootfs/boot/kernel/kernel | grep &#x27;@(#)FreeBSD&#x27;` (or read sys/sys/param.h __FreeBSD_version from $WORK/freebsd-src) and fail the build on mismatch before the expensive mach.ko compile.</pre>
+    <p><b>Gotchas.</b> - Ordering is load-bearing: the kernel.txz extraction MUST run after the pkgbase install (build.sh:106) and BEFORE the mach.ko install (build.sh:514) and BEFORE makefs (build.sh:2532). If extracted after mach.ko, tar overwrites/removes the freshly-built mach.ko in /boot/kernel.
+- Keep FreeBSD-bootloader in pkglist-base.txt. The disk-image assembly reads rootfs/boot/loader_lua.efi|loader.efi (build.sh:2547-2550) and rootfs/boot/pmbr + gptboot (build.sh:2565-2570). A kernel.txz does NOT contain the bootloader; dropping FreeBSD-bootloader would make mkimg fail at build.sh:2566.
+- KPI/version lockstep is the real coupling: mach.ko is stamped with the SYSDIR&#x27;s module version (built from src.txz at build.sh:516). kernel.txz and src.txz must be the identical source rev or kldload rejects mach.ko (&#x27;module mach version mismatch&#x27;). NextBSD&#x27;s continuous kernel drifts from freebsd.org RELEASE src.txz — you almost certainly need NextBSD to publish a matching src/sysdir tarball too.
+- pkg autoremove is already disabled (build.sh:2371-2394) and would not threaten the txz anyway, because once FreeBSD-kernel-generic is dropped from pkglist-base.txt the pkg DB has no manifest for /boot/kernel/* — this is exactly the no-pkgbase-for-apple-replaced principle (own the path, never let a pkg manifest cover it). No `pkg set -A 0` pin needed since kernel-generic isn&#x27;t a transitive dep.
+- linker.hints: kldxref is not run anywhere today (the pkg prebaked it). After switching to txz, run `chroot rootfs kldxref /boot/kernel` after BOTH txz extract and mach.ko install so the index covers mach.ko and the txz&#x27;s actual module set. mach_load=YES still works without it (loader resolves by path), but runtime kldload(8) and the driver *_load lines benefit from a correct index. Verify /sbin/kldxref is in srclist-fbsdglue.txt (kldload is; confirm kldxref).
+- On CI: build.sh runs inside a FreeBSD VM (vmactions, .github/workflows/build.yml:60-88) so `fetch` and `tar -xJf` work as-is; no curl needed. The kernel.txz URL should be parameterized (NEXTBSD_KERNEL_URL env) and cached in distfiles/ alongside src.txz (cache step at build.yml:54-58) to avoid re-downloading every run.
+- The standalone mach.ko release tarball (build.sh:2592-2614) and its README claim &#x27;Built against: FreeBSD ${FREEBSD_VERSION}&#x27;. That string becomes misleading once the kernel is NextBSD; update the README/basename to reflect the NextBSD kernel rev for users who kldload it on a stock box.</p>
+    <ul class="cites"><li><code>build.sh:15 (FREEBSD_VERSION default pin)</code></li><li><code>build.sh:22-23 (PKG_MAJOR/PKG_ABI derived from FREEBSD_VERSION)</code></li><li><code>build.sh:31,55-58 (MIRROR + src.txz fetch)</code></li><li><code>build.sh:97-106 (curated pkgbase install of BASE_PKGS into rootfs)</code></li><li><code>build.sh:221-229 (src.txz extract to $WORK/freebsd-src)</code></li><li><code>build.sh:509-518 + make-mach-kmod.sh:58,76 (mach.ko built vs src.txz sysdir, installed into rootfs/boot/kernel)</code></li><li><code>build.sh:2359-2394 (pkg delete build pkgs; autoremove disabled, by-manifest deletion)</code></li><li><code>build.sh:2497-2516 (overlay apply incl loader.conf.d + fstab; pwd_mkdb/cap_mkdb)</code></li><li><code>build.sh:2532-2573 (makefs ffs ROOTFS, ESP from loader.efi, mkimg gpt with pmbr/gptboot)</code></li><li><code>build.sh:2592-2614 (standalone mach.ko release tarball + README version string)</code></li><li><code>pkglist-base.txt:28-30 (FreeBSD-bootloader + FreeBSD-kernel-generic)</code></li><li><code>overlays/boot/loader.conf.d/freebsd-launchd-mach.conf (mach_load, *_load drivers, vfs.root.mountfrom, init_path)</code></li><li><code>overlays/etc/fstab (ufs:/dev/ufs/ROOTFS root)</code></li><li><code>.github/workflows/build.yml:36-88 (matrix FREEBSD_VERSION/VARIANT -&gt; build.sh; vmactions FreeBSD VM)</code></li></ul></details>
+
+<footer>Generated from a 5-agent research+design workflow over the repo and freebsd-src. Draft for joint review; not committed or pushed. The kernel CI workflow's source-overlay step is a placeholder pending the nextbsd-kernel repo layout.</footer>
+</div></body></html>

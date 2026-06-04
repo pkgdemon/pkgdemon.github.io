@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mach.ko → kernel built-in (options COMPAT_MACH) — plan</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; foundation for <a href="freebsd-ko-to-kext-conversion-plan.html#loaderconf">eliminating loader.conf (#180)</a></p>
+
+<h1><code>mach.ko</code> &rarr; kernel built-in</h1>
+<p class="lede">Compile the out-of-tree Mach kernel module <em>into</em> the <code>NEXTBSD</code> kernel (<code>options COMPAT_MACH</code>) instead of loading it as a <code>.ko</code>. This is the answer to &ldquo;how do we load <code>mach.ko</code> once <code>loader.conf</code> is gone?&rdquo; &mdash; we don&rsquo;t load it; it&rsquo;s part of the kernel image, present from the first instruction, long before launchd (PID&nbsp;1). It is the <strong>foundational step of #180</strong> (eliminate <code>loader.conf</code>).</p>
+<p class="meta">2026-06-03. Grounded in a 2-agent code scope: the <code>nextbsd/src/mach_kmod</code> build (sources, MIG, Makefile, syscall wiring) + the FreeBSD 15.x <code>sys/conf/{options,files}</code> + SYSINIT build-in mechanism. Tracked on <a href="https://github.com/nextbsd-redux/nextbsd/issues/180">nextbsd#180</a>.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Verdict</span> <strong>Feasible and clean &mdash; mostly build-system wiring, not a C rewrite.</strong> Two things that usually make &ldquo;module&nbsp;&rarr;&nbsp;built-in&rdquo; painful don&rsquo;t apply here: the MIG server stubs are <em>pre-generated and committed</em> (no codegen in the kernel build), and the syscalls already register through a <code>SYSINIT</code> via <code>kern_syscall_register()</code> (no <code>syscalls.master</code> regen). The mach source is <em>ours</em>, not <code>freebsd-src</code>, so it lives in <code>nextbsd-kernel</code> and is dropped into the builder&rsquo;s throwaway clone &mdash; the fork is never touched.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#why">Why build it in</a></li>
+  <li><a href="#today">What mach is today (inventory)</a></li>
+  <li><a href="#mechanism">The compile-in mechanism</a></li>
+  <li><a href="#migration">Source migration &amp; the wiring patch</a></li>
+  <li><a href="#cdelta">C deltas (smaller than expected)</a></li>
+  <li><a href="#ordering">Boot ordering: ready before PID&nbsp;1</a></li>
+  <li><a href="#pipeline">CI / pipeline changes</a></li>
+  <li><a href="#risk">Risk &amp; the safety net</a></li>
+  <li><a href="#steps">Steps &amp; sequencing</a></li>
+  <li><a href="#open">Open decisions</a></li>
+</ol>
+</div>
+
+<h2 id="why">1. Why build it in</h2>
+<p>NextBSD&rsquo;s running image loads exactly two things &mdash; <code>kldstat</code> shows <code>kernel</code> + <code>mach.ko</code>. <code>mach.ko</code> is preloaded by <code>loader.conf.d</code> (<code>mach_load="YES"</code>) so Mach syscalls exist before any userland. But mach is genuinely <strong>boot-tier</strong>: launchd (PID&nbsp;1) needs Mach traps, and the on-demand loader (kextd) is itself launched <em>by</em> launchd. So mach can never be an on-demand load &mdash; it must be present before PID&nbsp;1.</p>
+<p>When <a href="freebsd-ko-to-kext-conversion-plan.html#loaderconf">#180</a> retires <code>loader.conf</code>, the <code>mach_load="YES"</code> line goes away. The only correct place for a boot-tier component is then the <strong>kernel image itself</strong> &mdash; exactly how FFS and the disk drivers already ride (they&rsquo;re built into <code>GENERIC</code>, which is why nothing loads them). Building mach in puts it on that same tier.</p>
+<div class="callout">
+<p>This is <em>not</em> a blocker today. <code>mach_load="YES"</code> keeps working through the entire transition; the built-in is the end state, reached when <code>loader.conf</code> is removed. The two states are interchangeable for correctness &mdash; built-in is simply the one that survives loader.conf removal.</p>
+</div>
+
+<h2 id="today">2. What mach is today (inventory)</h2>
+<p>Out-of-tree module at <code>nextbsd/src/mach_kmod/</code>, built by <code>make-mach-kmod.sh</code> &rarr; <code>make -C src/mach_kmod</code> &rarr; <code>bsd.kmod.mk</code>, against the ingested kernel source (<code>SYSDIR</code>) with the <code>NEXTBSD</code> build&rsquo;s <code>opt_*.h</code> for KBI match.</p>
+<table>
+  <thead><tr><th>Group</th><th>Files</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Hand-written, top-level <code>src/</code></td><td>~20 .c (<code>mach_module.c</code>, <code>mach_syscall_wire.c</code>, <code>mach_traps.c</code>, <code>mach_busystate.c</code>, <code>mach_event_bridge.c</code>, <code>mach_{clock,host,host_priv,task,thread,vm,processor,semaphore,convert,misc,stats,test}.c</code>, <code>proc_info.c</code>, <code>compat_stubs.c</code>)</td><td>core logic</td></tr>
+    <tr><td>MIG server stubs (<strong>pre-committed</strong>)</td><td>7 .c from <code>src/defs/*.defs</code>: <code>{clock,host_priv,mach_host,mach_port,mach_vm,task,vm_map}_server.c</code></td><td><strong>No <code>mig</code> run at build</strong> &mdash; checked in. The Makefile just lists them in <code>SRCS</code>.</td></tr>
+    <tr><td><code>ipc/</code></td><td>17 .c (<code>ipc_*.c</code>, <code>mach_msg.c</code>, <code>mach_port.c</code>, <code>mach_debug.c</code>)</td><td>hand-written</td></tr>
+    <tr><td><code>kern/</code></td><td>4 .c (<code>ipc_host.c</code>, <code>ipc_tt.c</code>, <code>task.c</code>, <code>thread_pool.c</code>)</td><td>hand-written</td></tr>
+  </tbody>
+</table>
+<p><strong>Include tree &amp; flags</strong> (from the Makefile): <code>-I include</code> (resolves <code>&lt;sys/mach/&hellip;&gt;</code> and <code>&lt;sys/mach_debug/&hellip;&gt;</code>), <code>-I include/apple</code> (Apple-ism headers), <code>-I .</code> (the shipped <code>opt_*.h</code>), and a force-included <code>-include include/compat_shim.h</code> (aliases <code>p_machdata&rarr;p_emuldata</code>, defines <code>EVFILT_MACHPORT</code>, Apple stubs). CFLAGS: <code>-DCOMPAT_MACH -DMACH_INTERNAL -DAUDIT</code> plus a couple of <code>-Wno-error=</code> demotions.</p>
+<p><strong>Syscalls</strong>: <code>mach_syscall_wire.c</code> registers the traps from a <code>SYSINIT</code> (<code>SI_SUB_INTRINSIC</code>) via <code>kern_syscall_register()</code>, dynamically allocating slots from the widened <code>lkmnosys</code> band (patch 0001; slots 599&ndash;646). 15 Phase&nbsp;B traps wired today (<code>mach_reply_port</code>, <code>mach_msg_trap</code>, the <code>_kernelrpc_*</code> port traps, <code>task/thread/host_self_trap</code>, <code>register/unregister_event_bell</code>, <code>mach_wait_quiet</code>, &hellip;); ~39 more declared for later phases.</p>
+<p><strong>Existing kernel patches</strong> (<code>nextbsd-kernel/patches/series</code>): <code>0001</code> widen lkmnosys band, <code>0002</code> device_match quiesce hook, <code>0003</code> reserve <code>EVFILT_MACHPORT</code>. All merged.</p>
+
+<h2 id="mechanism">3. The compile-in mechanism</h2>
+<p>FreeBSD&rsquo;s standard way to gate a subsystem on a kernel option:</p>
+<ol>
+  <li><strong><code>sys/conf/options</code></strong>: register the option so config(8) emits a header &mdash; <code>COMPAT_MACH&nbsp;&nbsp;opt_compat_mach.h</code>. (mach already compiles under <code>-DCOMPAT_MACH</code> with a shipped <code>opt_compat_mach.h</code>, so we reuse that name &mdash; the generated header replaces the hand-shipped one.)</li>
+  <li><strong><code>sys/conf/files</code></strong>: list every mach <code>.c</code> as <code>optional compat_mach</code>, e.g. <code>compat/mach/mach_msg.c optional compat_mach</code>. Per-file <code>compile-with</code> carries the extra flags (<code>-DMACH_INTERNAL</code>, <code>-include &hellip;/compat_shim.h</code>, the <code>include/apple</code> path) that the Makefile applies today.</li>
+  <li><strong><code>config/NEXTBSD</code></strong>: add <code>options COMPAT_MACH</code>. config(8) generates <code>opt_compat_mach.h</code> (<code>#define COMPAT_MACH 1</code>) and pulls the <code>optional compat_mach</code> files into the kernel build.</li>
+  <li>The kernel build compiles the mach sources into <code>kernel</code>; the <code>SYSINIT</code>s fire at boot. No <code>.ko</code>, no loader entry.</li>
+</ol>
+<div class="callout callout-good">
+<p><strong>No MIG in the kernel build.</strong> Because the <code>*_server.c</code> are pre-committed, we add them as ordinary <code>optional compat_mach</code> files &mdash; none of the <code>vnode_if.c</code>-style <code>dependency</code>/<code>compile-with</code>/<code>before-depend</code> codegen machinery is needed. (If we ever regenerate from <code>.defs</code>, that pattern is available, but it&rsquo;s out of scope here.)</p>
+</div>
+
+<h2 id="migration">4. Source migration &amp; the wiring patch</h2>
+<p>The mach source is NextBSD-original code, not part of <code>freebsd-src</code>. So it moves into <strong><code>nextbsd-kernel</code></strong> as a first-class kernel subsystem, and the build lays it into the builder&rsquo;s freebsd-src clone &mdash; the same discipline as the patches (the fork is never edited).</p>
+<pre><code>nextbsd/src/mach_kmod/src/*.c        →  sys/compat/mach/*.c
+nextbsd/src/mach_kmod/src/ipc/*.c    →  sys/compat/mach/ipc/*.c
+nextbsd/src/mach_kmod/src/kern/*.c   →  sys/compat/mach/kern/*.c
+nextbsd/src/mach_kmod/include/sys/mach/*       →  sys/sys/mach/*         (so &lt;sys/mach/…&gt; resolves)
+nextbsd/src/mach_kmod/include/sys/mach_debug/* →  sys/sys/mach_debug/*
+nextbsd/src/mach_kmod/include/apple/*          →  sys/compat/mach/include/apple/*  (per-file -I)
+nextbsd/src/mach_kmod/include/compat_shim.h    →  sys/compat/mach/compat_shim.h    (force-included)</code></pre>
+<p><strong>Delivery mechanism</strong>: two parts.</p>
+<ul>
+  <li><strong>The source tree</strong> ships as real files in <code>nextbsd-kernel</code> (e.g. under <code>src/sys-overlay/</code>); the kernel build <code>cp -R</code>s it into the freebsd-src clone&rsquo;s <code>sys/</code> before <code>buildkernel</code>. Bulk source as files, not a giant diff.</li>
+  <li><strong>The wiring</strong> ships as <code>patches/0004-compat-mach-builtin.patch</code> &mdash; small, touching only <code>sys/conf/options</code>, <code>sys/conf/files</code> (or a new <code>sys/conf/files.compat_mach</code> included from it), and <code>config/NEXTBSD</code>.</li>
+</ul>
+<p>This keeps <code>nextbsd-kernel</code> a patches-plus-our-additions repo (no full freebsd tree), honors the never-touch-the-fork rule, and keeps the wiring reviewable as a tiny diff.</p>
+
+<h2 id="cdelta">5. C deltas (smaller than expected)</h2>
+<p>The init path already uses the SYSINIT machinery that fires for compiled-in code, so most of it carries over verbatim:</p>
+<ul>
+  <li><strong>Module declaration.</strong> <code>DECLARE_MODULE(mach, &hellip;, SI_SUB_KLD, &hellip;)</code> still fires its <code>MOD_LOAD</code> event for a built-in (the module framework runs events for compiled-in modules too). We can keep it, or convert <code>mach_mod_init()</code> to a plain <code>SYSINIT</code> &mdash; either works; converting is tidier and drops the now-meaningless <code>MOD_UNLOAD&rarr;EBUSY</code> path.</li>
+  <li><strong>Syscall wiring.</strong> Unchanged &mdash; <code>mach_syscall_wire</code> is already a <code>SYSINIT</code> doing dynamic <code>kern_syscall_register()</code>. No <code>syscalls.master</code> regen, no fixed slot numbers.</li>
+  <li><strong>EVFILT_MACHPORT.</strong> Unchanged &mdash; <code>kqueue_add_filteropts(EVFILT_MACHPORT, &amp;machport_filtops)</code> now succeeds (slot reserved by 0003). The stale &ldquo;stock FreeBSD rejects&nbsp;-16&rdquo; comment in <code>mach_module.c</code> can be corrected as a drive-by.</li>
+  <li><strong>Symbol hygiene.</strong> Built-in code shares the kernel namespace. The mach symbols are already prefixed (<code>mach_*</code>, <code>ipc_*</code>); a link-time check for collisions is the one new verification.</li>
+  <li><strong><code>opt_*.h</code>.</strong> The shipped <code>opt_compat_mach.h</code>/<code>opt_capsicum.h</code>/&hellip; are replaced by config(8)-generated ones from the real <code>NEXTBSD</code> config &mdash; which is <em>more</em> correct (guaranteed KBI match), removing the hand-maintained copies.</li>
+</ul>
+
+<h2 id="ordering">6. Boot ordering: ready before PID&nbsp;1</h2>
+<p>The traps must exist before launchd runs. SYSINIT subsystem ordering (from <code>&lt;sys/kernel.h&gt;</code>) guarantees this: <code>SI_SUB_INTRINSIC</code> (current syscall-wire) and <code>SI_SUB_KLD</code> (current module init) both run well before <code>SI_SUB_CREATE_INIT</code> (PID&nbsp;1) and <code>SI_SUB_KICK_SCHEDULER</code>. The one ordering invariant to preserve: IPC zone init must precede syscall wiring (it does today &mdash; init at <code>SI_SUB_KLD</code>, wire at <code>SI_SUB_INTRINSIC</code>). We keep that relative order; the boot smoke test confirms it empirically.</p>
+
+<h2 id="pipeline">7. CI / pipeline changes</h2>
+<table>
+  <thead><tr><th>Repo</th><th>Change</th></tr></thead>
+  <tbody>
+    <tr><td><code>nextbsd-kernel</code></td><td>Add <code>sys/compat/mach/</code> source + <code>0004-compat-mach-builtin.patch</code> + <code>options COMPAT_MACH</code>. The kernel build now compiles mach in. <strong>PR-gated by the boot smoke test (#6).</strong> On green main, the <code>continuous</code> kernel ships with mach built in.</td></tr>
+    <tr><td><code>nextbsd</code></td><td>Once the built-in kernel is in <code>continuous</code>: drop the out-of-tree <code>mach_kmod</code> build from <code>build.sh</code> (steps 3a/3b) and remove <code>mach_load="YES"</code> from <code>overlays/boot/loader.conf.d/freebsd-launchd-mach.conf</code>. The ISO then boots mach from the kernel image.</td></tr>
+  </tbody>
+</table>
+<p>Ordering matters (per the pipeline rule): kernel PR merges and <code>continuous</code> kernel republishes <em>first</em>; only then the <code>nextbsd</code> change that depends on the built-in kernel.</p>
+
+<h2 id="risk">8. Risk &amp; the safety net</h2>
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Blast radius</span> This changes the <strong>shipping kernel&rsquo;s boot path</strong>. A mistake = a kernel that doesn&rsquo;t boot. Mitigations: (1) land as a <code>nextbsd-kernel</code> PR &mdash; the <strong>boot smoke test (#6)</strong> boots the kernel in a VM and must pass before merge; (2) the transition keeps <code>mach_load="YES"</code> valid, so even a built-in that fails to init can&rsquo;t be worse than today until we remove the loader line; (3) verify on the booted PR kernel that the mach syscalls work with <code>mach.ko</code> <em>not</em> loaded (<code>kldstat</code> shows only <code>kernel</code>).</p>
+</div>
+
+<h2 id="steps">9. Steps &amp; sequencing</h2>
+<ol>
+  <li><strong>Stage the source</strong> in <code>nextbsd-kernel</code> (<code>sys/compat/mach/</code> + headers under <code>sys/sys/mach/</code>).</li>
+  <li><strong>Write <code>0004-compat-mach-builtin.patch</code></strong> (options + files + config) and the build-step that lays the source into the clone.</li>
+  <li><strong>Convert/keep init</strong>: tidy <code>mach_module.c</code> (SYSINIT or keep DECLARE_MODULE), correct the stale EVFILT comment.</li>
+  <li><strong>Open the PR</strong> &rarr; boot smoke test must pass; verify mach syscalls live with no <code>mach.ko</code>.</li>
+  <li><strong>Merge</strong> on green (both gh exit code <em>and</em> API conclusion); <code>continuous</code> kernel republishes with mach built in.</li>
+  <li><strong>nextbsd follow-up PR</strong>: drop the <code>mach_kmod</code> build + <code>mach_load="YES"</code>. Verify the ISO boots.</li>
+  <li>Then the rest of #180 (<code>ROOTDEVNAME</code>/<code>INIT_PATH</code> options, trim unused <code>.ko</code>) proceeds on the now-clean built-in tier.</li>
+</ol>
+
+<h2 id="open">10. Open decisions</h2>
+<ul>
+  <li><strong>Built-in only, or keep the <code>.ko</code> too?</strong> Built-in-only is the simpler pipeline (any mach change = full kernel rebuild). Keeping the <code>.ko</code> build alongside lets developers <code>kldload</code> a rebuilt mach without a kernel build, at the cost of maintaining both paths. <em>Leaning: built-in for release; optionally retain the <code>.ko</code> Makefile for dev iteration.</em></li>
+  <li><strong>Option name.</strong> Reuse <code>COMPAT_MACH</code> (matches the existing <code>-DCOMPAT_MACH</code> and shipped <code>opt_compat_mach.h</code> &mdash; least churn) vs. a fresh <code>MACH</code>. <em>Leaning: reuse <code>COMPAT_MACH</code>.</em></li>
+  <li><strong>Header placement.</strong> <code>&lt;sys/mach/&hellip;&gt;</code> implies <code>sys/sys/mach/</code>; confirm no clash with any base header namespace.</li>
+  <li><strong>Init style.</strong> Keep <code>DECLARE_MODULE</code> (works built-in) vs. convert to <code>SYSINIT</code> (tidier). <em>Leaning: convert.</em></li>
+</ul>
+
+<p class="footnote">mach-into-kernel plan, 2026-06-03. Foundation for <a href="freebsd-ko-to-kext-conversion-plan.html#loaderconf">eliminating loader.conf (#180)</a>. Sourced from the <code>nextbsd/src/mach_kmod</code> build (Makefile, <code>make-mach-kmod.sh</code>, <code>mach_module.c</code>, <code>mach_syscall_wire.c</code>) and FreeBSD 15.x <code>sys/conf/{options,files}</code> + SYSINIT(9) / config(5).</p>
+
+</div>
+</body>
+</html>

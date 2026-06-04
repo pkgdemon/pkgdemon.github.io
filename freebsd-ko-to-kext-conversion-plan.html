@@ -61,6 +61,7 @@
   <li><a href="#workflow">The conversion workflow</a></li>
   <li><a href="#caveats">Caveats (boot, deps, codesign)</a></li>
   <li><a href="#sequencing">Effort &amp; sequencing</a></li>
+  <li><a href="#loaderconf">Eliminating <code>loader.conf</code> (built-ins vs. kexts)</a></li>
 </ol>
 </div>
 
@@ -123,6 +124,13 @@ NetworkDriver.kext/
 </table>
 <p><strong>Apple model:</strong> firmware lives as files in a kext&rsquo;s <code>Contents/Resources/</code>; the in-kernel driver requests it by name via <code>OSKextRequestResource()</code> — <strong>asynchronous, served by the userspace loader daemon</strong> (kextd/kernelmanagerd), so <em>not</em> available on the early-boot path. <span class="cite">(XNU <code>OSKextLib.h</code>)</span></p>
 <p><strong>For NextBSD now:</strong> the underlying FreeBSD <code>firmware(9)</code> path still works (the <code>.ko</code>/<code>/boot/firmware</code> mechanisms are unchanged); the kext is <em>packaging</em>. Re-targeting driver <code>firmware_get()</code> to an <code>OSKextRequestResource</code>-style daemon fetch is a later, kextd-era step. Either way, firmware-dependent drivers are post-boot/on-demand, consistent with the boot caveat below.</p>
+<p><strong>Combining drm-kmod + all GPU firmware into one bundle &mdash; &ldquo;is it a linker thing? do I convert paths?&rdquo;</strong> Neither, if we keep <code>firmware(9)</code>:</p>
+<ul>
+  <li><strong>Not a linker thing &mdash; it&rsquo;s runtime.</strong> The DRM driver already computes the firmware name from the <em>detected</em> GPU/ASIC at attach time and calls <code>firmware_get("amdgpu/&lt;asic&gt;_*.bin")</code>. The driver is never statically bound to a blob; the &ldquo;intelligence to know which firmware&rdquo; is <em>already in the driver</em> &mdash; we add nothing.</li>
+  <li><strong>No path conversion</strong> if blobs stay registered under their FreeBSD names. Put every GPU firmware blob in the bundle&rsquo;s <code>Resources/</code> under the firmware namespace (<code>Resources/amdgpu/&hellip;</code>) and register each via <code>firmware_register(name,&hellip;)</code> (a small registration step, or the existing <code>gpu-firmware</code> <code>.ko</code> logic, bundled). The driver&rsquo;s <code>firmware_get(name)</code> resolves by name &mdash; <strong>driver unchanged, no remap.</strong> The registration namespace <em>is</em> the firmware-name namespace.</li>
+  <li><strong>Path conversion only bites under Apple&rsquo;s <code>OSKextRequestResource</code></strong>, which serves <em>flat</em> <code>Resources/</code> filenames (no subdirectories) &mdash; then <code>amdgpu/vega20_ce.bin</code> must be flattened (<code>amdgpu_vega20_ce.bin</code>) and the fetch shimmed to remap. That&rsquo;s a kextd-era choice; defer it. For now, <code>firmware(9)</code> by name = <strong>zero path conversion</strong>.</li>
+  <li><strong>One bundle vs. size:</strong> a single <code>drm.kext</code> carrying the driver(s) + all-vendor firmware works but is large (hundreds of MB). Splitting per-vendor (<code>amd</code>/<code>intel</code>/<code>radeon</code>) uses the identical mechanism if size matters.</li>
+</ul>
 
 <h2 id="workflow">5. The conversion workflow</h2>
 <p>A build/CI step layered <em>after</em> <code>bsd.kmod.mk</code> produces each <code>.ko</code> — natural home is the <code>nextbsd-kernel-modules</code> build (and later a 3rd-party repo for <code>drm-kmod</code> etc.):</p>
@@ -138,7 +146,7 @@ NetworkDriver.kext/
 
 <h2 id="caveats">6. Caveats</h2>
 <ul>
-  <li><strong>Boot-critical drivers stay conventional <code>.ko</code>.</strong> A userspace loader (kextd-derived) isn&rsquo;t up during early boot, and there is no Boot-KC. Root/console/storage drivers ride the existing FreeBSD path (<code>loader.conf</code>, GENERIC, <code>/boot/kernel</code>). The <code>.kext</code> story is for <strong>post-boot, on-demand</strong> drivers. <code>OSBundleRequired</code> is mostly cosmetic until/unless a boot-collection mechanism exists.</li>
+  <li><strong>Boot-critical drivers: same split Apple uses.</strong> Apple <em>does</em> have boot-critical kexts (storage/PCI/console/&hellip;) — it loads them via the <strong>Boot Kernel Collection</strong> (the prelinked kernelcache pre-Big&nbsp;Sur), which the <em>bootloader</em> loads alongside the kernel <em>before</em> <code>kextd</code>/<code>kernelmanagerd</code> runs; the daemon only does post-boot on-demand loads. NextBSD already has the faithful analog of that boot tier: drivers built into the <code>NEXTBSD</code> kernel (GENERIC) + <code>.ko</code> preloaded by the FreeBSD loader from <code>/boot/kernel</code> (<code>loader.conf</code>). So boot-critical drivers ride that tier (mirroring Apple&rsquo;s bootloader/collection tier), and <code>.kext</code> bundles + the <code>kextd</code>-derived daemon are the <strong>post-boot, on-demand</strong> tier (mirroring Apple&rsquo;s daemon tier). <code>OSBundleRequired</code> is load-bearing on Apple (it selects Boot-KC membership) but <em>informational</em> on NextBSD until a bundle-aware boot-collection / loader-preload mechanism exists (a possible future step: teach the loader to preload the <code>.ko</code> out of a <code>.kext</code> bundle, i.e. a real boot collection). <strong>launchd can&rsquo;t do this tier</strong> — it&rsquo;s PID&nbsp;1, started only <em>after</em> root mounts, which already needs the storage driver; so boot-critical loading is inherently a bootloader / kernel-built-in job on Apple <em>and</em> FreeBSD, never a userland daemon. Shrinking <code>loader.conf</code> means building drivers into <code>NEXTBSD</code> or a loader-loaded collection, not moving the work to launchd.</li>
   <li><strong>Dependencies: <code>OSBundleLibraries</code> is decorative.</strong> Real load ordering stays <code>MODULE_DEPEND</code> + <code>linker.hints</code> resolved by <code>kern_linker</code>; the Info.plist dep list is metadata only. Keep the FreeBSD side authoritative (don&rsquo;t let the two diverge).</li>
   <li><strong>No codesign/SIP.</strong> Apple&rsquo;s <code>kextd</code>/<code>kextutil</code> validate signatures; the ported loader stubs that out. A behavior divergence to document, not a blocker.</li>
   <li><strong>Matching is userspace, not in-kernel.</strong> Personalities feed the libIOKit&rarr;hwregd matcher, not an in-kernel IOCatalogue driving <code>probe/score/start</code> (that&rsquo;s newbus, and the XNU rework we&rsquo;re not doing).</li>
@@ -150,8 +158,30 @@ NetworkDriver.kext/
   <li><strong>busyState/<code>waitQuiet</code> (#176) + <code>EVFILT_MACHPORT</code> (#168)</strong> — format-agnostic kernel capabilities; proceed independently (in flight).</li>
   <li><strong>This <code>.ko</code>&rarr;<code>.kext</code> conversion</strong> — establishes the bundle format + personalities + <code>/System/Library/Extensions</code>, with the interim <code>kld</code> loader. <strong>Lands before kextd porting</strong> (kextd must load this format). Can start now; no dependency on the busyState/EVFILT phases.</li>
   <li><strong>kextd porting</strong> (device-matching convergence #177) — the ported <code>kextd</code> loads the <code>.kext</code> bundles this conversion produces, driven by match-notifications + <code>waitQuiet</code>.</li>
-  <li><strong>3rd-party kexts</strong> (future repo) — convert <code>drm-kmod</code> and other pkg kmods to standalone kexts (+ their firmware) with the same workflow.</li>
+  <li><strong>3rd-party kexts &mdash; same <code>nextbsd-kernel-modules</code> repo</strong> (not a separate repo): convert <code>drm-kmod</code> and other pkg kmods with the same workflow. Option: one combined <code>drm</code> bundle carrying the driver(s) + all GPU firmware, resolved at runtime by the driver&rsquo;s existing ASIC&rarr;name <code>firmware_get</code> (see &sect;4).</li>
 </ol>
+
+<h2 id="loaderconf">8. Eliminating <code>loader.conf</code> (built-ins vs. kexts)</h2>
+<p>Goal: no hand-maintained module list at boot. Grounded in what NextBSD actually loads today &mdash; <code>kldstat</code> shows only <code>kernel</code> + <code>mach.ko</code>, and <code>overlays/boot/loader.conf.d/freebsd-launchd-mach.conf</code> confirms why.</p>
+<p><strong>Boot-critical is already a non-issue.</strong> FFS and the disk drivers (<code>ahci nvme virtio* mfi</code>) are in <code>GENERIC</code> &mdash; built into the kernel image. The fragment&rsquo;s own comment admits the <code>*_load</code> lines are <em>&ldquo;harmless if the running kernel already has any of them built in.&rdquo;</em> The bootloader hands control to the kernel, the kernel mounts root with its <strong>built-in</strong> FFS, <em>then</em> launchd (PID&nbsp;1) starts. No daemon &mdash; launchd or kextd &mdash; can load the driver its own root filesystem depends on; that tier is inherently kernel/bootloader, exactly as on Apple.</p>
+<table>
+  <thead><tr><th><code>loader.conf</code> line today</th><th>Disposition</th></tr></thead>
+  <tbody>
+    <tr><td><code>ahci/nvme/virtio*/mfi_load="YES"</code></td><td>already in <code>GENERIC</code> &rarr; <strong>drop</strong> (built-in)</td></tr>
+    <tr><td><code>mach_load="YES"</code></td><td><strong><code>options MACH</code></strong> &mdash; compile mach into <code>NEXTBSD</code> (it&rsquo;s boot-tier: launchd needs Mach before any on-demand load, and kextd is launched <em>by</em> launchd)</td></tr>
+    <tr><td><code>vfs.root.mountfrom="ufs:/dev/ufs/ROOTFS"</code></td><td><strong><code>options ROOTDEVNAME="ufs:/dev/ufs/ROOTFS"</code></strong></td></tr>
+    <tr><td><code>init_path="/sbin/launchd"</code></td><td><strong><code>options INIT_PATH="/sbin/launchd"</code></strong></td></tr>
+    <tr><td><code>beastie_disable</code>, <code>autoboot_delay</code></td><td>loader-UI defaults &mdash; the only possible residue (a 2-line stub or accept defaults)</td></tr>
+    <tr><td><code>hw.nvidiadrm.modeset="1"</code></td><td>a property on the on-demand <strong>nvidia kext</strong></td></tr>
+  </tbody>
+</table>
+<p><strong>&ldquo;Don&rsquo;t copy what we don&rsquo;t need&rdquo; is the same cleanup.</strong> The image carries the full FreeBSD <code>/boot/kernel/*.ko</code> set (hundreds of modules) yet loads only two. <code>xz.ko</code> is the canonical example &mdash; it serves <code>geom_uzip</code>/compressed images, but the boot path is plain UFS (<em>&ldquo;no cd9660, no uzip&rdquo;</em>), so it is never used &rarr; <strong>don&rsquo;t ship it.</strong> The end model:</p>
+<ol>
+  <li><strong>Boot-critical &rarr; baked into <code>NEXTBSD</code></strong> (FFS + disk already are; add mach, ROOTDEVNAME, INIT_PATH).</li>
+  <li><strong>Real drivers &rarr; <code>.kext</code>, loaded on-demand</strong> by the kextd/devmatch-replacement (&sect;1&ndash;7).</li>
+  <li><strong>Ship only what&rsquo;s loaded/needed</strong> &mdash; trim the unused <code>.ko</code> set &rarr; smaller image <em>and</em> nothing left to list.</li>
+</ol>
+<p><strong>Repo split:</strong> the lever is <code>nextbsd-kernel/config/NEXTBSD</code> (today just a <code>GENERIC</code> passthrough &mdash; this is where the <code>options</code> land). The one real refactor is <strong>mach-into-kernel</strong>: mach builds out-of-tree as <code>mach_kmod</code> in <code>nextbsd</code>; <code>options MACH</code> means adding its sources + a <code>files</code>/config entry via the kernel <strong>patch series</strong> (never touching <code>freebsd-src</code>). <code>nextbsd</code> drops the <code>*_load</code> lines as they migrate; <code>nextbsd-kernel-modules</code> converts drivers to kexts and stops shipping dead <code>.ko</code>; <code>nextbsd-freebsd-compat</code> owns any residual boot-config/userland glue. Scoped under its own ticket; sequence it alongside the built-ins work, independent of the kextd port.</p>
 
 <p class="footnote">Conversion plan, 2026-06-03. Gates the kextd port in the <a href="nextbsd-apple-device-matching-plan.html">device-matching convergence (#177)</a>. Sourced from XNU <code>OSKextLib.h</code> + Apple KEXT/IOKit docs, <code>freebsd-src@releng/15.0</code> (<code>sys/sys/module.h</code>, <code>usr.sbin/kldxref</code>, <code>sys/sys/firmware.h</code>, <code>sys/conf/kmod.mk</code>), the firmware ports, and a ravynOS/Darling/PureDarwin prior-art pass (none package <code>.ko</code> as <code>.kext</code>).</p>
 

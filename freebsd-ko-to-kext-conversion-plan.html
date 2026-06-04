@@ -133,17 +133,25 @@ NetworkDriver.kext/
   <li><strong>One bundle vs. size:</strong> a single <code>drm.kext</code> carrying the driver(s) + all-vendor firmware works but is large (hundreds of MB). Splitting per-vendor (<code>amd</code>/<code>intel</code>/<code>radeon</code>) uses the identical mechanism if size matters.</li>
 </ul>
 
-<h2 id="workflow">5. The conversion workflow</h2>
-<p>A build/CI step layered <em>after</em> <code>bsd.kmod.mk</code> produces each <code>.ko</code> — natural home is the <code>nextbsd-kernel-modules</code> build (and later a 3rd-party repo for <code>drm-kmod</code> etc.):</p>
+<h2 id="workflow">5. The conversion workflow &mdash; a NextBSD <code>kmutil</code></h2>
+<p><strong>No Apple tool ever <em>converted</em> a foreign module into a kext</strong> &mdash; macOS modules were always kexts, and the one format change (NeXT loadable kernel servers &rarr; OS&nbsp;X IOKit) was a manual rewrite. So the wrap/convert step is genuinely novel; the closest precedent is <code>kextlibs</code> for the <em>dependency</em> half (&sect;9). The right packaging is to build a single NextBSD orchestrator &mdash; reasonably named <code>kmutil</code> (clean-room reimplementation composing the open-source <code>kext_tools</code> pieces, not a port of the closed <code>kmutil</code>) &mdash; that subsumes the converter, dep-resolution, and collection-building under one Apple-shaped command. A build/CI step layered <em>after</em> <code>bsd.kmod.mk</code> produces each <code>.ko</code> &mdash; natural home is the <code>nextbsd-kernel-modules</code> build:</p>
 <ol>
   <li>Build the <code>.ko</code> as today.</li>
   <li>Extract metadata (module name, <code>MODULE_VERSION</code>, <code>MODULE_DEPEND</code>, every <code>MDT_PNP_INFO</code> table) by parsing the <code>.ko</code> (port <code>kldxref</code>&rsquo;s scan) or its <code>linker.hints</code>.</li>
   <li>Classify: real driver (has PNP) vs firmware stub (Model&nbsp;A) vs plain payload (Model&nbsp;B).</li>
+  <li>Resolve dependencies: reuse <code>kextlibs</code>&rsquo; symbol&rarr;<code>OSBundleLibraries</code> logic, but matched against <em>our own</em> kernel&rsquo;s exported symbols (no Apple KDK needed). Note <code>OSBundleLibraries</code> is decorative here (&sect;6) &mdash; <code>MODULE_DEPEND</code>/<code>linker.hints</code> stays authoritative &mdash; so this is for fidelity, not load order.</li>
   <li>Generate <code>Info.plist</code> (&sect;2) with <code>IOKitPersonalities</code> (&sect;3); lay out <code>Foo.kext/Contents/{Info.plist,MacOS/Foo,Resources/…}</code>.</li>
   <li>Install bundles into the image overlay at <code>/System/Library/Extensions</code> (firmware into the relevant kext&rsquo;s <code>Resources/</code>).</li>
   <li>Point the loader at the Extensions tree (interim: <code>kld</code> via <code>kern.module_path</code>/full-path; later: the ported kextd reads bundle personalities).</li>
+  <li>Optionally prelink a selected set into a boot collection (reuse <code>kextcache</code> logic) &mdash; ties to <a href="#loaderconf">&sect;8</a>/#180.</li>
 </ol>
-<p>The conversion is a deterministic codegen step; it touches no kernel code. It can ship in <code>nextbsd-kernel-modules</code> independently of the kextd/hwregd work.</p>
+<p>The conversion is a deterministic codegen step; it touches no kernel code. It can ship in <code>nextbsd-kernel-modules</code> independently of the kextd/hwregd work. The orchestrator unifies this converter (&sect;5), the kext userland (&sect;9), and the boot collection (&sect;8) behind one <code>kmutil</code>:</p>
+<pre class="code">nextbsd kmutil
+ &#9500;&#9472; convert     .ko &rarr; Foo.kext bundle                  &larr; novel (no Apple precedent)
+ &#9500;&#9472; plist       MODULE_PNP_INFO &rarr; IOKitPersonalities    &larr; novel
+ &#9474;             MODULE_DEPEND   &rarr; OSBundleLibraries     &larr; reuse kextlibs vs OUR kernel symbols
+ &#9500;&#9472; collection  prelink kexts &rarr; boot collection        &larr; reuse kextcache  (&sect;8 / #180)
+ &#9492;&#9472; load/inspect                                        &larr; kld backend (shared with #177 kextd)</pre>
 
 <h2 id="caveats">6. Caveats</h2>
 <ul>
@@ -194,6 +202,8 @@ NetworkDriver.kext/
     <tr><td><code>kextload</code></td><td><code>kext_tools</code></td><td><code>kldload(2)</code> of the inner <code>.ko</code> + register <code>IOKitPersonalities</code></td></tr>
     <tr><td><code>kextunload</code></td><td><code>kext_tools</code></td><td><code>kldunload(2)</code></td></tr>
     <tr><td><code>kextutil</code> / <code>kextfind</code></td><td><code>kext_tools</code></td><td>bundle validation / search over <code>/System/Library/Extensions</code></td></tr>
+    <tr><td><code>kextlibs</code></td><td><code>kext_tools</code></td><td>scan a built kext&rsquo;s undefined symbols &rarr; compute <code>OSBundleLibraries</code>. <strong>Reusable in the converter</strong> (&sect;5 step&nbsp;4), matched against <em>our</em> kernel&rsquo;s exported symbols &mdash; no Apple KDK needed.</td></tr>
+    <tr><td><code>kextsymboltool</code></td><td><code>kext_tools</code></td><td>generate/merge kext symbol files (debug/link aid); paired with <code>kextlibs</code> for the dependency pass.</td></tr>
     <tr><td><code>kextd</code> (daemon)</td><td><code>kext_tools</code></td><td>on-demand autoload, <code>kld</code> backend &mdash; <strong>#177</strong></td></tr>
     <tr><td><code>kextcache</code></td><td><code>kext_tools</code></td><td>collection builder &mdash; ties to <strong>#180</strong> boot collection</td></tr>
     <tr><td><code>kmutil</code></td><td><em>not open source</em></td><td>present a <code>kmutil</code>-shaped front later if wanted; build from <code>kext_tools</code></td></tr>

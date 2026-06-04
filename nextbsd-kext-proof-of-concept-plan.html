@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prove kexts work — minimal kextload + converter + PR CI</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; de-risks <a href="freebsd-ko-to-kext-conversion-plan.html">.ko&rarr;.kext conversion (#179)</a> &amp; <a href="nextbsd-apple-device-matching-plan.html">kextd (#177)</a></p>
+
+<h1>Prove kexts work &mdash; minimal <code>kextload</code> + converter + PR CI</h1>
+<p class="lede">Before committing to the full <code>.ko</code>&rarr;<code>.kext</code> conversion, the <code>kext_tools</code>/<code>OSKext</code> port, or the mach-into-kernel work, prove the riskiest assumption end-to-end with the <em>cheapest</em> slice: <strong>convert one <code>.ko</code> to a <code>.kext</code>, load it with a ported <code>kextload</code>, and confirm the kernel loaded it</strong> &mdash; in PR CI. Walking skeleton, not the cathedral.</p>
+<p class="meta">2026-06-03. Approach (a) chosen: minimal trio first to prove the path, with the larger faithful port tracked in tickets so it can&rsquo;t get lost.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Why it&rsquo;s cheap</span> The expensive prerequisites already exist in <code>nextbsd</code>: <strong><code>libCoreFoundation</code> ships full <code>CFBundle</code></strong> (<code>CFBundle_InfoPlist.c</code>, <code>CFBundle_Executable.c</code>, <code>CFBundle_Resources.c</code>) &mdash; the exact machinery that opens a <code>.kext</code>, parses <code>Info.plist</code>, and locates <code>Contents/MacOS/&lt;binary&gt;</code> &mdash; and <code>libIOKit</code> is present. So the proof needs <strong>no <code>OSKext</code></strong>: <code>CFBundle</code> + the <code>kld</code> syscalls are enough to load a kext.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#goal">Goal &amp; the bet we&rsquo;re testing</a></li>
+  <li><a href="#have">What already exists</a></li>
+  <li><a href="#phase1">Phase 1 &mdash; minimal trio in <code>nextbsd</code></a></li>
+  <li><a href="#phase2">Phase 2 &mdash; converter + PR CI in <code>nextbsd-kernel-modules</code></a></li>
+  <li><a href="#flow">The end-to-end proof</a></li>
+  <li><a href="#deferred">Deferred (tracked in tickets)</a></li>
+  <li><a href="#tickets">Tickets</a></li>
+  <li><a href="#seq">Sequencing</a></li>
+</ol>
+</div>
+
+<h2 id="goal">1. Goal &amp; the bet we&rsquo;re testing</h2>
+<p>The whole Apple-shaped direction (#179 conversion, #177 kextd, #180 loader.conf) rests on one unproven assumption: <strong>a FreeBSD <code>.ko</code> wrapped as a <code>.kext</code> bundle can be loaded through an Apple-shaped tool and the kernel accepts it.</strong> Nobody has done this on a FreeBSD kernel. Rather than build the cathedral and discover a problem late, prove the load path now with the smallest real artifact, gated by CI so it stays proven.</p>
+<p>Success = a PR pipeline that <strong>converts a real module, <code>kextload</code>s the bundle in a booted VM, and asserts the kernel shows it loaded</strong> (then <code>kextunload</code>s it).</p>
+
+<h2 id="have">2. What already exists</h2>
+<table>
+  <thead><tr><th>Component</th><th>In <code>nextbsd</code></th><th>Role in the proof</th></tr></thead>
+  <tbody>
+    <tr><td><code>libCoreFoundation</code> / <code>CFBundle</code></td><td>yes (full bundle + Info.plist)</td><td>open <code>Foo.kext</code>, read <code>CFBundleExecutable</code>, find <code>Contents/MacOS/Foo</code></td></tr>
+    <tr><td><code>libIOKit</code></td><td>yes (<code>IOKitMatching.c</code>, <code>IOKitLib.c</code>)</td><td>personalities/matching &mdash; <em>later</em>, not needed for the load proof</td></tr>
+    <tr><td><code>kld</code> syscalls</td><td>base FreeBSD</td><td><code>kldload(2)</code>/<code>kldstat(2)</code>/<code>kldunload(2)</code> &mdash; the actual load engine</td></tr>
+    <tr><td>Apple-suite build pattern</td><td><code>build.sh</code> (configd, bootstrap_cmds, libxpc&hellip;)</td><td>template for building/installing a new <code>src/kext_tools</code></td></tr>
+    <tr><td>kext tooling</td><td><strong>none yet</strong></td><td>what we add in Phase 1</td></tr>
+  </tbody>
+</table>
+
+<h2 id="phase1">3. Phase 1 &mdash; minimal trio in <code>nextbsd</code></h2>
+<p>Three thin commands in <code>src/kext_tools/</code>, each a front-end over <code>kld</code>, parsing the bundle with <code>CFBundle</code>. <strong>No <code>OSKext</code>, no codesign, no personalities</strong> in this phase.</p>
+<table>
+  <thead><tr><th>Tool</th><th>Does</th></tr></thead>
+  <tbody>
+    <tr><td><code>kextload Foo.kext</code></td><td><code>CFBundleCreate</code>(Foo.kext) &rarr; <code>CFBundleCopyExecutableURL</code> &rarr; <code>kldload(2)</code> that path. Print the assigned file id.</td></tr>
+    <tr><td><code>kextstat</code></td><td><code>kldstat(2)</code> / <code>kldnext</code> walk &mdash; list loaded files (Apple-shape columns).</td></tr>
+    <tr><td><code>kextunload Foo.kext</code></td><td>resolve the bundle&rsquo;s module name &rarr; <code>kldunload(2)</code>.</td></tr>
+  </tbody>
+</table>
+<p><strong>Sourcing:</strong> vendor a <em>pre-SIP</em> <code>kext_tools</code> (APSL 2.0) and reduce <code>kextload_main.c</code>/<code>kextstat_main.c</code>/<code>kextunload_main.c</code> to the <code>kld</code>-backed path (the OSKext calls become <code>kld</code> calls). Build in the chroot against <code>libCoreFoundation</code> (already built earlier in <code>build.sh</code>); install to the image. Per the §9 of the conversion plan, the older tag avoids the SIP/collection machinery we don&rsquo;t want anyway.</p>
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Scope discipline</span> Phase 1 only proves <em>load</em>. It does <strong>not</strong> register <code>IOKitPersonalities</code>, resolve dependencies, or do matching &mdash; those ride the full port (deferred, ticketed). Wrapping a leaf module (no deps) keeps the proof honest.</p>
+</div>
+
+<h2 id="phase2">4. Phase 2 &mdash; converter + PR CI in <code>nextbsd-kernel-modules</code></h2>
+<ol>
+  <li><strong>Minimal converter</strong>: pick a leaf <code>.ko</code> (no <code>MODULE_DEPEND</code>), wrap it as <code>Foo.kext/Contents/{Info.plist,MacOS/Foo}</code> with a generated <code>Info.plist</code> (<code>CFBundleIdentifier</code>, <code>CFBundleExecutable</code>; <code>IOKitPersonalities</code> from <code>MODULE_PNP_INFO</code> optional/decorative here).</li>
+  <li><strong>PR CI job</strong> (mirrors the <code>nextbsd-kernel</code> boot smoke test #6): boot the <code>nextbsd</code> <code>continuous</code> image (now shipping <code>kextload</code>) in a VM, mount in <code>Foo.kext</code>, run <code>kextload /System/Library/Extensions/Foo.kext</code>, assert <code>kextstat</code>/<code>kldstat</code> lists the module, then <code>kextunload</code>. Green = kexts work end-to-end.</li>
+  <li><strong>PR-only, no publish</strong> &mdash; consistent with the pipeline rule (PRs never publish; build-only/test-only).</li>
+</ol>
+
+<h2 id="flow">5. The end-to-end proof</h2>
+<pre><code>nextbsd-kernel-modules (PR)
+  └─ build leaf .ko  →  converter wraps  →  Foo.kext
+        └─ boot nextbsd `continuous` image (ships kextload)
+              └─ kextload Foo.kext   →  kldload inner .ko
+              └─ kextstat | grep Foo →  ASSERT loaded
+              └─ kextunload Foo.kext →  kldunload
+  GREEN ⇒ "a FreeBSD .ko, wrapped as .kext, loads via an Apple-shaped tool." ✔</code></pre>
+
+<h2 id="deferred">6. Deferred (tracked in tickets, not lost)</h2>
+<ul>
+  <li><strong>Full <code>kext_tools</code> + <code>OSKext</code></strong>: port <code>OSKext</code> into <code>libIOKit</code>, plus <code>kextutil</code>/<code>kextfind</code>/<code>kextlibs</code>/<code>kextsymboltool</code>/<code>kextcache</code> &mdash; the faithful family the conversion (#179&nbsp;&sect;9) and kextd (#177) need. <strong>&larr; gets its own ticket.</strong></li>
+  <li><strong>Personalities + matching</strong>: feed <code>IOKitPersonalities</code> to the libIOKit matcher (autoload on device match) &mdash; part of #177.</li>
+  <li><strong>Dependencies</strong>: <code>OSBundleLibraries</code> via <code>kextlibs</code> (decorative; <code>MODULE_DEPEND</code> authoritative) &mdash; #179.</li>
+  <li><strong>Bulk conversion</strong> of all modules + 3rd-party (drm-kmod) &mdash; #179.</li>
+  <li><strong><code>kextd</code></strong> autoloader &mdash; #177.</li>
+</ul>
+
+<h2 id="tickets">7. Tickets</h2>
+<ul>
+  <li><strong>PoC</strong> (new): minimal <code>kextload</code>/<code>kextstat</code>/<code>kextunload</code> in <code>nextbsd</code> + converter + PR CI in <code>nextbsd-kernel-modules</code> &mdash; this plan.</li>
+  <li><strong>Full port</strong> (new, tracking): <code>OSKext</code> into <code>libIOKit</code> + the rest of the <code>kext_tools</code> family. Blocks faithful #179/#177; must not be lost.</li>
+  <li>Existing: #179 (conversion), #177 (kextd), #181/#180 (mach-into-kernel / loader.conf &mdash; parked, independent).</li>
+</ul>
+
+<h2 id="seq">8. Sequencing</h2>
+<ol>
+  <li><strong>Phase 1</strong> &mdash; minimal trio in <code>nextbsd</code>; ships in <code>continuous</code>.</li>
+  <li><strong>Phase 2</strong> &mdash; converter + PR CI in <code>nextbsd-kernel-modules</code>; first green = proof.</li>
+  <li><strong>Then</strong> &mdash; full <code>kext_tools</code>/<code>OSKext</code> port (tracked ticket) &rarr; bulk conversion (#179) &rarr; kextd (#177).</li>
+  <li><strong>Parallel/independent</strong> &mdash; mach-into-kernel (#181) &amp; loader.conf (#180) whenever; not gated by the kext proof.</li>
+</ol>
+
+<p class="footnote">Kext proof-of-concept plan, 2026-06-03. De-risks <a href="freebsd-ko-to-kext-conversion-plan.html">#179</a> / <a href="nextbsd-apple-device-matching-plan.html">#177</a>. Grounded in the <code>nextbsd</code> tree (<code>libCoreFoundation</code>/<code>CFBundle</code>, <code>libIOKit</code>, <code>build.sh</code> suite pattern) and Apple <code>kext_tools</code> (APSL 2.0).</p>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Faithful kext_tools / OSKext port — plan (#182)</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; the faithful follow-on to the <a href="nextbsd-kext-proof-of-concept-plan.html">kext PoC (#183)</a>; gates <a href="freebsd-ko-to-kext-conversion-plan.html">#179</a> / <a href="nextbsd-apple-device-matching-plan.html">#177</a></p>
+
+<h1>Faithful <code>kext_tools</code> / <code>OSKext</code> port</h1>
+<p class="lede">The kext PoC (#183) proved the load path with a minimal kld-backed trio. This plan ports Apple&rsquo;s real <strong><code>OSKext</code></strong> engine (bundle discovery, dependency-graph resolution, validation, personalities) onto NextBSD with a <code>kld</code> backend &mdash; the faithful foundation the bulk conversion (#179) and the kextd autoloader (#177) build on. Tracking ticket: <a href="https://github.com/nextbsd-redux/nextbsd/issues/182">nextbsd#182</a>.</p>
+<p class="meta">2026-06-04. Code-grounded scope of Apple <code>IOKitUser</code> <code>kext.subproj/OSKext.c</code> (pre-SIP, APSL&nbsp;2.0) against the NextBSD tree (libCoreFoundation, libIOKit, the kld syscalls).</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Verdict</span> <strong>Realistic &mdash; ~75% of <code>OSKext.c</code> ports unchanged.</strong> <code>OSKext.c</code> is ~21k&nbsp;LOC but highly modular. Bundle discovery, Info.plist parsing, dependency-graph math, and validation (~15.7k&nbsp;LOC) are CoreFoundation-based and portable as-is. Only ~5.3k&nbsp;LOC (25%) is XNU-specific and swaps out: the <strong>load path</strong> (<code>kext_request</code> MIG &rarr; <code>kldload</code>), <strong>personalities</strong> (<code>IOCatalogueSendData</code> &rarr; NextBSD&rsquo;s libIOKit/hwregd matcher), <strong>unload</strong> (&rarr; <code>kldunload</code>), and the <strong>KXLD linker / mkext / prelink</strong> code (deleted &mdash; the kernel&rsquo;s <code>kld</code> does the linking). Pre-SIP avoids codesign/AuxKC/kernelcache entirely.</p>
+</div>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Scale</span> This is a <strong>multi-week, phased</strong> effort (est. ~3k&nbsp;LOC written + the 21k-LOC vendor drop; ~5&ndash;6 weeks to production), <em>not</em> a single PR. It is sequenced <strong>after</strong> #180 (done) and lands in phases, each independently mergeable and CI-gated. Phase&nbsp;1 (dependency resolution) is the first shippable milestone.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#what">What OSKext is (and what we keep)</a></li>
+  <li><a href="#deps">Dependency surface vs. NextBSD</a></li>
+  <li><a href="#reback">The re-backing: XNU &rarr; kld</a></li>
+  <li><a href="#phases">Phased delivery</a></li>
+  <li><a href="#tools">The kext_tools family on top</a></li>
+  <li><a href="#risks">Risks</a></li>
+</ol>
+</div>
+
+<h2 id="what">1. What OSKext is (and what we keep)</h2>
+<p>Base: a <strong>pre-SIP <code>IOKitUser</code></strong> release (APSL 2.0; ~2008&ndash;2012), to minimize codesign/kernelcache surface. <code>kext.subproj/OSKext.c</code> ≈ 21k&nbsp;LOC. Responsibility map:</p>
+<table>
+  <thead><tr><th>Component</th><th>~LOC</th><th>Disposition</th></tr></thead>
+  <tbody>
+    <tr><td>Bundle discovery (<code>OSKextCreate*</code>, caching)</td><td>2,000</td><td><strong>keep</strong> (CFBundle)</td></tr>
+    <tr><td>Info.plist parsing (arch-keyed lookup)</td><td>1,500</td><td><strong>keep</strong> (libCoreFoundation)</td></tr>
+    <tr><td>Dependency-graph resolution (<code>OSBundleLibraries</code>, topo-sort, version/compat)</td><td>2,500</td><td><strong>keep</strong> (in-memory graph)</td></tr>
+    <tr><td>Validation (Mach-O format, plist)</td><td>3,000</td><td><strong>keep</strong> (minus codesign)</td></tr>
+    <tr><td>Load path (<code>kext_request</code> MIG, mkext)</td><td>2,000</td><td><strong>re-back &rarr; kld</strong></td></tr>
+    <tr><td>Personalities (<code>IOCatalogueSendData</code>)</td><td>1,500</td><td><strong>re-back &rarr; hwregd</strong></td></tr>
+    <tr><td>Unload (<code>kext_request</code> stop)</td><td>800</td><td><strong>re-back &rarr; <code>kldunload</code></strong></td></tr>
+    <tr><td>KXLD linking / mkext / prelink (AuxKC)</td><td>3,000</td><td><strong>delete</strong> (kld links)</td></tr>
+    <tr><td>Codesign / Security.framework</td><td>800</td><td><strong>stub/delete</strong> (pre-SIP)</td></tr>
+    <tr><td>Utilities, logging, diagnostics, caching</td><td>4,000</td><td><strong>keep</strong></td></tr>
+  </tbody>
+</table>
+
+<h2 id="deps">2. Dependency surface vs. NextBSD</h2>
+<table>
+  <thead><tr><th>OSKext needs</th><th>NextBSD status</th><th>Work</th></tr></thead>
+  <tbody>
+    <tr><td>CoreFoundation (CFBundle/Dictionary/Array/Data/Serialize)</td><td><strong>have</strong> libCoreFoundation (full)</td><td>none</td></tr>
+    <tr><td>IOKitLib (IOCFSerialize/Unserialize, IOCatalogue feed)</td><td><strong>have</strong> libIOKit; missing IOCatalogue feed</td><td>low &mdash; add a matcher-feed shim</td></tr>
+    <tr><td>Mach <code>kext_request</code> (load/unload/query)</td><td><strong>absent by design</strong> (we use kld)</td><td>high &mdash; re-back onto kld (the heart of the port)</td></tr>
+    <tr><td>KXLD linker, mkext, prelinked kernel</td><td>n/a (kld links in-kernel)</td><td>delete</td></tr>
+    <tr><td>codesign / Security.framework / kernelcache</td><td>not wanted (no SIP)</td><td>stub/delete (pre-SIP)</td></tr>
+  </tbody>
+</table>
+<p>~95% of dependencies are already satisfied by NextBSD&rsquo;s libCoreFoundation + libIOKit. The two genuine gaps are the <em>kernel</em> interfaces: <code>kext_request</code> (&rarr; kld) and <code>IOCatalogueSendData</code> (&rarr; the libIOKit/hwregd matcher).</p>
+
+<h2 id="reback">3. The re-backing: XNU &rarr; kld</h2>
+<pre><code>OSKextLoad / __OSKextLoadWithArgsDict
+   XNU:  build mkext (linked) -> kext_request(HOST_PRIV) -> kernel links+loads
+   kld:  resolve deps (UNCHANGED) -> for each, kldload(Contents/MacOS/&lt;exec&gt;) in order
+                                   -> feed IOKitPersonalities to the matcher
+
+OSKextReadLoadedKextInfo / OSKextIsLoaded
+   XNU:  kext_request "Get Loaded"        kld:  kldnext(0) loop + kldstat(id)
+
+__OSKextUnload
+   XNU:  kext_request "Stop"              kld:  reverse-dep check (UNCHANGED) -> kldunload(id)
+
+OSKextSendPersonalitiesToKernel
+   XNU:  IOCatalogueSendData(kIOCatalogAddDrivers)
+   NextBSD: IOCFSerialize (UNCHANGED) -> feed personalities to libIOKit -> hwregd matcher</code></pre>
+<p>The dependency-graph resolution, version/compat math, bundle parsing, and validation &mdash; the genuinely hard logic &mdash; are reused verbatim. The swap is concentrated in a small <code>OSKext_FreeBSD.c</code> (~600&nbsp;LOC of kld wrappers + the matcher feed).</p>
+
+<h2 id="phases">4. Phased delivery</h2>
+<ol>
+  <li><strong>Phase 0 &mdash; vendor + compile.</strong> Drop <code>kext.subproj</code> into <code>nextbsd/src/kext_tools</code>; build against libCoreFoundation/libIOKit with the <code>kext_request</code>/IOCatalogue/KXLD paths stubbed. Deliverable: OSKext compiles; load fails gracefully. <em>(This phase is itself iterative &mdash; getting 21k LOC to compile against the NextBSD headers is the bulk of the early CI churn; do it behind a build flag so it can&rsquo;t regress the shipping image until it links.)</em></li>
+  <li><strong>Phase 1 &mdash; dependency resolution + validation (first shippable).</strong> <code>OSKextResolveDependencies</code>, <code>OSKextCopyLoadList</code> (topo-sort), <code>OSKextValidate</code> (no codesign). A <code>kextlibs</code>/<code>kextdeps</code> CLI prints resolved load order. <strong>Feeds #179</strong> (dependency-correct conversion).</li>
+  <li><strong>Phase 2 &mdash; kld load/unload/query.</strong> The <code>OSKext_FreeBSD.c</code> wrappers; <code>kextload</code>/<code>kextunload</code>/<code>kextstat</code> graduate from the minimal trio to OSKext-backed (dependency-ordered load, reverse-dep unload).</li>
+  <li><strong>Phase 3 &mdash; personalities &rarr; matcher.</strong> <code>OSKextSendPersonalitiesToKernel</code> re-backed onto libIOKit/hwregd. <strong>Feeds #177</strong> (autoload on match) and #179 (personality injection).</li>
+  <li><strong>Phase 4 &mdash; polish.</strong> diagnostics, caching, <code>kextfind</code>/<code>kextutil</code>/<code>kextsymboltool</code>. <code>kextcache</code> (collections) deferred &mdash; ties to the boot-collection work, not needed early.</li>
+</ol>
+<p><strong>First shippable milestone = Phase&nbsp;1</strong> (dependency resolution); loading arrives in Phase&nbsp;2.</p>
+
+<h2 id="tools">5. The kext_tools family on top</h2>
+<table>
+  <thead><tr><th>Tool</th><th>With OSKext</th><th>Weight</th></tr></thead>
+  <tbody>
+    <tr><td><code>kextload</code>/<code>kextunload</code></td><td>dependency-ordered load / reverse-dep unload (today: bare kld)</td><td>medium</td></tr>
+    <tr><td><code>kextstat</code></td><td>kld state + dependency/personality info</td><td>small</td></tr>
+    <tr><td><code>kextfind</code></td><td>find kexts by identifier over <code>/System/Library/Extensions</code></td><td>thin</td></tr>
+    <tr><td><code>kextlibs</code></td><td>symbol&rarr;<code>OSBundleLibraries</code> (the converter&rsquo;s dep step, &sect;5 of the conversion plan)</td><td>medium</td></tr>
+    <tr><td><code>kextsymboltool</code></td><td>kext symbol files</td><td>thin</td></tr>
+    <tr><td><code>kextcache</code></td><td>collection builder &mdash; <strong>deferred</strong> (boot-collection work)</td><td>heavy</td></tr>
+  </tbody>
+</table>
+
+<h2 id="risks">6. Risks</h2>
+<ul>
+  <li><strong>Phase-0 compile churn.</strong> 21k LOC of Apple code against NextBSD headers will surface many small gaps (missing CF/IOKit internals, type shims). Mitigate: build behind a flag, iterate compile-only, never block the shipping image until it links.</li>
+  <li><strong>hwregd personality coverage.</strong> The matcher may not handle every IOKitPersonality field. Mitigate: prototype the personality mapping in Phase&nbsp;3a before wiring autoload.</li>
+  <li><strong>Dependency cycles.</strong> kld won&rsquo;t catch them; OSKext&rsquo;s validation must. Covered in Phase&nbsp;1.</li>
+  <li><strong>No SIP, by design.</strong> Codesign paths are stubbed and never re-added &mdash; consistent with the conversion plan&rsquo;s &sect;6.</li>
+</ul>
+
+<p class="footnote">OSKext port plan, 2026-06-04. Follows the kext PoC (#183, proven), gates the faithful parts of #179 and #177. Sourced from Apple <code>IOKitUser</code> <code>kext.subproj/OSKext.{c,h}</code> (pre-SIP, APSL 2.0) and the NextBSD libCoreFoundation/libIOKit/kld surface.</p>
+
+</div>
+</body>
+</html>

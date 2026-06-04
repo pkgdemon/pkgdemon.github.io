@@ -62,6 +62,7 @@
   <li><a href="#caveats">Caveats (boot, deps, codesign)</a></li>
   <li><a href="#sequencing">Effort &amp; sequencing</a></li>
   <li><a href="#loaderconf">Eliminating <code>loader.conf</code> (built-ins vs. kexts)</a></li>
+  <li><a href="#userland">kext userland tools (port from <code>kext_tools</code>)</a></li>
 </ol>
 </div>
 
@@ -148,7 +149,7 @@ NetworkDriver.kext/
 <ul>
   <li><strong>Boot-critical drivers: same split Apple uses.</strong> Apple <em>does</em> have boot-critical kexts (storage/PCI/console/&hellip;) — it loads them via the <strong>Boot Kernel Collection</strong> (the prelinked kernelcache pre-Big&nbsp;Sur), which the <em>bootloader</em> loads alongside the kernel <em>before</em> <code>kextd</code>/<code>kernelmanagerd</code> runs; the daemon only does post-boot on-demand loads. NextBSD already has the faithful analog of that boot tier: drivers built into the <code>NEXTBSD</code> kernel (GENERIC) + <code>.ko</code> preloaded by the FreeBSD loader from <code>/boot/kernel</code> (<code>loader.conf</code>). So boot-critical drivers ride that tier (mirroring Apple&rsquo;s bootloader/collection tier), and <code>.kext</code> bundles + the <code>kextd</code>-derived daemon are the <strong>post-boot, on-demand</strong> tier (mirroring Apple&rsquo;s daemon tier). <code>OSBundleRequired</code> is load-bearing on Apple (it selects Boot-KC membership) but <em>informational</em> on NextBSD until a bundle-aware boot-collection / loader-preload mechanism exists (a possible future step: teach the loader to preload the <code>.ko</code> out of a <code>.kext</code> bundle, i.e. a real boot collection). <strong>launchd can&rsquo;t do this tier</strong> — it&rsquo;s PID&nbsp;1, started only <em>after</em> root mounts, which already needs the storage driver; so boot-critical loading is inherently a bootloader / kernel-built-in job on Apple <em>and</em> FreeBSD, never a userland daemon. Shrinking <code>loader.conf</code> means building drivers into <code>NEXTBSD</code> or a loader-loaded collection, not moving the work to launchd.</li>
   <li><strong>Dependencies: <code>OSBundleLibraries</code> is decorative.</strong> Real load ordering stays <code>MODULE_DEPEND</code> + <code>linker.hints</code> resolved by <code>kern_linker</code>; the Info.plist dep list is metadata only. Keep the FreeBSD side authoritative (don&rsquo;t let the two diverge).</li>
-  <li><strong>No codesign/SIP.</strong> Apple&rsquo;s <code>kextd</code>/<code>kextutil</code> validate signatures; the ported loader stubs that out. A behavior divergence to document, not a blocker.</li>
+  <li><strong>No codesign/SIP &mdash; by design.</strong> NextBSD does not want SIP or kext signature enforcement, so this isn&rsquo;t a reluctant stub-out: we deliberately port a <em>pre-SIP</em>, pre-codesign <code>kext_tools</code> (&sect;9) where that machinery doesn&rsquo;t exist yet. Apple&rsquo;s modern <code>kextd</code>/<code>kextutil</code> gate on signatures; we drop the check entirely and never add it back.</li>
   <li><strong>Matching is userspace, not in-kernel.</strong> Personalities feed the libIOKit&rarr;hwregd matcher, not an in-kernel IOCatalogue driving <code>probe/score/start</code> (that&rsquo;s newbus, and the XNU rework we&rsquo;re not doing).</li>
 </ul>
 
@@ -158,6 +159,7 @@ NetworkDriver.kext/
   <li><strong>busyState/<code>waitQuiet</code> (#176) + <code>EVFILT_MACHPORT</code> (#168)</strong> — format-agnostic kernel capabilities; proceed independently (in flight).</li>
   <li><strong>This <code>.ko</code>&rarr;<code>.kext</code> conversion</strong> — establishes the bundle format + personalities + <code>/System/Library/Extensions</code>, with the interim <code>kld</code> loader. <strong>Lands before kextd porting</strong> (kextd must load this format). Can start now; no dependency on the busyState/EVFILT phases.</li>
   <li><strong>kextd porting</strong> (device-matching convergence #177) — the ported <code>kextd</code> loads the <code>.kext</code> bundles this conversion produces, driven by match-notifications + <code>waitQuiet</code>.</li>
+  <li><strong>kext userland tools</strong> (&sect;9) &mdash; port <code>kextstat</code>/<code>kextload</code>/<code>kextunload</code>/<code>kextutil</code> as front-ends over <code>kld</code>; rides in <em>this</em> epic (they consume the bundles, so they don&rsquo;t gate the converter, but they ship together so the system is genuinely Apple-shaped).</li>
   <li><strong>3rd-party kexts &mdash; same <code>nextbsd-kernel-modules</code> repo</strong> (not a separate repo): convert <code>drm-kmod</code> and other pkg kmods with the same workflow. Option: one combined <code>drm</code> bundle carrying the driver(s) + all GPU firmware, resolved at runtime by the driver&rsquo;s existing ASIC&rarr;name <code>firmware_get</code> (see &sect;4).</li>
 </ol>
 
@@ -182,6 +184,23 @@ NetworkDriver.kext/
   <li><strong>Ship only what&rsquo;s loaded/needed</strong> &mdash; trim the unused <code>.ko</code> set &rarr; smaller image <em>and</em> nothing left to list.</li>
 </ol>
 <p><strong>Repo split:</strong> the lever is <code>nextbsd-kernel/config/NEXTBSD</code> (today just a <code>GENERIC</code> passthrough &mdash; this is where the <code>options</code> land). The one real refactor is <strong>mach-into-kernel</strong>: mach builds out-of-tree as <code>mach_kmod</code> in <code>nextbsd</code>; <code>options MACH</code> means adding its sources + a <code>files</code>/config entry via the kernel <strong>patch series</strong> (never touching <code>freebsd-src</code>). <code>nextbsd</code> drops the <code>*_load</code> lines as they migrate; <code>nextbsd-kernel-modules</code> converts drivers to kexts and stops shipping dead <code>.ko</code>; <code>nextbsd-freebsd-compat</code> owns any residual boot-config/userland glue. Scoped under its own ticket; sequence it alongside the built-ins work, independent of the kextd port.</p>
+
+<h2 id="userland">9. kext userland tools (port from <code>kext_tools</code>)</h2>
+<p>If we&rsquo;re converting <code>.ko</code>&rarr;<code>.kext</code>, we port Apple&rsquo;s tools too &mdash; not as polish but so the system is genuinely Apple-shaped. The whole family except <code>kmutil</code> is <strong>open source</strong>: <code>kext_tools</code> (APSL&nbsp;2.0, on <code>opensource.apple.com</code> / <code>apple-oss-distributions/kext_tools</code>) ships the CLI + daemon source, and the bundle/load engine <code>OSKext</code> lives in <code>IOKitUser</code> (<code>kext.subproj/OSKext.c</code>, also APSL) &mdash; the same <code>libIOKit</code> lineage already being ported for device matching. Because the backend is <code>kld</code>, each tool is a thin front-end:</p>
+<table>
+  <thead><tr><th>Apple tool</th><th>Source</th><th>NextBSD port = front-end over&hellip;</th></tr></thead>
+  <tbody>
+    <tr><td><code>kextstat</code></td><td><code>kext_tools</code> (APSL&nbsp;2.0)</td><td><code>kldstat(2)</code> &mdash; list loaded</td></tr>
+    <tr><td><code>kextload</code></td><td><code>kext_tools</code></td><td><code>kldload(2)</code> of the inner <code>.ko</code> + register <code>IOKitPersonalities</code></td></tr>
+    <tr><td><code>kextunload</code></td><td><code>kext_tools</code></td><td><code>kldunload(2)</code></td></tr>
+    <tr><td><code>kextutil</code> / <code>kextfind</code></td><td><code>kext_tools</code></td><td>bundle validation / search over <code>/System/Library/Extensions</code></td></tr>
+    <tr><td><code>kextd</code> (daemon)</td><td><code>kext_tools</code></td><td>on-demand autoload, <code>kld</code> backend &mdash; <strong>#177</strong></td></tr>
+    <tr><td><code>kextcache</code></td><td><code>kext_tools</code></td><td>collection builder &mdash; ties to <strong>#180</strong> boot collection</td></tr>
+    <tr><td><code>kmutil</code></td><td><em>not open source</em></td><td>present a <code>kmutil</code>-shaped front later if wanted; build from <code>kext_tools</code></td></tr>
+  </tbody>
+</table>
+<p><strong>Pick an older <code>kext_tools</code> tag on purpose.</strong> Apple publishes <code>kext_tools</code> per macOS release, and older revisions are <em>substantially</em> simpler &mdash; pre-SIP, pre-codesign-enforcement, pre-kext-collections, no <code>kmutil</code>. That is exactly the shape that maps onto a <code>kld</code>-backed loader, so an older <code>kext_tools</code> + matching <code>IOKitUser</code> is the better porting base than current main.</p>
+<p><strong>What we do <em>not</em> drop:</strong> <code>kldload</code>/<code>kldstat</code>/<code>kldxref</code> remain the <em>engine</em> &mdash; <code>kextd</code> calls <code>kldload</code>, <code>kextstat</code> reads <code>kldstat</code>, <code>kldxref</code> still builds <code>linker.hints</code> (its PNP role is <em>supplemented</em> by <code>IOKitPersonalities</code>, not replaced). The <code>kext*</code> tools become the front; <code>kld</code> stays the back. Fully removing <code>kld</code> would mean reimplementing XNU&rsquo;s in-kernel <code>OSKext</code> loader &mdash; out of scope (&sect;1).</p>
 
 <p class="footnote">Conversion plan, 2026-06-03. Gates the kextd port in the <a href="nextbsd-apple-device-matching-plan.html">device-matching convergence (#177)</a>. Sourced from XNU <code>OSKextLib.h</code> + Apple KEXT/IOKit docs, <code>freebsd-src@releng/15.0</code> (<code>sys/sys/module.h</code>, <code>usr.sbin/kldxref</code>, <code>sys/sys/firmware.h</code>, <code>sys/conf/kmod.mk</code>), the firmware ports, and a ravynOS/Darling/PureDarwin prior-art pass (none package <code>.ko</code> as <code>.kext</code>).</p>
 

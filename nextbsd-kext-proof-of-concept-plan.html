@@ -62,6 +62,7 @@
   <li><a href="#deferred">Deferred (tracked in tickets)</a></li>
   <li><a href="#tickets">Tickets</a></li>
   <li><a href="#seq">Sequencing</a></li>
+  <li><a href="#impl">Implementation-ready (deep scope)</a></li>
 </ol>
 </div>
 
@@ -135,6 +136,31 @@
   <li><strong>Then</strong> &mdash; full <code>kext_tools</code>/<code>OSKext</code> port (tracked ticket) &rarr; bulk conversion (#179) &rarr; kextd (#177).</li>
   <li><strong>Parallel/independent</strong> &mdash; mach-into-kernel (#181) &amp; loader.conf (#180) whenever; not gated by the kext proof.</li>
 </ol>
+
+<h2 id="impl">9. Implementation-ready (deep scope)</h2>
+<p>From a 2-agent code-grounded pass over <code>nextbsd</code>, <code>nextbsd-kernel-modules</code>, and a pre-SIP <code>kext_tools</code>.</p>
+
+<h3>9.1 Phase 1 &mdash; the OSKext&rarr;kld reduction</h3>
+<p>Base: <code>kext_tools-65.76</code> (pre-SIP, APSL 2.0). Each tool keeps its CFBundle parsing and swaps the OSKext/Mach call for a <code>kld</code> syscall:</p>
+<table>
+  <thead><tr><th>Tool</th><th>Apple call</th><th>NextBSD</th></tr></thead>
+  <tbody>
+    <tr><td><code>kextload</code></td><td><code>_KXKextManagerLoadKextUsingOptions()</code></td><td><code>CFBundleCreate</code> &rarr; <code>CFBundleCopyExecutableURL</code> &rarr; <code>CFURLGetFileSystemRepresentation</code> &rarr; <code>kldload(path)</code> (full paths bypass <code>kern.module_path</code>)</td></tr>
+    <tr><td><code>kextstat</code></td><td><code>kmod_get_info()</code> (Mach RPC)</td><td><code>kldnext(0)</code> loop + <code>kldstat(id,&amp;st)</code> over <code>struct kld_file_stat</code></td></tr>
+    <tr><td><code>kextunload</code></td><td><code>_KXKextManagerUnloadKext()</code></td><td>name-match loop (<code>kldnext</code>/<code>kldstat</code>) &rarr; <code>kldunload(fileid)</code></td></tr>
+  </tbody>
+</table>
+<p><strong>Build:</strong> new <code>src/kext_tools/</code>; <code>build.sh</code> step after <strong>3p (libCoreFoundation)</strong>; link <code>-lCoreFoundation -ldispatch -lBlocksRuntime -lsystem_kernel -lpthread</code> (libs in <code>/usr/lib/system</code>); install to <code>/usr/sbin/{kextload,kextstat,kextunload}</code>. Drop codesign + personalities for this phase.</p>
+
+<h3>9.2 Phase 2 &mdash; converter + CI</h3>
+<ul>
+  <li><strong>Leaf module:</strong> <code>if_dummy.ko</code> (zero <code>MODULE_DEPEND</code>, ~8&ndash;12&nbsp;KB, clean load/unload &mdash; creates/removes <code>dummy0</code>). Alt: <code>misc/zero.ko</code>.</li>
+  <li><strong>Converter:</strong> <code>tools/ko2kext.sh Foo.ko Name org.nextbsd.kext.id</code> &rarr; <code>Name.kext/Contents/{Info.plist,MacOS/Name}</code>. Minimal plist keys: <code>CFBundleExecutable</code>, <code>CFBundleIdentifier</code>, <code>CFBundlePackageType=KEXT</code>, <code>CFBundleVersion</code>, <code>OSBundleRequired=Root</code>.</li>
+  <li><strong>CI mirrors the existing boot test:</strong> <code>nextbsd-kernel-modules</code> already ingests <code>kernel-obj</code> from the kernel&rsquo;s <code>continuous</code>; the new PR-only job builds <code>if_dummy.ko</code>, converts it, downloads the <code>nextbsd</code> <code>continuous</code> <code>.img.zip</code>, <code>mdconfig</code>+mount-injects <code>Dummy.kext</code> into <code>/System/Library/Extensions</code>, then boots via the <em>reused</em> <code>tests/boot-test.sh</code> + appended expect blocks asserting <code>kextload</code>&rarr;<code>kextstat</code> shows it&rarr;<code>kextunload</code>. PR-only, no publish.</li>
+</ul>
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Hard ordering</span> Phase 2 CI boots the <code>nextbsd</code> <code>continuous</code> image and calls <code>kextload</code> &mdash; so <strong>Phase 1&rsquo;s trio must already be shipping in that image</strong> before the Phase 2 job can pass. Phase 1 lands and republishes <code>continuous</code> first; then Phase 2.</p>
+</div>
 
 <p class="footnote">Kext proof-of-concept plan, 2026-06-03. De-risks <a href="freebsd-ko-to-kext-conversion-plan.html">#179</a> / <a href="nextbsd-apple-device-matching-plan.html">#177</a>. Grounded in the <code>nextbsd</code> tree (<code>libCoreFoundation</code>/<code>CFBundle</code>, <code>libIOKit</code>, <code>build.sh</code> suite pattern) and Apple <code>kext_tools</code> (APSL 2.0).</p>
 

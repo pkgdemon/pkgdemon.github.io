@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FreeBSD .ko → Apple .kext conversion — plan</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; gates <a href="nextbsd-apple-device-matching-plan.html">kextd porting / device-matching convergence (#177)</a></p>
+
+<h1>FreeBSD <code>.ko</code> &rarr; Apple <code>.kext</code> conversion</h1>
+<p class="lede">Convert NextBSD&rsquo;s kernel modules from FreeBSD <code>.ko</code> to Apple <code>.kext</code> <strong>bundles</strong> installed in <code>/System/Library/Extensions</code> &mdash; the Apple-shaped <em>format</em>, established <strong>before</strong> the kextd loader port so kextd has a bundle format to load. The honest scope: this is a <strong>format/packaging</strong> conversion (a <code>.kext</code> bundle wrapping the unmodified ELF <code>.ko</code>, still <code>kld</code>-loaded), <em>not</em> a port of XNU&rsquo;s in-kernel kext machinery. Nobody has done this on a FreeBSD kernel before &mdash; ravynOS runs plain <code>.ko</code>, or switched to real XNU &mdash; so it&rsquo;s NextBSD-original.</p>
+<p class="meta">2026-06-03. From a 3-agent code-grounded scope: Apple <code>.kext</code>/Info.plist/IOKitPersonalities + firmware (XNU/kext_tools), FreeBSD <code>.ko</code> metadata + <code>firmware(9)</code> (<code>freebsd-src@releng/15.0</code>, ports), and a prior-art/feasibility pass (ravynOS/Darling/PureDarwin + the NextBSD tree).</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Verdict</span> <strong>Achievable in weeks as a format conversion; not a kernel project.</strong> A <code>.kext</code> bundle wraps the unmodified FreeBSD <code>.ko</code>; <code>kld</code> loads it (it accepts a full path); the bundle&rsquo;s <code>Info.plist</code> <code>IOKitPersonalities</code> feed the <strong>userspace matcher NextBSD already has</strong> (<code>libIOKit/IOKitMatching.c</code> &rarr; hwregd). The XNU path (real <code>OSKext</code> Mach-O linking, in-kernel IOCatalogue, AuxKC, codesign) is a 3&ndash;5 engineer-year diversion that collides with newbus &mdash; out of scope. We get the Apple <em>shape</em> on top of the unchanged FreeBSD KLD mechanism.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#model">The achievable model (format, not kernel)</a></li>
+  <li><a href="#bundle">Bundle layout + Info.plist</a></li>
+  <li><a href="#map">MODULE_PNP_INFO → IOKitPersonalities</a></li>
+  <li><a href="#firmware">Firmware</a></li>
+  <li><a href="#workflow">The conversion workflow</a></li>
+  <li><a href="#caveats">Caveats (boot, deps, codesign)</a></li>
+  <li><a href="#sequencing">Effort &amp; sequencing</a></li>
+</ol>
+</div>
+
+<h2 id="model">1. The achievable model (format, not kernel)</h2>
+<p>Two layers, sharply separated by the scoping:</p>
+<ul>
+  <li><strong>Format-only (cheap, this plan):</strong> the <code>.kext</code> bundle directory + <code>Info.plist</code> (with <code>IOKitPersonalities</code> derived from the module&rsquo;s PNP tables), installed in <code>/System/Library/Extensions</code>; the unmodified ELF <code>.ko</code> is the bundle&rsquo;s &ldquo;executable&rdquo;; <code>kld</code> remains the linker (<code>kldload &lt;bundle&gt;/Contents/MacOS/&lt;name&gt;</code>, or extend <code>kern.module_path</code> into the Extensions tree). Matching is the <strong>userspace</strong> analog of IOCatalogue that already exists (libIOKit facade &rarr; hwregd registry).</li>
+  <li><strong>Kernel-deep (out of scope):</strong> XNU <code>OSKext</code> Mach-O kext linking, <code>kmod_info</code>, in-kernel IOCatalogue driving <code>IOService::registerService</code>, AuxKC/Boot-KC, codesign/SIP. None exist on FreeBSD; FreeBSD matching is <strong>newbus</strong>. This is the path ravynOS abandoned the FreeBSD kernel to get (its <code>darwin</code> branch builds real XNU).</li>
+</ul>
+<p>So the conversion buys the Apple-canonical <em>format</em> (bundles, personalities, <code>/System/Library/Extensions</code>, Apple-named CLIs) while the kernel still treats each as a plain FreeBSD KLD. Only the <em>matching dictionary</em> is derived from a module; the driver code stays an ELF <code>.ko</code> (it does not become a Mach-O kext).</p>
+
+<h2 id="bundle">2. Bundle layout + Info.plist</h2>
+<pre>
+NetworkDriver.kext/
+└── Contents/
+    ├── Info.plist            # CFBundle* + OSBundle* + IOKitPersonalities
+    ├── MacOS/
+    │   └── NetworkDriver     # the unmodified FreeBSD .ko (renamed/symlinked)
+    └── Resources/            # firmware blobs (see §4), if any
+</pre>
+<p>Info.plist keys we generate per module <span class="cite">(Apple KEXT docs / OSKextLib.h)</span>:</p>
+<table>
+  <thead><tr><th>Key</th><th>Source</th></tr></thead>
+  <tbody>
+    <tr><td><code>CFBundleIdentifier</code></td><td>synthesized reverse-DNS, e.g. <code>org.nextbsd.driver.if_em</code> (from the module name in <code>MDT_MODULE</code>)</td></tr>
+    <tr><td><code>CFBundleExecutable</code></td><td>the <code>.ko</code> filename</td></tr>
+    <tr><td><code>CFBundleVersion</code></td><td>from <code>MODULE_VERSION</code> (a single int &rarr; synthesized <code>x.y.z</code> &mdash; <em>heuristic</em>)</td></tr>
+    <tr><td><code>CFBundlePackageType</code></td><td><code>KEXT</code></td></tr>
+    <tr><td><code>OSBundleLibraries</code></td><td>from <code>MODULE_DEPEND</code> (name&rarr;bundle-id via a small table; version range collapses to one min &mdash; <em>decorative</em>, see &sect;6)</td></tr>
+    <tr><td><code>OSBundleRequired</code></td><td>only for the (few) drivers that may load early; most omit it (see &sect;6)</td></tr>
+    <tr><td><code>IOKitPersonalities</code></td><td>from <code>MODULE_PNP_INFO</code> (&sect;3)</td></tr>
+  </tbody>
+</table>
+<p>Install target is <code>/System/Library/Extensions</code> per NextBSD&rsquo;s Apple-shaped layout (on real macOS that volume is sealed/SIP-protected; on NextBSD&rsquo;s own image it is writable). Third-party kexts would conventionally live in <code>/Library/Extensions</code>.</p>
+
+<h2 id="map">3. <code>MODULE_PNP_INFO</code> → <code>IOKitPersonalities</code></h2>
+<p>Each module embeds its match tables as a <code>modmetadata_set</code> ELF linker set of <code>struct mod_metadata</code> (<code>MDT_MODULE</code>/<code>VERSION</code>/<code>DEPEND</code>/<code>PNP_INFO</code>) <span class="cite">(<code>sys/sys/module.h</code>)</span> — the same data <code>kldxref</code> reads. A converter either re-implements that ELF scan (port <code>kldxref</code>&rsquo;s helpers) or parses the <code>linker.hints</code> it already emits. Each <code>MDT_PNP_INFO</code> is a descriptor string (<code>"M16:mask;U16:vendor;U16:device;…"</code>) + a binary table; one personality dict (or one OR-token) is emitted per table row.</p>
+<table>
+  <thead><tr><th>FreeBSD PNP (bus)</th><th>Apple personality</th><th>Quality</th></tr></thead>
+  <tbody>
+    <tr><td>PCI <code>vendor</code>+<code>device</code></td><td><code>IOProviderClass=IOPCIDevice</code>, <code>IOPCIPrimaryMatch="0x{device}{vendor}"</code> (device&lt;&lt;16 | vendor)</td><td><span class="pill pill-good">mechanical</span></td></tr>
+    <tr><td>PCI <code>subvendor</code>+<code>subdevice</code></td><td><code>IOPCISecondaryMatch</code> (subsystem id)</td><td><span class="pill pill-good">mechanical</span></td></tr>
+    <tr><td>PCI <code>class</code>/<code>subclass</code> (gated by <code>M16:mask</code>)</td><td><code>IOPCIClassMatch</code> (with mask)</td><td><span class="pill pill-warn">mostly</span></td></tr>
+    <tr><td>USB <code>vendor</code>/<code>product</code> (bus <code>uhub</code>)</td><td><code>idVendor</code>/<code>idProduct</code> (decimal), provider <code>IOUSBHostDevice</code>/Interface</td><td><span class="pill pill-good">mechanical</span></td></tr>
+    <tr><td>USB class/subclass/proto, <code>T:mode=host/device</code></td><td><code>bDeviceClass</code>… / provider class selection</td><td><span class="pill pill-warn">mostly</span></td></tr>
+    <tr><td>ACPI <code>Z:_HID</code>/<code>Z:_CID</code> (strings)</td><td><code>IONameMatch</code> against the ID string</td><td><span class="pill pill-good">mechanical</span></td></tr>
+    <tr><td>PCI <code>revid</code>; <code>M16</code> mask bit semantics</td><td>no clean Apple key</td><td><span class="pill pill-bad">gap</span></td></tr>
+  </tbody>
+</table>
+<p>Worked example: <code>if_em</code> registers <code>IFLIB_PNP_INFO(pci, em, em_vendor_info_array)</code> with rows like <code>PVID(0x8086, 0x100E, …)</code> &rarr; one personality with <code>IOPCIPrimaryMatch=0x100E8086</code>. <span class="cite">(<code>sys/net/iflib.h</code>, <code>sys/dev/e1000/if_em.c</code>)</span> Heuristics/gaps: the single-int <code>MODULE_VERSION</code>, the <code>MODULE_DEPEND</code> name&rarr;bundle-id table, <code>revid</code>, BCD ranges, and ACPI <code>_CID</code> secondary IDs.</p>
+
+<h2 id="firmware">4. Firmware</h2>
+<p>FreeBSD ships driver firmware <strong>two</strong> ways today, and Apple has <strong>one</strong> way — so the converter must bridge both:</p>
+<table>
+  <thead><tr><th>FreeBSD</th><th>What it is</th><th>→ kext</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Model A — firmware as <code>.ko</code></strong> (e.g. <code>gpu-firmware-amd-kmod</code>, <code>USES=kmod</code>)</td><td><code>kmod.mk</code> <code>.incbin</code>s the blob into a module whose <code>MOD_LOAD</code> calls <code>firmware_register(name, data, len, ver)</code>; no PNP table.</td><td>a <strong>data/firmware kext</strong>: blob verbatim in <code>Contents/Resources/</code>, <code>CFBundleVersion</code> from the register version, <em>no</em> <code>IOKitPersonalities</code>. Detect by: <code>MODULE_DEPEND(.., firmware,..)</code> + no PNP + a single big <code>_binary_*</code> rodata blob.</td></tr>
+    <tr><td><strong>Model B — raw blobs in <code>/boot/firmware</code></strong> (modern <code>wifi-firmware-*-kmod</code>, <code>NO_BUILD</code>)</td><td>not a module at all — just copies <code>linux-firmware</code> files into <code>/boot/firmware</code>.</td><td>flat firmware payload: bundle the blobs as <code>Resources/</code> of the consuming/firmware kext (keyed by filename). Nothing to &ldquo;convert&rdquo; — it&rsquo;s packaging.</td></tr>
+  </tbody>
+</table>
+<p><strong>Apple model:</strong> firmware lives as files in a kext&rsquo;s <code>Contents/Resources/</code>; the in-kernel driver requests it by name via <code>OSKextRequestResource()</code> — <strong>asynchronous, served by the userspace loader daemon</strong> (kextd/kernelmanagerd), so <em>not</em> available on the early-boot path. <span class="cite">(XNU <code>OSKextLib.h</code>)</span></p>
+<p><strong>For NextBSD now:</strong> the underlying FreeBSD <code>firmware(9)</code> path still works (the <code>.ko</code>/<code>/boot/firmware</code> mechanisms are unchanged); the kext is <em>packaging</em>. Re-targeting driver <code>firmware_get()</code> to an <code>OSKextRequestResource</code>-style daemon fetch is a later, kextd-era step. Either way, firmware-dependent drivers are post-boot/on-demand, consistent with the boot caveat below.</p>
+
+<h2 id="workflow">5. The conversion workflow</h2>
+<p>A build/CI step layered <em>after</em> <code>bsd.kmod.mk</code> produces each <code>.ko</code> — natural home is the <code>nextbsd-kernel-modules</code> build (and later a 3rd-party repo for <code>drm-kmod</code> etc.):</p>
+<ol>
+  <li>Build the <code>.ko</code> as today.</li>
+  <li>Extract metadata (module name, <code>MODULE_VERSION</code>, <code>MODULE_DEPEND</code>, every <code>MDT_PNP_INFO</code> table) by parsing the <code>.ko</code> (port <code>kldxref</code>&rsquo;s scan) or its <code>linker.hints</code>.</li>
+  <li>Classify: real driver (has PNP) vs firmware stub (Model&nbsp;A) vs plain payload (Model&nbsp;B).</li>
+  <li>Generate <code>Info.plist</code> (&sect;2) with <code>IOKitPersonalities</code> (&sect;3); lay out <code>Foo.kext/Contents/{Info.plist,MacOS/Foo,Resources/…}</code>.</li>
+  <li>Install bundles into the image overlay at <code>/System/Library/Extensions</code> (firmware into the relevant kext&rsquo;s <code>Resources/</code>).</li>
+  <li>Point the loader at the Extensions tree (interim: <code>kld</code> via <code>kern.module_path</code>/full-path; later: the ported kextd reads bundle personalities).</li>
+</ol>
+<p>The conversion is a deterministic codegen step; it touches no kernel code. It can ship in <code>nextbsd-kernel-modules</code> independently of the kextd/hwregd work.</p>
+
+<h2 id="caveats">6. Caveats</h2>
+<ul>
+  <li><strong>Boot-critical drivers stay conventional <code>.ko</code>.</strong> A userspace loader (kextd-derived) isn&rsquo;t up during early boot, and there is no Boot-KC. Root/console/storage drivers ride the existing FreeBSD path (<code>loader.conf</code>, GENERIC, <code>/boot/kernel</code>). The <code>.kext</code> story is for <strong>post-boot, on-demand</strong> drivers. <code>OSBundleRequired</code> is mostly cosmetic until/unless a boot-collection mechanism exists.</li>
+  <li><strong>Dependencies: <code>OSBundleLibraries</code> is decorative.</strong> Real load ordering stays <code>MODULE_DEPEND</code> + <code>linker.hints</code> resolved by <code>kern_linker</code>; the Info.plist dep list is metadata only. Keep the FreeBSD side authoritative (don&rsquo;t let the two diverge).</li>
+  <li><strong>No codesign/SIP.</strong> Apple&rsquo;s <code>kextd</code>/<code>kextutil</code> validate signatures; the ported loader stubs that out. A behavior divergence to document, not a blocker.</li>
+  <li><strong>Matching is userspace, not in-kernel.</strong> Personalities feed the libIOKit&rarr;hwregd matcher, not an in-kernel IOCatalogue driving <code>probe/score/start</code> (that&rsquo;s newbus, and the XNU rework we&rsquo;re not doing).</li>
+  <li><strong>Trademark.</strong> Apple-named bundles/paths (<code>/System/Library/Extensions</code>) and a ported <code>kextd</code> carry Apple-mark exposure; legal review before release (tracked separately).</li>
+</ul>
+
+<h2 id="sequencing">7. Effort &amp; sequencing</h2>
+<p>Format conversion is a <strong>weeks-scale codegen + packaging</strong> change with <strong>no kernel work</strong>; the kernel-deep XNU path is explicitly out of scope. Sequencing relative to the convergence (#177):</p>
+<ol>
+  <li><strong>busyState/<code>waitQuiet</code> (#176) + <code>EVFILT_MACHPORT</code> (#168)</strong> — format-agnostic kernel capabilities; proceed independently (in flight).</li>
+  <li><strong>This <code>.ko</code>&rarr;<code>.kext</code> conversion</strong> — establishes the bundle format + personalities + <code>/System/Library/Extensions</code>, with the interim <code>kld</code> loader. <strong>Lands before kextd porting</strong> (kextd must load this format). Can start now; no dependency on the busyState/EVFILT phases.</li>
+  <li><strong>kextd porting</strong> (device-matching convergence #177) — the ported <code>kextd</code> loads the <code>.kext</code> bundles this conversion produces, driven by match-notifications + <code>waitQuiet</code>.</li>
+  <li><strong>3rd-party kexts</strong> (future repo) — convert <code>drm-kmod</code> and other pkg kmods to standalone kexts (+ their firmware) with the same workflow.</li>
+</ol>
+
+<p class="footnote">Conversion plan, 2026-06-03. Gates the kextd port in the <a href="nextbsd-apple-device-matching-plan.html">device-matching convergence (#177)</a>. Sourced from XNU <code>OSKextLib.h</code> + Apple KEXT/IOKit docs, <code>freebsd-src@releng/15.0</code> (<code>sys/sys/module.h</code>, <code>usr.sbin/kldxref</code>, <code>sys/sys/firmware.h</code>, <code>sys/conf/kmod.mk</code>), the firmware ports, and a ravynOS/Darling/PureDarwin prior-art pass (none package <code>.ko</code> as <code>.kext</code>).</p>
+
+</div>
+</body>
+</html>

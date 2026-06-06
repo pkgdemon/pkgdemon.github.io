@@ -93,6 +93,38 @@
 
 <p>Consequence: an Apple-<em>faithful</em> NextBSD puts matching in the kernel and reduces kextd to a loader. A userland matcher is a real architecture &mdash; but it splits device-tree authority (kernel) from binding authority (userland), loses the kernel&rsquo;s atomic match locking, and can&rsquo;t bind critical-path devices until userland is up. It should be chosen with eyes open, documented as a divergence.</p>
 
+<h3>What a &ldquo;kernel registry&rdquo; actually looks like (yes &mdash; like the data behind Linux <code>/sys</code>)</h3>
+<p>Concretely, the registry is an <strong>in-kernel, in-memory tree</strong>: one <em>node</em> per device or service, each holding a <em>property dictionary</em> (key/value pairs). It is built live as buses enumerate hardware (nothing on disk) and torn down on unplug. The closest mental model is <strong>the device model behind Linux&rsquo;s <code>/sys</code></strong> &mdash; the same kind of data (a tree of devices with properties), just reached through an API rather than a mounted filesystem.</p>
+<table>
+<tr><th></th><th>The in-kernel tree</th><th>How userland reads it</th><th>The match database</th></tr>
+<tr><td><strong>Linux</strong></td><td>driver core / kobject tree</td><td><code>/sys</code> (sysfs filesystem)</td><td>modalias + driver tables; udev (userland)</td></tr>
+<tr><td><strong>Apple</strong></td><td><strong>IORegistry</strong> (IOService nodes)</td><td>IOKit APIs / <code>ioreg(8)</code></td><td><strong>IOCatalogue</strong> (kext personalities), in-kernel</td></tr>
+<tr><td><strong>FreeBSD</strong></td><td>newbus <code>device_t</code> tree</td><td><code>hw.bus</code> sysctl / <code>devinfo(8)</code></td><td>driver <code>MODULE_PNP_INFO</code> + <code>devmatch</code></td></tr>
+</table>
+<p>A node for your t420&rsquo;s WiFi is just a path in the tree plus a property bag &mdash; pure <em>data</em> describing the hardware found (it carries no logic, and no IDs are hardcoded in the kernel):</p>
+<pre><code>IORegistry (in kernel)
+└─ pci0
+   └─ IOPCIDevice@4:0:0          &lt;- one registry node = one device
+        IOProviderClass = "IOPCIDevice"
+        vendor-id       = 0x8086         (Intel)
+        device-id       = 0x24f3         (Wireless-AC 8260)
+        class-code      = 0x028000       (network controller)
+        IONameMatch     = "pci8086,24f3"
+        (no driver bound yet)</code></pre>
+<p>Beside the registry sits the <strong>IOCatalogue</strong> &mdash; the union of every kext&rsquo;s <code>IOKitPersonalities</code>. <code>IntelWiFi.kext</code>&rsquo;s personality is also just data, and <em>this</em> is where device IDs live:</p>
+<pre><code>IntelWiFi.kext / Info.plist -&gt; IOKitPersonalities -&gt; "IntelWiFi"
+    IOProviderClass    = "IOPCIDevice"
+    IOPCIPrimaryMatch  = "0x24f38086"    &lt;- device 0x24f3, vendor 0x8086
+    IOClass            = "if_iwlwifi"
+    IOProbeScore       = 400</code></pre>
+<p>The <strong>matcher</strong> is the kernel code that, when the registry gains the 8260 node, walks the IOCatalogue, finds the personality whose <code>IOPCIPrimaryMatch</code> equals the node&rsquo;s <code>vendor-id</code>/<code>device-id</code>, and &mdash; since that driver&rsquo;s code isn&rsquo;t resident &mdash; asks kextd to load <code>IntelWiFi.kext</code>. So an &ldquo;in-kernel IOKit registry&rdquo; is really <em>three</em> cooperating pieces:</p>
+<ol>
+  <li><strong>Registry</strong> &mdash; the live device tree + property bags (the <code>/sys</code>-like data).</li>
+  <li><strong>IOCatalogue</strong> &mdash; the in-kernel set of all kext personalities (the match rules; the IDs live here, in the kexts).</li>
+  <li><strong>Matcher</strong> &mdash; the engine that binds a registry node to a catalogue personality and triggers the load.</li>
+</ol>
+<p>newbus already gives us #1 (the <code>device_t</code> tree + discovery) and a probe/attach engine close to #3. What Option&nbsp;B adds is a registry <em>representation</em> with property bags, an IOCatalogue holding <em>externalized</em> personalities (vs newbus&rsquo;s compiled-in ID tables), and the matcher + the kernel&rarr;kextd load request. That delta is the build.</p>
+
 <h2 id="freebsd">3. The FreeBSD substrate we build on (newbus)</h2>
 <p>The good news: newbus is structurally close to IOKit, and <em>already in-kernel</em>. A faithful IOKit matcher is closer to a superset of newbus than a from-scratch subsystem.</p>
 <table>

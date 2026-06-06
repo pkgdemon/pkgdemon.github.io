@@ -48,7 +48,7 @@
 <p class="meta">2026-06-05. Synthesized from a 2-agent deep review: FreeBSD newbus internals + our <code>hwregd</code>/<code>libIOKit</code>/<code>kext_tools</code> stack, and Apple&rsquo;s XNU IOKit + <code>kext_tools</code> (kextd) sources. For joint review before committing to the kextd milestone. Nothing here is built yet.</p>
 
 <div class="callout callout-warn">
-<p><span class="pill pill-warn">The one decision</span> Driver&ndash;device <strong>matching</strong> can live (B)&nbsp;in the kernel &mdash; the Apple-faithful answer &mdash; or (A/C)&nbsp;in userland &mdash; faster, but a divergence from how macOS actually works. Everything else (dropping <code>hwregd</code>, dropping <code>devd</code>/<code>devmatch</code>, kextd as a loader, IOKitPersonalities on kexts) follows from this one choice. Pick this first.</p>
+<p><span class="pill pill-warn">The one decision</span> Driver&ndash;device <strong>matching</strong> can live (B)&nbsp;in the kernel &mdash; the Apple-faithful answer &mdash; or (A/C)&nbsp;in userland &mdash; <strong>quicker to <em>build</em></strong>, but a divergence from how macOS actually works. (&ldquo;Quicker&rdquo; = implementation effort only. At <em>runtime</em> the in-kernel matcher B is actually faster and earlier: it matches in-kernel at probe time with no IPC and binds drivers before userland is even up, where a userland matcher needs a per-device device&rarr;daemon round-trip and can&rsquo;t bind anything until it&rsquo;s running.) Everything else (dropping <code>hwregd</code>, dropping <code>devd</code>/<code>devmatch</code>, kextd as a loader, IOKitPersonalities on kexts) follows from this one choice. Pick this first.</p>
 </div>
 
 <div class="callout callout-good">
@@ -168,7 +168,8 @@
 <tr><td>Userland code</td><td>~800&ndash;1000 LOC (into libIOKit)</td><td>kextd loader ~ small; opt. catalogue IPC</td><td>~1000&ndash;1200 LOC (kextd)</td></tr>
 <tr><td>Drops hwregd</td><td>Yes (logic moves in-process)</td><td>Yes (kernel is the registry)</td><td>Yes</td></tr>
 <tr><td>Lock/risk</td><td>Medium (in-proc concurrency)</td><td>High (kldload under bus locks &mdash; needs a deadlock-safety PoC; likely deferred-taskqueue load)</td><td>Low (userland)</td></tr>
-<tr><td>Rough effort</td><td>~2&ndash;3 wk</td><td>~6&ndash;8 wk (+ mandatory lock PoC)</td><td>~3&ndash;4 wk</td></tr>
+<tr><td>Rough effort <span class="cite">(build time)</span></td><td>~2&ndash;3 wk</td><td>~6&ndash;8 wk (+ mandatory lock PoC)</td><td>~3&ndash;4 wk</td></tr>
+<tr><td>Runtime / boot binding</td><td>in-process match; needs libIOKit running; not before userland</td><td><span class="pill pill-good">Fastest</span> in-kernel at probe time, no IPC, binds before userland is up</td><td>slowest: per-device <code>devctl</code>&rarr;daemon round-trip; only after userland is up</td></tr>
 <tr><td>libIOKit API survives</td><td>Yes</td><td>Yes (reads kernel registry)</td><td>No (retired)</td></tr>
 </table>
 

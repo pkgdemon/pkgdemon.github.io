@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>In-kernel IOKit for NextBSD — feasibility &amp; the matching-location decision</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; companion to <a href="nextbsd-apple-device-matching-plan.html">Eliminating standalone hwregd (convergence plan)</a> &amp; <a href="freebsd-hardware-registry-iokit-plan.html">hardware registry / IOKit plan</a></p>
+
+<h1>In-kernel IOKit for NextBSD &mdash; feasibility &amp; the matching-location decision</h1>
+<p class="lede">We can now <strong>auto-load a driver kext when its hardware appears</strong> &mdash; the open question is <em>where the matching decision lives</em>. This doc lays out the single architectural fork that everything else hangs off, with enough FreeBSD/Apple ground truth to decide together. <strong>The crux, stated plainly:</strong> in Apple&rsquo;s design the <em>kernel</em> matches drivers to devices and merely <em>asks</em> a userland daemon to load the code; a userland matcher (which is what our current <code>hwregd</code> + <code>libIOKit</code> is) is a deliberate <em>divergence</em>, not a faithful port.</p>
+<p class="meta">2026-06-05. Synthesized from a 2-agent deep review: FreeBSD newbus internals + our <code>hwregd</code>/<code>libIOKit</code>/<code>kext_tools</code> stack, and Apple&rsquo;s XNU IOKit + <code>kext_tools</code> (kextd) sources. For joint review before committing to the kextd milestone. Nothing here is built yet.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">The one decision</span> Driver&ndash;device <strong>matching</strong> can live (B)&nbsp;in the kernel &mdash; the Apple-faithful answer &mdash; or (A/C)&nbsp;in userland &mdash; faster, but a divergence from how macOS actually works. Everything else (dropping <code>hwregd</code>, dropping <code>devd</code>/<code>devmatch</code>, kextd as a loader, IOKitPersonalities on kexts) follows from this one choice. Pick this first.</p>
+</div>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Decided &mdash; 2026-06-05</span> <strong>Option B: in-kernel IOKit registry + matcher (Apple-faithful).</strong> The kernel owns the registry + IOCatalogue + matching; kextd is reduced to a passive loader that loads the bundle the kernel names. <code>hwregd</code> and <code>devd</code>/<code>devmatch</code> are retired as the kernel becomes the registry. Phase&nbsp;0 (mandatory, cheap) is a kernel <strong>lock-safety proof-of-concept</strong> &mdash; prove a match can trigger a deferred <code>kldload</code> without deadlocking under the bus lock &mdash; before committing to the full subsystem. Shared prerequisites (ko2kext emits <code>IOKitPersonalities</code> from <code>MODULE_PNP_INFO</code>; matcher honors <code>IOPCIPrimaryMatch</code>) start in parallel since they&rsquo;re needed regardless and carry no kernel risk.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#q">Your question: do I edit the kernel to add device IDs?</a></li>
+  <li><a href="#apple">How Apple actually does it (the kernel decides)</a></li>
+  <li><a href="#freebsd">The FreeBSD substrate we build on (newbus)</a></li>
+  <li><a href="#now">Where NextBSD is today (and why it&rsquo;s a divergence)</a></li>
+  <li><a href="#options">The three options, compared</a></li>
+  <li><a href="#tradeoff">The honest trade-off + recommended phasing</a></li>
+  <li><a href="#drivers">Which drivers stay in-kernel vs become kexts</a></li>
+  <li><a href="#decisions">Open decisions for joint review</a></li>
+  <li><a href="#sources">Sources</a></li>
+</ol>
+</div>
+
+<h2 id="q">1. Your question, answered: no, you do not edit the kernel to add device IDs</h2>
+<p>The concern was: would &ldquo;in-kernel IOKit&rdquo; mean PNP/device IDs are compiled <em>into the kernel</em>, so a new device needs a kernel rebuild? <strong>No.</strong> Two things are easy to conflate:</p>
+<ul>
+  <li><strong>The device tree</strong> (what hardware is physically present) auto-populates. On FreeBSD, newbus discovers PCI/USB devices and builds the in-kernel <code>device_t</code> tree dynamically as buses enumerate; it is already exposed to userland via the <code>hw.bus</code> sysctl (the <code>/sys</code>-like tree our <code>hwregd</code> snapshots). No per-device code.</li>
+  <li><strong>Device-ID matching</strong> (which driver claims <code>8086:24f3</code>) lives <em>with the driver</em>, as <strong>data</strong>: Apple puts it in the kext&rsquo;s <code>IOKitPersonalities</code> (Info.plist); FreeBSD compiles it into the driver as <code>MODULE_PNP_INFO</code> tables. Adding a new device = editing a <em>kext&rsquo;s</em> personality, never the kernel.</li>
+</ul>
+<p>&ldquo;In-kernel IOKit&rdquo; only moves the <em>registry + matching engine</em> into the kernel (like XNU&rsquo;s <code>IOCatalogue</code>). The IDs <strong>still</strong> come from kext personalities loaded into it &mdash; the kernel hardcodes none. So in <em>every</em> option below, supporting new hardware is a kext change. The fork is purely <em>where the registry and matcher run</em>.</p>
+
+<h2 id="apple">2. How Apple actually does it &mdash; the kernel decides, the daemon loads</h2>
+<p>This is the finding that reframes the whole decision. In macOS/XNU, IOKit is <strong>in-kernel end to end</strong>:</p>
+<ul>
+  <li><strong>IORegistry</strong> &mdash; the live device tree, in kernel memory, never on disk. Nodes (<code>IORegistryEntry</code> / <code>IOService</code>) are created as a bus controller discovers hardware and publishes a <em>nub</em> (e.g. <code>IOPCIDevice</code>).</li>
+  <li><strong>IOCatalogue</strong> &mdash; <em>&ldquo;an in-kernel database for IOKit driver personalities&hellip; IOService uses this resource when matching devices to their associated drivers.&rdquo;</em> Populated from kexts&rsquo; <code>IOKitPersonalities</code> at boot/install.</li>
+  <li><strong>Matching</strong> &mdash; runs in the kernel, in <code>IOService</code>: class match &rarr; passive (property) match &rarr; active <code>probe()</code> with probe-score arbitration. The highest score wins and is <code>start()</code>ed.</li>
+</ul>
+<p>The userland daemon &mdash; historically <code>kextd</code>, now <code>kernelmanagerd</code> &mdash; is a <strong>passive loader</strong>. Apple&rsquo;s own <code>kext_tools</code> source: it <em>&ldquo;simply loads exactly what the kernel requests by bundle ID&hellip; a passive executor of kernel directives, not an intelligent matching engine.&rdquo;</em> It registers a Mach service, pushes personalities into <code>gIOCatalogue</code> (<code>IOCatalogueSendData</code>), and answers kernel load-requests (<code>kKextRequestPredicateRequestLoad</code>) by loading the named bundle&rsquo;s executable. It does not match.</p>
+
+<div class="callout">
+<p><span class="pill pill-neutral">Reference load flow</span> (1)&nbsp;daemon pushes all kext personalities into the in-kernel IOCatalogue at boot &rarr; (2)&nbsp;bus discovers a device, kernel creates a nub &rarr; (3)&nbsp;<strong>kernel</strong> matches the nub against IOCatalogue, picks the winner by probe score &rarr; (4)&nbsp;if that driver&rsquo;s code isn&rsquo;t resident, kernel <em>requests it by bundle ID</em> &rarr; (5)&nbsp;daemon loads the executable, tells the catalogue &rarr; (6)&nbsp;kernel <code>start()</code>s the driver. <strong>The kernel decides; userland fetches.</strong></p>
+</div>
+
+<p>Consequence: an Apple-<em>faithful</em> NextBSD puts matching in the kernel and reduces kextd to a loader. A userland matcher is a real architecture &mdash; but it splits device-tree authority (kernel) from binding authority (userland), loses the kernel&rsquo;s atomic match locking, and can&rsquo;t bind critical-path devices until userland is up. It should be chosen with eyes open, documented as a divergence.</p>
+
+<h2 id="freebsd">3. The FreeBSD substrate we build on (newbus)</h2>
+<p>The good news: newbus is structurally close to IOKit, and <em>already in-kernel</em>. A faithful IOKit matcher is closer to a superset of newbus than a from-scratch subsystem.</p>
+<table>
+<tr><th>Apple IOKit (in-kernel)</th><th>FreeBSD newbus (in-kernel)</th></tr>
+<tr><td>IORegistry (IOService plane)</td><td><code>device_t</code> tree (<code>sys/kern/subr_bus.c</code>)</td></tr>
+<tr><td>nub (<code>IOPCIDevice</code>)</td><td>child <code>device_t</code> created by the parent bus driver</td></tr>
+<tr><td><code>probe()</code> &rarr; probe score</td><td><code>DEVICE_PROBE</code> &rarr; priority (<code>BUS_PROBE_*</code>)</td></tr>
+<tr><td><code>start()</code></td><td><code>DEVICE_ATTACH</code></td></tr>
+<tr><td>IOCatalogue (external personality data)</td><td>per-driver <code>MODULE_PNP_INFO</code> ID tables (compiled <em>into</em> the driver)</td></tr>
+<tr><td>IOKitPersonalities (Info.plist, data)</td><td><code>pci_device_id</code> tables (C code, in the <code>.ko</code>)</td></tr>
+</table>
+<p>What&rsquo;s already exposed to userland today: <code>hw.bus.info</code> (generation count) + <code>hw.bus.devices.&lt;gen&gt;.&lt;idx&gt;</code> (one <code>struct u_device</code> per node: name, desc, driver, <strong>pnpinfo</strong>, location, parent, state); the <code>/dev/devctl</code> event stream (<code>+</code> attach / <code>-</code> detach / <code>?</code> nomatch / <code>!</code> notify); and <code>/dev/pci</code> <code>PCIOCGETCONF</code> for vendor/device IDs. The matching substrate already exists; the question is who consumes it.</p>
+<p>The one structural difference that matters: newbus keeps match data <strong>compiled into each driver</strong> (linker-set ID tables, read at runtime via <code>linker.hints</code> by <code>devmatch</code>); IOKit keeps it as <strong>external data</strong> (personalities) in a kernel catalogue. A faithful port means giving NextBSD kexts <code>IOKitPersonalities</code> and an IOCatalogue-equivalent to hold them &mdash; rather than relying on the driver&rsquo;s compiled-in PNP table.</p>
+
+<h2 id="now">4. Where NextBSD is today &mdash; a userland matcher (a divergence)</h2>
+<p>What exists, and what it implies:</p>
+<ul>
+  <li><strong><code>hwregd</code></strong> (<code>src/hwregd/</code>, ~1700 LOC) &mdash; a userland daemon that snapshots <code>hw.bus</code> into an in-memory registry, enriches PCI IDs from <code>/dev/pci</code>, watches <code>/dev/devctl</code>, and serves the registry over Mach-RPC (+ a watch API). <em>This is the un-Apple piece</em> &mdash; Apple has no userland registry daemon; the registry is the kernel.</li>
+  <li><strong><code>libIOKit</code></strong> (<code>src/libIOKit/</code>) &mdash; implements <code>IOServiceMatching</code>/<code>IOServiceGetMatchingServices</code>/<code>IORegistryEntryCreateCFProperties</code>/notifications, but as a <strong>client of hwregd</strong>. Matching keys are currently limited (<code>IOProviderClass</code>, <code>IONameMatch</code>); property matches like <code>IOPCIPrimaryMatch</code> are not yet honored.</li>
+  <li><strong>OSKext personalities</strong> &mdash; <code>OSKextCopyPersonalitiesArray()</code> is implemented (reads <code>IOKitPersonalities</code> from a kext&rsquo;s Info.plist), but <code>OSKextSendPersonalitiesToKernel()</code> / <code>RemovePersonalities()</code> are deliberate <strong>no-op stubs</strong> &mdash; there is no in-kernel IOCatalogue to send to.</li>
+  <li><strong>ko2kext</strong> does <em>not</em> generate <code>IOKitPersonalities</code> yet &mdash; kexts are personality-less today (the &ldquo;personalities&rdquo; half of #179 is unstarted). <code>if_iwlwifi.ko</code> does carry <code>MODULE_PNP_INFO</code> (its PCI IDs), so matching data can be <em>generated</em> from the driver.</li>
+  <li>Other consumers of hwregd: launchd&rsquo;s <code>HardwareMatch</code> job directive (parsed, not yet wired). Dropping hwregd must account for it.</li>
+</ul>
+<p>So today: <strong>nothing auto-loads</strong> (kextload is manual), and the matching infrastructure that does exist is the userland-matcher shape that diverges from Apple.</p>
+
+<h2 id="options">5. The three options, compared</h2>
+
+<h3>Option A &mdash; fold enumeration into <code>libIOKit</code> in-process (no daemon)</h3>
+<p>Move hwregd&rsquo;s newbus reading (<code>hw.bus</code> snapshot + <code>/dev/pci</code> + <code>/dev/devctl</code> watch) <em>into</em> libIOKit, so <code>IOServiceMatching</code>/notifications work with no separate daemon. kextd links libIOKit, matches IOKitPersonalities itself, and kextloads. Drops the hwregd daemon + Mach-RPC.</p>
+
+<h3>Option B &mdash; in-kernel IOKit registry + matcher (Apple-faithful)</h3>
+<p>Build an IORegistry/IOCatalogue-equivalent and a three-phase matcher in the kernel, hooked into newbus <code>device_probe_and_attach()</code>. Personalities are pushed in from userland (an IOCatalogue-style interface) or read from loaded kexts&rsquo; metadata. kextd becomes a passive loader answering kernel load-requests by bundle ID &mdash; exactly Apple&rsquo;s shape.</p>
+
+<h3>Option C &mdash; <code>kextd</code> reads newbus directly</h3>
+<p>A single kextd daemon listens on <code>/dev/devctl</code>, reads <code>hw.bus</code>, matches personalities (or reuses the <code>linker.hints</code>/devmatch logic), and kextloads. Drops hwregd; retires the reusable libIOKit matching layer (other consumers get their own path).</p>
+
+<table>
+<tr><th>Aspect</th><th>A &mdash; libIOKit in-process</th><th>B &mdash; in-kernel IOKit</th><th>C &mdash; kextd-direct</th></tr>
+<tr><td><strong>Apple-faithful?</strong></td><td><span class="pill pill-warn">Divergent</span> userland matches</td><td><span class="pill pill-good">Faithful</span> kernel matches</td><td><span class="pill pill-bad">Most divergent</span></td></tr>
+<tr><td>Kernel changes</td><td>None</td><td>~1000&ndash;1500 LOC new subsystem</td><td>None (opt. re-probe hook)</td></tr>
+<tr><td>Userland code</td><td>~800&ndash;1000 LOC (into libIOKit)</td><td>kextd loader ~ small; opt. catalogue IPC</td><td>~1000&ndash;1200 LOC (kextd)</td></tr>
+<tr><td>Drops hwregd</td><td>Yes (logic moves in-process)</td><td>Yes (kernel is the registry)</td><td>Yes</td></tr>
+<tr><td>Lock/risk</td><td>Medium (in-proc concurrency)</td><td>High (kldload under bus locks &mdash; needs a deadlock-safety PoC; likely deferred-taskqueue load)</td><td>Low (userland)</td></tr>
+<tr><td>Rough effort</td><td>~2&ndash;3 wk</td><td>~6&ndash;8 wk (+ mandatory lock PoC)</td><td>~3&ndash;4 wk</td></tr>
+<tr><td>libIOKit API survives</td><td>Yes</td><td>Yes (reads kernel registry)</td><td>No (retired)</td></tr>
+</table>
+
+<p>All three need the same two prerequisites regardless: kexts must carry <strong>IOKitPersonalities</strong> (generate them from <code>MODULE_PNP_INFO</code> in <code>ko2kext</code> &mdash; the #179 personalities work), and the matcher must honor real device-property keys (<code>IOPCIPrimaryMatch</code> et al., encoded device-high/vendor-low, e.g. <code>0x24f38086</code>).</p>
+
+<h2 id="tradeoff">6. The honest trade-off + recommended phasing</h2>
+<p>This is a &ldquo;faithful but big&rdquo; vs &ldquo;pragmatic but divergent&rdquo; call. Two coherent ways to sequence it:</p>
+<div class="callout callout-good">
+<p><span class="pill pill-good">Recommended</span> <strong>Phase the faithful target; don&rsquo;t skip it.</strong> (1)&nbsp;Land the shared prerequisites now &mdash; teach <code>ko2kext</code> to emit <code>IOKitPersonalities</code> from <code>MODULE_PNP_INFO</code>, and make the matcher honor <code>IOPCIPrimaryMatch</code>. (2)&nbsp;Stand up a minimal <strong>kextd</strong> as a launchd Mach-service loader (the half that&rsquo;s identical in every option). (3)&nbsp;Do a <strong>kernel lock-safety proof-of-concept</strong> for Option B &mdash; can a device&rsquo;s match trigger a deferred <code>kldload</code> without deadlocking under the bus lock? If yes, build the in-kernel matcher (the Apple-faithful end state) and retire hwregd as the registry moves into the kernel. The in-process/userland matcher (A) is the fallback only if B&rsquo;s lock PoC proves intractable.</p>
+</div>
+<p>Why not just ship the userland matcher (A/C) and call it done? Because the stated north star is Apple-faithful, and the agents confirmed a userland matcher is a genuine architectural divergence, not a smaller version of the same thing. Shipping A/C as &ldquo;the&rdquo; design quietly bakes the divergence in; shipping A/C explicitly as an interim while B&rsquo;s feasibility is proven keeps the faithful target alive. Either is defensible &mdash; but it should be a <em>chosen</em> trade, which is the point of this doc.</p>
+<p>Note this doc&rsquo;s sibling, <a href="nextbsd-apple-device-matching-plan.html">the convergence plan</a>, currently leans userland (port Apple&rsquo;s <code>kextd</code> + a configd event plugin over FreeBSD <code>kld</code>). This doc&rsquo;s new contribution is the explicit in-kernel option B with effort/risk, so the two can be weighed as one decision rather than defaulting to userland by omission.</p>
+
+<h2 id="drivers">7. Which drivers stay in-kernel vs become kexts (and the order)</h2>
+<p>Apple&rsquo;s split &mdash; tiny in-kernel core (IOKit runtime + xnu) + a few <em>boot kexts prelinked into the kernelcache</em> + everything else loaded on match &mdash; maps onto NextBSD as the table below. First, the load-bearing point: <strong>configd / IPConfiguration don&rsquo;t care how a driver loaded.</strong> They see <code>em0</code> via the routing socket / <code>getifaddrs</code> whether its driver is compiled into the kernel or a loaded kext. So none of this is required for networking to <em>function</em> &mdash; it&rsquo;s required only for the Apple-faithful <em>shape</em>.</p>
+<table>
+<tr><th>Layer</th><th>NextBSD today</th><th>Target (Apple-faithful)</th></tr>
+<tr><td>Boot-critical: root storage (ahci / nvme / virtio), console</td><td>compiled into the kernel (#180)</td><td><strong>stays in-kernel</strong> &mdash; NextBSD&rsquo;s equivalent of Apple&rsquo;s prelinked boot kext collection; chicken-and-egg (need the disk to read a kext)</td></tr>
+<tr><td>IOKit/Mach + linuxkpi/wlan infrastructure</td><td>compiled in (<code>COMPAT_MACH</code>, <code>COMPAT_LINUXKPI</code> + <code>device wlan</code>)</td><td>stays in-kernel (the framework drivers bind against)</td></tr>
+<tr><td>WiFi (<code>if_iwlwifi</code>)</td><td><strong>already a kext</strong> (IntelWiFi.kext) &mdash; not a built-in <code>device</code></td><td>kext, auto-loaded by kextd</td></tr>
+<tr><td>NICs (<code>em</code>&hellip;), sound, GPU (drm/i915/amdgpu), USB peripherals</td><td>built into the kernel (GENERIC <code>device</code> lines)</td><td><strong>become kexts</strong> &mdash; auto-loaded on match (#179)</td></tr>
+</table>
+<p><strong>You cannot have both.</strong> A built-in <code>device em</code> claims the PCI NIC at boot, so a separate <code>em.kext</code> would hit &ldquo;already attached.&rdquo; Converting a driver to a kext therefore means <em>removing its <code>device</code> line from the NEXTBSD kernel config</em> and shipping it as a kext &mdash; an either/or, per driver.</p>
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Ordering &mdash; do not invert</span> kextd auto-load must work <strong>before</strong> any built-in driver is removed. Pull <code>device em</code> out before matching+load works and the machine has no network (nothing loads it). So: <strong>(1)</strong>&nbsp;decide the matching location (&sect;6) &rarr; <strong>(2)</strong>&nbsp;build kextd &rarr; <strong>(3)</strong>&nbsp;convert non-boot drivers to kexts <em>one at a time</em>, verifying each auto-loads and removing its <code>device</code> line only as the kext path is proven. Never remove a built-in before its kext loads.</p>
+</div>
+<p>Net trajectory: the kernel shrinks toward <em>boot-critical + IOKit/Mach/linuxkpi infrastructure</em>, while the driver fleet (NICs, sound, GPU, USB, WiFi) lives in <code>/System/Library/Extensions</code> as kexts that kextd binds on match &mdash; the Apple shape. WiFi already demonstrates it; <code>em</code> is the natural first built-in to convert once kextd exists.</p>
+
+<h2 id="decisions">8. Open decisions for joint review</h2>
+<ol>
+  <li><strong>Matching location (the fork): <span class="pill pill-good">Resolved &mdash; Option B (in-kernel).</span></strong> Everything below follows from this.</li>
+  <li><strong>hwregd timing:</strong> retired as the kernel becomes the registry (Option B). Sequence it after the in-kernel registry can answer the queries hwregd/launchd HardwareMatch rely on, so nothing loses its backend mid-flight.</li>
+  <li><strong>Personalities source:</strong> auto-generate from <code>MODULE_PNP_INFO</code> (works today, no hand-authoring), hand-author per kext (Apple-style), or both?</li>
+  <li><strong>kextd scope/name:</strong> the loader half is shared; name it <code>kextd</code> (APSL provenance) per the convergence plan&rsquo;s decision.</li>
+  <li><strong>Is an Option B lock-safety PoC worth funding first</strong> before committing &mdash; i.e. a throwaway kernel patch that proves deferred <code>kldload</code> from the match path is deadlock-free?</li>
+</ol>
+
+<h2 id="sources">9. Sources</h2>
+<p class="cite">Apple / XNU: IOKit Fundamentals (Architectural Overview; Driver and Device Matching), <code>iokit/IOKit/IOCatalogue.h</code>, <code>iokit/Kernel/IOService.cpp</code>, <code>iokit/Kernel/IORegistryEntry.cpp</code>; <code>kext_tools/kextd_main.c</code> &amp; <code>kextd_request.c</code>; <code>kernelmanagerd(8)</code>/<code>kmutil(8)</code> man pages; IOKitUser <code>IOKitLib.h</code>. PCI ID encoding (device-high/vendor-low, e.g. <code>0x24f38086</code>) community-corroborated &mdash; verify against <code>IOPCIFamily</code> before final.</p>
+<p class="cite">FreeBSD: <code>sys/kern/subr_bus.c</code>, <code>sys/sys/bus.h</code>, <code>sys/kern/kern_devctl.c</code>, <code>sys/sys/module.h</code>, <code>sys/sys/linker.h</code>, <code>sbin/devmatch/devmatch.c</code>; Architecture Handbook &ldquo;Newbus.&rdquo;</p>
+<p class="cite">NextBSD: <code>src/hwregd/</code>, <code>src/libIOKit/</code>, <code>src/kext_tools/kext.subproj/OSKext.c</code>, <code>src/launchd/src/core.c</code>.</p>
+
+<p class="footnote">2026-06-05. <strong>Decision made: Option B (in-kernel IOKit matcher).</strong> Next is Phase&nbsp;0 &mdash; a kernel lock-safety proof-of-concept (deferred <code>kldload</code> from the match path) &mdash; plus the shared prerequisites (ko2kext <code>IOKitPersonalities</code>; <code>IOPCIPrimaryMatch</code> matching), then the in-kernel registry / IOCatalogue / matcher, the kextd loader, and incremental driver&rarr;kext conversion (&sect;7). Companion: <a href="nextbsd-apple-device-matching-plan.html">hwregd convergence plan</a>.</p>
+
+</div>
+</body>
+</html>

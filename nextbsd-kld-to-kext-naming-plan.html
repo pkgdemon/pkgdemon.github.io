@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD: kld → kext naming + categorization plan (#179)</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:1080px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.08rem; margin:26px 0 8px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.88em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.84rem; }
+  th,td { text-align:left; padding:6px 9px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; position:sticky; top:0; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  td.cat { white-space:nowrap; font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.82em; }
+  td.id { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.82em; }
+  .grp { background:#efe9dd; font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; groundwork for <a href="freebsd-ko-to-kext-conversion-plan.html">#179 (.ko&rarr;.kext conversion)</a>; built on the landed <a href="nextbsd-oskext-port-plan.html">OSKext port (#182)</a></p>
+
+<h1>kld &rarr; kext: naming + categorization</h1>
+<p class="lede">Before the bulk <code>.ko</code>&rarr;<code>.kext</code> conversion (#179), this is a complete catalog of <strong>every</strong> FreeBSD loadable kernel module in the NextBSD tree (<code>sys/modules/</code>, 474 dirs) &mdash; what each one is, what category it falls in (driver / filesystem / network / crypto / &hellip;), and a proposed Apple-style <code>.kext</code> bundle identifier + name. It exists so #179 follows one deliberate naming convention instead of ad-hoc per-module guesses.</p>
+<p class="meta">2026-06-04. Source: read-only review of <code>launchd/freebsd-src/sys/modules</code> (== <code>nextbsd-kernel</code>, 474 modules) by 8 parallel review agents. Categories/purposes derived from each module's <code>Makefile</code> <code>.PATH</code> + source. <strong>This is a proposal for review, not a final mapping</strong> &mdash; the naming style and the build-in-vs-kext split are open decisions (&sect;3).</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Read me first</span> Scope is now <strong>343 kext candidates</strong> &mdash; the modules the NEXTBSD kernel does <em>not</em> already compile in (the other 131 are built-in; &sect;6b). <strong>D2 (built-in split)</strong> and <strong>D4 (firmware &rarr; bundled in the kext)</strong> are resolved this pass. The main call left open is <strong>D1 &mdash; the <code>.kext</code> naming style</strong> (vendor-product CamelCase à la Apple vs. keeping FreeBSD names); the per-module names in &sect;6a are a first-pass mix until that's decided. D3 (sub-component plugins) and the firmware runtime sub-choice are minor. See &sect;3.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#what">What this covers (and what a kext is here)</a></li>
+  <li><a href="#convention">The proposed naming convention</a></li>
+  <li><a href="#decisions">Open decisions (need your call)</a></li>
+  <li><a href="#summary">Category summary (counts)</a></li>
+  <li><a href="#start">Where to start: reference machine + minimal subset</a></li>
+  <li><a href="#table">Full per-module catalog</a></li>
+</ol>
+</div>
+
+<h2 id="what">1. What this covers (and what a &ldquo;kext&rdquo; is here)</h2>
+<p>A NextBSD kext is an Apple <code>.kext</code> bundle wrapping an <em>unmodified</em> FreeBSD ELF <code>.ko</code>: <code>&lt;Name&gt;.kext/Contents/Info.plist</code> (CFBundleIdentifier, version, <code>OSBundleLibraries</code> dependencies, IOKitPersonalities) + <code>Contents/MacOS/&lt;executable&gt;</code> (the <code>.ko</code>). The OSKext engine (#182, landed) resolves dependencies and <code>kldload</code>s in order; <code>kextdeps</code> already proves the dependency sort works.</p>
+<p>Every row below maps one <code>sys/modules/</code> entry. The <strong>ko</strong> column is the real loaded module name (from <code>KMOD=</code>), which becomes <code>CFBundleExecutable</code>; that is the name the kernel/kld actually sees and the key OSKext uses to tell whether a kext is loaded.</p>
+
+<h2 id="convention">2. The proposed naming convention</h2>
+<p>Apple uses reverse-DNS bundle identifiers grouped by role (<code>com.apple.driver.AppleAHCI</code>, <code>com.apple.filesystems.msdosfs</code>, <code>com.apple.iokit.IONetworkingFamily</code>, <code>com.apple.kpi.bsd</code>). NextBSD mirrors that under <code>org.nextbsd</code>:</p>
+<table>
+  <thead><tr><th>Category</th><th>Bundle ID group</th><th>Example ko</th><th>Example bundle id</th></tr></thead>
+  <tbody>
+    <tr><td>Hardware drivers (storage, network, wireless, usb, graphics, sound, serial-bus, platform, crypto-hw, misc)</td><td><code>org.nextbsd.driver.*</code></td><td>ahci</td><td><code>org.nextbsd.driver.AHCI</code></td></tr>
+    <tr><td>Filesystems</td><td><code>org.nextbsd.filesystems.*</code></td><td>msdosfs</td><td><code>org.nextbsd.filesystems.msdosfs</code></td></tr>
+    <tr><td>Software crypto</td><td><code>org.nextbsd.crypto.*</code></td><td>aesni</td><td><code>org.nextbsd.crypto.AESNI</code></td></tr>
+    <tr><td>Network protocols / pseudo-interfaces</td><td><code>org.nextbsd.net.*</code></td><td>pf</td><td><code>org.nextbsd.net.PF</code></td></tr>
+    <tr><td>MAC / security policies</td><td><code>org.nextbsd.security.*</code></td><td>mac_biba</td><td><code>org.nextbsd.security.MACBiba</code></td></tr>
+    <tr><td>Kernel KPI / subsystem families</td><td><code>org.nextbsd.kpi.*</code></td><td>cam</td><td><code>org.nextbsd.kpi.CAM</code></td></tr>
+    <tr><td>ABI / Linux compat</td><td><code>org.nextbsd.compat.*</code></td><td>linux64</td><td><code>org.nextbsd.compat.Linux64</code></td></tr>
+    <tr><td>Firmware images</td><td><code>org.nextbsd.firmware.*</code></td><td>ispfw</td><td><code>org.nextbsd.firmware.ISP</code></td></tr>
+    <tr><td>Virtualization / tracing / misc</td><td><code>org.nextbsd.kext.*</code></td><td>vmm</td><td><code>org.nextbsd.kext.VMM</code></td></tr>
+  </tbody>
+</table>
+<p>The <code>.kext</code> <strong>display name</strong> is CamelCase. For drivers, Apple-style names lead with the vendor/family (<code>com.apple.driver.AppleIntelI210</code>); the first-pass table below sometimes still carries FreeBSD-flavored names (e.g. <code>IfRe</code>) &mdash; normalizing those is decision&nbsp;(1) in &sect;3.</p>
+
+<h2 id="decisions">3. Open decisions (need your call)</h2>
+<div class="callout">
+<p><strong>D1 &mdash; <code>.kext</code> display-name style.</strong> Three options: <strong>(a)</strong> vendor-product CamelCase like Apple (<code>ahci</code>&rarr;<code>AHCI.kext</code>, <code>em</code>&rarr;<code>IntelE1000.kext</code>, <code>re</code>&rarr;<code>RealtekRTL8169.kext</code>) &mdash; most Apple-faithful, most renaming work; <strong>(b)</strong> keep the FreeBSD module name (<code>ahci.kext</code>, <code>if_em.kext</code>) &mdash; least surprising for FreeBSD users, least Apple-like; <strong>(c)</strong> hybrid &mdash; vendor names for the common/visible drivers, FreeBSD names for the long tail. The table proposes a mix; pick one rule.</p>
+</div>
+<div class="callout">
+<p><strong>D2 &mdash; kext vs. built-into-kernel. <span class="pill pill-good">Resolved (this pass)</span></strong> The conversion target is now scoped to what the NEXTBSD kernel does <em>not</em> already compile in: matching every module against <code>device</code>/<code>options</code> in <code>sys/amd64/conf/NEXTBSD</code> gives <strong>131 already built-in</strong> (excluded &mdash; &sect;6b) and <strong>343 kext candidates</strong> (&sect;6a). The built-in set already covers the boot-critical path (ahci/nvme/cam/ufs, acpi, crypto, common NICs). Remaining sub-question (deferred): if we later slim the kernel toward an Apple-minimal core, some of the 131 move back out to kexts &mdash; not now.</p>
+</div>
+<div class="callout">
+<p><strong>D3 &mdash; sub-components &amp; plugins.</strong> Many modules are pieces of a parent: <code>ath_hal_*</code>/<code>ath_rate</code>/<code>ath_main</code> (the ath stack), <code>wlan_*</code> ciphers, <code>sdhci_pci/_acpi/_fdt</code>, <code>nfscl/nfsd/nfscommon/&hellip;</code>. Bundle each as its own <code>.kext</code>, or nest them under the parent's <code>Contents/PlugIns/</code> (Apple's approach)?</p>
+</div>
+<div class="callout">
+<p><strong>D4 &mdash; firmware. <span class="pill pill-good">Resolved: bundle in the kext</span></strong> Every driver that needs firmware carries it in its own <code>&lt;Driver&gt;.kext/Contents/Resources/</code> (Apple-style); no runtime fetch. The driver&rarr;blob mapping is mechanical: each <code>sys/modules/&lt;x&gt;fw/Makefile</code> <code>FIRMWS=</code> line lists <code>blobfile:fwname[:version]</code>, and the blobs already live in <code>sys/contrib/dev/&lt;x&gt;/</code> &mdash; so the build stages them straight from the tree (no network for the in-tree set; linux-firmware only for any blob with no in-tree copy). A generated manifest (driver &rarr; firmware module &rarr; blob files) drives this in <code>nextbsd-kernel-modules</code>. Open sub-choice: how the driver finds the bundled blobs at runtime &mdash; <strong>(a)</strong> nest the firmware <code>.ko</code> in the kext so <code>firmware_get()</code> works unchanged (simplest), or <strong>(b)</strong> point <code>firmware(9)</code> at the kext&rsquo;s <code>Resources/</code> (purer Apple layout, small loader hook).</p>
+</div>
+<div class="callout">
+<p><strong>D5 &mdash; exclusions.</strong> Test/build-internal modules (<code>tests</code>, <code>ktest</code>, <code>epoch_test</code>, <code>mmcnull</code>, <code>mac_test</code>, <code>amd_ecc_inject</code>, <code>dummymbuf</code>) and dead-legacy hardware should likely be excluded from conversion entirely. Confirm the exclude list.</p>
+</div>
+
+<h2 id="summary">4. Category summary</h2>
+<p>Approximate counts across the 474 modules (the long tail is hardware drivers, as expected):</p>
+<table>
+  <thead><tr><th>Category</th><th>~Count</th><th>Disposition note</th></tr></thead>
+  <tbody>
+    <tr><td>driver/network (wired NIC)</td><td>~80</td><td>kext (driver)</td></tr>
+    <tr><td>driver/platform (SoC/ACPI/sensor/watchdog)</td><td>~45</td><td>kext (driver); many arch-specific</td></tr>
+    <tr><td>driver/storage (HBA/RAID/NVMe/SD)</td><td>~48</td><td>kext (driver)</td></tr>
+    <tr><td>driver/wireless</td><td>~35</td><td>kext (driver) + firmware deps</td></tr>
+    <tr><td>security/mac</td><td>~32</td><td>kext (security)</td></tr>
+    <tr><td>net/infra + net/protocol</td><td>~70</td><td>kext (net) / some built-in</td></tr>
+    <tr><td>driver/serial-bus</td><td>~25</td><td>kext (driver)</td></tr>
+    <tr><td>filesystem</td><td>~25</td><td>kext (filesystems)</td></tr>
+    <tr><td>kpi/infra</td><td>~28</td><td><strong>D2</strong>: likely built-in</td></tr>
+    <tr><td>compat (linux/abi)</td><td>~14</td><td>kext (compat)</td></tr>
+    <tr><td>crypto (sw) + driver/crypto-hw</td><td>~22</td><td>kext (crypto / driver)</td></tr>
+    <tr><td>tracing/debug</td><td>~13</td><td>kext (misc) / dev-only</td></tr>
+    <tr><td>firmware</td><td>~13</td><td><strong>D4</strong></td></tr>
+    <tr><td>driver/graphics, sound, usb, misc</td><td>~35</td><td>kext (driver)</td></tr>
+    <tr><td>virtualization</td><td>4</td><td>kext (misc)</td></tr>
+    <tr><td>test-internal</td><td>~6</td><td><strong>D5</strong>: exclude</td></tr>
+  </tbody>
+</table>
+
+<h2 id="start">5. Where to start: a reference machine + the smallest subset</h2>
+<p>343 candidates is the <em>universe</em> of hardware, not a to-do list. A real machine needs only ~a dozen kexts on top of the kernel &mdash; so #179 should be driven by <strong>reference machines</strong> (hardware people actually run) and begin with the <strong>smallest useful subset</strong>, not a mass conversion.</p>
+
+<h3>Reference machine &mdash; modern Intel Dell XPS (13&nbsp;9320 / 15&nbsp;9530 / 17&nbsp;9730 class)</h3>
+<p>Most of the box is already covered by the NEXTBSD kernel; only a short list needs kexts &mdash; and the GPU stack comes from the <em>ports</em> tree, not the base module set (so it is not even in the 343):</p>
+<table>
+  <thead><tr><th>Function</th><th>Hardware</th><th>Driver</th><th>Where it comes from</th></tr></thead>
+  <tbody>
+    <tr class="grp"><td colspan="4">Already in the NEXTBSD kernel &mdash; nothing to do</td></tr>
+    <tr><td>Boot storage</td><td>NVMe SSD</td><td><code>nvme</code>/<code>nvd</code></td><td>built-in</td></tr>
+    <tr><td>USB + input transport</td><td>xHCI / USB4</td><td><code>xhci</code>, <code>usb</code>, <code>hid</code>/<code>hidbus</code>/<code>evdev</code></td><td>built-in</td></tr>
+    <tr><td>Platform</td><td>ACPI, CPU</td><td><code>acpi</code>, <code>cpufreq</code></td><td>built-in</td></tr>
+    <tr><td>Filesystems</td><td>root + EFI</td><td><code>ufs</code> (FFS), <code>msdosfs</code>, <code>cd9660</code></td><td>built-in</td></tr>
+    <tr><td>Crypto</td><td>AES-NI</td><td><code>aesni</code>, <code>crypto</code></td><td>built-in</td></tr>
+    <tr class="grp"><td colspan="4">Kexts to add (from the 343 candidates)</td></tr>
+    <tr><td><strong>Wi-Fi</strong></td><td>Intel AX211 / AX210 (Wi-Fi 6E)</td><td><code>if_iwlwifi</code> &rarr; <code>linuxkpi_wlan</code> &rarr; <code>linuxkpi</code> + <code>wlan</code> + firmware</td><td><strong>kext</strong>(s) + bundled fw. <code>linuxkpi</code> = Linux <em>driver-API</em> shim (NOT <code>linux.ko</code> / the userland ABI); may be built-in via <code>COMPAT_LINUXKPI</code></td></tr>
+    <tr><td>Bluetooth</td><td>Intel BT (USB)</td><td><code>ng_ubt</code> (netgraph)</td><td><strong>kext</strong></td></tr>
+    <tr><td>Audio</td><td>Intel HDA / codec</td><td><code>snd_hda</code> (<code>sound</code>)</td><td><strong>kext</strong> (codec support varies)</td></tr>
+    <tr><td>Touchpad</td><td>I&sup2;C HID precision touchpad</td><td>Intel LPSS I&sup2;C + <code>hms</code>/<code>hmt</code>/<code>hconf</code></td><td><strong>kext</strong> (some HID built-in)</td></tr>
+    <tr><td>Card reader</td><td>Realtek (if present)</td><td><code>rtsx</code></td><td><strong>kext</strong></td></tr>
+    <tr><td>Thunderbolt/USB4</td><td>Intel</td><td><code>thunderbolt</code></td><td><strong>kext</strong> (limited)</td></tr>
+    <tr class="grp"><td colspan="4">From the ports tree &mdash; separate workstream (not in the 343)</td></tr>
+    <tr><td>iGPU</td><td>Intel Iris Xe</td><td><code>i915kms</code></td><td><strong>ports</strong> (<code>graphics/drm-kmod</code>)</td></tr>
+    <tr><td>dGPU (15/17)</td><td>NVIDIA RTX</td><td><code>nvidia-modeset</code></td><td><strong>ports</strong> (<code>x11/nvidia-driver</code>)</td></tr>
+    <tr><td>Webcam</td><td>USB UVC</td><td><code>webcamd</code> + <code>cuse</code></td><td><strong>ports</strong> + <code>cuse</code> kext</td></tr>
+  </tbody>
+</table>
+
+<h3>Reference machine B &mdash; ThinkPad T460s (Skylake, 2016) &mdash; from real <code>pciconf</code></h3>
+<p>Decoded from an actual <code>pciconf -lv</code> on the box. It confirms the thesis even harder than the XPS: an older Intel laptop runs almost entirely on the kernel. <code>none&lt;N&gt;</code> in <code>pciconf</code> = no driver attached (so a kext is needed or none exists); a real devname (<code>em0</code>, <code>ahci0</code>, <code>hdac0</code>) = a driver already claimed it.</p>
+<table>
+  <thead><tr><th>Device</th><th>PCI id</th><th>Driver</th><th>Status</th></tr></thead>
+  <tbody>
+    <tr class="grp"><td colspan="4">Already covered by the kernel &mdash; attached, nothing to do</td></tr>
+    <tr><td>SATA (AHCI)</td><td><code>8086:9d03</code></td><td><code>ahci</code></td><td>built-in (<code>ahci0</code>)</td></tr>
+    <tr><td>USB 3.0 (xHCI)</td><td><code>8086:9d2f</code></td><td><code>xhci</code></td><td>built-in (<code>xhci0</code>)</td></tr>
+    <tr><td>Ethernet I219-LM</td><td><code>8086:156f</code></td><td><code>em</code></td><td>built-in (<code>em0</code>)</td></tr>
+    <tr><td>HD Audio</td><td><code>8086:9d70</code></td><td><code>snd_hda</code>/<code>hdac</code></td><td>built-in (<code>hdac0</code>; <code>kldload snd_hda</code> &rarr; &ldquo;already in kernel&rdquo;)</td></tr>
+    <tr><td>Host / PCIe / LPC bridges</td><td><code>1904/9d10/9d12/9d48</code></td><td><code>hostb</code>/<code>pcib</code>/<code>isab</code></td><td>built-in</td></tr>
+    <tr class="grp"><td colspan="4">Needs a kext &mdash; currently unattached (<code>none</code>)</td></tr>
+    <tr><td><strong>Wi-Fi: Intel 8260</strong></td><td><code>8086:24f3</code></td><td><code>iwm</code> (native; or <code>iwlwifi</code>) + firmware</td><td><strong>kext</strong> (<code>none7</code>). <code>iwm</code> is native &mdash; <em>no</em> linuxkpi, just <code>wlan</code> + fw</td></tr>
+    <tr><td>Card reader: Realtek RTS522A</td><td><code>10ec:522a</code></td><td><code>rtsx</code></td><td><strong>kext</strong> (<code>none6</code>)</td></tr>
+    <tr><td>Bluetooth: Intel (USB on 8260)</td><td>USB</td><td><code>ng_ubt</code></td><td><strong>kext</strong> (USB; not enumerable &mdash; <code>usbconfig</code> broken on this install)</td></tr>
+    <tr class="grp"><td colspan="4">Ports tree</td></tr>
+    <tr><td>GPU: Intel HD 520</td><td><code>8086:1916</code></td><td><code>i915kms</code></td><td><strong>ports</strong> (<code>drm-kmod</code>); <code>vgapci0</code> stub attached</td></tr>
+    <tr class="grp"><td colspan="4">No driver needed (Intel platform bits &mdash; <code>none</code>, no FreeBSD driver / not required)</td></tr>
+    <tr><td>GMM, thermal, ME (HECI), AMT-SOL UART, PMC, SMBus</td><td><code>1911/9d31/9d3a/9d3d/9d21/9d23</code></td><td>&mdash; (<code>intsmb</code> optional for sensors)</td><td>skip</td></tr>
+  </tbody>
+</table>
+<p><strong>T460s takeaway:</strong> storage, USB, Ethernet, <em>and</em> audio all come from the kernel. The only real kexts it needs are <strong>Wi-Fi (<code>iwm</code>)</strong> and the <strong>card reader (<code>rtsx</code>)</strong>, plus Bluetooth (<code>ng_ubt</code>) and GPU from ports &mdash; ~2&ndash;3 kexts, even fewer than the XPS, and with <code>iwm</code> no LinuxKPI at all. (Its Ethernet is Intel <code>em</code>, so <code>realtek-re-kmod</code> isn&rsquo;t needed here; the Realtek part is only the card reader.)</p>
+
+<h3>Start smallest &mdash; tiered first targets</h3>
+<p>The box already boots on the kernel alone, so the first kext that matters is the one that makes it <em>useful</em>: Wi-Fi.</p>
+<ul>
+  <li><strong>Tier&nbsp;0 &mdash; prove the pipeline (one driver family):</strong> <code>iwlwifi</code> + <code>linuxkpi_wlan</code> + bundled firmware. This single target exercises <em>everything</em> #179 needs end-to-end &mdash; a real driver, its LinuxKPI dependencies loaded in order (OSKext/<code>kextdeps</code>), and firmware bundled in <code>Contents/Resources/</code> &mdash; on the most-wanted driver. If it loads and associates, the whole model is proven. <strong>This is the recommended first conversion.</strong></li>
+  <li><strong>Tier&nbsp;1 &mdash; daily-driver laptop:</strong> add Bluetooth (<code>ng_ubt</code>), audio (<code>snd_hda</code>), the I&sup2;C touchpad HID stack. (GPU via <code>drm-kmod</code> ports is its own track.)</li>
+  <li><strong>Tier&nbsp;2 &mdash; broaden:</strong> the rest of this machine, then a second reference box (e.g. a common AMD desktop), widening by real-world popularity.</li>
+</ul>
+<p>The exact per-machine list is mechanical: <code>pciconf -lv</code> + <code>devmatch</code> map every PCI/USB ID to its driver &mdash; FreeBSD&rsquo;s own &ldquo;what does this box need&rdquo; tool. That same signal should order the conversion queue: convert what real machines hit first; leave the long tail (SPARC NICs, RAID HBAs, ARM-SoC platform drivers) for later or never. The full inventory is &sect;6 below.</p>
+
+<h3>Additional ports kmods in the minimal set</h3>
+<p>Some drivers people actually run live in the <strong>ports tree</strong>, not base <code>sys/modules</code> &mdash; so they are <em>not</em> in the 343, but they belong in the minimal target set and form a parallel &ldquo;ports kmod &rarr; kext&rdquo; track (same bundling + firmware rules). Explicitly wanted:</p>
+<table>
+  <thead><tr><th>port</th><th>driver</th><th>purpose</th><th>proposed kext</th></tr></thead>
+  <tbody>
+    <tr><td><code>net/realtek-re-kmod</code></td><td><code>if_re</code> (vendor)</td><td>Realtek RTL8168/8111/8125 Ethernet &mdash; the vendor/updated driver, newer than base <code>re</code>; needed for recent Realtek Gigabit / 2.5GbE NICs (common on budget laptops, mini-PCs, docks)</td><td><code>org.nextbsd.driver.RealtekRE</code> &middot; <code>RealtekRE.kext</code></td></tr>
+    <tr><td><code>misc/utouch-kmod</code></td><td>USB HID absolute pointer</td><td>Kernel driver for <strong>absolute USB HID mice</strong> &mdash; USB touchscreens, hypervisor/VM absolute pointers (qemu/bhyve/VirtualBox), KVM-over-IP. <em>Complements</em>, does not replace, the I&sup2;C-HID laptop-touchpad stack (<code>hms</code>/<code>hmt</code>/<code>hconf</code>). wulf@, BSD-2-Clause. (Handy for NextBSD-in-a-VM &mdash; 1:1 guest pointer.)</td><td><code>org.nextbsd.driver.UTouch</code> &middot; <code>UTouch.kext</code></td></tr>
+    <tr><td><code>graphics/drm-kmod</code></td><td><code>i915kms</code></td><td>Intel iGPU / KMS (separate driver &mdash; do <em>not</em> merge with AMD)</td><td><code>org.nextbsd.driver.IntelGraphics</code> &middot; <code>IntelGraphics.kext</code></td></tr>
+    <tr><td><code>graphics/drm-kmod</code></td><td><code>amdgpu</code></td><td>AMD GPU / KMS, GCN&nbsp;1.2+ / RDNA (separate driver from Intel)</td><td><code>org.nextbsd.driver.AMDGraphics</code> &middot; <code>AMDGraphics.kext</code></td></tr>
+    <tr><td><code>graphics/drm-kmod</code></td><td><code>radeonkms</code></td><td>Older AMD/ATI Radeon (pre-GCN / early GCN)</td><td><code>org.nextbsd.driver.RadeonGraphics</code> &middot; <code>RadeonGraphics.kext</code></td></tr>
+    <tr><td><code>x11/nvidia-driver</code></td><td><code>nvidia-modeset</code></td><td>NVIDIA discrete GPU</td><td><code>org.nextbsd.driver.NVIDIA</code> &middot; <code>NVIDIA.kext</code></td></tr>
+    <tr><td><code>multimedia/webcamd</code> + <code>cuse</code></td><td>UVC bridge</td><td><span class="pill pill-warn">Later</span> USB webcams (+ DVB/etc.) &mdash; deferred to a later phase, not part of the minimal set</td><td>userland daemon + <code>cuse</code> kext</td></tr>
+  </tbody>
+</table>
+<p class="meta">Note: <code>realtek-re-kmod</code> overlaps base <code>re</code>/<code>rge</code> &mdash; same curation call as the Intel-Wi-Fi drivers (&sect;3 / family consolidation): pick the vendor kmod as canonical for the chips it covers. <code>misc/utouch-kmod</code> is confirmed (absolute USB-HID pointer driver) and is additive &mdash; it coexists with the HID touchpad stack.</p>
+
+
+<h2 id="table">6. Full per-module catalog</h2>
+<p>The 474 modules are split by whether the NEXTBSD kernel already compiles them in: <strong>343 kext candidates</strong> (&sect;6a &mdash; the #179 target) and <strong>131 already built into the kernel</strong> (&sect;6b &mdash; excluded), matched against <code>device</code>/<code>options</code> in <code>sys/amd64/conf/NEXTBSD</code>. <strong>ko</strong> = real module name (= <code>CFBundleExecutable</code>); <strong>kext</strong> + <strong>bundle id</strong> are the first-pass proposal (subject to D1). &ldquo;sub&rdquo; / &ldquo;fw&rdquo; / &ldquo;subdir&rdquo; / &ldquo;test&rdquo; in notes flag D3/D5 cases.</p>
+
+<h3>6a. Kext candidates &mdash; NOT in the NEXTBSD kernel (343)</h3><p>These are the actual #179 conversion target: modules the NEXTBSD kernel does <strong>not</strong> statically compile in, so they must be packaged as loadable <code>.kext</code>s. Grouped by category.</p><table>
+<thead><tr><th>ko (CFBundleExecutable)</th><th>purpose</th><th>proposed bundle id</th><th>kext</th><th>notes</th></tr></thead><tbody>
+<tr class="grp"><td colspan="5">Filesystems &middot; 16</td></tr>
+<tr><td><code>autofs</code></td><td>Automounter FS (triggers automountd)</td><td class="id">org.nextbsd.filesystems.autofs</td><td>autofs</td><td></td></tr>
+<tr><td><code>cd9660_iconv</code></td><td>iconv charset plugin for cd9660</td><td class="id">org.nextbsd.filesystems.cd9660-iconv</td><td>cd9660-iconv</td><td>sub of cd9660</td></tr>
+<tr><td><code>ext2fs</code></td><td>Linux ext2/3/4 filesystem</td><td class="id">org.nextbsd.filesystems.ext2fs</td><td>ext2fs</td><td></td></tr>
+<tr><td><code>fdescfs</code></td><td>File-descriptor filesystem (/dev/fd)</td><td class="id">org.nextbsd.filesystems.fdescfs</td><td>fdescfs</td><td></td></tr>
+<tr><td><code>fusefs</code></td><td>FUSE (Filesystem in Userspace) kernel support</td><td class="id">org.nextbsd.filesystems.fusefs</td><td>fusefs</td><td></td></tr>
+<tr><td><code>msdosfs_iconv</code></td><td>iconv charset plugin for msdosfs</td><td class="id">org.nextbsd.filesystems.msdosfs-iconv</td><td>msdosfs-iconv</td><td>sub of msdosfs</td></tr>
+<tr><td><code>nfscommon</code></td><td>Shared NFS RPC/KPI for client+server</td><td class="id">org.nextbsd.filesystems.nfscommon</td><td>nfscommon</td><td>sub</td></tr>
+<tr><td><code>nfssvc</code></td><td>NFS syscall dispatch/service KPI glue</td><td class="id">org.nextbsd.filesystems.nfssvc</td><td>nfssvc</td><td>sub</td></tr>
+<tr><td><code>nullfs</code></td><td>Null/loopback overlay filesystem</td><td class="id">org.nextbsd.filesystems.nullfs</td><td>nullfs</td><td></td></tr>
+<tr><td><code>p9fs</code></td><td>9P/VirtIO Plan 9 filesystem client</td><td class="id">org.nextbsd.filesystems.p9fs</td><td>p9fs</td><td></td></tr>
+<tr><td><code>smbfs</code></td><td>SMB/CIFS client filesystem (SMBv1)</td><td class="id">org.nextbsd.filesystems.smbfs</td><td>smbfs</td><td></td></tr>
+<tr><td><code>tarfs</code></td><td>Read-only tar-archive filesystem (zstd)</td><td class="id">org.nextbsd.filesystems.tarfs</td><td>tarfs</td><td></td></tr>
+<tr><td><code>udf</code></td><td>UDF optical-media filesystem</td><td class="id">org.nextbsd.filesystems.udf</td><td>udf</td><td></td></tr>
+<tr><td><code>udf_iconv</code></td><td>iconv charset plugin for UDF</td><td class="id">org.nextbsd.filesystems.udf-iconv</td><td>udf-iconv</td><td>sub of udf</td></tr>
+<tr><td><code>unionfs</code></td><td>Union/overlay filesystem</td><td class="id">org.nextbsd.filesystems.unionfs</td><td>unionfs</td><td></td></tr>
+<tr><td><code>zfs</code></td><td>OpenZFS copy-on-write filesystem + volume mgr</td><td class="id">org.nextbsd.filesystems.zfs</td><td>zfs</td><td>monolithic</td></tr>
+<tr class="grp"><td colspan="5">Drivers — storage &middot; 17</td></tr>
+<tr><td><code>(subdir)</code></td><td>Adaptec AIC-7xxx/79xx SCSI HBA (ahc, ahd)</td><td class="id">&mdash;</td><td>&mdash;</td><td>subdir-only</td></tr>
+<tr><td><code>cfi</code></td><td>Common Flash Interface NOR flash</td><td class="id">org.nextbsd.driver.CFI</td><td>CFI</td><td></td></tr>
+<tr><td><code>hpt27xx</code></td><td>HighPoint RocketRAID 27xx SAS/SATA RAID</td><td class="id">org.nextbsd.driver.Hpt27xx</td><td>Hpt27xx</td><td>binary blob</td></tr>
+<tr><td><code>hptmv</code></td><td>HighPoint RocketRAID 182x SATA RAID</td><td class="id">org.nextbsd.driver.Hptmv</td><td>Hptmv</td><td>binary blob</td></tr>
+<tr><td><code>hptnr</code></td><td>HighPoint RocketRAID NR SATA RAID</td><td class="id">org.nextbsd.driver.Hptnr</td><td>Hptnr</td><td>binary blob</td></tr>
+<tr><td><code>hptrr</code></td><td>HighPoint RocketRAID RR SATA RAID</td><td class="id">org.nextbsd.driver.Hptrr</td><td>Hptrr</td><td>binary blob</td></tr>
+<tr><td><code>iscsi</code></td><td>iSCSI initiator kernel driver (ICL)</td><td class="id">org.nextbsd.driver.Iscsi</td><td>Iscsi</td><td></td></tr>
+<tr><td><code>iser</code></td><td>iSCSI Extensions for RDMA (iSER)</td><td class="id">org.nextbsd.driver.Iser</td><td>Iser</td><td>sub of iscsi</td></tr>
+<tr><td><code>nvdimm</code></td><td>ACPI NVDIMM (NFIT) persistent memory</td><td class="id">org.nextbsd.driver.Nvdimm</td><td>Nvdimm</td><td></td></tr>
+<tr><td><code>nvmf</code></td><td>NVMe-oF host driver (tcp/transport/target)</td><td class="id">org.nextbsd.driver.Nvmf</td><td>Nvmf</td><td>subdir umbrella</td></tr>
+<tr><td><code>pmspcv</code></td><td>PMC-Sierra SAS/SATA HBA</td><td class="id">org.nextbsd.driver.Pmspcv</td><td>Pmspcv</td><td>ko=pmspcv</td></tr>
+<tr><td><code>pst</code></td><td>Promise SuperTrak I2O RAID</td><td class="id">org.nextbsd.driver.Pst</td><td>Pst</td><td>legacy</td></tr>
+<tr><td><code>rtsx</code></td><td>Realtek RTSX PCI SD/MMC card reader</td><td class="id">org.nextbsd.driver.Rtsx</td><td>Rtsx</td><td></td></tr>
+<tr><td><code>sdhci_acpi</code></td><td>ACPI attach for SDHCI</td><td class="id">org.nextbsd.driver.SdhciAcpi</td><td>SdhciAcpi</td><td>sub of sdhci</td></tr>
+<tr><td><code>sdhci_fdt</code></td><td>FDT attach for SDHCI</td><td class="id">org.nextbsd.driver.SdhciFdt</td><td>SdhciFdt</td><td>sub of sdhci</td></tr>
+<tr><td><code>sdhci_pci</code></td><td>PCI attach for SDHCI</td><td class="id">org.nextbsd.driver.SdhciPci</td><td>SdhciPci</td><td>sub of sdhci</td></tr>
+<tr><td><code>sdio</code></td><td>SDIO bus bridge (CAM &lt;-&gt; SDIO peripherals)</td><td class="id">org.nextbsd.driver.Sdio</td><td>Sdio</td><td></td></tr>
+<tr class="grp"><td colspan="5">Drivers — wired network (NIC) &middot; 39</td></tr>
+<tr><td><code>(subdir)</code></td><td>AMD 10GbE XGMAC (if_axa/if_axp)</td><td class="id">&mdash;</td><td>&mdash;</td><td>subdir-only</td></tr>
+<tr><td><code>dpaa2</code></td><td>NXP DPAA2 Management Complex + NIC (Layerscape)</td><td class="id">org.nextbsd.driver.DPAA2</td><td>DPAA2</td><td></td></tr>
+<tr><td><code>e6000sw</code></td><td>Marvell 88E6000 managed Ethernet switch</td><td class="id">org.nextbsd.driver.E6000SW</td><td>E6000SW</td><td>sub of etherswitch</td></tr>
+<tr><td><code>felix</code></td><td>NXP Felix DSA Ethernet switch (QorIQ)</td><td class="id">org.nextbsd.driver.Felix</td><td>Felix</td><td></td></tr>
+<tr><td><code>if_bnxt</code></td><td>Broadcom NetXtreme-C/E NIC + RDMA (bnxt_re)</td><td class="id">org.nextbsd.driver.Bnxt</td><td>Bnxt</td><td>subdir</td></tr>
+<tr><td><code>if_cgem</code></td><td>Cadence GEM NIC (Xilinx/Zynq)</td><td class="id">org.nextbsd.driver.IfCgem</td><td>IfCgem</td><td></td></tr>
+<tr><td><code>if_cpsw</code></td><td>TI CPSW Ethernet switch (AM335x)</td><td class="id">org.nextbsd.driver.CPSW</td><td>CPSW</td><td></td></tr>
+<tr><td><code>if_cxgb</code></td><td>Chelsio T3 10GbE (+t3fw firmware)</td><td class="id">org.nextbsd.driver.CXGB</td><td>CXGB</td><td>subdir</td></tr>
+<tr><td><code>if_cxgbe</code></td><td>Chelsio T4/5/6/7 10-100GbE (TOE/iWARP/NVMeoF)</td><td class="id">org.nextbsd.driver.CXGBE</td><td>CXGBE</td><td>subdir</td></tr>
+<tr><td><code>if_ena</code></td><td>Amazon AWS Elastic Network Adapter (EC2)</td><td class="id">org.nextbsd.driver.ENA</td><td>ENA</td><td></td></tr>
+<tr><td><code>if_enetc</code></td><td>NXP ENETC PCIe Gigabit (Layerscape)</td><td class="id">org.nextbsd.driver.ENETC</td><td>ENETC</td><td></td></tr>
+<tr><td><code>if_enic</code></td><td>Cisco VIC Ethernet</td><td class="id">org.nextbsd.driver.ENIC</td><td>ENIC</td><td></td></tr>
+<tr><td><code>if_ffec</code></td><td>Freescale Fast Ethernet Controller (i.MX)</td><td class="id">org.nextbsd.driver.Ffec</td><td>Ffec</td><td></td></tr>
+<tr><td><code>if_genet</code></td><td>Broadcom GENET (RPi4) Gigabit</td><td class="id">org.nextbsd.driver.Genet</td><td>Genet</td><td></td></tr>
+<tr><td><code>if_gve</code></td><td>Google Virtual NIC (gVNIC)</td><td class="id">org.nextbsd.driver.Gve</td><td>Gve</td><td></td></tr>
+<tr><td><code>if_lio</code></td><td>Cavium LiquidIO SmartNIC (Octeon)</td><td class="id">org.nextbsd.driver.Lio</td><td>Lio</td><td></td></tr>
+<tr><td><code>if_mana</code></td><td>Microsoft Azure Network Adapter (MANA)</td><td class="id">org.nextbsd.driver.Mana</td><td>Mana</td><td></td></tr>
+<tr><td><code>if_mgb</code></td><td>Microchip LAN7430/7431 PCIe Gigabit (iflib)</td><td class="id">org.nextbsd.driver.Mgb</td><td>Mgb</td><td></td></tr>
+<tr><td><code>if_mvneta</code></td><td>Marvell Armada NETA Ethernet (FDT)</td><td class="id">org.nextbsd.driver.Mvneta</td><td>Mvneta</td><td></td></tr>
+<tr><td><code>if_mxge</code></td><td>Myricom Myri-10G 10GbE (+firmware subdir)</td><td class="id">org.nextbsd.driver.Mxge</td><td>Mxge</td><td>subdir+fw</td></tr>
+<tr><td><code>if_my</code></td><td>Myson MTD803 Fast Ethernet</td><td class="id">org.nextbsd.driver.My</td><td>My</td><td></td></tr>
+<tr><td><code>if_oce</code></td><td>Emulex OneConnect 10GbE</td><td class="id">org.nextbsd.driver.Oce</td><td>Oce</td><td></td></tr>
+<tr><td><code>if_qlxgb</code></td><td>QLogic ISP 8020/80xx CNA Ethernet</td><td class="id">org.nextbsd.driver.Qlxgb</td><td>Qlxgb</td><td></td></tr>
+<tr><td><code>if_qlxgbe</code></td><td>QLogic ISP 8300/83xx CNA 10GbE</td><td class="id">org.nextbsd.driver.Qlxgbe</td><td>Qlxgbe</td><td></td></tr>
+<tr><td><code>if_qlxge</code></td><td>QLogic ISP 8000 CNA 10GbE</td><td class="id">org.nextbsd.driver.Qlxge</td><td>Qlxge</td><td></td></tr>
+<tr><td><code>if_sbni</code></td><td>Granch SBNI12 leased-line WAN adapter</td><td class="id">org.nextbsd.driver.Sbni</td><td>Sbni</td><td></td></tr>
+<tr><td><code>if_sume</code></td><td>NetFPGA-SUME 4-port 10GbE FPGA NIC</td><td class="id">org.nextbsd.driver.Sume</td><td>Sume</td><td></td></tr>
+<tr><td><code>if_tsec</code></td><td>Freescale eTSEC Ethernet (FDT)</td><td class="id">org.nextbsd.driver.Tsec</td><td>Tsec</td><td></td></tr>
+<tr><td><code>if_vte</code></td><td>DM&amp;P Vortex86 RDC R6040 Fast Ethernet</td><td class="id">org.nextbsd.driver.Vte</td><td>Vte</td><td></td></tr>
+<tr><td><code>ipoib</code></td><td>IP-over-InfiniBand interface driver (OFED)</td><td class="id">org.nextbsd.driver.IpOib</td><td>IpOib</td><td></td></tr>
+<tr><td><code>irdma</code></td><td>Intel RDMA (iWARP/RoCE) for ICE</td><td class="id">org.nextbsd.driver.Irdma</td><td>Irdma</td><td></td></tr>
+<tr><td><code>mlx4</code></td><td>Mellanox ConnectX-2/3 core</td><td class="id">org.nextbsd.driver.Mlx4</td><td>Mlx4</td><td>dep for mlx4en/ib</td></tr>
+<tr><td><code>mlx4en</code></td><td>Mellanox ConnectX-2/3 Ethernet (10/40GbE)</td><td class="id">org.nextbsd.driver.Mlx4en</td><td>Mlx4en</td><td>needs mlx4</td></tr>
+<tr><td><code>mlx4ib</code></td><td>Mellanox ConnectX-2/3 InfiniBand verbs</td><td class="id">org.nextbsd.driver.Mlx4ib</td><td>Mlx4ib</td><td>needs mlx4</td></tr>
+<tr><td><code>mlx5ib</code></td><td>Mellanox ConnectX-4/5/6 InfiniBand verbs</td><td class="id">org.nextbsd.driver.Mlx5ib</td><td>Mlx5ib</td><td>needs mlx5</td></tr>
+<tr><td><code>mthca</code></td><td>Mellanox legacy InfiniBand HCA (Tavor/Arbel)</td><td class="id">org.nextbsd.driver.Mthca</td><td>Mthca</td><td>OFED</td></tr>
+<tr><td><code>qlnx</code></td><td>Cavium/QLogic FastLinQ 41000 25/40/100GbE</td><td class="id">org.nextbsd.driver.Qlnx</td><td>Qlnx</td><td>subdir umbrella</td></tr>
+<tr><td><code>sfxge</code></td><td>Solarflare SFC 10/40GbE</td><td class="id">org.nextbsd.driver.Sfxge</td><td>Sfxge</td><td></td></tr>
+<tr><td><code>vnic</code></td><td>Cavium ThunderX BGX/VNIC controllers</td><td class="id">org.nextbsd.driver.Vnic</td><td>Vnic</td><td>subdir umbrella</td></tr>
+<tr class="grp"><td colspan="5">Drivers — wireless &middot; 26</td></tr>
+<tr><td><code>(subdir)</code></td><td>Broadcom FullMAC wifi (brcmfmac) + brcmutil</td><td class="id">&mdash;</td><td>&mdash;</td><td>subdir-only</td></tr>
+<tr><td><code>ath_dfs</code></td><td>Atheros DFS null stub for ath</td><td class="id">org.nextbsd.driver.AthDFS</td><td>AthDFS</td><td>sub of ath</td></tr>
+<tr><td><code>ath_hal_ar5210</code></td><td>Atheros AR5210 HAL (802.11a)</td><td class="id">org.nextbsd.driver.AthHALar5210</td><td>AthHALar5210</td><td>sub of ath</td></tr>
+<tr><td><code>ath_hal_ar5211</code></td><td>Atheros AR5211 HAL (802.11a/b)</td><td class="id">org.nextbsd.driver.AthHALar5211</td><td>AthHALar5211</td><td>sub of ath</td></tr>
+<tr><td><code>ath_hal_ar5212</code></td><td>Atheros AR5212 HAL (legacy a/b/g)</td><td class="id">org.nextbsd.driver.AthHALar5212</td><td>AthHALar5212</td><td>sub of ath</td></tr>
+<tr><td><code>ath_hal_ar5416</code></td><td>Atheros AR5416/92xx HAL (802.11n)</td><td class="id">org.nextbsd.driver.AthHALar5416</td><td>AthHALar5416</td><td>sub of ath</td></tr>
+<tr><td><code>ath_hal_ar9300</code></td><td>Atheros AR9300 HAL (802.11n gen3)</td><td class="id">org.nextbsd.driver.AthHALar9300</td><td>AthHALar9300</td><td>sub of ath</td></tr>
+<tr><td><code>ath_main</code></td><td>Atheros 802.11n main driver body</td><td class="id">org.nextbsd.driver.AthMain</td><td>AthMain</td><td>sub of ath</td></tr>
+<tr><td><code>ath_rate</code></td><td>Atheros TX rate control (sample/onoe/amrr)</td><td class="id">org.nextbsd.driver.AthRate</td><td>AthRate</td><td>sub of ath</td></tr>
+<tr><td><code>athk_common</code></td><td>Shared lib for ath10k/11k/12k (LinuxKPI)</td><td class="id">org.nextbsd.driver.AthkCommon</td><td>AthkCommon</td><td>sub/shared</td></tr>
+<tr><td><code>if_ath10k</code></td><td>Qualcomm/Atheros QCA988x/99xx 802.11ac (LinuxKPI)</td><td class="id">org.nextbsd.driver.Ath10k</td><td>Ath10k</td><td></td></tr>
+<tr><td><code>if_ath11k</code></td><td>Qualcomm QCA6390/WCN6855 802.11ax (LinuxKPI)</td><td class="id">org.nextbsd.driver.Ath11k</td><td>Ath11k</td><td></td></tr>
+<tr><td><code>if_ath12k</code></td><td>Qualcomm QCN9274/WCN7850 802.11be (LinuxKPI)</td><td class="id">org.nextbsd.driver.Ath12k</td><td>Ath12k</td><td></td></tr>
+<tr><td><code>if_bwi</code></td><td>Broadcom BCM430x 802.11b/g (bhnd)</td><td class="id">org.nextbsd.driver.BWi</td><td>BWi</td><td></td></tr>
+<tr><td><code>if_bwn</code></td><td>Broadcom BCM43xx 802.11b/g/n (bhnd)</td><td class="id">org.nextbsd.driver.BWn</td><td>BWn</td><td></td></tr>
+<tr><td><code>if_iwlwifi</code></td><td>Intel ax200/ax210/9260 wifi (LinuxKPI)</td><td class="id">org.nextbsd.driver.IntelIwlwifi</td><td>IntelIwlwifi</td><td></td></tr>
+<tr><td><code>if_iwm</code></td><td>Intel 7000/8000/9000 802.11ac</td><td class="id">org.nextbsd.driver.IntelIWM</td><td>IntelIWM</td><td></td></tr>
+<tr><td><code>if_iwx</code></td><td>Intel AX200/AX201 802.11ax (OpenBSD-derived)</td><td class="id">org.nextbsd.driver.IntelIWX</td><td>IntelIWX</td><td></td></tr>
+<tr><td><code>if_otus</code></td><td>Atheros AR9001U USB 802.11a/b/g/n</td><td class="id">org.nextbsd.driver.Otus</td><td>Otus</td><td>needs otusfw</td></tr>
+<tr><td><code>if_rtw88</code></td><td>Realtek RTL88xx 802.11ac (LinuxKPI)</td><td class="id">org.nextbsd.driver.Rtw88</td><td>Rtw88</td><td></td></tr>
+<tr><td><code>if_rtw89</code></td><td>Realtek RTL885x/8922 802.11ax (LinuxKPI)</td><td class="id">org.nextbsd.driver.Rtw89</td><td>Rtw89</td><td></td></tr>
+<tr><td><code>if_rtwn_pci</code></td><td>PCI bus attach for rtwn</td><td class="id">org.nextbsd.driver.RtwnPci</td><td>RtwnPci</td><td>sub of rtwn</td></tr>
+<tr><td><code>if_rtwn_usb</code></td><td>USB bus attach for rtwn</td><td class="id">org.nextbsd.driver.RtwnUsb</td><td>RtwnUsb</td><td>sub of rtwn</td></tr>
+<tr><td><code>mt76</code></td><td>MediaTek MT76xx 802.11ac/ax (mt7615/7921/7996)</td><td class="id">org.nextbsd.driver.Mt76</td><td>Mt76</td><td>subdir</td></tr>
+<tr><td><code>rtwn</code></td><td>Realtek RTL8188E/8192C/8812A 802.11 core</td><td class="id">org.nextbsd.driver.Rtwn</td><td>Rtwn</td><td>needs pci/usb attach</td></tr>
+<tr><td><code>wtap</code></td><td>Software-simulated null-radio 802.11 (test)</td><td class="id">org.nextbsd.driver.Wtap</td><td>Wtap</td><td>test/virtual</td></tr>
+<tr class="grp"><td colspan="5">Drivers — USB &middot; 4</td></tr>
+<tr><td><code>ubser</code></td><td>USB serial for BWCT USB RS-232</td><td class="id">org.nextbsd.driver.Ubser</td><td>Ubser</td><td></td></tr>
+<tr><td><code>uchcom</code></td><td>USB serial for WinChipHead CH341/CH340</td><td class="id">org.nextbsd.driver.Uchcom</td><td>Uchcom</td><td></td></tr>
+<tr><td><code>ucycom</code></td><td>USB serial for Cypress HID USB-serial</td><td class="id">org.nextbsd.driver.Ucycom</td><td>Ucycom</td><td></td></tr>
+<tr><td><code>ufintek</code></td><td>USB serial for Fintek F81232 USB-UART</td><td class="id">org.nextbsd.driver.Ufintek</td><td>Ufintek</td><td></td></tr>
+<tr class="grp"><td colspan="5">Drivers — graphics / input-video &middot; 6</td></tr>
+<tr><td><code>3dfx</code></td><td>PCI driver for 3Dfx Voodoo (tdfx) graphics cards</td><td class="id">org.nextbsd.driver.Tdfx</td><td>Tdfx</td><td></td></tr>
+<tr><td><code>dpms</code></td><td>VESA DPMS monitor power management via VBE</td><td class="id">org.nextbsd.driver.DPMS</td><td>DPMS</td><td></td></tr>
+<tr><td><code>s3</code></td><td>S3 PCI VGA/framebuffer</td><td class="id">org.nextbsd.driver.S3</td><td>S3</td><td></td></tr>
+<tr><td><code>vesa</code></td><td>VESA BIOS Extension video mode driver</td><td class="id">org.nextbsd.driver.Vesa</td><td>Vesa</td><td></td></tr>
+<tr><td><code>videomode</code></td><td>EDID parser + video mode database</td><td class="id">org.nextbsd.driver.Videomode</td><td>Videomode</td><td>KPI for display</td></tr>
+<tr><td><code>vkbd</code></td><td>Virtual AT keyboard (software keystroke inject)</td><td class="id">org.nextbsd.driver.Vkbd</td><td>Vkbd</td><td></td></tr>
+<tr class="grp"><td colspan="5">Drivers — serial bus &middot; 20</td></tr>
+<tr><td><code>(subdir)</code></td><td>SPI bus drivers (spibus/spigen/at45d/mx25l)</td><td class="id">org.nextbsd.driver.Spi</td><td>Spi</td><td>subdir-only</td></tr>
+<tr><td><code>amdgpio</code></td><td>AMD FCH/Ryzen ACPI GPIO controller</td><td class="id">org.nextbsd.driver.AmdGPIO</td><td>AmdGPIO</td><td></td></tr>
+<tr><td><code>amdsmb</code></td><td>AMD-8111 SMBus 2.0 controller</td><td class="id">org.nextbsd.driver.AmdSMBus</td><td>AmdSMBus</td><td></td></tr>
+<tr><td><code>bytgpio</code></td><td>Intel Bay Trail ACPI GPIO controller</td><td class="id">org.nextbsd.driver.BytGPIO</td><td>BytGPIO</td><td></td></tr>
+<tr><td><code>chvgpio</code></td><td>Intel Cherry View ACPI GPIO controller</td><td class="id">org.nextbsd.driver.ChvGPIO</td><td>ChvGPIO</td><td></td></tr>
+<tr><td><code>firewire</code></td><td>IEEE 1394 FireWire OHCI + stack</td><td class="id">org.nextbsd.driver.Firewire</td><td>Firewire</td><td>subdir</td></tr>
+<tr><td><code>glxiic</code></td><td>AMD Geode LX I2C/SMBus controller</td><td class="id">org.nextbsd.driver.Glxiic</td><td>Glxiic</td><td></td></tr>
+<tr><td><code>gpio</code></td><td>GPIO bus framework (gpiobus/led/spi/iic)</td><td class="id">org.nextbsd.driver.Gpio</td><td>Gpio</td><td>subdir umbrella</td></tr>
+<tr><td><code>i2c</code></td><td>I2C/SMBus bus framework + devices</td><td class="id">org.nextbsd.driver.I2c</td><td>I2c</td><td>subdir umbrella</td></tr>
+<tr><td><code>intelspi</code></td><td>Intel LPSS SPI controller (Lynx Point+)</td><td class="id">org.nextbsd.driver.Intelspi</td><td>Intelspi</td><td></td></tr>
+<tr><td><code>nctgpio</code></td><td>Nuvoton NCT Super I/O GPIO</td><td class="id">org.nextbsd.driver.Nctgpio</td><td>Nctgpio</td><td></td></tr>
+<tr><td><code>ow</code></td><td>1-Wire bus + devices (owc, ow_temp)</td><td class="id">org.nextbsd.driver.Ow</td><td>Ow</td><td>subdir umbrella</td></tr>
+<tr><td><code>pcfclock</code></td><td>PCF-1.0 radio clock via parallel port</td><td class="id">org.nextbsd.driver.Pcfclock</td><td>Pcfclock</td><td>legacy</td></tr>
+<tr><td><code>plip</code></td><td>Parallel Line IP (PLIP) over ppbus</td><td class="id">org.nextbsd.driver.Plip</td><td>Plip</td><td>legacy</td></tr>
+<tr><td><code>pps</code></td><td>Pulse-per-second capture via parallel port</td><td class="id">org.nextbsd.driver.Pps</td><td>Pps</td><td></td></tr>
+<tr><td><code>pwmbus</code></td><td>PWM bus infrastructure (pwmbus/pwmc)</td><td class="id">org.nextbsd.driver.Pwmbus</td><td>Pwmbus</td><td>subdir umbrella</td></tr>
+<tr><td><code>scc</code></td><td>Generic SCC serial controller (Z8530/QUICC)</td><td class="id">org.nextbsd.driver.Scc</td><td>Scc</td><td></td></tr>
+<tr><td><code>spigen</code></td><td>Generic userspace SPI device (/dev/spigen)</td><td class="id">org.nextbsd.driver.Spigen</td><td>Spigen</td><td></td></tr>
+<tr><td><code>tb</code></td><td>Thunderbolt NHI PCIe controller + topology</td><td class="id">org.nextbsd.driver.Thunderbolt</td><td>Thunderbolt</td><td></td></tr>
+<tr><td><code>vf_i2c</code></td><td>Vybrid SoC I2C controller</td><td class="id">org.nextbsd.driver.VfI2c</td><td>VfI2c</td><td></td></tr>
+<tr class="grp"><td colspan="5">Drivers — platform (SoC/ACPI/sensor/wdog) &middot; 37</td></tr>
+<tr><td><code>(subdir)</code></td><td>Allwinner SoC peripherals (MMC/PWM/RTC/SPI/thermal)</td><td class="id">&mdash;</td><td>&mdash;</td><td>subdir-only</td></tr>
+<tr><td><code>(subdir)</code></td><td>TI ARM SoC drivers (AM335x, TI I2C)</td><td class="id">&mdash;</td><td>&mdash;</td><td>subdir-only</td></tr>
+<tr><td><code>(subdir)</code></td><td>Pre-compiled Device Tree Blobs for ARM/RISC-V</td><td class="id">&mdash;</td><td>&mdash;</td><td>subdir-only</td></tr>
+<tr><td><code>(subdir)</code></td><td>Rockchip SoC peripherals (I2C/PMIC/SPI/eMMC)</td><td class="id">&mdash;</td><td>&mdash;</td><td>subdir-only</td></tr>
+<tr><td><code>am335x_dmtpps</code></td><td>TI AM335x DMTimer PPS capture</td><td class="id">org.nextbsd.driver.AM335xDMTPPS</td><td>AM335xDMTPPS</td><td></td></tr>
+<tr><td><code>amdsbwd</code></td><td>AMD SB600/SB7xx/SB8xx watchdog</td><td class="id">org.nextbsd.driver.AmdSBWD</td><td>AmdSBWD</td><td></td></tr>
+<tr><td><code>amdsmn</code></td><td>AMD Family 15h-1Ah SMN access (KPI for amdtemp)</td><td class="id">org.nextbsd.driver.AmdSMN</td><td>AmdSMN</td><td></td></tr>
+<tr><td><code>amdsmu</code></td><td>AMD System Management Unit power/freq mgmt</td><td class="id">org.nextbsd.driver.AmdSMU</td><td>AmdSMU</td><td></td></tr>
+<tr><td><code>amdtemp</code></td><td>AMD CPU on-die thermal sensor</td><td class="id">org.nextbsd.driver.AmdTemp</td><td>AmdTemp</td><td></td></tr>
+<tr><td><code>asmc</code></td><td>Apple System Management Controller (sensors/fans)</td><td class="id">org.nextbsd.driver.AppleSMC</td><td>AppleSMC</td><td></td></tr>
+<tr><td><code>bcm283x_clkman</code></td><td>BCM2835 (RPi) CPRMAN clock manager</td><td class="id">org.nextbsd.driver.BCM2835ClkMan</td><td>BCM2835ClkMan</td><td></td></tr>
+<tr><td><code>bcm283x_pwm</code></td><td>BCM2835 (RPi) PWM controller</td><td class="id">org.nextbsd.driver.BCM2835PWM</td><td>BCM2835PWM</td><td></td></tr>
+<tr><td><code>chromebook_platform</code></td><td>Chromebook I2C kbd/touchpad platform glue</td><td class="id">org.nextbsd.driver.ChromebookPlatform</td><td>ChromebookPlatform</td><td></td></tr>
+<tr><td><code>coretemp</code></td><td>Intel on-die thermal sensor (MSR)</td><td class="id">org.nextbsd.driver.CoreTemp</td><td>CoreTemp</td><td></td></tr>
+<tr><td><code>cpuctl</code></td><td>/dev/cpuctl MSR/CPUID access</td><td class="id">org.nextbsd.driver.CPUCtl</td><td>CPUCtl</td><td></td></tr>
+<tr><td><code>dwwdt</code></td><td>Synopsys DesignWare watchdog (FDT)</td><td class="id">org.nextbsd.driver.DwWDT</td><td>DwWDT</td><td></td></tr>
+<tr><td><code>exca</code></td><td>PC Card ExCA (82365) socket register access</td><td class="id">org.nextbsd.driver.ExCA</td><td>ExCA</td><td>sub of CardBus</td></tr>
+<tr><td><code>ftgpio</code></td><td>Faraday FTGPIO010 GPIO controller</td><td class="id">org.nextbsd.driver.Ftgpio</td><td>Ftgpio</td><td></td></tr>
+<tr><td><code>ftwd</code></td><td>Faraday FTWD watchdog</td><td class="id">org.nextbsd.driver.Ftwd</td><td>Ftwd</td><td></td></tr>
+<tr><td><code>ichwd</code></td><td>Intel ICH/6300ESB watchdog</td><td class="id">org.nextbsd.driver.Ichwd</td><td>Ichwd</td><td></td></tr>
+<tr><td><code>imx</code></td><td>NXP i.MX SoC drivers (AHCI/SNVS/I2C/SPI/wdog)</td><td class="id">org.nextbsd.driver.Imx</td><td>Imx</td><td>subdir umbrella</td></tr>
+<tr><td><code>ipmi</code></td><td>IPMI BMC driver</td><td class="id">org.nextbsd.driver.Ipmi</td><td>Ipmi</td><td></td></tr>
+<tr><td><code>itwd</code></td><td>ITE IT87xx SuperIO watchdog</td><td class="id">org.nextbsd.driver.Itwd</td><td>Itwd</td><td></td></tr>
+<tr><td><code>ncthwm</code></td><td>Nuvoton NCT6779D/6796D hardware monitor</td><td class="id">org.nextbsd.driver.Ncthwm</td><td>Ncthwm</td><td></td></tr>
+<tr><td><code>ntb</code></td><td>PCIe Non-Transparent Bridge (NTB) abstraction</td><td class="id">org.nextbsd.driver.Ntb</td><td>Ntb</td><td>subdir umbrella</td></tr>
+<tr><td><code>nvram</code></td><td>/dev/nvram CMOS NVRAM access (x86)</td><td class="id">org.nextbsd.driver.Nvram</td><td>Nvram</td><td></td></tr>
+<tr><td><code>opal_nvram</code></td><td>IBM PowerNV OPAL NVRAM access (ppc)</td><td class="id">org.nextbsd.driver.OpalNvram</td><td>OpalNvram</td><td></td></tr>
+<tr><td><code>p2sb</code></td><td>Intel PCH P2SB bridge + Lewisburg GPIO</td><td class="id">org.nextbsd.driver.P2sb</td><td>P2sb</td><td></td></tr>
+<tr><td><code>pchtherm</code></td><td>Intel PCH (Skylake+) thermal subsystem</td><td class="id">org.nextbsd.driver.PchTherm</td><td>PchTherm</td><td></td></tr>
+<tr><td><code>powermac_nvram</code></td><td>Apple PowerMac OpenFirmware NVRAM</td><td class="id">org.nextbsd.driver.PowermacNvram</td><td>PowermacNvram</td><td>ppc</td></tr>
+<tr><td><code>rccgpio</code></td><td>ADI RCC-VE/RCC-DFF embedded GPIO</td><td class="id">org.nextbsd.driver.RccGpio</td><td>RccGpio</td><td></td></tr>
+<tr><td><code>sgx</code></td><td>Intel SGX enclave memory management (amd64)</td><td class="id">org.nextbsd.driver.Sgx</td><td>Sgx</td><td></td></tr>
+<tr><td><code>superio</code></td><td>Super I/O (LPC) bus controller (ITE/Nuvoton/Fintek)</td><td class="id">org.nextbsd.driver.SuperIo</td><td>SuperIo</td><td></td></tr>
+<tr><td><code>tpm</code></td><td>TPM 1.2/2.0 Trusted Platform Module</td><td class="id">org.nextbsd.driver.Tpm</td><td>Tpm</td><td></td></tr>
+<tr><td><code>viawd</code></td><td>VIA chipset watchdog</td><td class="id">org.nextbsd.driver.Viawd</td><td>Viawd</td><td></td></tr>
+<tr><td><code>wbwd</code></td><td>Winbond Super I/O watchdog</td><td class="id">org.nextbsd.driver.Wbwd</td><td>Wbwd</td><td></td></tr>
+<tr><td><code>wdatwd</code></td><td>ACPI WDAT watchdog</td><td class="id">org.nextbsd.driver.Wdatwd</td><td>Wdatwd</td><td></td></tr>
+<tr class="grp"><td colspan="5">Drivers — hardware crypto &middot; 9</td></tr>
+<tr><td><code>armv8_rng</code></td><td>ARMv8.5 RNDR hardware RNG</td><td class="id">org.nextbsd.driver.ARMv8RNG</td><td>ARMv8RNG</td><td></td></tr>
+<tr><td><code>armv8crypto</code></td><td>ARMv8 AES/GHASH hardware crypto accel</td><td class="id">org.nextbsd.driver.ARMv8Crypto</td><td>ARMv8Crypto</td><td></td></tr>
+<tr><td><code>ccp</code></td><td>AMD Cryptographic Co-Processor (CCP-5) + TRNG</td><td class="id">org.nextbsd.driver.CCP</td><td>CCP</td><td></td></tr>
+<tr><td><code>glxsb</code></td><td>AMD Geode LX Security Block (AES/RNG)</td><td class="id">org.nextbsd.driver.Glxsb</td><td>Glxsb</td><td></td></tr>
+<tr><td><code>padlock</code></td><td>VIA PadLock AES/SHA crypto engine</td><td class="id">org.nextbsd.driver.Padlock</td><td>Padlock</td><td></td></tr>
+<tr><td><code>qat</code></td><td>Intel QuickAssist (QAT) crypto accel + OCF</td><td class="id">org.nextbsd.driver.Qat</td><td>Qat</td><td>subdir umbrella</td></tr>
+<tr><td><code>qat_c2xxx</code></td><td>Intel QAT C2xxx (DH89xxCC) crypto accel</td><td class="id">org.nextbsd.driver.QatC2xxx</td><td>QatC2xxx</td><td></td></tr>
+<tr><td><code>safe</code></td><td>SafeNet SafeXcel-1141 PCI crypto accel</td><td class="id">org.nextbsd.driver.Safe</td><td>Safe</td><td></td></tr>
+<tr><td><code>safexcel</code></td><td>Inside Secure EIP-97 crypto accel (FDT)</td><td class="id">org.nextbsd.driver.SafeXcel</td><td>SafeXcel</td><td></td></tr>
+<tr class="grp"><td colspan="5">Drivers — misc &middot; 14</td></tr>
+<tr><td><code>(subdir)</code></td><td>syscons console screen-savers (fire/rain/snake)</td><td class="id">org.nextbsd.driver.Syscons</td><td>Syscons</td><td>subdir</td></tr>
+<tr><td><code>adlink</code></td><td>Adlink PCI-9812/9810 high-speed ADC DAQ cards</td><td class="id">org.nextbsd.driver.AdlinkDAQ</td><td>AdlinkDAQ</td><td></td></tr>
+<tr><td><code>flash</code></td><td>Flash subdir (aarch64/FDT flexspi)</td><td class="id">org.nextbsd.driver.Flash</td><td>Flash</td><td>subdir-only</td></tr>
+<tr><td><code>io</code></td><td>/dev/io privileged port/mem access (x86)</td><td class="id">org.nextbsd.driver.Io</td><td>Io</td><td></td></tr>
+<tr><td><code>ioat</code></td><td>Intel I/OAT DMA engine</td><td class="id">org.nextbsd.driver.Ioat</td><td>Ioat</td><td></td></tr>
+<tr><td><code>mem</code></td><td>/dev/mem and /dev/kmem device</td><td class="id">org.nextbsd.driver.Mem</td><td>Mem</td><td></td></tr>
+<tr><td><code>mlx5fpga_tools</code></td><td>Mellanox ConnectX-4/5 FPGA debug/tools</td><td class="id">org.nextbsd.driver.Mlx5fpgaTools</td><td>Mlx5fpgaTools</td><td>sub of mlx5</td></tr>
+<tr><td><code>nmdm</code></td><td>Null-modem virtual TTY pair</td><td class="id">org.nextbsd.driver.Nmdm</td><td>Nmdm</td><td></td></tr>
+<tr><td><code>proto</code></td><td>Generic raw PCI/ISA device for userland access</td><td class="id">org.nextbsd.driver.Proto</td><td>Proto</td><td>diag</td></tr>
+<tr><td><code>pty</code></td><td>BSD legacy /dev/pty* pseudo-terminal compat</td><td class="id">org.nextbsd.driver.Pty</td><td>Pty</td><td>legacy</td></tr>
+<tr><td><code>rpi_ft5406</code></td><td>Raspberry Pi FT5406 touchscreen</td><td class="id">org.nextbsd.driver.RpiFt5406</td><td>RpiFt5406</td><td></td></tr>
+<tr><td><code>sff</code></td><td>SFF/SFP optical transceiver interface</td><td class="id">org.nextbsd.driver.Sff</td><td>Sff</td><td>KPI for NICs</td></tr>
+<tr><td><code>snp</code></td><td>TTY snooping device (/dev/snp)</td><td class="id">org.nextbsd.driver.Snp</td><td>Snp</td><td></td></tr>
+<tr><td><code>speaker</code></td><td>PC speaker beep/tone device (/dev/speaker)</td><td class="id">org.nextbsd.driver.Speaker</td><td>Speaker</td><td></td></tr>
+<tr class="grp"><td colspan="5">Crypto (software / RNG) &middot; 8</td></tr>
+<tr><td><code>blake2</code></td><td>BLAKE2b/2s hash with SIMD for opencrypto</td><td class="id">org.nextbsd.crypto.BLAKE2</td><td>BLAKE2</td><td></td></tr>
+<tr><td><code>cryptodev</code></td><td>/dev/crypto userland interface to opencrypto</td><td class="id">org.nextbsd.crypto.CryptoDev</td><td>CryptoDev</td><td>sub of crypto</td></tr>
+<tr><td><code>ossl</code></td><td>OpenSSL-derived asm software crypto (AES/ChaCha/SHA)</td><td class="id">org.nextbsd.crypto.Ossl</td><td>Ossl</td><td></td></tr>
+<tr><td><code>random_fortuna</code></td><td>Fortuna CSPRNG for random(4)</td><td class="id">org.nextbsd.crypto.RandomFortuna</td><td>RandomFortuna</td><td></td></tr>
+<tr><td><code>random_other</code></td><td>Alternate/stub CSPRNG for random(4)</td><td class="id">org.nextbsd.crypto.RandomOther</td><td>RandomOther</td><td></td></tr>
+<tr><td><code>rc4</code></td><td>RC4 (ARC4) stream cipher library</td><td class="id">org.nextbsd.crypto.RC4</td><td>RC4</td><td></td></tr>
+<tr><td><code>rdseed_rng</code></td><td>Intel RDSEED hardware RNG entropy source</td><td class="id">org.nextbsd.crypto.RdseedRng</td><td>RdseedRng</td><td></td></tr>
+<tr><td><code>rndtest</code></td><td>FIPS 140-2 continuous RNG test for hw RNGs</td><td class="id">org.nextbsd.crypto.Rndtest</td><td>Rndtest</td><td></td></tr>
+<tr class="grp"><td colspan="5">Network — protocols / firewalls / tunnels &middot; 26</td></tr>
+<tr><td><code>(subdir)</code></td><td>TCP algos (hpts/BBR/RACK/tcpmd5)</td><td class="id">org.nextbsd.net.Tcp</td><td>Tcp</td><td>subdir</td></tr>
+<tr><td><code>carp</code></td><td>Common Address Redundancy Protocol (failover)</td><td class="id">org.nextbsd.net.CARP</td><td>CARP</td><td></td></tr>
+<tr><td><code>cfiscsi</code></td><td>CTL iSCSI frontend (storage target over iSCSI)</td><td class="id">org.nextbsd.net.CFiSCSI</td><td>CFiSCSI</td><td>sub of ctl</td></tr>
+<tr><td><code>if_geneve</code></td><td>GENEVE tunnel pseudo-interface</td><td class="id">org.nextbsd.net.IfGeneve</td><td>IfGeneve</td><td></td></tr>
+<tr><td><code>if_gif</code></td><td>Generic IP-in-IP tunnel pseudo-interface</td><td class="id">org.nextbsd.net.IfGif</td><td>IfGif</td><td></td></tr>
+<tr><td><code>if_gre</code></td><td>GRE tunnel pseudo-interface</td><td class="id">org.nextbsd.net.IfGre</td><td>IfGre</td><td></td></tr>
+<tr><td><code>if_me</code></td><td>IP-in-IP minimal encapsulation (RFC 2004)</td><td class="id">org.nextbsd.net.IfMe</td><td>IfMe</td><td></td></tr>
+<tr><td><code>if_ovpn</code></td><td>OpenVPN DCO kernel tunnel</td><td class="id">org.nextbsd.net.IfOvpn</td><td>IfOvpn</td><td></td></tr>
+<tr><td><code>if_stf</code></td><td>6to4 IPv6-over-IPv4 tunnel (RFC 3056)</td><td class="id">org.nextbsd.net.IfStf</td><td>IfStf</td><td></td></tr>
+<tr><td><code>if_vxlan</code></td><td>VXLAN overlay tunnel pseudo-interface</td><td class="id">org.nextbsd.net.IfVxlan</td><td>IfVxlan</td><td></td></tr>
+<tr><td><code>if_wg</code></td><td>WireGuard VPN kernel tunnel</td><td class="id">org.nextbsd.net.IfWg</td><td>IfWg</td><td></td></tr>
+<tr><td><code>ip6_mroute</code></td><td>IPv6 multicast routing / MLD</td><td class="id">org.nextbsd.net.Ip6Mroute</td><td>Ip6Mroute</td><td></td></tr>
+<tr><td><code>ip_mroute</code></td><td>IPv4 multicast routing / PIM</td><td class="id">org.nextbsd.net.IpMroute</td><td>IpMroute</td><td></td></tr>
+<tr><td><code>ipdivert</code></td><td>ipfw divert socket (natd)</td><td class="id">org.nextbsd.net.IpDivert</td><td>IpDivert</td><td></td></tr>
+<tr><td><code>ipfw</code></td><td>IP Firewall + traffic shaper engine</td><td class="id">org.nextbsd.net.Ipfw</td><td>Ipfw</td><td></td></tr>
+<tr><td><code>ipfw_nat</code></td><td>ipfw in-kernel NAT via libalias</td><td class="id">org.nextbsd.net.IpfwNat</td><td>IpfwNat</td><td></td></tr>
+<tr><td><code>ipfw_nat64</code></td><td>ipfw NAT64 IPv6-to-IPv4 translation</td><td class="id">org.nextbsd.net.IpfwNat64</td><td>IpfwNat64</td><td></td></tr>
+<tr><td><code>ipfw_nptv6</code></td><td>ipfw NPTv6 IPv6 prefix translation</td><td class="id">org.nextbsd.net.IpfwNptv6</td><td>IpfwNptv6</td><td></td></tr>
+<tr><td><code>ipfw_pmod</code></td><td>ipfw packet modification (TCP opts)</td><td class="id">org.nextbsd.net.IpfwPmod</td><td>IpfwPmod</td><td></td></tr>
+<tr><td><code>ipl</code></td><td>IPFilter stateful packet filter (ipf/ipnat)</td><td class="id">org.nextbsd.net.IpFilter</td><td>IpFilter</td><td>ko=ipl</td></tr>
+<tr><td><code>libalias</code></td><td>Packet aliasing/NAT library + protocol plugins</td><td class="id">org.nextbsd.net.LibAlias</td><td>LibAlias</td><td>subdir</td></tr>
+<tr><td><code>pf</code></td><td>OpenBSD-derived stateful packet filter (pf)</td><td class="id">org.nextbsd.net.PF</td><td>PF</td><td></td></tr>
+<tr><td><code>pflog</code></td><td>pf logging pseudo-interface</td><td class="id">org.nextbsd.net.PfLog</td><td>PfLog</td><td>sub of pf</td></tr>
+<tr><td><code>pflow</code></td><td>pf NetFlow/IPFIX export</td><td class="id">org.nextbsd.net.PfFlow</td><td>PfFlow</td><td>sub of pf</td></tr>
+<tr><td><code>pfsync</code></td><td>pf state synchronisation interface</td><td class="id">org.nextbsd.net.PfSync</td><td>PfSync</td><td>sub of pf</td></tr>
+<tr><td><code>send</code></td><td>Secure Neighbor Discovery (SEND, RFC 3971)</td><td class="id">org.nextbsd.net.Send</td><td>Send</td><td></td></tr>
+<tr class="grp"><td colspan="5">Network — infrastructure / pseudo-interfaces &middot; 29</td></tr>
+<tr><td><code>(subdir)</code></td><td>TCP congestion control algos (newreno/cubic/...)</td><td class="id">&mdash;</td><td>&mdash;</td><td>subdir-only</td></tr>
+<tr><td><code>accf_data</code></td><td>Accept filter: hold connection until data arrives</td><td class="id">org.nextbsd.net.AccfData</td><td>AccfData</td><td></td></tr>
+<tr><td><code>accf_dns</code></td><td>Accept filter: hold until complete DNS request</td><td class="id">org.nextbsd.net.AccfDNS</td><td>AccfDNS</td><td></td></tr>
+<tr><td><code>accf_http</code></td><td>Accept filter: hold until complete HTTP request</td><td class="id">org.nextbsd.net.AccfHTTP</td><td>AccfHTTP</td><td></td></tr>
+<tr><td><code>accf_tls</code></td><td>Accept filter: hold until TLS client hello</td><td class="id">org.nextbsd.net.AccfTLS</td><td>AccfTLS</td><td></td></tr>
+<tr><td><code>bridgestp</code></td><td>802.1D STP/RSTP for if_bridge</td><td class="id">org.nextbsd.kpi.BridgeSTP</td><td>BridgeSTP</td><td>sub of if_bridge</td></tr>
+<tr><td><code>dpdk_lpm4</code></td><td>DPDK IPv4 LPM routing table for FIB</td><td class="id">org.nextbsd.net.DpdkLPM4</td><td>DpdkLPM4</td><td></td></tr>
+<tr><td><code>dpdk_lpm6</code></td><td>DPDK IPv6 LPM6 routing table for FIB</td><td class="id">org.nextbsd.net.DpdkLPM6</td><td>DpdkLPM6</td><td></td></tr>
+<tr><td><code>dummynet</code></td><td>Traffic shaper/emulator (delay/bw/AQM) for ipfw</td><td class="id">org.nextbsd.net.DummyNet</td><td>DummyNet</td><td></td></tr>
+<tr><td><code>fib_dxr</code></td><td>DXR IPv4 FIB lookup algorithm</td><td class="id">org.nextbsd.net.FibDxr</td><td>FibDxr</td><td></td></tr>
+<tr><td><code>if_bridge</code></td><td>802.1D Ethernet bridge pseudo-interface</td><td class="id">org.nextbsd.net.IfBridge</td><td>IfBridge</td><td></td></tr>
+<tr><td><code>if_disc</code></td><td>Discard network pseudo-interface</td><td class="id">org.nextbsd.net.IfDisc</td><td>IfDisc</td><td></td></tr>
+<tr><td><code>if_edsc</code></td><td>Ethernet discard pseudo-interface (example)</td><td class="id">org.nextbsd.net.IfEdsc</td><td>IfEdsc</td><td>test/example</td></tr>
+<tr><td><code>if_enc</code></td><td>IPsec enc0 inspection pseudo-interface</td><td class="id">org.nextbsd.net.IfEnc</td><td>IfEnc</td><td></td></tr>
+<tr><td><code>if_epair</code></td><td>Virtual Ethernet pair (vnet/jail)</td><td class="id">org.nextbsd.net.IfEpair</td><td>IfEpair</td><td></td></tr>
+<tr><td><code>if_infiniband</code></td><td>IPoIB network interface layer</td><td class="id">org.nextbsd.net.IfInfiniband</td><td>IfInfiniband</td><td></td></tr>
+<tr><td><code>if_lagg</code></td><td>Link Aggregation (LACP/802.3ad) bonding</td><td class="id">org.nextbsd.net.IfLagg</td><td>IfLagg</td><td></td></tr>
+<tr><td><code>if_tuntap</code></td><td>TUN/TAP virtual network pseudo-interfaces</td><td class="id">org.nextbsd.net.IfTuntap</td><td>IfTuntap</td><td></td></tr>
+<tr><td><code>if_vlan</code></td><td>802.1Q VLAN tagging pseudo-interface</td><td class="id">org.nextbsd.net.IfVlan</td><td>IfVlan</td><td></td></tr>
+<tr><td><code>krpc</code></td><td>In-kernel ONC RPC + RPCSEC_GSS/TLS (NFS)</td><td class="id">org.nextbsd.kpi.Krpc</td><td>Krpc</td><td></td></tr>
+<tr><td><code>miibus</code></td><td>MII bus framework + PHY drivers</td><td class="id">org.nextbsd.kpi.Miibus</td><td>Miibus</td><td>core net KPI</td></tr>
+<tr><td><code>miiproxy</code></td><td>MII proxy bridging etherswitch MDIO to miibus</td><td class="id">org.nextbsd.kpi.Miiproxy</td><td>Miiproxy</td><td>sub of etherswitch</td></tr>
+<tr><td><code>netgraph</code></td><td>Netgraph graph-based networking framework + nodes</td><td class="id">org.nextbsd.kpi.Netgraph</td><td>Netgraph</td><td>subdir umbrella</td></tr>
+<tr><td><code>netlink</code></td><td>RFC 3549 Netlink socket protocol</td><td class="id">org.nextbsd.kpi.Netlink</td><td>Netlink</td><td></td></tr>
+<tr><td><code>nlsysevent</code></td><td>Netlink generic family for kernel sysevents</td><td class="id">org.nextbsd.kpi.NlSysEvent</td><td>NlSysEvent</td><td></td></tr>
+<tr><td><code>toecore</code></td><td>TCP Offload Engine (TOE) core infrastructure</td><td class="id">org.nextbsd.kpi.ToeCore</td><td>ToeCore</td><td>KPI</td></tr>
+<tr><td><code>wlan_acl</code></td><td>802.11 MAC-address ACL plugin (AP mode)</td><td class="id">org.nextbsd.kpi.WlanAcl</td><td>WlanAcl</td><td>sub of wlan</td></tr>
+<tr><td><code>wlan_rssadapt</code></td><td>802.11 RSS adaptive TX rate plugin</td><td class="id">org.nextbsd.kpi.WlanRssadapt</td><td>WlanRssadapt</td><td>sub of wlan</td></tr>
+<tr><td><code>wlan_xauth</code></td><td>802.11 external (hostapd/RADIUS) auth</td><td class="id">org.nextbsd.kpi.WlanXauth</td><td>WlanXauth</td><td>sub of wlan</td></tr>
+<tr class="grp"><td colspan="5">Security — MAC / ACLs &middot; 25</td></tr>
+<tr><td><code>acl_nfs4</code></td><td>NFSv4 ACL implementation for VFS</td><td class="id">org.nextbsd.security.AclNFS4</td><td>AclNFS4</td><td></td></tr>
+<tr><td><code>acl_posix1e</code></td><td>POSIX.1e ACL implementation for VFS</td><td class="id">org.nextbsd.security.AclPosix1e</td><td>AclPosix1e</td><td></td></tr>
+<tr><td><code>mac_biba</code></td><td>MAC Biba mandatory integrity policy</td><td class="id">org.nextbsd.security.MACBiba</td><td>MACBiba</td><td></td></tr>
+<tr><td><code>mac_bsdextended</code></td><td>MAC BSD Extended (ugidfw) uid/gid firewall</td><td class="id">org.nextbsd.security.MACBsdExtended</td><td>MACBsdExtended</td><td></td></tr>
+<tr><td><code>mac_ddb</code></td><td>MAC policy restricting ddb(4) debugger</td><td class="id">org.nextbsd.security.MACDdb</td><td>MACDdb</td><td></td></tr>
+<tr><td><code>mac_do</code></td><td>MAC/do controlled privilege-transition (run-as)</td><td class="id">org.nextbsd.security.MACDo</td><td>MACDo</td><td></td></tr>
+<tr><td><code>mac_ifoff</code></td><td>MAC policy disabling network on interfaces</td><td class="id">org.nextbsd.security.MACIfoff</td><td>MACIfoff</td><td></td></tr>
+<tr><td><code>mac_ipacl</code></td><td>MAC ACLs on IP bind/connect</td><td class="id">org.nextbsd.security.MACIpacl</td><td>MACIpacl</td><td></td></tr>
+<tr><td><code>mac_lomac</code></td><td>MAC Low-watermark (LOMAC) integrity policy</td><td class="id">org.nextbsd.security.MACLomac</td><td>MACLomac</td><td></td></tr>
+<tr><td><code>mac_mls</code></td><td>MAC Multi-Level Security confidentiality labels</td><td class="id">org.nextbsd.security.MACMls</td><td>MACMls</td><td></td></tr>
+<tr><td><code>mac_none</code></td><td>MAC no-op reference policy</td><td class="id">org.nextbsd.security.MACNone</td><td>MACNone</td><td>stub</td></tr>
+<tr><td><code>mac_ntpd</code></td><td>MAC policy granting ntpd clock privileges</td><td class="id">org.nextbsd.security.MACNtpd</td><td>MACNtpd</td><td></td></tr>
+<tr><td><code>mac_partition</code></td><td>MAC process partitioning policy</td><td class="id">org.nextbsd.security.MACPartition</td><td>MACPartition</td><td></td></tr>
+<tr><td><code>mac_pimd</code></td><td>MAC policy granting pimd multicast privileges</td><td class="id">org.nextbsd.security.MACPimd</td><td>MACPimd</td><td></td></tr>
+<tr><td><code>mac_portacl</code></td><td>MAC per-uid/gid port-bind access control</td><td class="id">org.nextbsd.security.MACPortacl</td><td>MACPortacl</td><td></td></tr>
+<tr><td><code>mac_priority</code></td><td>MAC rt/idle scheduling priority by group</td><td class="id">org.nextbsd.security.MACPriority</td><td>MACPriority</td><td></td></tr>
+<tr><td><code>mac_seeotheruids</code></td><td>MAC restrict process visibility to same uid</td><td class="id">org.nextbsd.security.MACSeeotheruids</td><td>MACSeeotheruids</td><td></td></tr>
+<tr><td><code>mac_stub</code></td><td>MAC stub policy (all hooks no-op)</td><td class="id">org.nextbsd.security.MACStub</td><td>MACStub</td><td>stub</td></tr>
+<tr><td><code>mac_test</code></td><td>MAC test policy (exercises label alloc)</td><td class="id">org.nextbsd.security.MACTest</td><td>MACTest</td><td>test</td></tr>
+<tr><td><code>mac_veriexec</code></td><td>Verified Execution MAC policy (exec integrity)</td><td class="id">org.nextbsd.security.MACVeriexec</td><td>MACVeriexec</td><td></td></tr>
+<tr><td><code>mac_veriexec_sha1</code></td><td>SHA-1 fingerprint module for mac_veriexec</td><td class="id">org.nextbsd.security.MACVeriexecSha1</td><td>MACVeriexecSha1</td><td>sub</td></tr>
+<tr><td><code>mac_veriexec_sha256</code></td><td>SHA-256 fingerprint module for mac_veriexec</td><td class="id">org.nextbsd.security.MACVeriexecSha256</td><td>MACVeriexecSha256</td><td>sub</td></tr>
+<tr><td><code>mac_veriexec_sha384</code></td><td>SHA-384 fingerprint module for mac_veriexec</td><td class="id">org.nextbsd.security.MACVeriexecSha384</td><td>MACVeriexecSha384</td><td>sub</td></tr>
+<tr><td><code>mac_veriexec_sha512</code></td><td>SHA-512 fingerprint module for mac_veriexec</td><td class="id">org.nextbsd.security.MACVeriexecSha512</td><td>MACVeriexecSha512</td><td>sub</td></tr>
+<tr><td><code>veriexec</code></td><td>MAC Verified Exec file integrity framework</td><td class="id">org.nextbsd.security.Veriexec</td><td>Veriexec</td><td></td></tr>
+<tr class="grp"><td colspan="5">Kernel KPI / infrastructure &middot; 20</td></tr>
+<tr><td><code>(subdir)</code></td><td>SysV IPC (msg/sem/shm)</td><td class="id">org.nextbsd.kpi.SysVIpc</td><td>SysVIpc</td><td>subdir (3 ko)</td></tr>
+<tr><td><code>backlight</code></td><td>Display backlight control framework/KPI</td><td class="id">org.nextbsd.kpi.Backlight</td><td>Backlight</td><td></td></tr>
+<tr><td><code>bhnd</code></td><td>Broadcom HND SoC/bus framework (BCM wifi SoCs)</td><td class="id">org.nextbsd.kpi.BHND</td><td>BHND</td><td>parent of bwi/bwn</td></tr>
+<tr><td><code>cam</code></td><td>CAM SCSI/ATA/NVMe transport + peripherals</td><td class="id">org.nextbsd.kpi.CAM</td><td>CAM</td><td>core storage KPI</td></tr>
+<tr><td><code>ctl</code></td><td>CAM Target Layer (SCSI/NVMe target emulation)</td><td class="id">org.nextbsd.kpi.CTL</td><td>CTL</td><td></td></tr>
+<tr><td><code>cuse</code></td><td>Userspace character-device framework</td><td class="id">org.nextbsd.kpi.CUSE</td><td>CUSE</td><td></td></tr>
+<tr><td><code>etherswitch</code></td><td>Ethernet switch management framework (KPI)</td><td class="id">org.nextbsd.kpi.EtherSwitch</td><td>EtherSwitch</td><td></td></tr>
+<tr><td><code>fdt_slicer</code></td><td>FDT blob slicer for kernel consumers</td><td class="id">org.nextbsd.kpi.FdtSlicer</td><td>FdtSlicer</td><td>subdir</td></tr>
+<tr><td><code>h_ertt</code></td><td>khelp/HHOOK framework (h_ertt TCP helper)</td><td class="id">org.nextbsd.kpi.Khelp</td><td>Khelp</td><td>TCP_HHOOK only</td></tr>
+<tr><td><code>ibcore</code></td><td>OFED InfiniBand core (verbs/CM/MAD/SA) KPI</td><td class="id">org.nextbsd.kpi.Ibcore</td><td>Ibcore</td><td>OFED</td></tr>
+<tr><td><code>kgssapi</code></td><td>Kernel GSSAPI framework (NFS Kerberos)</td><td class="id">org.nextbsd.kpi.Kgssapi</td><td>Kgssapi</td><td></td></tr>
+<tr><td><code>kgssapi_krb5</code></td><td>Kerberos 5 GSS mechanism for kgssapi</td><td class="id">org.nextbsd.kpi.KgssapiKrb5</td><td>KgssapiKrb5</td><td>sub of kgssapi</td></tr>
+<tr><td><code>krping</code></td><td>RDMA kernel ping test utility</td><td class="id">org.nextbsd.kext.KRping</td><td>KRping</td><td>test/debug; subdir</td></tr>
+<tr><td><code>libiconv</code></td><td>In-kernel charset conversion (iconv) framework</td><td class="id">org.nextbsd.kpi.LibIconv</td><td>LibIconv</td><td></td></tr>
+<tr><td><code>libmchain</code></td><td>Mbuf chain helper (subr_mchain) for SMB/NFS</td><td class="id">org.nextbsd.kpi.LibMchain</td><td>LibMchain</td><td></td></tr>
+<tr><td><code>mqueuefs</code></td><td>POSIX message queue filesystem (mqueue)</td><td class="id">org.nextbsd.kpi.Mqueuefs</td><td>Mqueuefs</td><td></td></tr>
+<tr><td><code>opensolaris</code></td><td>OpenSolaris/ZFS SPL compatibility shim</td><td class="id">org.nextbsd.kpi.OpenSolaris</td><td>OpenSolaris</td><td>ZFS dep</td></tr>
+<tr><td><code>sem</code></td><td>POSIX named semaphore support (uipc_sem)</td><td class="id">org.nextbsd.kpi.Sem</td><td>Sem</td><td></td></tr>
+<tr><td><code>xdr</code></td><td>XDR serialization library for RPC/NFS</td><td class="id">org.nextbsd.kpi.Xdr</td><td>Xdr</td><td></td></tr>
+<tr><td><code>zlib</code></td><td>zlib (DEFLATE) compression library</td><td class="id">org.nextbsd.kpi.Zlib</td><td>Zlib</td><td></td></tr>
+<tr class="grp"><td colspan="5">Compatibility (Linux / ABI) &middot; 15</td></tr>
+<tr><td><code>3dfx_linux</code></td><td>Linux ioctl shim for /dev/tdfx (3Dfx Voodoo)</td><td class="id">org.nextbsd.compat.TdfxLinux</td><td>TdfxLinux</td><td>sub of 3dfx</td></tr>
+<tr><td><code>aout</code></td><td>a.out legacy executable image activator</td><td class="id">org.nextbsd.compat.Aout</td><td>Aout</td><td></td></tr>
+<tr><td><code>imgact_binmisc</code></td><td>binfmt_misc-style interpreter registration</td><td class="id">org.nextbsd.compat.ImgactBinmisc</td><td>ImgactBinmisc</td><td></td></tr>
+<tr><td><code>lindebugfs</code></td><td>Linux-compatible debugfs for LinuxKPI</td><td class="id">org.nextbsd.compat.LinDebugfs</td><td>LinDebugfs</td><td></td></tr>
+<tr><td><code>linprocfs</code></td><td>Linux-compatible /proc</td><td class="id">org.nextbsd.compat.LinProcfs</td><td>LinProcfs</td><td></td></tr>
+<tr><td><code>linsysfs</code></td><td>Linux-compatible /sys</td><td class="id">org.nextbsd.compat.LinSysfs</td><td>LinSysfs</td><td></td></tr>
+<tr><td><code>linux</code></td><td>Linux 32-bit (i386) syscall emulation</td><td class="id">org.nextbsd.compat.Linux</td><td>Linux</td><td></td></tr>
+<tr><td><code>linux64</code></td><td>Linux 64-bit (amd64) syscall emulation</td><td class="id">org.nextbsd.compat.Linux64</td><td>Linux64</td><td></td></tr>
+<tr><td><code>linux_common</code></td><td>Shared Linux compat infrastructure</td><td class="id">org.nextbsd.compat.LinuxCommon</td><td>LinuxCommon</td><td></td></tr>
+<tr><td><code>linuxkpi</code></td><td>LinuxKPI shim (Linux kernel API for ported drivers)</td><td class="id">org.nextbsd.compat.LinuxKpi</td><td>LinuxKpi</td><td></td></tr>
+<tr><td><code>linuxkpi_hdmi</code></td><td>LinuxKPI HDMI helpers for DRM/GPU</td><td class="id">org.nextbsd.compat.LinuxKpiHdmi</td><td>LinuxKpiHdmi</td><td>sub of linuxkpi</td></tr>
+<tr><td><code>linuxkpi_video</code></td><td>LinuxKPI framebuffer/video aperture helpers</td><td class="id">org.nextbsd.compat.LinuxKpiVideo</td><td>LinuxKpiVideo</td><td>sub of linuxkpi</td></tr>
+<tr><td><code>linuxkpi_wlan</code></td><td>LinuxKPI mac80211/cfg80211 WLAN shim</td><td class="id">org.nextbsd.compat.LinuxKpiWlan</td><td>LinuxKpiWlan</td><td>sub of linuxkpi</td></tr>
+<tr><td><code>sgx_linux</code></td><td>Linux ioctl shim for Intel SGX</td><td class="id">org.nextbsd.compat.SgxLinux</td><td>SgxLinux</td><td>sub of sgx</td></tr>
+<tr><td><code>x86bios</code></td><td>x86 real-mode BIOS call emulator (option ROMs)</td><td class="id">org.nextbsd.compat.X86bios</td><td>X86bios</td><td></td></tr>
+<tr class="grp"><td colspan="5">Firmware images &middot; 12</td></tr>
+<tr><td><code>(subdir)</code></td><td>Realtek rtwn firmware blobs</td><td class="id">org.nextbsd.firmware.Rtwn</td><td>RtwnFirmware</td><td>fw; subdir (9 fw)</td></tr>
+<tr><td><code>ice_ddp</code></td><td>Intel E800 DDP firmware package</td><td class="id">org.nextbsd.firmware.IceDdp</td><td>IceDdp</td><td>fw; for ice</td></tr>
+<tr><td><code>ipwfw</code></td><td>Intel PRO/Wireless 2100 firmware</td><td class="id">org.nextbsd.firmware.IPW</td><td>IPWFirmware</td><td>fw; for ipw</td></tr>
+<tr><td><code>ispfw</code></td><td>QLogic ISP FC adapter firmware</td><td class="id">org.nextbsd.firmware.ISP</td><td>ISPFirmware</td><td>fw; for isp</td></tr>
+<tr><td><code>iwifw</code></td><td>Intel 2200/2915 firmware</td><td class="id">org.nextbsd.firmware.IWI</td><td>IWIFirmware</td><td>fw; for iwi</td></tr>
+<tr><td><code>iwnfw</code></td><td>Intel iwn firmware (4965/5000/6000/...)</td><td class="id">org.nextbsd.firmware.IWN</td><td>IWNFirmware</td><td>fw; for iwn</td></tr>
+<tr><td><code>mwlfw</code></td><td>Marvell 88W8363 firmware</td><td class="id">org.nextbsd.firmware.Mwl</td><td>MwlFirmware</td><td>fw; for mwl</td></tr>
+<tr><td><code>otusfw</code></td><td>Atheros AR9001U USB firmware</td><td class="id">org.nextbsd.firmware.Otus</td><td>OtusFirmware</td><td>fw; for otus</td></tr>
+<tr><td><code>qat_c2xxxfw</code></td><td>Intel QAT C2xxx firmware (MOF/MMP)</td><td class="id">org.nextbsd.firmware.QatC2xxx</td><td>QatC2xxxFirmware</td><td>fw</td></tr>
+<tr><td><code>qatfw</code></td><td>Intel QAT firmware (C62x/C3xxx/4xxx/...)</td><td class="id">org.nextbsd.firmware.Qat</td><td>QatFirmware</td><td>fw; subdir</td></tr>
+<tr><td><code>ralfw</code></td><td>Ralink RT2561/2661/2860 firmware</td><td class="id">org.nextbsd.firmware.Ral</td><td>RalFirmware</td><td>fw; subdir; for ral</td></tr>
+<tr><td><code>wpifw</code></td><td>Intel 3945ABG firmware</td><td class="id">org.nextbsd.firmware.WPI</td><td>WPIFirmware</td><td>fw; for wpi</td></tr>
+<tr class="grp"><td colspan="5">Virtualization &middot; 2</td></tr>
+<tr><td><code>vmm</code></td><td>Kernel hypervisor (bhyve VMM)</td><td class="id">org.nextbsd.kext.VMM</td><td>VMM</td><td></td></tr>
+<tr><td><code>vmware</code></td><td>VMware guest drivers (pvscsi/vmxnet3/vmci)</td><td class="id">org.nextbsd.kext.Vmware</td><td>Vmware</td><td>subdir umbrella</td></tr>
+<tr class="grp"><td colspan="5">Tracing / debug &middot; 13</td></tr>
+<tr><td><code>(subdir)</code></td><td>DTrace framework (fbt/sdt/profile/systrace/...)</td><td class="id">&mdash;</td><td>&mdash;</td><td>subdir-only</td></tr>
+<tr><td><code>alq</code></td><td>Async logging queue KPI for in-kernel tracing</td><td class="id">org.nextbsd.kext.ALQ</td><td>ALQ</td><td></td></tr>
+<tr><td><code>amd_ecc_inject</code></td><td>AMD DRAM ECC error injection (test)</td><td class="id">org.nextbsd.kext.AmdEccInject</td><td>AmdEccInject</td><td>test</td></tr>
+<tr><td><code>dcons</code></td><td>Dumb console over shmem/FireWire for debugging</td><td class="id">org.nextbsd.kext.dcons</td><td>dcons</td><td></td></tr>
+<tr><td><code>dcons_crom</code></td><td>FireWire CROM attach for dcons</td><td class="id">org.nextbsd.kext.dconsCROM</td><td>dconsCROM</td><td>sub of dcons</td></tr>
+<tr><td><code>dummymbuf</code></td><td>Mbuf fault injection for net stack testing</td><td class="id">org.nextbsd.kext.dummymbuf</td><td>dummymbuf</td><td>test</td></tr>
+<tr><td><code>filemon</code></td><td>File-op monitoring for bmake dependency tracing</td><td class="id">org.nextbsd.kext.Filemon</td><td>Filemon</td><td></td></tr>
+<tr><td><code>hwpmc</code></td><td>Hardware Performance Monitoring Counters</td><td class="id">org.nextbsd.kext.Hwpmc</td><td>Hwpmc</td><td></td></tr>
+<tr><td><code>hwt</code></td><td>Hardware Trace framework (ETM/CoreSight)</td><td class="id">org.nextbsd.kext.Hwt</td><td>Hwt</td><td></td></tr>
+<tr><td><code>ksyms</code></td><td>/dev/ksyms live kernel symbol table</td><td class="id">org.nextbsd.kext.Ksyms</td><td>Ksyms</td><td></td></tr>
+<tr><td><code>pt</code></td><td>Intel Processor Trace backend for hwt (amd64)</td><td class="id">org.nextbsd.kext.Pt</td><td>Pt</td><td></td></tr>
+<tr><td><code>siftr</code></td><td>Statistical Info For TCP Research (via alq)</td><td class="id">org.nextbsd.kext.Siftr</td><td>Siftr</td><td></td></tr>
+<tr><td><code>spe</code></td><td>ARM Statistical Profiling Extension (arm64)</td><td class="id">org.nextbsd.kext.Spe</td><td>Spe</td><td></td></tr>
+<tr class="grp"><td colspan="5">Test / build-internal &middot; 4</td></tr>
+<tr><td><code>epoch_test</code></td><td>Kernel epoch(9) unit test</td><td class="id">org.nextbsd.kext.epochTest</td><td>epochTest</td><td>test</td></tr>
+<tr><td><code>kern_testfrwk</code></td><td>Kernel test framework infrastructure</td><td class="id">org.nextbsd.kext.KernTestFramework</td><td>KernTestFramework</td><td>test; subdir</td></tr>
+<tr><td><code>ktest</code></td><td>In-kernel test framework</td><td class="id">org.nextbsd.kext.Ktest</td><td>Ktest</td><td>test; subdir</td></tr>
+<tr><td><code>mmcnull</code></td><td>Emulated null MMC controller for testing</td><td class="id">org.nextbsd.kext.Mmcnull</td><td>Mmcnull</td><td>test</td></tr>
+<tr class="grp"><td colspan="5">Misc &middot; 1</td></tr>
+<tr><td><code>(subdir)</code></td><td>SMBIOS/VPD/SMAPI firmware info modules</td><td class="id">&mdash;</td><td>&mdash;</td><td>subdir-only</td></tr>
+</tbody>
+</table>
+
+<h3>6b. Already in the NEXTBSD kernel &mdash; excluded from conversion (131)</h3><p>These modules are <strong>statically compiled into the NEXTBSD kernel config</strong> (matched against <code>device</code>/<code>options</code> in <code>sys/amd64/conf/NEXTBSD</code>). Their <code>.ko</code> exists but is never loaded; they need no kext. Listed for completeness; revisit only if we slim the kernel toward an Apple-minimal core (see D2).</p><table>
+<thead><tr><th>module</th><th>purpose</th><th>category</th><th>NEXTBSD config token</th></tr></thead><tbody>
+<tr class="grp"><td colspan="4">Filesystems &middot; 9</td></tr>
+<tr><td><code>cd9660</code></td><td>ISO 9660 (CD-ROM) FS with Rock Ridge</td><td class="cat">filesystem</td><td><code>cd9660</code></td></tr>
+<tr><td><code>msdosfs</code></td><td>MS-DOS FAT12/16/32 filesystem</td><td class="cat">filesystem</td><td><code>msdosfs</code></td></tr>
+<tr><td><code>nfscl</code></td><td>NFSv4 client</td><td class="cat">filesystem</td><td><code>nfscl</code></td></tr>
+<tr><td><code>nfsd</code></td><td>NFSv4 server</td><td class="cat">filesystem</td><td><code>nfsd</code></td></tr>
+<tr><td><code>nfslockd</code></td><td>NFS Network Lock Manager (NLM)</td><td class="cat">filesystem</td><td><code>nfslockd</code></td></tr>
+<tr><td><code>procfs</code></td><td>Process filesystem (/proc) via pseudofs</td><td class="cat">filesystem</td><td><code>procfs</code></td></tr>
+<tr><td><code>pseudofs</code></td><td>Pseudo-filesystem framework (KPI)</td><td class="cat">filesystem</td><td><code>pseudofs</code></td></tr>
+<tr><td><code>tmpfs</code></td><td>In-memory temporary filesystem</td><td class="cat">filesystem</td><td><code>tmpfs</code></td></tr>
+<tr><td><code>ufs</code></td><td>UFS/FFS with soft-updates + dirhash</td><td class="cat">filesystem</td><td><code>ufs</code></td></tr>
+<tr class="grp"><td colspan="4">Drivers — storage &middot; 31</td></tr>
+<tr><td><code>(subdir)</code></td><td>Legacy ATA/IDE subsystem (atacore/ataisa/atapci)</td><td class="cat">driver/storage</td><td><code>ata</code></td></tr>
+<tr><td><code>aac</code></td><td>Adaptec FSA family SCSI RAID adapter (older AAC)</td><td class="cat">driver/storage</td><td><code>aac</code></td></tr>
+<tr><td><code>aacraid</code></td><td>Adaptec Series 6/7/8+ RAID controller</td><td class="cat">driver/storage</td><td><code>aacraid</code></td></tr>
+<tr><td><code>ahci</code></td><td>AHCI SATA host controller</td><td class="cat">driver/storage</td><td><code>ahci</code></td></tr>
+<tr><td><code>arcmsr</code></td><td>Areca SATA/SAS RAID host adapter</td><td class="cat">driver/storage</td><td><code>arcmsr</code></td></tr>
+<tr><td><code>ciss</code></td><td>Compaq/HP Smart Array RAID (CISS)</td><td class="cat">driver/storage</td><td><code>ciss</code></td></tr>
+<tr><td><code>fdc</code></td><td>Floppy disk controller (NEC 765)</td><td class="cat">driver/storage</td><td><code>fdc</code></td></tr>
+<tr><td><code>geom_md</code></td><td>GEOM memory/vnode-backed virtual disk (md)</td><td class="cat">driver/storage</td><td><code>md</code></td></tr>
+<tr><td><code>hptiop</code></td><td>HighPoint RocketRAID 3xxx/4xxx SAS HBA</td><td class="cat">driver/storage</td><td><code>hptiop</code></td></tr>
+<tr><td><code>ida</code></td><td>Compaq Smart Array (IDA) RAID</td><td class="cat">driver/storage</td><td><code>ida</code></td></tr>
+<tr><td><code>ips</code></td><td>IBM/Adaptec ServeRAID (IPS) SCSI HBA</td><td class="cat">driver/storage</td><td><code>ips</code></td></tr>
+<tr><td><code>isci</code></td><td>Intel SAS controller (isci/SCIL) HBA</td><td class="cat">driver/storage</td><td><code>isci</code></td></tr>
+<tr><td><code>isp</code></td><td>QLogic ISP Fibre Channel/SCSI HBA</td><td class="cat">driver/storage</td><td><code>isp</code></td></tr>
+<tr><td><code>mfi</code></td><td>LSI/Broadcom MegaRAID SAS/SATA (MFI)</td><td class="cat">driver/storage</td><td><code>mfi</code></td></tr>
+<tr><td><code>mlx</code></td><td>Mylex DAC960/AcceleRAID RAID (legacy)</td><td class="cat">driver/storage</td><td><code>mlx</code></td></tr>
+<tr><td><code>mmcsd</code></td><td>MMC/SD/SDIO block storage driver</td><td class="cat">driver/storage</td><td><code>mmcsd</code></td></tr>
+<tr><td><code>mpi3mr</code></td><td>Broadcom MPI3 Tri-Mode 12Gb/s RAID/HBA</td><td class="cat">driver/storage</td><td><code>mpi3mr</code></td></tr>
+<tr><td><code>mpr</code></td><td>LSI/Broadcom SAS3 (12Gb/s) Fusion-MPT</td><td class="cat">driver/storage</td><td><code>mpr</code></td></tr>
+<tr><td><code>mps</code></td><td>LSI SAS2 (6Gb/s) Fusion-MPT</td><td class="cat">driver/storage</td><td><code>mps</code></td></tr>
+<tr><td><code>mpt</code></td><td>LSI Fusion-MPT SAS/SCSI/FC (legacy)</td><td class="cat">driver/storage</td><td><code>mpt</code></td></tr>
+<tr><td><code>mrsas</code></td><td>Avago/Broadcom MegaRAID SAS (MR)</td><td class="cat">driver/storage</td><td><code>mrsas</code></td></tr>
+<tr><td><code>mvs</code></td><td>Marvell 88SX SATA II host controller</td><td class="cat">driver/storage</td><td><code>mvs</code></td></tr>
+<tr><td><code>nvd</code></td><td>NVMe disk (nvd) GEOM driver over nvme</td><td class="cat">driver/storage</td><td><code>nvd</code></td></tr>
+<tr><td><code>nvme</code></td><td>NVMe host controller (CAM/GEOM)</td><td class="cat">driver/storage</td><td><code>nvme</code></td></tr>
+<tr><td><code>ocs_fc</code></td><td>Emulex LightPulse Fibre Channel/FCoE HBA</td><td class="cat">driver/storage</td><td><code>ocs_fc</code></td></tr>
+<tr><td><code>sdhci</code></td><td>SD Host Controller Interface (SDHCI) core</td><td class="cat">driver/storage</td><td><code>sdhci</code></td></tr>
+<tr><td><code>siis</code></td><td>Silicon Image SiI3124/3132 SATA</td><td class="cat">driver/storage</td><td><code>siis</code></td></tr>
+<tr><td><code>smartpqi</code></td><td>HPE/Microsemi Smart Array (SmartPQI) RAID</td><td class="cat">driver/storage</td><td><code>smartpqi</code></td></tr>
+<tr><td><code>sym</code></td><td>Symbios/LSI 53C8xx Ultra/Wide SCSI</td><td class="cat">driver/storage</td><td><code>sym</code></td></tr>
+<tr><td><code>tws</code></td><td>LSI 3ware 9750 SAS2/SATA-II RAID</td><td class="cat">driver/storage</td><td><code>tws</code></td></tr>
+<tr><td><code>ufshci</code></td><td>UFS Host Controller Interface (embedded flash)</td><td class="cat">driver/storage</td><td><code>ufshci</code></td></tr>
+<tr class="grp"><td colspan="4">Drivers — wired network (NIC) &middot; 40</td></tr>
+<tr><td><code>if_ae</code></td><td>Attansic/Atheros L2 Fast Ethernet</td><td class="cat">driver/network</td><td><code>ae</code></td></tr>
+<tr><td><code>if_age</code></td><td>Attansic/Atheros L1 Gigabit Ethernet</td><td class="cat">driver/network</td><td><code>age</code></td></tr>
+<tr><td><code>if_alc</code></td><td>Atheros AR813x/815x/816x Gigabit Ethernet</td><td class="cat">driver/network</td><td><code>alc</code></td></tr>
+<tr><td><code>if_ale</code></td><td>Atheros AR8121/8113 Fast/Gigabit Ethernet</td><td class="cat">driver/network</td><td><code>ale</code></td></tr>
+<tr><td><code>if_aq</code></td><td>Aquantia AQtion 10 Gigabit Ethernet</td><td class="cat">driver/network</td><td><code>aq</code></td></tr>
+<tr><td><code>if_bce</code></td><td>Broadcom BCM570x NetXtreme II Gigabit</td><td class="cat">driver/network</td><td><code>bce</code></td></tr>
+<tr><td><code>if_bfe</code></td><td>Broadcom BCM4401 Fast Ethernet</td><td class="cat">driver/network</td><td><code>bfe</code></td></tr>
+<tr><td><code>if_bge</code></td><td>Broadcom BCM57xx NetXtreme/Tigon III Gigabit</td><td class="cat">driver/network</td><td><code>bge</code></td></tr>
+<tr><td><code>if_bxe</code></td><td>QLogic/Broadcom BCM5771x 10GbE</td><td class="cat">driver/network</td><td><code>bxe</code></td></tr>
+<tr><td><code>if_cas</code></td><td>Sun Cassini / NS DP83065 Gigabit</td><td class="cat">driver/network</td><td><code>cas</code></td></tr>
+<tr><td><code>if_dc</code></td><td>DEC 21143 Tulip &amp; compatibles Fast Ethernet</td><td class="cat">driver/network</td><td><code>dc</code></td></tr>
+<tr><td><code>if_em</code></td><td>Intel e1000 PRO/1000 Gigabit (also if_igb symlink)</td><td class="cat">driver/network</td><td><code>em</code></td></tr>
+<tr><td><code>if_et</code></td><td>Agere ET1310 Gigabit/Fast Ethernet</td><td class="cat">driver/network</td><td><code>et</code></td></tr>
+<tr><td><code>if_fxp</code></td><td>Intel 8255x EtherExpress Pro/100</td><td class="cat">driver/network</td><td><code>fxp</code></td></tr>
+<tr><td><code>if_gem</code></td><td>Sun GEM/ERI/Apple GMAC Gigabit</td><td class="cat">driver/network</td><td><code>gem</code></td></tr>
+<tr><td><code>if_iavf</code></td><td>Intel Adaptive Virtual Function NIC (X710 VF)</td><td class="cat">driver/network</td><td><code>iavf</code></td></tr>
+<tr><td><code>if_ice</code></td><td>Intel E800 (Ice Lake) 100GbE + RDMA</td><td class="cat">driver/network</td><td><code>ice</code></td></tr>
+<tr><td><code>if_igc</code></td><td>Intel I225/I226 2.5GbE</td><td class="cat">driver/network</td><td><code>igc</code></td></tr>
+<tr><td><code>if_ix</code></td><td>Intel 82598/99/X540/X550 10GbE (ixgbe)</td><td class="cat">driver/network</td><td><code>ix</code></td></tr>
+<tr><td><code>if_ixl</code></td><td>Intel XL710/X710 10/25/40GbE PF</td><td class="cat">driver/network</td><td><code>ixl</code></td></tr>
+<tr><td><code>if_ixv</code></td><td>Intel ixgbe SR-IOV Virtual Function</td><td class="cat">driver/network</td><td><code>ixv</code></td></tr>
+<tr><td><code>if_jme</code></td><td>JMicron JMC25x/26x Gigabit/Fast Ethernet</td><td class="cat">driver/network</td><td><code>jme</code></td></tr>
+<tr><td><code>if_lge</code></td><td>Level 1 LXT1001 Gigabit Ethernet</td><td class="cat">driver/network</td><td><code>lge</code></td></tr>
+<tr><td><code>if_msk</code></td><td>Marvell/SysKonnect Yukon II Gigabit</td><td class="cat">driver/network</td><td><code>msk</code></td></tr>
+<tr><td><code>if_nfe</code></td><td>NVIDIA nForce MCP Fast/Gigabit Ethernet</td><td class="cat">driver/network</td><td><code>nfe</code></td></tr>
+<tr><td><code>if_nge</code></td><td>National DP83820/83821 Gigabit</td><td class="cat">driver/network</td><td><code>nge</code></td></tr>
+<tr><td><code>if_re</code></td><td>Realtek RTL816x/8169/8110 Gigabit</td><td class="cat">driver/network</td><td><code>re</code></td></tr>
+<tr><td><code>if_rge</code></td><td>Realtek RTL8168G/8125 2.5GbE</td><td class="cat">driver/network</td><td><code>rge</code></td></tr>
+<tr><td><code>if_rl</code></td><td>Realtek RTL8129/8139 10/100</td><td class="cat">driver/network</td><td><code>rl</code></td></tr>
+<tr><td><code>if_sge</code></td><td>SiS 190/191 Gigabit Ethernet</td><td class="cat">driver/network</td><td><code>sge</code></td></tr>
+<tr><td><code>if_sis</code></td><td>SiS 900/7016 10/100 Ethernet</td><td class="cat">driver/network</td><td><code>sis</code></td></tr>
+<tr><td><code>if_sk</code></td><td>SysKonnect SK-984x/982x Gigabit</td><td class="cat">driver/network</td><td><code>sk</code></td></tr>
+<tr><td><code>if_ste</code></td><td>Sundance ST201 10/100 Ethernet</td><td class="cat">driver/network</td><td><code>ste</code></td></tr>
+<tr><td><code>if_stge</code></td><td>Sundance/Tamarack TC9021 Gigabit</td><td class="cat">driver/network</td><td><code>stge</code></td></tr>
+<tr><td><code>if_ti</code></td><td>Alteon Tigon PCI Gigabit</td><td class="cat">driver/network</td><td><code>ti</code></td></tr>
+<tr><td><code>if_vge</code></td><td>VIA VT6122 Gigabit Ethernet</td><td class="cat">driver/network</td><td><code>vge</code></td></tr>
+<tr><td><code>if_vr</code></td><td>VIA Rhine Fast Ethernet</td><td class="cat">driver/network</td><td><code>vr</code></td></tr>
+<tr><td><code>if_xl</code></td><td>3Com 3c90x/3c100x EtherLink XL</td><td class="cat">driver/network</td><td><code>xl</code></td></tr>
+<tr><td><code>mlx5</code></td><td>Mellanox ConnectX-4/5/6 core</td><td class="cat">driver/network</td><td><code>mlx5</code></td></tr>
+<tr><td><code>mlx5en</code></td><td>Mellanox ConnectX-4/5/6 Ethernet (25-100GbE)</td><td class="cat">driver/network</td><td><code>mlx5en</code></td></tr>
+<tr class="grp"><td colspan="4">Drivers — wireless &middot; 9</td></tr>
+<tr><td><code>ath_hal</code></td><td>Atheros HAL core (chip-independent)</td><td class="cat">driver/wireless</td><td><code>ath_hal</code></td></tr>
+<tr><td><code>if_ath</code></td><td>Atheros 802.11abgn PCI glue/attach</td><td class="cat">driver/wireless</td><td><code>ath</code></td></tr>
+<tr><td><code>if_ipw</code></td><td>Intel PRO/Wireless 2100 802.11b</td><td class="cat">driver/wireless</td><td><code>ipw</code></td></tr>
+<tr><td><code>if_iwi</code></td><td>Intel PRO/Wireless 2200BG/2915ABG</td><td class="cat">driver/wireless</td><td><code>iwi</code></td></tr>
+<tr><td><code>if_iwn</code></td><td>Intel 4965/5000/6000 802.11n</td><td class="cat">driver/wireless</td><td><code>iwn</code></td></tr>
+<tr><td><code>if_malo</code></td><td>Marvell 88W8335/8310 802.11a/b/g</td><td class="cat">driver/wireless</td><td><code>malo</code></td></tr>
+<tr><td><code>if_mwl</code></td><td>Marvell 88W8363 802.11a/b/g/n</td><td class="cat">driver/wireless</td><td><code>mwl</code></td></tr>
+<tr><td><code>if_ral</code></td><td>Ralink RT2560/2661/2860/3090/5390 802.11n</td><td class="cat">driver/wireless</td><td><code>ral</code></td></tr>
+<tr><td><code>if_wpi</code></td><td>Intel PRO/Wireless 3945ABG 802.11a/b/g</td><td class="cat">driver/wireless</td><td><code>wpi</code></td></tr>
+<tr class="grp"><td colspan="4">Drivers — USB &middot; 1</td></tr>
+<tr><td><code>usb</code></td><td>USB stack + host/device controllers</td><td class="cat">driver/usb</td><td><code>usb</code></td></tr>
+<tr class="grp"><td colspan="4">Drivers — graphics / input-video &middot; 2</td></tr>
+<tr><td><code>(subdir)</code></td><td>Boot splash renderers (bmp/pcx/txt)</td><td class="cat">driver/graphics</td><td><code>splash</code></td></tr>
+<tr><td><code>agp</code></td><td>AGP bridge and GART driver</td><td class="cat">driver/graphics</td><td><code>agp</code></td></tr>
+<tr class="grp"><td colspan="4">Drivers — sound &middot; 1</td></tr>
+<tr><td><code>(subdir)</code></td><td>Sound subsystem (newpcm) + audio hw drivers</td><td class="cat">driver/sound</td><td><code>sound</code></td></tr>
+<tr class="grp"><td colspan="4">Drivers — serial bus &middot; 6</td></tr>
+<tr><td><code>lpt</code></td><td>Parallel port printer/lpt (ppbus)</td><td class="cat">driver/serial-bus</td><td><code>lpt</code></td></tr>
+<tr><td><code>ppbus</code></td><td>Parallel Port Bus + IEEE 1284</td><td class="cat">driver/serial-bus</td><td><code>ppbus</code></td></tr>
+<tr><td><code>ppc</code></td><td>PC parallel port hardware controller</td><td class="cat">driver/serial-bus</td><td><code>ppc</code></td></tr>
+<tr><td><code>ppi</code></td><td>Parallel port raw interface (/dev/ppi)</td><td class="cat">driver/serial-bus</td><td><code>ppi</code></td></tr>
+<tr><td><code>puc</code></td><td>PCI/ISA multi-port serial/parallel</td><td class="cat">driver/serial-bus</td><td><code>puc</code></td></tr>
+<tr><td><code>uart</code></td><td>Multi-bus UART serial driver (8250/Z8530/QUICC)</td><td class="cat">driver/serial-bus</td><td><code>uart</code></td></tr>
+<tr class="grp"><td colspan="4">Drivers — platform (SoC/ACPI/sensor/wdog) &middot; 6</td></tr>
+<tr><td><code>(subdir)</code></td><td>ACPI sub-drivers (asus, dock, video, wmi, ...)</td><td class="cat">driver/platform</td><td><code>acpi</code></td></tr>
+<tr><td><code>cardbus</code></td><td>CardBus (32-bit PC Card) bus + CIS</td><td class="cat">driver/platform</td><td><code>cardbus</code></td></tr>
+<tr><td><code>cbb</code></td><td>PCI-to-CardBus bridge (pccbb)</td><td class="cat">driver/platform</td><td><code>cbb</code></td></tr>
+<tr><td><code>cpufreq</code></td><td>CPU frequency scaling (EST/PowerNow/HWPstate)</td><td class="cat">driver/platform</td><td><code>cpufreq</code></td></tr>
+<tr><td><code>efirt</code></td><td>UEFI Runtime Services (RTC + variables)</td><td class="cat">driver/platform</td><td><code>efirt</code></td></tr>
+<tr><td><code>vmd</code></td><td>Intel Volume Management Device (NVMe aggregator)</td><td class="cat">driver/platform</td><td><code>vmd</code></td></tr>
+<tr class="grp"><td colspan="4">Drivers — hardware crypto &middot; 2</td></tr>
+<tr><td><code>aesni</code></td><td>x86 AES-NI/GHASH/SHA hardware crypto accel</td><td class="cat">driver/crypto-hw</td><td><code>aesni</code></td></tr>
+<tr><td><code>padlock_rng</code></td><td>VIA Nehemiah hardware RNG</td><td class="cat">driver/crypto-hw</td><td><code>padlock_rng</code></td></tr>
+<tr class="grp"><td colspan="4">Drivers — misc &middot; 3</td></tr>
+<tr><td><code>kbdmux</code></td><td>Keyboard multiplexer (merge keyboards)</td><td class="cat">driver/misc</td><td><code>kbdmux</code></td></tr>
+<tr><td><code>mmc</code></td><td>MMC/SD host bus protocol + card enumeration</td><td class="cat">driver/misc</td><td><code>mmc</code></td></tr>
+<tr><td><code>uinput</code></td><td>evdev uinput virtual input device</td><td class="cat">driver/misc</td><td><code>uinput</code></td></tr>
+<tr class="grp"><td colspan="4">Crypto (software / RNG) &middot; 2</td></tr>
+<tr><td><code>crypto</code></td><td>OpenCrypto framework + software ciphers</td><td class="cat">crypto</td><td><code>crypto</code></td></tr>
+<tr><td><code>rdrand_rng</code></td><td>Intel RDRAND hardware RNG entropy source</td><td class="cat">crypto</td><td><code>rdrand_rng</code></td></tr>
+<tr class="grp"><td colspan="4">Network — protocols / firewalls / tunnels &middot; 2</td></tr>
+<tr><td><code>ipsec</code></td><td>IPsec (ESP/AH) kernel stack</td><td class="cat">net/protocol</td><td><code>ipsec</code></td></tr>
+<tr><td><code>sctp</code></td><td>SCTP transport protocol stack</td><td class="cat">net/protocol</td><td><code>sctp</code></td></tr>
+<tr class="grp"><td colspan="4">Network — infrastructure / pseudo-interfaces &middot; 8</td></tr>
+<tr><td><code>mdio</code></td><td>MDIO bus framework for PHY management</td><td class="cat">net/infra</td><td><code>mdio</code></td></tr>
+<tr><td><code>netmap</code></td><td>Zero-copy packet I/O + VALE switch</td><td class="cat">net/infra</td><td><code>netmap</code></td></tr>
+<tr><td><code>wlan</code></td><td>IEEE 802.11 wireless stack (net80211)</td><td class="cat">net/infra</td><td><code>wlan</code></td></tr>
+<tr><td><code>wlan_amrr</code></td><td>802.11 AMRR TX rate control plugin</td><td class="cat">net/infra</td><td><code>wlan_amrr</code></td></tr>
+<tr><td><code>wlan_ccmp</code></td><td>802.11 CCMP (AES-CCM) WPA2 cipher</td><td class="cat">net/infra</td><td><code>wlan_ccmp</code></td></tr>
+<tr><td><code>wlan_gcmp</code></td><td>802.11 GCMP (AES-GCM) WPA3 cipher</td><td class="cat">net/infra</td><td><code>wlan_gcmp</code></td></tr>
+<tr><td><code>wlan_tkip</code></td><td>802.11 TKIP WPA cipher</td><td class="cat">net/infra</td><td><code>wlan_tkip</code></td></tr>
+<tr><td><code>wlan_wep</code></td><td>802.11 WEP legacy cipher</td><td class="cat">net/infra</td><td><code>wlan_wep</code></td></tr>
+<tr class="grp"><td colspan="4">Kernel KPI / infrastructure &middot; 6</td></tr>
+<tr><td><code>evdev</code></td><td>Linux-compatible evdev input event interface</td><td class="cat">kpi/infra</td><td><code>evdev</code></td></tr>
+<tr><td><code>firmware</code></td><td>Kernel firmware loader subsystem</td><td class="cat">kpi/infra</td><td><code>firmware</code></td></tr>
+<tr><td><code>geom</code></td><td>GEOM storage framework (cache/concat/eli/mirror/raid)</td><td class="cat">kpi/infra</td><td><code>geom</code></td></tr>
+<tr><td><code>hid</code></td><td>HID bus framework + device drivers</td><td class="cat">kpi/infra</td><td><code>hid</code></td></tr>
+<tr><td><code>iflib</code></td><td>iflib NIC driver framework (TX/RX rings) KPI</td><td class="cat">kpi/infra</td><td><code>iflib</code></td></tr>
+<tr><td><code>xz</code></td><td>XZ/LZMA2 decompression library</td><td class="cat">kpi/infra</td><td><code>xz</code></td></tr>
+<tr class="grp"><td colspan="4">Firmware images &middot; 1</td></tr>
+<tr><td><code>mlxfw</code></td><td>Mellanox firmware flash framework (MFA2)</td><td class="cat">firmware</td><td><code>mlxfw</code></td></tr>
+<tr class="grp"><td colspan="4">Virtualization &middot; 2</td></tr>
+<tr><td><code>hyperv</code></td><td>Microsoft Hyper-V guest drivers (vmbus/netvsc/storvsc)</td><td class="cat">virtualization</td><td><code>hyperv</code></td></tr>
+<tr><td><code>virtio</code></td><td>VirtIO para-virtual device framework + transports</td><td class="cat">virtualization</td><td><code>virtio</code></td></tr>
+</tbody>
+</table>
+
+<p class="footnote">kld&rarr;kext naming + categorization plan, 2026-06-04. Catalog sourced from a read-only review of <code>freebsd-src/sys/modules</code> (474 modules); the raw agent catalog is preserved in <a href="nextbsd-kld-to-kext-catalog.html">the raw module catalog</a>. Feeds #179. Naming style (D1) and the build-in/kext split (D2) are unresolved pending review.</p>
+
+</div>
+</body>
+</html>

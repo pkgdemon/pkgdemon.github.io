@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD #168 — Native EVFILT_MACHPORT migration &amp; pipe-bridge removal</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  h4 { font-size:1rem; margin:22px 0 8px; }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; companion to <a href="nextbsd-apple-device-matching-plan.html">Eliminating standalone hwregd (convergence)</a> &amp; <a href="nextbsd-inkernel-iokit-feasibility.html">in-kernel IOKit feasibility</a></p>
+
+<h1>NextBSD #168 — Unify Mach-event delivery on native <code>EVFILT_MACHPORT</code> (-16) &amp; delete the pipe-bridge</h1>
+<p class="lede">The module-era <strong>pipe-bridge</strong> (task&nbsp;#39 Path&nbsp;B) fakes Mach-event delivery through a self-pipe, and is the root of task&nbsp;#41 (&ldquo;<code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> does not reliably deliver&rdquo;) &mdash; which forced every daemon onto <code>pthread</code>+timed&nbsp;<code>mach_msg</code> polling. The kernel now has a real <code>EVFILT_MACHPORT</code> filter; this plan moves <em>everything</em> onto it, fixes the launchd attach panic that blocks the first reroute (PR&nbsp;#250), and retires the bridge and the polling workarounds for good.</p>
+<p class="meta">2026-06-08 &middot; Synthesized from a 7-agent workflow surveying nextbsd-kernel, nextbsd userland, and read-only freebsd-src (kernel native filter + panic, kernel pipe-bridge, libmach shim, libdispatch, consumers, tests/tickets). Design doc for maintainer review &mdash; nothing in stages&nbsp;1+ is built yet.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Root cause</span> The PR&nbsp;#250 boot panic (<code>page fault write 0x70</code> in <code>filt_machportattach</code>) is a <strong>use-after-free on the port set during knote attach</strong>: the attach drops the pset lock without holding a reference, then <code>knlist_add</code> writes into pset memory that a concurrent <code>mach_port_move_member</code> / <code>ipc_pset_signal</code> can free &amp; reallocate. Amplified on libdispatch <code>DispatchWorker</code> threads whose per-thread Mach state was never initialized (#148 class). The fix: take a pset reference across <code>knlist_add</code> + revalidate the entry, paired with lazy-init of <code>ith_messages</code>.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#1-executive-summary">1. Executive Summary</a></li>
+<li><a href="#2-root-cause-of-the-panic">2. Root Cause of the Panic</a></li>
+<li><a href="#3-does-native-actually-fix-task-41">3. Does Native Actually Fix Task #41?</a></li>
+<li><a href="#4-component-change-map">4. Component Change Map</a></li>
+<li><a href="#5-staged-rollout">5. Staged Rollout</a></li>
+<li><a href="#6-workarounds-retired">6. Workarounds Retired</a></li>
+<li><a href="#7-tests">7. Tests</a></li>
+<li><a href="#8-ticket-updates">8. Ticket Updates</a></li>
+</ol>
+</div>
+
+<h2 id="1-executive-summary">1. Executive Summary</h2>
+<h3 id="the-problem">The problem</h3>
+<p>In the module era, FreeBSD's kqueue had no Mach-aware filter, so NextBSD shipped <strong>task #39 Path B</strong>: a "pipe-bridge" that fakes Mach-event delivery through a regular pipe.</p>
+<ul><li>A userland process registers a write-fd against a Mach port set via two custom syscalls (<code>register_event_bell</code> / <code>unregister_event_bell</code>).</li><li>The kernel keeps a <code>(pset → struct file *)</code> map; when <code>ipc_pset_signal()</code> fires, <code>mach_event_bridge_fire()</code> writes one byte into the pipe.</li><li>libdispatch/libmach watch the read-end with <code>EVFILT_READ</code>, then drain the pset via <code>mach_msg(MACH_RCV_TIMEOUT, 0)</code>.</li></ul>
+<p>This works but is fragile. It is the root of <strong>task #41</strong> ("<code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> does not reliably deliver"), which forced consumers (<code>SCNotify</code>, <code>IOKitNotify</code>, <code>mach_service.c</code>, …) to fall back to <strong>raw <code>pthread</code> + timed <code>mach_msg(MACH_RCV_TIMEOUT, 500ms)</code> polling loops</strong> — high latency, more code, more threads.</p>
+<p>The kernel now has a <strong>native <code>EVFILT_MACHPORT</code> filter (slot -16)</strong>, reserved by <code>patches/0003-kqueue-reserve-evfilt-machport.patch</code> and implemented by <code>filt_machport*</code> in <code>ipc_pset.c</code>. The single-threaded probe (#249) proves it delivers. But the full reroute (PR #250) <strong>panics</strong> under launchd's concurrent <code>DispatchWorker</code> load: <code>page fault write 0x70</code> in <code>filt_machportattach</code>.</p>
+<h3 id="the-goal">The goal</h3>
+<p>Make <strong>all</strong> Mach-event delivery use the native <code>EVFILT_MACHPORT</code> filter, <strong>delete the pipe-bridge entirely</strong>, and retire the per-consumer polling workarounds — fixing task #41 reliability for good.</p>
+<h3 id="the-end-state">The end state</h3>
+<ul><li>Kernel: native <code>filt_machport*</code> is the only Mach-event wakeup path; <code>mach_event_bridge.{c,h}</code> and the two <code>*_event_bell</code> syscalls are gone.</li><li>libmach: <code>dispatch_kevent.c</code> translates the libdispatch sentinel <code>EVFILT_MACHPORT (-22)</code> to the native <code>-16</code> filter on a wrap port set; no pipes, no bell syscalls.</li><li>libdispatch: unchanged delivery contract; FreeBSD userland polling shim retired.</li><li>Consumers: raw <code>pthread</code>+<code>mach_msg</code> loops replaced by <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, …)</code>; sub-ms latency.</li><li>Tests: a new <strong>concurrency stress test</strong> reproduces and then guards against the launchd panic.</li></ul>
+<h2 id="2-root-cause-of-the-panic">2. Root Cause of the Panic</h2>
+<h3 id="mechanism-uaf-on-the-port-set-during-knote-attach">Mechanism — UAF on the port set during knote attach</h3>
+<p><code>filt_machportattach()</code> (<code>/Users/jmaloney/Documents/nextbsd-kernel/src-overlay/sys/compat/mach/ipc/ipc_pset.c:553-577</code>) has a race window between dropping the pset lock and adding the knote:</p>
+<ol><li>Line ~567: <code>ips_unlock(pset)</code> releases the pset lock, but <strong>holds no reference</strong> to keep the pset alive.</li><li>Line ~575: <code>knlist_add(note, kn, 0)</code> reaches back into <code>pset-&gt;ips_note</code> and, via the knlist's <code>sx</code> callbacks, writes to the lock structure embedded in the pset.</li><li>Concurrently, <code>ipc_pset_move</code> (<code>ipc_pset.c:318-398</code>) — driven by <code>mach_port_move_member</code> from a sibling thread — together with message delivery / <code>ipc_pset_signal</code> can drop the pset's last reference and <strong>free/reallocate</strong> it inside that window.</li><li><code>knlist_add</code>'s <code>sx_xlock</code> then writes into freed/reallocated memory at offset <strong>~0x70</strong> (the <code>rcd_io_lock_data</code> mutex inside <code>rpc_common_data</code>) → <code>page fault write 0x70</code>.</li></ol>
+<p>This is amplified in launchd because libdispatch <strong><code>DispatchWorker</code> threads are spawned by the kernel pthread workqueue, outside mach.ko's <code>task_init_internal</code> path</strong> — their per-thread Mach state (<code>struct thread::ith_messages</code>) is uninitialized (the #148 class of bug), so any dereference during attach/detach on those threads is doubly unsafe. The single-threaded probe (#249) never opens the window because it does one attach, one message, one read, exit.</p>
+<h3 id="the-kernel-fix-authoritative">The kernel fix (authoritative)</h3>
+<p>Adopt <strong>Option C</strong> from the kernel-native survey — take a reference across <code>knlist_add</code> <strong>and</strong> revalidate that the entry still points at the same pset after the lookup. It is the smallest change that closes both the lifetime hole and the reallocation hole, without holding the knlist <code>sx</code> lock across an allocation path (which Option B risks):</p>
+<pre><code>static int
+filt_machportattach(struct knote *kn)
+{
+    mach_port_name_t name = (mach_port_name_t)kn-&gt;kn_kevent.ident;
+    ipc_pset_t       pset = IPS_NULL;
+    ipc_entry_t      entry;
+    kern_return_t    kr;
+    struct knlist   *note;
+
+    kr = ipc_object_translate(current_space(), name, MACH_PORT_RIGHT_PORT_SET,
+                              (ipc_object_t *)&amp;pset);
+    if (kr != KERN_SUCCESS)
+        return (kr == KERN_INVALID_NAME ? ENOENT : ENOTSUP);
+
+    note = &amp;pset-&gt;ips_note;
+    ips_reference(pset);          /* keep pset alive across knlist_add */
+    ips_unlock(pset);
+
+    if ((entry = ipc_entry_lookup(current_space(), name)) == NULL) {
+        ips_release(pset);
+        return (ENOENT);
+    }
+    if (entry-&gt;ie_object != (ipc_object_t)pset) {   /* reallocated under us */
+        ips_release(pset);
+        return (ENOENT);
+    }
+
+    kn-&gt;kn_fp = entry-&gt;ie_fp;
+    knlist_add(note, kn, 0);
+    ips_release(pset);
+    return (0);
+}</code></pre>
+<p>Pair this with the <strong><code>ith_messages</code> lazy-init</strong> fix (new ticket, §8) so worker threads that never went through <code>task_init_internal</code> cannot fault during attach/detach or on exit (#148). Both land in the <strong>same kernel stage</strong> because the panic is only fully closed when both are present.</p>
+<p><code>filt_machportdetach</code> already guards on <code>kn_knlist == NULL</code> (<code>ipc_pset.c:595-596</code>); confirm <code>ipc_pset_destroy</code> still does <code>sx_xlock</code> → <code>knlist_clear</code> → <code>knlist_destroy</code> (<code>ipc_pset.c:438-478</code>) so detach vs destroy ordering is safe in either direction.</p>
+<h2 id="3-does-native-actually-fix-task-41">3. Does Native Actually Fix Task #41?</h2>
+<p>**Honest answer: yes, but be precise about *why*, because the surveys disagree on the blame.**</p>
+<p>Two distinct claims appeared:</p>
+<ul><li><strong>libmach/consumer surveys:</strong> the flake is in the *pipe-bridge transport* — polling latency, byte-coalescing, the 500ms timeout loops.</li><li><strong>libdispatch survey:</strong> the flake is partly in the *libdispatch layer* — <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> registers with <code>EV_UDATA_SPECIFIC|EV_DISPATCH|EV_VANISHED</code>, and <code>_dispatch_kevent_merge_ev_flags</code> (<code>event_kevent.c:467-475</code>) clears <code>DU_STATE_ARMED</code> on every <code>EV_DISPATCH</code> delivery, opening a lost-wakeup window between delivery and re-arm.</li></ul>
+<p>Reconciliation: <strong>the native filter sidesteps both</strong>, which is what makes it a real fix rather than a transport swap.</p>
+<ol><li>libmach registers the wrap pset with <strong><code>EV_ADD | EV_CLEAR</code> (no <code>EV_DISPATCH</code>)</strong> at the kernel boundary (<code>dispatch_kevent.c:409-413</code>). The kernel <code>filt_machport</code> <strong>re-evaluates <code>ips_active(pset)</code> on every <code>kevent</code> syscall</strong> (<code>ipc_pset.c:610-707</code>), so readiness *survives* across polling cycles independent of knote re-arm state — the <code>EV_DISPATCH</code> auto-disarm race never reaches the kernel.</li><li>Edge-coalescing is handled correctly by libmach's backlog (<code>dispatch_kevent.c:527-557</code>): bursts collapse to one pending readability event in notify mode, and message mode drains every queued message — no message is lost, only redundant wakeups are merged.</li><li>Wakeup latency goes from "up to 100–500ms polling" to "immediate on message arrival."</li></ol>
+<p><strong>What this means for the plan:</strong> the existing libdispatch *delivery* code (<code>_dispatch_source_type_mach_recv</code> notify mode, <code>_dispatch_mach_type_recv</code> message mode at <code>event_kevent.c:3314-3379</code>) is <strong>already correct</strong> for the native filter. We do <strong>not</strong> rewrite libdispatch's merge logic. We only (a) land the native reroute in libmach, (b) retire the FreeBSD userland polling shim, and (c) verify <code>_dispatch_unote_needs_rearm()</code> does not block on <code>EV_CLEAR</code>-registered sources. The one risk to watch in QA: the <code>EV_DISPATCH</code> disarm path is bypassed *only because* libmach strips it at the kernel boundary — that translation must be preserved exactly.</p>
+<h2 id="4-component-change-map">4. Component Change Map</h2>
+<p>Legend: <strong>FIX</strong> = correctness change, <strong>MIGRATE</strong> = move to native path, <strong>DELETE</strong> = remove.</p>
+<h3 id="kernel-users-jmaloney-documents-nextbsd-kernel">Kernel — <code>/Users/jmaloney/Documents/nextbsd-kernel</code></h3>
+<table>
+<thead><tr><th>File(s)</th><th>Current state</th><th>Action</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>src-overlay/sys/compat/mach/ipc/ipc_pset.c:553-577</code></td><td><code>filt_machportattach</code> drops pset lock w/o ref → UAF</td><td><strong>FIX</strong></td><td>Option C: <code>ips_reference</code> across <code>knlist_add</code> + revalidate <code>entry-&gt;ie_object == pset</code>.</td></tr>
+<tr><td><code>src-overlay/sys/compat/mach/ipc/ipc_pset.c:595-596</code>, <code>438-478</code></td><td>detach NULL-guard + destroy <code>knlist_clear</code>/<code>destroy</code></td><td><strong>FIX (verify)</strong></td><td>Confirm detach-vs-destroy safe both orders; no code change expected.</td></tr>
+<tr><td>mach.ko thread init / <code>ipc_kmsg_delayed_destroy</code> (<code>ith_messages</code>)</td><td>worker threads have uninit <code>ith_messages</code> (#148)</td><td><strong>FIX</strong></td><td>Lazy-init empty queue before deref; lands same stage as attach fix.</td></tr>
+<tr><td><code>src-overlay/sys/compat/mach/ipc/ipc_pset.c:498-501, 510-515</code></td><td>weak <code>mach_event_bridge_fire</code> extern + call in <code>ipc_pset_signal</code></td><td><strong>DELETE</strong></td><td>Remove <strong>last</strong>, after native proven.</td></tr>
+<tr><td><code>src-overlay/sys/compat/mach/mach_event_bridge.c</code></td><td>entire 282-line bridge core</td><td><strong>DELETE</strong></td><td>Bridge-only, no reuse.</td></tr>
+<tr><td><code>src-overlay/sys/compat/mach/mach_event_bridge.h</code></td><td>entire 39-line bridge API</td><td><strong>DELETE</strong></td><td>Bridge-only.</td></tr>
+<tr><td><code>src-overlay/sys/compat/mach/mach_module.c:51, 150-159</code></td><td><code>#include</code> + <code>mach_event_bridge_init()</code></td><td><strong>DELETE</strong></td><td>Keep all other module/syscall registration.</td></tr>
+<tr><td><code>src-overlay/sys/compat/mach/mach_traps.c:30, 337-359</code></td><td><code>sys_*_event_bell_trap</code> handlers</td><td><strong>DELETE</strong></td><td>Keep other Mach traps.</td></tr>
+<tr><td><code>src-overlay/sys/compat/mach/mach_syscall_wire.c:59-60, 97-100, 316-340, 471-488, 538-542, 626-634, 734-737, 748-753</code></td><td>bell fwd-decls, guarded wrappers, sysents, offsets, sysctls, wire/unwire</td><td><strong>DELETE</strong></td><td>Keep all non-bell syscall machinery.</td></tr>
+<tr><td><code>src-overlay/sys/sys/mach/_mach_sysproto.h:191-203</code></td><td><code>register/unregister_event_bell_trap_args</code></td><td><strong>DELETE</strong></td><td>Keep other trap arg structs.</td></tr>
+<tr><td><code>patches/0003-kqueue-reserve-evfilt-machport.patch</code></td><td>reserves slot -16, bumps <code>EVFILT_SYSCOUNT</code> 15→16</td><td><strong>KEEP</strong></td><td>This is the native enabler.</td></tr>
+<tr><td><code>src-overlay/sys/compat/mach/mach_module.c:144-149</code>, <code>ipc_pset.c:489, 504-550, 209-211</code></td><td>native <code>machport_filtops</code> registration + signal/init/destroy</td><td><strong>KEEP</strong></td><td>This is the replacement path.</td></tr>
+</tbody></table>
+<h3 id="libmach-users-jmaloney-documents-nextbsd-work-src-libmach">libmach — <code>/Users/jmaloney/Documents/nextbsd-work/src/libmach</code></h3>
+<table>
+<thead><tr><th>File(s)</th><th>Current state</th><th>Action</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>dispatch_kevent.c:1-14, 85-102</code></td><td>comments + <code>EVFILT_MACHPORT_NATIVE (-16)</code> define</td><td><strong>MIGRATE</strong></td><td>Reflect native arch (already on <code>libmach-native-machport</code> branch, commit 3c7f75a).</td></tr>
+<tr><td><code>dispatch_kevent.c:148-165</code> (<code>pipe_r</code>,<code>pipe_w</code>)</td><td>pipe fds in <code>struct mach_kev_reg</code></td><td><strong>DELETE</strong></td><td>Wrap pset is the knote target.</td></tr>
+<tr><td><code>dispatch_kevent.c:181-189</code> <code>reg_find_by_pipe_r_locked</code></td><td>lookup by pipe fd</td><td><strong>MIGRATE</strong></td><td>→ <code>reg_find_by_wrap_pset_locked</code>.</td></tr>
+<tr><td><code>dispatch_kevent.c:276-323</code> <code>reg_create</code></td><td><code>pipe2()</code> + <code>mach_event_bell_register()</code></td><td><strong>MIGRATE</strong></td><td>Pset alloc only; native knote in <code>kevent_qos</code>.</td></tr>
+<tr><td><code>dispatch_kevent.c:338-354</code> <code>reg_destroy</code></td><td><code>bell_unregister</code> + <code>close()</code></td><td><strong>MIGRATE</strong></td><td>Just <code>pset_deallocate</code>; knote auto-detaches.</td></tr>
+<tr><td><code>dispatch_kevent.c:362-431</code> <code>machport_change_translate</code></td><td>emits <code>EVFILT_READ</code> on <code>pipe_r</code></td><td><strong>MIGRATE</strong></td><td>Emit <code>EVFILT_MACHPORT_NATIVE</code> on <code>wrap_pset</code>.</td></tr>
+<tr><td><code>dispatch_kevent.c:527-557</code> <code>backlog_drain_locked</code></td><td>pipe read-drain loop</td><td><strong>MIGRATE</strong></td><td>Drop pipe drain; keep message/notify backlog logic verbatim.</td></tr>
+<tr><td><code>dispatch_kevent.c:775-789</code></td><td>event demux on <code>filter==EVFILT_READ</code></td><td><strong>MIGRATE</strong></td><td>Demux on <code>filter==EVFILT_MACHPORT_NATIVE</code>.</td></tr>
+<tr><td><code>dispatch_kevent.c:215-228</code> <code>resolve_mach_syscall</code></td><td>resolves bell syscall nums</td><td><strong>DELETE</strong></td><td>Bell-only.</td></tr>
+<tr><td><code>dispatch_kevent.c:230-244</code> <code>mach_event_bell_register</code></td><td>arms kernel bell</td><td><strong>DELETE</strong></td><td>Native self-signals.</td></tr>
+<tr><td><code>dispatch_kevent.c:252-266</code> <code>mach_event_bell_unregister</code></td><td>disarms bell</td><td><strong>DELETE</strong></td><td>knote auto-detaches.</td></tr>
+<tr><td><code>include/mach/dispatch_kevent.h:69-71</code></td><td><code>EVFILT_MACHPORT (-22)</code> sentinel</td><td><strong>KEEP</strong></td><td>Apple-shape; libmach translates to -16.</td></tr>
+<tr><td><code>include/mach/dispatch_kevent.h:192-200</code></td><td>bell protos</td><td><strong>DELETE</strong> (or stub ENOSYS)</td><td>Delete if no external callers; grep first.</td></tr>
+<tr><td>backlog/synth (<code>backlog_pop_locked</code> ~565-612, flag mask 116-117)</td><td>Apple-shape event synth, <code>DISPATCH_EV_MSG_NEEDS_FREE</code>, <code>ext[0]/ext[1]</code></td><td><strong>KEEP</strong></td><td>Delivery contract must not change.</td></tr>
+</tbody></table>
+<h3 id="libdispatch-users-jmaloney-documents-nextbsd-work-src-libdispatch">libdispatch — <code>/Users/jmaloney/Documents/nextbsd-work/src/libdispatch</code></h3>
+<table>
+<thead><tr><th>File(s)</th><th>Current state</th><th>Action</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>src/event/event_kevent.c:3314-3328</code> <code>_dispatch_source_type_mach_recv</code></td><td>notify mode, <code>dst_fflags=0</code></td><td><strong>KEEP (verify)</strong></td><td>Already correct for native.</td></tr>
+<tr><td><code>src/event/event_kevent.c:3364-3379</code> <code>_dispatch_mach_type_recv</code></td><td>message mode, <code>dst_fflags=DISPATCH_MACH_RCV_OPTIONS</code></td><td><strong>KEEP (verify)</strong></td><td>Already correct.</td></tr>
+<tr><td><code>src/event/event_kevent.c:467-475</code> <code>_dispatch_kevent_merge_ev_flags</code></td><td><code>EV_DISPATCH</code> auto-disarm</td><td><strong>KEEP</strong></td><td>Bypassed at kernel boundary by libmach's <code>EV_CLEAR</code>-only registration; do <strong>not</strong> edit.</td></tr>
+<tr><td><code>src/event/event_mach_freebsd.c:99-230, 233-287</code></td><td>per-source pthread polling shim (100ms)</td><td><strong>DELETE</strong></td><td>Replaced by native wakeup once #250 lands green.</td></tr>
+<tr><td><code>source_internal.h</code> <code>_dispatch_unote_needs_rearm()</code></td><td>re-arm gating</td><td><strong>VERIFY</strong></td><td>Must not block on <code>EV_CLEAR</code> sources.</td></tr>
+</tbody></table>
+<h3 id="consumers-users-jmaloney-documents-nextbsd-work-src">Consumers — <code>/Users/jmaloney/Documents/nextbsd-work/src</code></h3>
+<table>
+<thead><tr><th>File(s)</th><th>Current state</th><th>Action</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>libSystemConfiguration/SCNotify.c:254-292, 316-330, 340-350</code></td><td>raw pthread + 500ms <code>mach_msg</code> (task #41 workaround, see <code>SCInternal.h:87-88</code>)</td><td><strong>DELETE → MIGRATE</strong></td><td>Replace with <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, notifyPort, …)</code>.</td></tr>
+<tr><td><code>libIOKit/IOKitNotify.c:207-251, 292</code></td><td>raw pthread + 500ms <code>mach_msg</code> (comments 18-21)</td><td><strong>DELETE → MIGRATE</strong></td><td>Dispatch source on <code>recv_port</code>; drop <code>atomic_int</code> stop + <code>pthread_t</code> from <code>IONotificationPort</code>.</td></tr>
+<tr><td><code>IPConfiguration/mach_service.c:50-100, 109</code></td><td>raw pthread + 500ms <code>mach_msg</code> RPC loop</td><td><strong>DELETE → MIGRATE</strong></td><td>Dispatch source (or keep if RPC stays trivial).</td></tr>
+<tr><td><code>IPConfiguration/sc_link_watch.c:157-165, 221</code></td><td><code>SCDynamicStoreSetDispatchQueue</code> (rides shim)</td><td><strong>KEEP</strong></td><td>Auto-fixed when SCNotify migrates.</td></tr>
+<tr><td><code>libxpc/xpc_connection.c:240-246</code></td><td><code>DISPATCH_SOURCE_TYPE_MACH_RECV</code></td><td><strong>KEEP</strong></td><td>Already correct; auto-accelerates.</td></tr>
+<tr><td><code>Libnotify/notify_client.c:943</code></td><td><code>DISPATCH_SOURCE_TYPE_MACH_RECV</code></td><td><strong>KEEP</strong></td><td>Already correct.</td></tr>
+<tr><td><code>launchd/src/runtime.c:227-232</code> (demand_port dispatch source)</td><td>dispatch source</td><td><strong>KEEP</strong></td><td>Correct.</td></tr>
+<tr><td><code>launchd/src/runtime.c:243, 570-650</code> <code>kqueue_demand_loop</code> + <code>select()</code> race workaround</td><td>secondary safety thread</td><td><strong>DELETE (deferred to #168 configd fold)</strong></td><td>Keep as safety valve until configd unification; not on the critical path for this plan.</td></tr>
+<tr><td><code>configd/configd.c:675-723</code> <code>configd_serve</code> raw <code>mach_msg</code> loop</td><td>raw 1s <code>mach_msg</code></td><td><strong>DEFER</strong></td><td>Optional dispatch upgrade is part of the configd-unification follow-up, not this plan.</td></tr>
+<tr><td><code>KernelEventMonitor/kernel_event_monitor.c:246-288</code> standalone PF_ROUTE daemon</td><td>separate daemon</td><td><strong>DEFER</strong></td><td>Fold into configd in follow-up ticket.</td></tr>
+</tbody></table>
+<h2 id="5-staged-rollout">5. Staged Rollout</h2>
+<p>Cross-repo timing follows the <strong>kernel → continuous-release ingest → consumer</strong> ordering. Every NextBSD <code>main</code> change goes via PR; <strong>a PR never publishes</strong> — merging a green PR is the publish event. Each stage gates the next on its CI marker.</p>
+<h3 id="stage-0-concurrency-repro-no-behavior-change">Stage 0 — Concurrency repro (no behavior change)</h3>
+<ul><li><strong>What:</strong> Add <code>test_evfilt_machport_concurrent.c</code> (see §7). Confirm it reproduces <code>page fault write 0x70</code> against the *current* kernel.</li><li><strong>Repos:</strong> nextbsd-kernel (tests).</li><li><strong>Timing/gating:</strong> tests-only change → skips the build per CI doctrine; runs on existing kernel image.</li><li><strong>Risk:</strong> none (test-only).</li><li><strong>CI gate:</strong> new marker <code>EVFILT-MACHPORT-CONCURRENT-FAIL</code> is *expected* here — proves the repro is real before we claim a fix.</li></ul>
+<h3 id="stage-1-kernel-fix-the-unblocker">Stage 1 — Kernel fix (the unblocker)</h3>
+<ul><li><strong>What:</strong> Option C in <code>filt_machportattach</code> + <code>ith_messages</code> lazy-init (#148 class).</li><li><strong>Repos:</strong> nextbsd-kernel only. <strong>HARD RULE: no freebsd-src edits — all kernel changes are overlay/patch in nextbsd-kernel.</strong></li><li><strong>Timing/gating:</strong> kernel PR first; must be green and merged before continuous-release ingest picks it up; consumers wait on the ingested kernel.</li><li><strong>Risk:</strong> medium — touches IPC locking. Mitigated by Option C being ref-count + revalidation only (no new lock held across allocation).</li><li><strong>CI gate:</strong> <code>EVFILT-MACHPORT-OK</code> (single-thread, #249) <strong>and</strong> flipped <code>EVFILT-MACHPORT-CONCURRENT-OK</code>. Boot test green (configd→ipconfigd→KEM→mDNS→launchctl).</li></ul>
+<h3 id="stage-2-libmach-native-reroute-pr-250">Stage 2 — libmach native reroute (PR #250)</h3>
+<ul><li><strong>What:</strong> Merge <code>libmach-native-machport</code> (commit 3c7f75a) onto the fixed kernel: struct/function migration + delete <code>resolve_mach_syscall</code>, <code>mach_event_bell_register/unregister</code>.</li><li><strong>Repos:</strong> nextbsd-work (libmach). Built against the Stage-1 kernel ingested via continuous-release.</li><li><strong>Timing/gating:</strong> PR #250 may not merge until Stage 1 is published and <code>EVFILT-MACHPORT-CONCURRENT-OK</code> passes on the ingested kernel.</li><li><strong>Risk:</strong> medium — this is where the panic surfaced. De-risked by Stage 1 + Stage 0 gate.</li><li><strong>CI gate:</strong> <code>LIBDISPATCH-MACH-OK</code>, <code>LIBDISPATCH-OK</code>, full boot chain, <code>EVFILT-MACHPORT-CONCURRENT-OK</code> under launchd load.</li></ul>
+<h3 id="stage-3-retire-libdispatch-polling-shim">Stage 3 — Retire libdispatch polling shim</h3>
+<ul><li><strong>What:</strong> Delete <code>event_mach_freebsd.c:99-287</code> polling threads; verify <code>_dispatch_unote_needs_rearm()</code> on <code>EV_CLEAR</code>.</li><li><strong>Repos:</strong> nextbsd-work (libdispatch).</li><li><strong>Timing/gating:</strong> after Stage 2 green; libdispatch and libmach co-built.</li><li><strong>Risk:</strong> medium — removes the fallback. Gate on the same boot markers proving native covers all sources.</li><li><strong>CI gate:</strong> <code>LIBDISPATCH-MACH-OK</code> with the shim gone.</li></ul>
+<h3 id="stage-4-per-consumer-workaround-removal-task-41-payoff">Stage 4 — Per-consumer workaround removal (task #41 payoff)</h3>
+<ul><li><strong>What:</strong> Replace raw pthread+<code>mach_msg</code> loops in <code>SCNotify</code>, <code>IOKitNotify</code>, <code>mach_service.c</code> with <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code>.</li><li><strong>Repos:</strong> nextbsd-work (libSystemConfiguration, libIOKit, IPConfiguration).</li><li><strong>Timing/gating:</strong> after Stage 3; each consumer is an independent PR so blast radius is isolated.</li><li><strong>Risk:</strong> low per PR — <code>sc_link_watch</code>, <code>libxpc</code>, <code>Libnotify</code>, launchd demand_port are already dispatch-based and auto-benefit.</li><li><strong>CI gate:</strong> boot chain + targeted daemon notification tests (configd link-state, IOKit matching, ipconfigd DHCP) show no dropped notifications.</li></ul>
+<h3 id="stage-5-delete-the-pipe-bridge-point-of-no-return">Stage 5 — Delete the pipe-bridge (point of no return)</h3>
+<ul><li><strong>What:</strong> Delete <code>mach_event_bridge.{c,h}</code>; strip bridge bits from <code>mach_module.c</code>, <code>mach_traps.c</code>, <code>mach_syscall_wire.c</code>, <code>_mach_sysproto.h</code>; remove the weak <code>mach_event_bridge_fire</code> extern + call in <code>ipc_pset.c:498-501, 510-515</code> <strong>last</strong>.</li><li><strong>Repos:</strong> nextbsd-kernel.</li><li><strong>Timing/gating:</strong> only after Stages 1–4 are published and stable in CI. Kernel PR; merge = publish.</li><li><strong>Risk:</strong> high if premature, low after gates — once merged there is no fallback transport.</li><li><strong>CI gate:</strong> full boot chain green with bridge symbols absent (<code>nm</code>/build check that <code>mach_event_bridge_*</code> and <code>*_event_bell</code> symbols no longer exist).</li></ul>
+<h2 id="6-workarounds-retired">6. Workarounds Retired</h2>
+<table>
+<thead><tr><th>Workaround</th><th>Location</th><th>Lines</th><th>Win</th></tr></thead>
+<tbody>
+<tr><td><code>SCNotify.__sc_notify_thread</code></td><td><code>libSystemConfiguration/SCNotify.c</code></td><td>254-292 (+316-330, 340-350)</td><td>~40 lines + a pthread gone; 500ms→sub-ms SCDynamicStore notifications.</td></tr>
+<tr><td><code>IOKitNotify.receive_thread</code></td><td><code>libIOKit/IOKitNotify.c</code></td><td>207-251 (+292)</td><td>~45 lines + one pthread *per* <code>IONotificationPort</code>; immediate IOKit matching.</td></tr>
+<tr><td><code>mach_service_thread</code></td><td><code>IPConfiguration/mach_service.c</code></td><td>50-100 (+109)</td><td>~50 lines; lower-latency ipconfigd RPC.</td></tr>
+<tr><td>libdispatch FreeBSD polling shim</td><td><code>libdispatch/src/event/event_mach_freebsd.c</code></td><td>99-287</td><td>Removes per-source 100ms polling threads across *every* dispatch Mach source.</td></tr>
+<tr><td><code>kqueue_demand_loop</code> + <code>select()</code> race fix</td><td><code>launchd/src/runtime.c</code></td><td>243, 570-650</td><td>~80 lines (deferred to configd-unification follow-up).</td></tr>
+<tr><td>Pipe-bridge (kernel)</td><td><code>mach_event_bridge.{c,h}</code> + scattered</td><td>282 + 39 + ~150</td><td>Two custom syscalls, a global pset→file map, and a weak wakeup hook gone.</td></tr>
+</tbody></table>
+<p>Net: roughly <strong>135+ lines of userland polling</strong>, <strong>multiple per-source threads</strong>, and the <strong>entire kernel bridge (~470+ lines + 2 syscalls)</strong> deleted. Latency for Mach-event consumers drops from 100–500ms polling to immediate kernel wakeup.</p>
+<h2 id="7-tests">7. Tests</h2>
+<h3 id="existing-keep">Existing (keep)</h3>
+<ul><li><code>test_evfilt_machport</code> (#249) — single-thread native delivery → <code>EVFILT-MACHPORT-OK</code>. Necessary but <strong>insufficient</strong> (never opens the race window).</li><li>Boot markers <code>LIBDISPATCH-MACH-OK</code>, <code>LIBDISPATCH-OK</code>; full daemon boot chain.</li><li><code>test_libmach</code>, <code>test_mach_port</code>, <code>test_bootstrap</code>, <code>test_busystate</code>, <code>test_waitquiet</code> — all single-threaded/single-task; keep as regression baseline.</li></ul>
+<h3 id="new-test-evfilt-machport-concurrent-c-the-panic-reproducer">NEW — <code>test_evfilt_machport_concurrent.c</code> (the panic reproducer)</h3>
+<p>Location: <code>src/mach_kmod/tests/test_evfilt_machport_concurrent.c</code>. Marker: <code>EVFILT-MACHPORT-CONCURRENT-OK</code> / <code>-FAIL</code>.</p>
+<ul><li><strong>Setup:</strong> allocate a pset; register native <code>EVFILT_MACHPORT</code> (-16) in notify mode; allocate N=4–8 receive ports.</li><li><strong>Workers (N pthreads, 100–1000 iters each, no barriers = max contention):</strong></li></ul>
+<ol><li><code>mach_port_move_member(port, pset)</code></li><li><code>mach_port_move_member(port, MACH_PORT_NULL)</code></li><li><code>mach_msg(SEND_TIMEOUT, 0)</code> to a sibling's port (avoid recv-block).</li></ol>
+<ul><li><strong>Main:</strong> poll <code>kevent(kq, NULL,0, ev,1, {0,0})</code> every ~10ms to drive <code>filt_machport</code> evaluation; SIGSEGV/page-fault handler flips to <code>-FAIL</code>; <code>pthread_join</code> with 30s timeout.</li><li><strong>Why it triggers:</strong> concurrent <code>move_member</code> races <code>pset-&gt;ips_lock</code>; workqueue <code>DispatchWorker</code> threads with uninit <code>ith_messages</code> arrive mid-kqueue op; the tight kevent poll widens the attach window — exactly the PR #250 signature.</li></ul>
+<h3 id="ci-integration">CI integration</h3>
+<ul><li>Build <code>test_evfilt_machport_concurrent.c</code> in <code>src/mach_kmod/tests/</code>.</li><li>Gate in <code>tests/boot-test.sh</code> <strong>after <code>LIBDISPATCH-MACH-OK</code>, before daemon startup</strong>.</li><li>Expected markers after Stage 1:</li></ul>
+<pre><code>  EVFILT-MACHPORT-OK
+  EVFILT-MACHPORT-CONCURRENT-OK</code></pre>
+<ul><li><strong>REQUIRED gate:</strong> PR #250 cannot merge unless <code>EVFILT-MACHPORT-CONCURRENT-OK</code> passes.</li></ul>
+<h2 id="8-ticket-updates">8. Ticket Updates</h2>
+<h3 id="update-168-configd-host-kerneleventmonitor-in-process">Update — #168 "configd: host KernelEventMonitor in-process"</h3>
+<ul><li>This doc is the umbrella plan. Phase A (#249 probe) passing; <strong>Phase B reroute (PR #250) blocked by the <code>filt_machportattach</code> concurrency panic.</strong></li><li>Record dependency chain: kernel fix (new) → PR #250 → libdispatch shim removal → consumer migration → bridge deletion → <strong>configd/KEM fold (the original #168 body) is the final follow-up</strong>, gated on all of the above.</li><li>Note that the configd unification (fold KEM PF_ROUTE + retire launchd <code>kqueue_demand_loop</code>) is intentionally deferred out of the delivery-unification critical path.</li></ul>
+<h3 id="update-249-test-probe-native-evfilt-machport-delivery-phase-a">Update — #249 "test: probe native EVFILT_MACHPORT delivery (Phase A)"</h3>
+<ul><li>Single-thread probe passing; add cross-reference that the <strong>multi-threaded concurrency stress test is the next blocker</strong> and lives in the new ticket below.</li></ul>
+<h3 id="update-148-mach-ko-page-fault-in-ipc-kmsg-destroy-on-thread-exit-libdispatch-worker">Update — #148 "mach.ko: page fault in ipc_kmsg_destroy on thread exit (libdispatch worker)"</h3>
+<ul><li>Link the new concurrency test as the reproducer for the same uninit-<code>ith_messages</code> root class.</li><li>Prioritize the lazy-init fix; it co-ships with the <code>filt_machportattach</code> fix in Stage 1.</li></ul>
+<h3 id="new-tickets-to-file">New tickets to file</h3>
+<ol><li><strong>"test: EVFILT_MACHPORT concurrency stress (#168 Phase B blocker)"</strong> — create <code>test_evfilt_machport_concurrent.c</code>, gate as <code>EVFILT-MACHPORT-CONCURRENT-OK</code> in boot-test.sh; reproduces the PR #250 panic. *Blocks #168, PR #250.*</li></ol>
+<ol><li><strong>"mach.ko: lazy-init <code>ith_messages</code> for non-task-init threads (#148 fix)"</strong> — detect uninit per-thread Mach delayed-destroy queue and init empty before deref in attach/detach and <code>ipc_kmsg_delayed_destroy</code>. *Blocks PR #250; closes #148.*</li></ol>
+<ol><li><strong>"mach.ko: fix UAF in <code>filt_machportattach</code> under concurrent move_member (#168 Stage 1)"</strong> — Option C ref+revalidate fix in <code>ipc_pset.c:553-577</code>. *Blocks PR #250.*</li></ol>
+<ol><li><strong>"libdispatch: retire FreeBSD <code>event_mach_freebsd.c</code> polling shim once native proven (#168 Stage 3)"</strong> — delete per-source polling threads; verify <code>_dispatch_unote_needs_rearm</code> on <code>EV_CLEAR</code>. *Depends on PR #250 green.*</li></ol>
+<ol><li><strong>"consumers: replace raw pthread+mach_msg loops with DISPATCH_SOURCE_TYPE_MACH_RECV (task #41 payoff, #168 Stage 4)"</strong> — SCNotify / IOKitNotify / mach_service.c. *Depends on Stage 3; resolves task #41.*</li></ol>
+<ol><li><strong>"kernel: delete task #39 Path B pipe-bridge (#168 Stage 5)"</strong> — remove <code>mach_event_bridge.{c,h}</code> + all bell syscall infra + weak hook in <code>ipc_pset.c</code>. *Final stage; depends on Stages 1–4 stable in CI.*</li></ol>
+<ol><li><strong>(Follow-up, out of critical path) "configd: fold KernelEventMonitor PF_ROUTE + retire launchd kqueue_demand_loop (#168 original body)"</strong> — unify the event loop after delivery is on native filter.</li></ol>
+<p>*Execution note:* never edit or push freebsd-src; all kernel work is overlay/patch in nextbsd-kernel. Every NextBSD <code>main</code> change goes through a PR; merging a green PR is the publish step; respect kernel → continuous-release ingest → consumer ordering at each stage.</p>
+
+<p class="footnote">Generated from the <code>evfilt-machport-native-migration-plan</code> workflow (7 agents, ~448k tokens). Companion docs: <a href="nextbsd-apple-device-matching-plan.html">hwregd convergence</a>, <a href="nextbsd-inkernel-iokit-feasibility.html">in-kernel IOKit feasibility</a>, <a href="freebsd-mach-kmod-syscall-slots-impl-plan.html">Mach syscall slots</a>.</p>
+
+</div>
+</body>
+</html>

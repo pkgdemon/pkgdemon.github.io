@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD graphics — virtual-GPU DRM kexts, an end-to-end CI test, and the NVIDIA/VirtualBox tracks</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; builds on the <a href="nextbsd-apple-device-matching-plan.html">in-kernel IOKit matcher</a>, the <a href="freebsd-ko-to-kext-conversion-plan.html">ko&rarr;kext conversion</a>, and the shipped drm-kmod &rarr; <code>IntelGraphics</code>/<code>AMDGraphics</code>/<code>RadeonGraphics</code> kexts</p>
+
+<h1>NextBSD graphics: virtual-GPU DRM kexts, an end-to-end CI test, and the NVIDIA / VirtualBox tracks</h1>
+<p class="lede">NextBSD already builds drm-kmod (Intel/AMD/Radeon) into Apple-style <code>.kext</code> bundles that the in-kernel IOKit matcher autoloads. But that whole <em>match&nbsp;&rarr;&nbsp;autoload&nbsp;&rarr;&nbsp;bind&nbsp;&rarr;&nbsp;KMS</em> path is <strong>untested end-to-end</strong> &mdash; qemu emulates no real Intel/AMD/Radeon GPU, so those drivers can never reach <code>attach</code> in CI. A DRM driver for a <em>virtual</em> GPU fixes both gaps at once: real KMS graphics in VMs, and the first true end-to-end graphics CI test. This plan scopes the open virtual-GPU ports (bochs, virtio-gpu, vmwgfx, VirtualBox vboxvideo), the repo architecture (an unmodified drm-kmod fork + a single <code>nextbsd-graphics</code> kext factory), and the separate, license-constrained <strong>NVIDIA legacy</strong> track.</p>
+<p class="meta">2026-06-09. Synthesized from a 7-agent scope: a 5-agent virtual-GPU workflow (bochs / virtio-gpu / vmwgfx + build architecture + CI/kext/nvidia-drm) plus dedicated VirtualBox-<code>vboxvideo</code> and NVIDIA-legacy studies. Citations to Linux&nbsp;6.6 <code>drivers/gpu/drm</code>, <code>freebsd/drm-kmod</code> (branch <code>6.6-lts</code>), <code>freebsd-ports</code>, and the <code>nextbsd-redux</code> repos.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Guiding principle</span> <strong>Start with bochs.</strong> It binds qemu&rsquo;s <em>default</em> <code>-vga std</code> device (<code>1234:1111</code>) with no qemu reconfiguration, and matches as a <strong>raw <code>IOPCIPrimaryMatch</code></strong> PCI node &mdash; exactly the personality shape <code>ko2kext.sh</code> already emits for i915/amd/radeon. So it unlocks the first end-to-end CI test by <em>reusing the existing match&rarr;<code>kextd</code>&rarr;load&rarr;bind machinery unchanged</em>. The real cost is not the driver; it is the <strong>missing DRM GEM helper(s)</strong> that drm-kmod never compiles. virtio-gpu and vmwgfx are larger follow-ons; NVIDIA is a separate, license-shaped repo.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#opportunity">The opportunity &amp; honest framing</a></li>
+  <li><a href="#candidates">The candidates compared</a></li>
+  <li><a href="#gate">The cross-cutting gate: missing GEM helpers</a></li>
+  <li><a href="#rec">Recommendation</a></li>
+  <li><a href="#arch">Build architecture &mdash; fork + <code>nextbsd-graphics</code></a></li>
+  <li><a href="#ci">Kext integration &amp; the end-to-end CI test</a></li>
+  <li><a href="#nvidia">The NVIDIA legacy track (a separate, recipe-only repo)</a></li>
+  <li><a href="#repos">Repos &amp; naming</a></li>
+  <li><a href="#roadmap">Phased roadmap</a></li>
+  <li><a href="#risks">Risks &amp; open questions</a></li>
+</ol>
+</div>
+
+<h2 id="opportunity">1. The opportunity &amp; honest framing</h2>
+<p>NextBSD builds the FreeBSD <code>drm-kmod</code> port (branch <code>6.6-lts</code>) green in CI &mdash; the <code>drm.ko</code>/<code>drmn</code> core, <code>ttm.ko</code>, <code>dmabuf.ko</code>, <code>linuxkpi</code>, plus the <code>i915kms</code>/<code>amdgpu</code>/<code>radeonkms</code> drivers &mdash; each wrapped into an Apple-style <code>.kext</code> with <code>IOPCIPrimaryMatch</code> personalities so the in-kernel IOKit matcher autoloads the matched driver via <code>kextd</code>. That entire <em>match&rarr;autoload&rarr;bind&rarr;KMS</em> pipeline is, today, <strong>untested end-to-end</strong>: qemu emulates no real Intel/AMD/Radeon GPU, so those drivers can never device-match in CI. Their personalities are only unit-tested (<code>personalities-selftest.sh</code>); no driver ever reaches <code>attach</code>.</p>
+<p>A DRM driver for a <em>virtual</em> GPU changes that on both axes: (a) real KMS graphics inside VMs, and (b) the <strong>first true end-to-end CI test</strong>, because a virtual-GPU device actually appears on the qemu PCI bus and binds.</p>
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">The honest catch</span> <strong>drm-kmod <code>6.6-lts</code> vendors none of these drivers.</strong> Its <code>drivers/gpu/drm/</code> holds only <code>amd</code>, <code>display</code>, <code>i915</code>, <code>radeon</code>, <code>scheduler</code>, <code>ttm</code> &mdash; no <code>tiny/</code> (bochs), no <code>virtio</code>, no <code>vmwgfx</code>. (It once shipped <code>vboxvideo</code>&nbsp;+&nbsp;<code>vmwgfx</code> and <strong>removed</strong> them in commit <code>787a917</code> &mdash; unmaintained &gt;1yr, drm-kmod issue&nbsp;#356.) So every candidate is a <strong>net-new port</strong>: vendor the Linux&nbsp;6.6 source, write a FreeBSD <code>bsd.kmod.mk</code> Makefile, fill the gaps &mdash; all <em>on top of the unmodified drm-kmod core</em>.</p>
+</div>
+
+<h2 id="candidates">2. The candidates compared</h2>
+<table>
+<tr><th>Driver</th><th>Target device</th><th>Where it binds</th><th>Missing helper to vendor</th><th>Hardest gap</th><th>PoC effort</th><th>Kext match</th><th>CI value</th></tr>
+<tr><td><strong>bochs</strong></td><td>Bochs VBE / stdvga <code>1234:1111</code></td><td>qemu <strong><code>-vga std</code> (default)</strong> &mdash; no config change</td><td><code>drm_gem_vram_helper</code> + <code>drm_simple_kms_helper</code></td><td>TTM-coupled VRAM helper</td><td><strong>1&ndash;2 wks</strong></td><td>raw <code>0x11111234</code></td><td><strong>highest</strong></td></tr>
+<tr><td><strong>vboxvideo</strong></td><td>VBoxVGA <code>80ee:beef</code></td><td>VirtualBox (set adapter = VBoxVGA)</td><td><code>drm_gem_vram_helper</code> + fbdev-TTM (<em>same VRAM helper as bochs</em>)</td><td>shares the bochs VRAM-helper gate</td><td>~days <em>after</em> bochs</td><td>raw <code>0xbeef80ee</code></td><td>medium (needs VirtualBox)</td></tr>
+<tr><td><strong>virtio-gpu</strong></td><td>virtio-gpu <code>1af4:1050</code> (virtio type 16)</td><td>qemu <code>-device virtio-gpu-pci</code></td><td><code>drm_gem_shmem_helper</code></td><td><strong>no <code>linuxkpi</code> virtio layer at all</strong></td><td>2&ndash;4 wks (revive prior art)</td><td>virtio sub-bus (<em>not</em> raw PCI)</td><td>high (different match path)</td></tr>
+<tr><td><strong>vmwgfx</strong></td><td>VMware SVGA II <code>15ad:0405</code></td><td>qemu <code>-vga vmware</code> / real VMware</td><td>brings its own <code>ttm_object.c</code></td><td><code>page_dirty</code> mmap write-protect over Linux MM</td><td>3&ndash;6 wks</td><td>raw <code>0x040515ad</code></td><td>low (real value = VMware guests)</td></tr>
+</table>
+
+<h3>bochs</h3>
+<p>The cheapest path. A single ~950-LOC file (<code>drivers/gpu/drm/tiny/bochs.c</code>), pure MMIO (Bochs DISPI over a BAR offset, with an <code>0x1ce/0x1cf</code> I/O-port fallback) &mdash; no command FIFO, no hypervisor backdoor, no virtio. It matches qemu&rsquo;s <strong>default</strong> <code>-vga std</code> device, so the kext device-matches in CI with no qemu change (the same match covers <code>-device bochs-display</code>). The PCI register/autoload plumbing (<code>linux_pci_register_drm_driver</code>) already exists in drm-kmod&rsquo;s <code>linuxkpi</code>. The work is the two missing helpers. The canonical failure mode (freebsd/drm-kmod issue&nbsp;#62, &ldquo;binds but black screen&rdquo;) is exactly the symptom of getting the TTM-coupled VRAM helper 90% right.</p>
+
+<h3>vboxvideo &mdash; a near-free follow-on to bochs</h3>
+<p>The mainline Linux <code>drivers/gpu/drm/vboxvideo/</code> driver (a few kLOC; MMIO + the HGSMI guest&harr;host protocol, no firmware, single PCI id <code>80ee:beef</code>) is its own small driver &mdash; <em>and it needs the same <code>drm_gem_vram_helper</code> bochs forces</em>. So once that helper exists in the shared module (&sect;5), vboxvideo is days of work, not weeks. Note: FreeBSD&rsquo;s <code>emulators/virtualbox-ose-additions</code> ships only the legacy <em>Xorg</em> <code>vboxvideo_drv.so</code> (UMS) + <code>vboxguest.ko</code>/<code>vboxvfs.ko</code> &mdash; <strong>no KMS, no <code>/dev/dri</code>, no Wayland</strong> &mdash; so a modern KMS vboxvideo kext is genuinely net-new value for VirtualBox guests. <em>Caveat:</em> VirtualBox&rsquo;s newer <strong>VBoxSVGA</strong> adapter reports the VMware id <code>15ad:0405</code> and is driven by <code>vmwgfx</code>, not vboxvideo &mdash; so target/standardize on the <strong>VBoxVGA</strong> adapter for this kext.</p>
+
+<h3>virtio-gpu</h3>
+<p>The &ldquo;modern VM&rdquo; answer (qemu/KVM, crosvm, cloud-hypervisor), with abandoned prior art (Alex Richardson&rsquo;s port on <code>ravynsoft/drm-kmod</code> branch <code>virtio</code>, orig. freebsd/drm-kmod PR&nbsp;#119 against Linux&nbsp;5.5). Two blockers: (1) <strong><code>linuxkpi</code> has <em>zero</em> virtio support</strong> &mdash; no <code>&lt;linux/virtio.h&gt;</code>, <code>virtio_device</code>, <code>virtqueue</code>, <code>virtio_driver</code>; FreeBSD&rsquo;s native <code>sys/dev/virtio</code> is structurally different (newbus, <code>virtio_alloc_virtqueues</code>, <code>virtqueue_enqueue</code>), so a bridge must be hand-written. The ~208-LOC <code>linux_virtio.c</code> prototype maps the common calls but has compile errors, <code>panic()</code> stubs for the mandatory <code>reset</code>/<code>del_vqs</code>, and is against 5.5. (2) <code>drm_gem_shmem_helper.c</code> backs virtio-gpu&rsquo;s entire buffer lifecycle and is absent. And it does <strong>not</strong> match as a raw PCI node &mdash; FreeBSD&rsquo;s <code>virtio_pci</code> claims <code>1af4:1050</code> and presents a child keyed by a virtio device-type ivar (GPU&nbsp;=&nbsp;16), so the <code>IOPCIPrimaryMatch</code> model doesn&rsquo;t apply and new IOKit-matcher plumbing is needed.</p>
+
+<h3>vmwgfx</h3>
+<p>Architecturally friendly (TTM-based, no virtio, slots next to radeon/amdgpu) but <strong>large</strong> (~45k vendored lines) with genuinely hard <code>linuxkpi</code> gaps concentrated in <code>vmwgfx_page_dirty.c</code> (mmap write-protect / <code>mkwrite</code> dirty-tracking over Linux MM internals that <code>linuxkpi</code> does not expose). The small shims (<code>asm/vmware.h</code>, <code>asm/hypervisor.h</code>, <code>linux/cc_platform.h</code>, <code>kmap_atomic_prot</code>) are cheap; FreeBSD base already ships <code>sys/x86/include/vmware.h</code>. For the CI goal it is poor cost/benefit &mdash; bochs reaches the same milestone for a fraction of the code. vmwgfx&rsquo;s value is <strong>real VMware/ESXi/Workstation guest support + 3D</strong>, not the CI test (qemu <code>-vga vmware</code> emulates only the 2D-incomplete SVGA2).</p>
+
+<h2 id="gate">3. The cross-cutting gate: missing GEM helpers</h2>
+<p>The single most important finding: <strong>the real cost of <em>every</em> tiny virtual-GPU driver is a DRM GEM-helper layer that drm-kmod never compiles</strong> &mdash; not the driver <code>.c</code> files. drm-kmod ships <code>ttm/</code> + <code>drm_gem_ttm_helper</code>, but lacks the convenience helpers these drivers sit on:</p>
+<table>
+<tr><th>Helper</th><th>Needed by</th><th>In drm-kmod 6.6-lts?</th></tr>
+<tr><td><code>drm_gem_vram_helper.c</code> (~1050 LOC, TTM-backed VRAM GEM)</td><td><strong>bochs, vboxvideo</strong></td><td><span class="pill pill-bad">missing</span></td></tr>
+<tr><td><code>drm_simple_kms_helper.c</code> (~550, pure-core)</td><td>bochs</td><td><span class="pill pill-bad">missing</span></td></tr>
+<tr><td><code>drm_gem_shmem_helper.c</code> (~1000, GPL-2.0)</td><td>virtio-gpu</td><td><span class="pill pill-bad">missing</span></td></tr>
+<tr><td><code>ttm/</code>, <code>drm_gem_ttm_helper</code>, atomic/format/fbdev helpers</td><td>all</td><td><span class="pill pill-good">present</span></td></tr>
+</table>
+<p>This is what makes bochs the right first step: porting <code>drm_gem_vram_helper</code> (the TTM-coupled, make-or-break piece) is most of the bochs effort &mdash; and it simultaneously unblocks <strong>vboxvideo</strong>. virtio-gpu needs a <em>different</em> helper (<code>gem_shmem</code>) and the virtio bridge; vmwgfx brings its own object manager. So the helper work isn&rsquo;t throwaway: it is the foundation the open-driver track is built on.</p>
+
+<h2 id="rec">4. Recommendation</h2>
+<p><strong>P0 &mdash; bochs.</strong> The only candidate that (1) binds qemu&rsquo;s default VGA with no reconfiguration, (2) matches as a raw <code>IOPCIPrimaryMatch</code> node &mdash; reusing the existing match&rarr;<code>kextd</code>&rarr;load&rarr;bind machinery unchanged, and (3) is small and self-contained. It is the cheapest thing that delivers the <strong>first true end-to-end graphics CI test</strong>. Substantive work = <code>drm_simple_kms_helper.c</code> (low risk) + <code>drm_gem_vram_helper.c</code> (the blocker).</p>
+<p><strong>P0.5 &mdash; vboxvideo</strong>, folded in right after bochs since it reuses the same VRAM helper. Cheap incremental KMS for VirtualBox guests.</p>
+<p><strong>P1 &mdash; virtio-gpu</strong>, the modern-VM follow-on &mdash; eyes open that the <strong>virtio KPI bridge is the dominant cost</strong>, not the driver. Plus <code>drm_gem_shmem_helper</code> and new sub-bus matcher plumbing. PoC ~2&ndash;4 wks <em>given</em> the prototype; production 2&ndash;4 months. virgl/3D explicitly out of scope.</p>
+<p><strong>P2 &mdash; vmwgfx, optional</strong>, justified only for real VMware guest support. The <code>page_dirty</code> MM port is the schedule risk; a first cut can stub it (losing the 2D dirty fast path) to get KMS up.</p>
+
+<h2 id="arch">5. Build architecture &mdash; fork + <code>nextbsd-graphics</code></h2>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Version target &mdash; planned bump</span> NextBSD is moving its drm core <strong>6.6 &rarr; 6.12</strong>. The fork tracks <strong><code>6.12-lts</code></strong> (the branch exists), the new drivers vendor <strong>Linux&nbsp;6.12</strong> sources, and the kernel-baked <code>linuxkpi</code> becomes <code>LINUXKPI_VERSION&nbsp;61200</code>. Because <code>drm-612-kmod</code> needs a newer <code>linuxkpi</code> than <code>releng/15.0</code> bakes, this likely pulls the FreeBSD base to <strong>15.1 / 15-stable</strong> &mdash; the maintainer accepts that bump. The NVIDIA bridge follows in lockstep: <code>graphics/nvidia-drm-612-kmod</code> (rebuilding the NVIDIA ports against 6.12 as needed). <em>References to <code>6.6-lts</code> / <code>LINUXKPI_VERSION 60600</code> elsewhere in this plan describe today&rsquo;s shipping state &mdash; read them as <code>6.12-lts</code> / <code>61200</code> once the bump lands.</em></p>
+</div>
+
+<p>Keep the design intact: <strong>fork <code>freebsd/drm-kmod</code> UNMODIFIED</strong> (a SHA-pinned mirror under <code>nextbsd-redux</code>) and add a single companion repo &mdash; <strong><code>nextbsd-graphics</code></strong> &mdash; that vendors the extra drivers + Makefiles + helper sources + <code>linuxkpi</code> shims and builds against the fork. This mirrors how <code>nextbsd-kernel-modules</code> layers on the kernel, and keeps the fork a clean, rebaseable upstream mirror.</p>
+
+<h3>How the companion repo builds against the fork</h3>
+<p>drm-kmod builds out-of-tree: a top Makefile descends via <code>bsd.subdir.mk</code> into per-module dirs (<code>dmabuf</code>/<code>ttm</code>/<code>drm</code>/<code>amd</code>/<code>radeon</code>/<code>i915</code>), each a self-contained <code>bsd.kmod.mk</code> driven by <code>SYSDIR=/usr/src/sys</code>. A new driver is just another such subdir &mdash; a near-copy of <code>i915/Makefile</code>: the verbatim <code>-I</code> block (<code>linuxkpi/gplv2/include</code>, <code>linuxkpi/bsd/include</code>, <code>${SYSDIR}/compat/linuxkpi/common/include</code>, the fork&rsquo;s <code>include</code>/<code>include/drm</code>/<code>include/uapi</code>), <code>-DLINUXKPI_VERSION=60600</code>, per-driver <code>-DCONFIG_*</code> and the required string defines (<code>-DKBUILD_MODNAME</code>, <code>-DLINUXKPI_PARAM_PREFIX</code>). <code>MODULE_DEPEND</code> lines live in a glue C file (<code>&lt;driver&gt;_freebsd.c</code>): <code>MODULE_DEPEND(&lt;kmod&gt;, drmn, 2,2,2)</code> + <code>ttm</code>/<code>linuxkpi</code>/<code>dmabuf</code> as needed (<code>linuxkpi</code> is baked into the NextBSD kernel, so no <code>OSBundleLibraries</code> for it).</p>
+
+<div class="callout">
+<p><span class="pill pill-neutral">Key decision</span> <strong>Where the missing helpers live.</strong> The GEM helpers are <em>drm-core</em> code, and the plan forbids modifying the fork &mdash; and if two drivers each bundle the same VRAM helper, <code>EXPORT_SYMS</code> collide. <strong>Resolution: a small companion <code>drm_extra_helpers.ko</code></strong> that compiles the missing helpers <em>once</em>, exports them, and that each new driver <code>MODULE_DEPEND</code>s on. This preserves &ldquo;fork unmodified&rdquo; without symbol duplication. (<code>drm_gem_shmem_helper.c</code> is GPL-2.0 &mdash; fine in the gplv2 companion module, but isolate it.)</p>
+</div>
+
+<h3>Pinning &amp; CI</h3>
+<p>Today&rsquo;s CI does <code>git clone --depth 1 --branch 6.6-lts</code> &mdash; <strong>not reproducible</strong> (the branch moves, and the kernel-baked <code>linuxkpi</code> <code>LINUXKPI_VERSION 60600</code> must match the fork&rsquo;s <code>linuxkpi_version.mk</code> or symbols drift). The companion repo MUST pin the fork to a <strong>SHA</strong> (a git submodule with a locked commit; nesting also makes the relative <code>-I</code> paths resolve naturally). In CI: check out the pinned fork SHA, build it inside <code>make.py &hellip; buildenv</code>, then build the companion drivers + <code>drm_extra_helpers.ko</code> against that checkout, linking at load via <code>MODULE_DEPEND</code>. <strong>Always rebuild the fork and the extras together from the pinned pair.</strong></p>
+
+<h2 id="ci">6. Kext integration &amp; the end-to-end CI test</h2>
+<p>Reuse <code>ko2kext.sh</code> and add per-driver personality generators modeled on <code>gen-i915-personalities.sh</code> (each parses its driver&rsquo;s own PCI id table):</p>
+<table>
+<tr><th>Driver</th><th>Kext</th><th>Match</th></tr>
+<tr><td>bochs</td><td><code>BochsGraphics.kext</code></td><td><code>IOPCIPrimaryMatch 0x11111234</code> (ideally 4-tuple incl. subsystem <code>1af4:1100</code>; <strong>do not</strong> add qxl <code>1b36:0100</code>)</td></tr>
+<tr><td>vboxvideo</td><td><code>VBoxGraphics.kext</code></td><td><code>IOPCIPrimaryMatch 0xbeef80ee</code> (VBoxVGA)</td></tr>
+<tr><td>virtio-gpu</td><td><code>VirtIOGraphics.kext</code></td><td><strong>virtio sub-bus</strong> (device-type ivar 16) &mdash; needs new matcher plumbing</td></tr>
+<tr><td>vmwgfx</td><td><code>VMwareGraphics.kext</code></td><td><code>IOPCIPrimaryMatch 0x040515ad</code></td></tr>
+</table>
+<p>All wrap with <code>ko2kext.sh -l org.nextbsd.kext.iographics</code> (the drm core); <strong>no <code>-f firmware</code></strong> &mdash; virtual GPUs ship none (a welcome contrast to amdgpu&rsquo;s hundreds of MB).</p>
+
+<h3>Kext roster &mdash; everything</h3>
+<p>The full set across the shipping work and this plan. Bundle ids follow <code>org.nextbsd.kext.&lt;name&gt;</code> (lowercased). &#9216; = proposed name (open to change).</p>
+<table>
+<tr><th>Kext</th><th>Wraps (<code>.ko</code>)</th><th>GPU / role</th><th>Device match</th><th>Depends on</th><th>Status</th></tr>
+<tr><td><strong>IOGraphics</strong></td><td><code>drm.ko</code></td><td>DRM/KMS core (shared family)</td><td>&mdash; (loaded as dep)</td><td>DMABuf</td><td><span class="pill pill-good">shipping</span></td></tr>
+<tr><td><strong>DMABuf</strong></td><td><code>dmabuf.ko</code></td><td>dma-buf sharing</td><td>&mdash;</td><td>(linuxkpi baked)</td><td><span class="pill pill-good">shipping</span></td></tr>
+<tr><td><strong>TTM</strong></td><td><code>ttm.ko</code></td><td>GPU memory manager</td><td>&mdash;</td><td>IOGraphics</td><td><span class="pill pill-good">shipping</span></td></tr>
+<tr><td><strong>IntelGraphics</strong></td><td><code>i915kms.ko</code></td><td>Intel iGPU</td><td><code>0x….8086</code></td><td>IOGraphics, TTM</td><td><span class="pill pill-good">shipping</span></td></tr>
+<tr><td><strong>AMDGraphics</strong></td><td><code>amdgpu.ko</code></td><td>AMD GCN+/RDNA</td><td><code>0x….1002</code></td><td>IOGraphics, TTM, DMABuf</td><td><span class="pill pill-good">shipping</span></td></tr>
+<tr><td><strong>RadeonGraphics</strong></td><td><code>radeonkms.ko</code></td><td>older ATI/AMD Radeon</td><td><code>0x….1002</code> (de-overlapped vs amdgpu)</td><td>IOGraphics, TTM</td><td><span class="pill pill-good">shipping</span></td></tr>
+<tr><td><strong>DRMExtraHelpers</strong> &#9216;</td><td><code>drm_extra_helpers.ko</code></td><td><code>gem_vram</code> + <code>gem_shmem</code> + <code>simple_kms</code> helpers</td><td>&mdash;</td><td>IOGraphics, TTM</td><td><span class="pill pill-warn">planned P0</span></td></tr>
+<tr><td><strong>BochsGraphics</strong> &#9216;</td><td><code>bochsdrm.ko</code></td><td>Bochs / stdvga (<strong>qemu default</strong>)</td><td><code>0x11111234</code></td><td>IOGraphics, TTM, DRMExtraHelpers</td><td><span class="pill pill-warn">planned P0</span></td></tr>
+<tr><td><strong>VBoxGraphics</strong> &#9216;</td><td><code>vboxvideo.ko</code></td><td>VirtualBox VBoxVGA</td><td><code>0xbeef80ee</code></td><td>IOGraphics, TTM, DRMExtraHelpers</td><td><span class="pill pill-warn">planned P0.5</span></td></tr>
+<tr><td><strong>VirtIOGraphics</strong> &#9216;</td><td><code>virtio_gpu.ko</code></td><td>virtio-gpu (qemu/KVM/cloud)</td><td><strong>virtio sub-bus</strong> (type 16)</td><td>IOGraphics, DRMExtraHelpers, virtio</td><td><span class="pill pill-warn">planned P1</span></td></tr>
+<tr><td><strong>VMwareGraphics</strong> &#9216;</td><td><code>vmwgfx.ko</code></td><td>VMware SVGA II</td><td><code>0x040515ad</code></td><td>IOGraphics, TTM</td><td><span class="pill pill-warn">planned P2</span></td></tr>
+<tr><td colspan="6" style="background:var(--accent-soft);font-weight:600;">NVIDIA &mdash; one kext per FreeBSD <code>nvidia-kmod*</code> port (separate recipe repo; see &sect;7)</td></tr>
+<tr><td><strong>NVIDIA</strong> &#9216;</td><td><code>nvidia</code> + <code>nvidia-modeset</code> + <code>nvidia-drm</code> (main)</td><td>Turing+ (RTX&nbsp;20xx&rarr;Blackwell)</td><td><code>0x10de:*</code> (main list)</td><td>IOGraphics <em>(via nvidia-drm)</em></td><td><span class="pill pill-neutral">planned</span></td></tr>
+<tr><td><strong>NVIDIA580</strong> &#9216;</td><td><code>nvidia</code>+<code>modeset</code>+<code>drm</code> (580)</td><td>Maxwell/Pascal/Volta (900/1000)</td><td><code>0x10de:*</code> (580 list)</td><td>IOGraphics</td><td><span class="pill pill-neutral">planned</span></td></tr>
+<tr><td><strong>NVIDIALegacy470</strong> &#9216;</td><td><code>nvidia</code> + <code>nvidia-modeset</code> (470)</td><td>Kepler (600/700)</td><td><code>0x10de:*</code> (470 list)</td><td>&mdash; (no KMS bridge; X11 only)</td><td><span class="pill pill-neutral">planned</span></td></tr>
+<tr><td><strong>NVIDIALegacy390</strong> &#9216;</td><td><code>nvidia</code> (390)</td><td>Fermi (400/500)</td><td><code>0x10de:*</code> (390 list)</td><td>&mdash; (X11 only)</td><td><span class="pill pill-neutral">planned</span></td></tr>
+<tr><td><strong>NVIDIALegacy340</strong> &#9216;</td><td><code>nvidia</code> (340)</td><td>Tesla (8/9/200/300)</td><td><code>0x10de:*</code> (340 list)</td><td>&mdash; (X11 only)</td><td><span class="pill pill-neutral">planned</span></td></tr>
+<tr><td><strong>NVIDIALegacy304</strong> &#9216;</td><td><code>nvidia</code> (304)</td><td>GeForce 6/7 (Curie)</td><td><code>0x10de:*</code> (304 list)</td><td>&mdash; (X11 only)</td><td><span class="pill pill-neutral">planned</span></td></tr>
+</table>
+<p><strong>The CI test (bochs, the clean case).</strong> Boot the continuous image headless with qemu&rsquo;s default <code>-vga std</code>. The device goes unmatched &rarr; <code>device_nomatch</code> &rarr; the IOKit matcher reads <code>IOPCIPrimaryMatch</code> &rarr; <code>kextd</code> <code>kextload</code>s <code>BochsGraphics.kext</code> &rarr; <code>MODULE_DEPEND</code> pulls <code>drmn</code>/<code>ttm</code>/<code>drm_extra_helpers</code> in order &rarr; driver attaches. <strong>Assertions:</strong> <code>kextstat</code> shows it loaded; <code>dmesg</code> shows <code>drmn</code>/<code>bochs</code> attach + <code>[drm]</code> fb + connector init; <code>/dev/dri/card0</code> exists; <code>sysctl dev.drmn.0</code> present; no panic. This is the first time the path is exercised against a device that actually appears. Watch two attach pitfalls: the <strong>aperture/vgaarb handoff</strong> (must release the boot/<code>efifb</code> framebuffer or the driver fights the console &mdash; a common KMS hang), and (virtio only) ensuring the DRM driver out-scores FreeBSD base&rsquo;s native non-DRM <code>virtio_gpu(4)</code> scanout driver.</p>
+
+<h2 id="nvidia">7. The NVIDIA legacy track (a separate, recipe-only repo)</h2>
+<p>NVIDIA is <strong>its own repo</strong> &mdash; not because of the kext mechanics (those are identical) but because of <em>licensing</em> and <em>build shape</em>. The idea: repackage only the <strong>kernel modules</strong> needed to load for X11/KMS &mdash; no libGL, no X driver, no Vulkan ICD &mdash; as per-legacy-branch kexts.</p>
+<h3>The module layout (confirmed)</h3>
+<ul>
+  <li><code>nvidia.ko</code> &mdash; the <strong>proprietary core</strong> (open OS-shim recompiled + a precompiled <code>nv-kernel.o</code> blob), exposing its own <code>/dev/nvidia</code> char interface. <strong>Not a DRM driver; does not use <code>drm.ko</code>.</strong></li>
+  <li><code>nvidia-modeset.ko</code> &mdash; kernel modesetting (<code>NvKmsKapi</code>).</li>
+  <li><code>nvidia-drm.ko</code> &mdash; the <strong>DRM/KMS bridge</strong> that registers with and links the <em>same</em> <code>drm.ko</code>/<code>drmn</code> core this plan&rsquo;s <code>IOGraphics.kext</code> provides (<code>MODULE_DEPEND(nvidia_drm, drmn, 2,2,2)</code>). FreeBSD even split the port: <code>x11/nvidia-driver</code> (userland) &rarr; <code>x11/nvidia-kmod</code> (the <code>.ko</code>s) + <code>graphics/nvidia-drm-kmod</code> (the bridge).</li>
+</ul>
+<div class="callout callout-warn">
+<p><span class="pill">Distribution &mdash; same as FreeBSD</span> NVIDIA&rsquo;s driver is redistributable: FreeBSD ships nvidia-driver as binary packages. NextBSD builds the .kos from NVIDIA&rsquo;s tarball like the FreeBSD port and ships the result the same way (carry doc/license.txt, don&rsquo;t sell).</p>
+</div>
+<p><strong>One kext per FreeBSD <code>nvidia-kmod*</code> port.</strong> FreeBSD ships the current driver plus five pinned legacy branches; each becomes a kext carrying that branch&rsquo;s <code>.ko</code>s and its own supported-GPU match table. Crucially, the DRM/KMS bridge (<code>graphics/nvidia-drm-612-kmod</code>, pinned to NextBSD&rsquo;s drm&nbsp;6.12 core &mdash; see the note in &sect;5) is packaged <strong>only for the main and 580 branches</strong>; the four older branches are <strong>core / X11-only</strong> (proprietary <code>/dev/nvidia</code> path, no <code>/dev/dri</code>, no Wayland), so only main/580 depend on <code>IOGraphics</code>.</p>
+<table>
+<tr><th>FreeBSD port</th><th>Branch</th><th>GPU generation(s)</th><th>DRM/KMS bridge (drm 6.12)</th><th>&rarr; Kext</th></tr>
+<tr><td><code>x11/nvidia-kmod</code></td><td>main / current</td><td>Turing+ (RTX&nbsp;20xx &rarr; Blackwell)</td><td><span class="pill pill-good">yes</span> <code>nvidia-drm-612-kmod</code></td><td><code>NVIDIA.kext</code></td></tr>
+<tr><td><code>x11/nvidia-kmod-580</code></td><td>580.xx</td><td>Maxwell / Pascal / Volta (GTX&nbsp;900/1000)</td><td><span class="pill pill-good">yes</span> <code>nvidia-drm-612-kmod-580</code></td><td><code>NVIDIA580.kext</code></td></tr>
+<tr><td><code>x11/nvidia-kmod-470</code></td><td>470.xx</td><td>Kepler (GeForce&nbsp;600/700)</td><td><span class="pill pill-neutral">no</span> &mdash; X11 only</td><td><code>NVIDIALegacy470.kext</code></td></tr>
+<tr><td><code>x11/nvidia-kmod-390</code></td><td>390.xx</td><td>Fermi (GeForce&nbsp;400/500)</td><td><span class="pill pill-neutral">no</span></td><td><code>NVIDIALegacy390.kext</code></td></tr>
+<tr><td><code>x11/nvidia-kmod-340</code></td><td>340.xx</td><td>Tesla (GeForce&nbsp;8/9/200/300)</td><td><span class="pill pill-neutral">no</span></td><td><code>NVIDIALegacy340.kext</code></td></tr>
+<tr><td><code>x11/nvidia-kmod-304</code></td><td>304.xx</td><td>GeForce&nbsp;6/7 (Curie / NV4x&ndash;G7x)</td><td><span class="pill pill-neutral">no</span></td><td><code>NVIDIALegacy304.kext</code></td></tr>
+</table>
+<p>(<code>x11/nvidia-kmod-devel</code> is the beta track &mdash; an optional <code>NVIDIADevel.kext</code> if wanted.) Matching: vendor <code>0x10de</code>; a <code>gen-nvidia-personalities</code> parses each branch&rsquo;s <code>supportedchips.html</code> (NVIDIA&rsquo;s own per-branch device table) into a branch-specific <code>IOPCIPrimaryMatch</code> list (NVIDIA&rsquo;s ids are non-contiguous, so exact lists, not ranges). <strong>Biggest blocker:</strong> the same <code>linuxkpi</code>/DRM KBI fragility &mdash; <code>nvidia-drm.ko</code> must be commit-matched to the drm&nbsp;6.12 core, which is why build-from-source (not a stock pkg <code>.ko</code>) is mandatory. The maintainer accepts rebuilding the NVIDIA ports against drm&nbsp;6.12 as part of this track.</p>
+
+<h2 id="repos">8. Repos &amp; naming</h2>
+<p>One plan, but the heterogeneity (open build-from-source vs. NVIDIA recipe-with-blob) is real, so it lands as <strong>three repos</strong>, with the per-driver-class differences expressed as <em>jobs/subdirs</em> inside the open one rather than a repo explosion:</p>
+<table>
+<tr><th>Repo</th><th>Role</th><th>Publishes</th></tr>
+<tr><td><code>nextbsd-redux/drm-kmod</code></td><td>Unmodified, SHA-pinned mirror of <code>freebsd/drm-kmod</code> (the core + intel/amd/radeon source). Kept clean for rebasing.</td><td>nothing (a source dep)</td></tr>
+<tr><td><code>nextbsd-redux/nextbsd-graphics</code></td><td><strong>The open kext factory.</strong> Vendors the new drivers (bochs/vboxvideo/virtio/vmwgfx) + <code>drm_extra_helpers.ko</code>; builds them <em>and</em> wraps drm-kmod&rsquo;s intel/amd/radeon, all via the shared <code>ko2kext</code>/<code>gen-personalities</code> toolchain.</td><td>prebuilt <code>.kext</code>s &rarr; <code>continuous</code></td></tr>
+<tr><td><code>nextbsd-redux/nextbsd-nvidia</code> <span class="cite">(name TBD)</span></td><td>The NVIDIA <strong>recipe</strong> (proprietary, per-legacy-branch). Builds on-target/at-build-time; hosts no binaries.</td><td>a port/recipe, <em>not</em> binaries</td></tr>
+</table>
+<p><strong>Naming:</strong> <code>nextbsd-graphics</code> reads cleaner than <code>nextbsd-graphics-modules</code> (these are kexts, not <code>kld</code> modules, and &ldquo;modules&rdquo; collides confusingly with <code>nextbsd-kernel-modules</code>). The fork stays plainly <code>drm-kmod</code>. <strong>Migration:</strong> the current <code>IntelGraphics</code>/<code>AMDGraphics</code>/<code>RadeonGraphics</code> kext work <em>stays in <code>nextbsd-kernel-modules</code> for now</em>; the roadmap migrates it into <code>nextbsd-graphics</code> once that repo exists, so nothing has to move all at once.</p>
+
+<h2 id="roadmap">9. Phased roadmap</h2>
+<h3>P0 &mdash; bochs PoC &rarr; kext &rarr; CI bind test (the milestone)</h3>
+<ol>
+  <li>Stand up <code>nextbsd-graphics</code>; pin the <code>drm-kmod</code> fork by SHA (submodule); decide submodule layout (it dictates every Makefile&rsquo;s <code>-I</code> block).</li>
+  <li>Build <code>drm_extra_helpers.ko</code>: vendor + compile <code>drm_simple_kms_helper.c</code> (low risk first), then <code>drm_gem_vram_helper.c</code> (the TTM-coupled blocker); wire in <code>drm_format_helper.c</code>.</li>
+  <li>Vendor <code>bochs.c</code>; write its <code>bsd.kmod.mk</code> + <code>bochs_freebsd.c</code> glue; resolve DISPI MMIO/io-port + the aperture handoff.</li>
+  <li>Get it to compile, <code>kldload</code>, and bind under qemu <code>-vga std</code>; chase the &ldquo;binds but black screen&rdquo; symptom in the VRAM helper to a working KMS console.</li>
+  <li><code>ko2kext</code> + <code>gen-bochs-personalities.sh</code> &rarr; <code>BochsGraphics.kext</code>; add the qemu <code>-vga std</code> line + <code>/dev/dri/card0</code> + <code>kextstat</code> + <code>dmesg</code> assertions to CI. <strong>First end-to-end graphics CI test.</strong></li>
+</ol>
+<h3>P0.5 &mdash; vboxvideo (reuses the VRAM helper)</h3>
+<ol><li>Vendor <code>vboxvideo</code> + HGSMI; <code>MODULE_DEPEND</code> on <code>drm_extra_helpers</code>; <code>VBoxGraphics.kext</code> on <code>80ee:beef</code>. Optional VirtualBox-guest CI if a runner exists.</li></ol>
+<h3>P1 &mdash; virtio-gpu + the virtio KPI shim</h3>
+<ol>
+  <li>Build the <code>linuxkpi</code> virtio bridge: revive <code>linux_virtio.c</code>, fix the compile errors, implement the <code>panic()</code>-stubbed <code>reset</code>/<code>del_vqs</code>, settle the <code>virtio_driver</code> probe model. <em>This is the dominant cost.</em></li>
+  <li>Vendor <code>drm_gem_shmem_helper.c</code> into <code>drm_extra_helpers.ko</code>; re-port the 5.5&rarr;6.6 virtgpu deltas.</li>
+  <li>Vendor the <code>virtgpu_*.c</code> set + glue; new IOKit-matcher plumbing for the virtio sub-bus; ensure the DRM driver beats base <code>virtio_gpu(4)</code>.</li>
+  <li>CI: add <code>-device virtio-gpu-pci</code>; assert bind + <code>/dev/dri/card0</code> + <code>renderD128</code>. <strong>Descope virgl/3D.</strong></li>
+</ol>
+<h3>P2 &mdash; vmwgfx (optional) &middot; future &mdash; NVIDIA legacy recipe</h3>
+<ol>
+  <li>vmwgfx: the four small shims; vendor the 6.6 tree (incl. its <code>ttm_object.c</code>); <strong>stub <code>vmwgfx_page_dirty.c</code></strong> for a first cut; <code>VMwareGraphics.kext</code> on <code>15ad:0405</code>.</li>
+  <li>NVIDIA: stand up <code>nextbsd-nvidia</code> as a recipe (fetch unmodified tarball at build; compile <code>nvidia-kmod</code> against the NextBSD kernel; wrap the 3 <code>.ko</code>s); start with branch 470 (Kepler), then 390/340; <code>gen-nvidia-personalities</code> from <code>supportedchips.html</code>.</li>
+</ol>
+
+<h2 id="risks">10. Risks &amp; open questions</h2>
+<ul>
+  <li><strong>The GEM helpers are make-or-break.</strong> <code>drm_gem_vram_helper</code> (bochs/vbox) and <code>drm_gem_shmem_helper</code> (virtio) are absent from drm-kmod <em>and</em> the ravynsoft fork; the kernel-baked <code>linuxkpi</code> was never exercised for them, so the first build surfaces a cascade of missing symbols. The VRAM helper&rsquo;s TTM coupling yields exactly the &ldquo;binds but black screen&rdquo; of drm-kmod issue&nbsp;#62.</li>
+  <li><strong>The virtio KPI bridge is the real virtio cost</strong> &mdash; no <code>linuxkpi</code> virtio layer exists; the prototype is against 5.5, doesn&rsquo;t compile, and <code>panic()</code>s on the mandatory <code>reset</code>/<code>del_vqs</code>. Its <code>scatterlist</code>&rarr;<code>sglist</code> conversion and interrupt-context casts are likely buggy under real traffic.</li>
+  <li><strong>virtio&rsquo;s match path differs</strong> (sub-bus ivar, not a raw <code>IOPCIDevice</code>), so the <em>cleanest</em> end-to-end CI demonstration is <strong>bochs</strong>, not virtio.</li>
+  <li><strong>Aperture/vgaarb handoff</strong> must release the boot framebuffer or every driver fights the console at attach.</li>
+<li><strong>NVIDIA distribution</strong> is not a blocker &mdash; FreeBSD ships nvidia-driver as a binary pkg; NextBSD ships the kext on the same terms.</li>
+  <li><strong>vmwgfx <code>page_dirty</code></strong> leans on Linux MM internals <code>linuxkpi</code> doesn&rsquo;t expose; correct (un-stubbed) support may require touching <code>linuxkpi</code> VM-fault handling. <code>kmap_atomic_prot</code> is x86-specific &mdash; an arm64 target needs more.</li>
+</ul>
+<p><strong>Open questions to settle first:</strong></p>
+<ol>
+  <li>Submodule-vs-sibling layout for <code>nextbsd-graphics</code> (dictates every Makefile&rsquo;s <code>-I</code> block).</li>
+  <li>Does NextBSD&rsquo;s <code>IOPCIPrimaryMatch</code> honor the full 4-tuple (subvendor/subdevice), or only vendor/device? bochs ideally keys on subsystem <code>1af4:1100</code> to avoid grabbing non-qemu <code>1234:1111</code>.</li>
+  <li>Did drm-kmod&rsquo;s core build with <code>CONFIG_DRM_FBDEV_EMULATION</code>? Without it KMS may work but the fbdev console is absent.</li>
+  <li>The new IOKit-matcher plumbing for the virtio sub-bus, and how to out-score base <code>virtio_gpu(4)</code>.</li>
+  <li>The exact pinned-SHA pair (fork + kernel-baked <code>LINUXKPI_VERSION 60600</code>) and the CI rule that rebuilds both together.</li>
+</ol>
+
+<p class="footnote">Research scope: 5-agent virtual-GPU workflow (bochs/virtio-gpu/vmwgfx + build architecture + CI/kext/nvidia-drm) + dedicated VirtualBox-<code>vboxvideo</code> and NVIDIA-legacy studies. Primary sources: Linux&nbsp;6.6 <code>drivers/gpu/drm</code> (<code>tiny/bochs.c</code>, <code>virtio/</code>, <code>vmwgfx/</code>, <code>vboxvideo/</code>), <code>freebsd/drm-kmod</code> (incl. issues #62/#356 and the removed vboxvideo/vmwgfx), <code>ravynsoft/drm-kmod</code> branch <code>virtio</code> (PR&nbsp;#119), <code>freebsd-ports</code> (<code>x11/nvidia-kmod</code>, <code>graphics/nvidia-drm-kmod</code>, <code>emulators/virtualbox-ose-additions</code>), and NVIDIA&rsquo;s per-branch <code>supportedchips.html</code> + redistribution license. A plan, not a promise &mdash; the GEM-helper port and the virtio KPI bridge are the two pieces that decide the schedule.</p>
+
+</div>
+</body>
+</html>

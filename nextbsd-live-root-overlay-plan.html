@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD live root: a compressed read-only image with a kernel-built writable overlay, and a cpdup install — design</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+  .axis { background:white; border:1px solid var(--border); border-radius:4px; padding:4px 20px 8px; margin:14px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; supersedes the earlier <a href="freebsd-livecd-plan.html">live-ISO</a>, <a href="freebsd-livecd-gunion-reroot-plan.html">gunion-reroot</a>, and <a href="freebsd-squashfs-research.html">squashfs</a> notes &middot; relates to <a href="https://github.com/nextbsd-redux/nextbsd/issues/70">nextbsd&nbsp;#70</a> and <a href="https://github.com/gershwin-desktop/gershwin-on-freebsd/issues/14">gershwin-on-freebsd&nbsp;#14/#15</a></p>
+
+<h1>NextBSD live root: a compressed read-only image with a kernel-built writable overlay, and a cpdup install</h1>
+<p class="lede">NextBSD already ships a read-write UFS disk image, and it already has the one piece every live system needs: <strong>launchd (PID&nbsp;1) owns root writability</strong>. The live ISO is a generalization of that single step. The recommended shape: the <strong>kernel</strong> stacks a <code>tmpfs&nbsp;+&nbsp;unionfs</code> overlay over a compressed read-only root <em>before init runs</em> &mdash; but only when the booted image <em>declares</em> it is live; launchd stays dumb and just reacts to whether <code>/</code> is writable; and installing is a plain <code>cpdup</code> clone to a rw-UFS target that <strong>never</strong> unions. No <code>/rescue/init</code>, no chroot, no <code>/sysroot</code> pivot &mdash; which, as a bonus, sidesteps the <code>efibootmgr</code> path-mangling bug entirely. This document is the design record.</p>
+<p class="meta">2026-06-09. Synthesized from two freebsd-src research passes (read-only-root filesystems + boot orchestration) against <code>releng/15.0</code>, the current <code>nextbsd</code> build, and the live <code>gershwin-on-freebsd&nbsp;#14/#15</code> efibootmgr bug. Citations are <code>file:line</code> in freebsd-src unless noted. <strong>Update 2026-06-10: built, booted, and verified &mdash; see the box below. The sections that follow are the original design record; where the implementation diverged, the box says how and why.</strong></p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Implemented &amp; verified &mdash; 2026-06-10</span></p>
+<p>A live ISO now boots end-to-end in qemu (UEFI) to a root shell on a writable union, and publishes to <code>nextbsd</code>&rsquo;s <code>continuous</code> release alongside the disk image (<a href="https://github.com/nextbsd-redux/nextbsd/pull/274">nextbsd&nbsp;#274</a>, kernel <a href="https://github.com/nextbsd-redux/nextbsd-kernel/pull/41">#41</a>). The shipped shape is a <strong>hybrid</strong> of the options below, not the pure in-kernel Option&nbsp;B this document first recommended:</p>
+<ul>
+<li><strong>On-demand compressed root, no preload.</strong> <code>rootfs.uzip</code> (geom_uzip over a UFS image) sits on the cd9660 and is decompressed <em>block-by-block on read</em> &mdash; the loader preloads <em>only</em> a tiny <strong>mfsroot</strong> (~7.5&nbsp;MB), never the multi-GB root. (The 2&nbsp;GB-into-RAM <code>md_image</code> preload was tried and rejected as too slow / RAM-hungry.)</li>
+<li><strong>Userland assembles the overlay; a clean kernel primitive adopts it.</strong> The mfsroot&rsquo;s <code>/init</code> (a <code>#!/bin/sh</code> script) does <code>mdconfig -t vnode</code> the uzip &rarr; <code>/rofs</code> (RO lower), <code>tmpfs</code> &rarr; <code>/cow</code> (writable upper), <code>mount_unionfs</code>, then <code>sysctl vfs.pivot=/rofs</code> and <code>exec /sbin/launchd</code> (PID&nbsp;1 preserved across exec).</li>
+<li><strong>Why not the pure-kernel Option&nbsp;B (&sect;6)?</strong> It was tried first (nextbsd-kernel #39): a hook in <code>vfs_mountroot()</code> that repointed the root with <code>pwd_set_rootvnode()</code>. That only repoints <em>curproc</em> &mdash; launchd&rsquo;s forked services kept the old root and died on dead Mach ports. The fix (and what shipped, #41) is a dedicated <code>vfs.pivot</code> sysctl that adopts an <em>already-mounted</em> union as <code>/</code> using the kernel&rsquo;s own <code>mountcheckdirs()</code> &mdash; the same audited walk over <code>FOREACH_PROC_IN_SYSTEM</code> that <code>kern_reroot()</code> uses &mdash; so <em>every</em> process&rsquo;s root is repointed. This is the Linux <code>pivot_root</code>/<code>switch_root</code> analog FreeBSD lacked.</li>
+<li><strong>Clean mount table.</strong> The pivot rewrites the union&rsquo;s <code>f_mntonname</code> to <code>/</code>, so getfsstat shows <code>&lt;union&gt; on /</code>, the uzip on <code>/rofs</code>, tmpfs on <code>/cow</code> &mdash; no <code>/sysroot</code> prefix, so the <code>efibootmgr.c:1047</code> bug still can&rsquo;t fire.</li>
+</ul>
+<p class="meta">Boot evidence (CI <code>iso-test</code>, qemu&nbsp;-cdrom UEFI): <code>media mounted from /dev/iso9660/NEXTBSD</code> &rarr; <code>/dev/md1.uzip</code> (geom_uzip taste) &rarr; <code>vfs.pivot: / is now unionfs (mounted from /rofs)</code> &rarr; <code>login:</code> &rarr; root shell. Gotchas found &amp; fixed along the way: the vmactions build VM ships an <em>empty</em> <code>/rescue</code> (so the mfsroot is built from the rootfs&rsquo;s own dynamic tools + their <code>readelf</code>-NEEDED lib closure); <code>mount_cd9660</code> hard-needs <code>libkiconv.so.4</code> (absent from the curated base &mdash; supplied from the VM); and the next PID&nbsp;1 needs a fresh <code>devfs</code> on the union&rsquo;s <code>/dev</code> (the kernel&rsquo;s auto-devfs is orphaned by the pivot).</p>
+</div>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">The original design in five answers</span> <span class="pill pill-neutral">superseded in part &mdash; see the verified box above</span></p>
+<ul>
+<li><strong>Compressed RO root, writable automatically, no chroot/rescue?</strong> Yes &mdash; the kernel stacks <code>tmpfs&nbsp;+&nbsp;unionfs</code> over the RO image in <code>vfs_mountroot()</code> before PID&nbsp;1, so <code>/</code> is already writable when launchd starts (&sect;6).</li>
+<li><strong>How does it know live vs installed without hardcoding a device?</strong> The live image&rsquo;s <code>loader.conf</code> sets a <code>vfs.root.overlay</code> kenv; the kernel reads it (and falls back to &ldquo;is the root provider RO?&rdquo;). The installed system&rsquo;s <code>loader.conf</code> omits it (&sect;7).</li>
+<li><strong>Doesn&rsquo;t launchd&rsquo;s <code>mount -uw /</code> break on the union?</strong> It would (unionfs rejects <code>MNT_UPDATE</code>) &mdash; so launchd is gated on <code>statfs("/").f_flags &amp; MNT_RDONLY</code>: writable &rarr; skip, read-only &rarr; remount. No live/installed knowledge needed (&sect;7).</li>
+<li><strong>Install from the same ISO?</strong> Yes &mdash; <code>cpdup</code> the live tree to a freshly <code>newfs</code>&rsquo;d UFS at <code>/mnt</code>, write a plain (no-overlay) <code>loader.conf</code>, install bootcode + <code>efibootmgr</code> un-chrooted. The installed system is plain rw-UFS, never unions (&sect;8).</li>
+<li><strong>Clean <code>df</code>, no <code>/sysroot</code> efibootmgr bug?</strong> The kernel mounts the layers <code>MNT_IGNORE</code> &rarr; one clean <code>/</code>; no pivot &rarr; the <code>efibootmgr.c:1047</code> prefix bug can&rsquo;t fire (&sect;9).</li>
+</ul>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#today">Where NextBSD is today</a></li>
+<li><a href="#constraint">The shaping constraint: no <code>.ko</code> tree (and the modules to bake)</a></li>
+<li><a href="#noremount">Why <code>mount -uw /</code> can&rsquo;t work on a compressed root</a></li>
+<li><a href="#axis1">Axis 1 &mdash; the read-only root primitive</a></li>
+<li><a href="#axis2">Axis 2 &mdash; the writable overlay</a></li>
+<li><a href="#axis3">Axis 3 &mdash; where the overlay is established (kernel, Option&nbsp;B)</a></li>
+<li><a href="#liveinstalled">Live vs installed: how the kernel decides, and why launchd stays dumb</a></li>
+<li><a href="#install">Installing from the live ISO (cpdup &rarr; plain rw-UFS)</a></li>
+<li><a href="#tools">Tool &amp; bootloader compatibility (efibootmgr, df)</a></li>
+<li><a href="#recommend">Recommendation &amp; decision matrix</a></li>
+<li><a href="#ci">CI for ISO + image, and what gets touched where</a></li>
+<li><a href="#caveats">Honest caveats &amp; open questions</a></li>
+<li><a href="#refs">References</a></li>
+</ol>
+</div>
+
+<h2 id="today">1. Where NextBSD is today</h2>
+<p>The continuous artifact is a <strong>GPT disk image</strong> with a read-write UFS root. The build comment is explicit (<code>nextbsd build.sh:2843&ndash;2848</code>): &ldquo;the kernel mounts the freebsd-ufs partition read-only; launchd PID&nbsp;1 remounts it read-write before starting any daemon. No cd9660, no uzip, no unionfs, no ramdisk pivot.&rdquo; So the writability handoff already lives in the right place: <strong>launchd owns making <code>/</code> writable.</strong> Today that is one <code>mount -uw /</code>, which works because the root is plain UFS on a writable partition. <a href="https://github.com/nextbsd-redux/nextbsd/issues/70">Issue&nbsp;#70</a> asks to <em>also</em> ship a <code>.iso</code>; your deeper goal is the live model underneath it. The two compose: the ISO is the carrier, the overlay is the mechanism, and the install is a clone back to today&rsquo;s rw-UFS layout.</p>
+
+<h2 id="constraint">2. The shaping constraint: no <code>.ko</code> tree (and the modules to bake)</h2>
+<p>NextBSD ships <strong>no loadable module tree</strong>; everything must be baked &mdash; the rule that just drove the graphics work (<a href="https://github.com/nextbsd-redux/nextbsd-kernel/pull/37">nextbsd-kernel&nbsp;#37</a>). The audit is good news: <strong>every filesystem this needs has a static config token</strong> &mdash; none is module-only (<code>sys/conf/options:260&ndash;279</code>, the <code>opt_dontuse.h</code> gate).</p>
+<table>
+<thead><tr><th>Capability</th><th>Token to bake</th><th>Note</th></tr></thead>
+<tbody>
+<tr><td>compressed RO image (uzip)</td><td><code>device geom_uzip</code></td><td>zlib + LZMA free; no <code>GEOM_UZIP_LZMA</code> in 15.0 <span class="cite">(files:3755)</span></td></tr>
+<tr><td>tar RO image (modern alt)</td><td><code>options TARFS</code></td><td>first-class RO VFS; FreeBSD&rsquo;s OCI build uses it <span class="cite">(tarfs_vfsops.c:1246)</span></td></tr>
+<tr><td>zstd in either</td><td><code>options ZSTDIO</code></td><td>else <code>.tar.zst</code>/zstd-uzip rejected at mount <span class="cite">(g_uzip.c:766)</span></td></tr>
+<tr><td>image carrier</td><td><code>device md</code> + <code>options MD_ROOT</code></td><td>tarfs root also needs <code>MD_ROOT_FSTYPE="tarfs"</code> (default <code>ufs</code>, <code>md.c:175</code>)</td></tr>
+<tr><td>stable provider names</td><td><code>options GEOM_LABEL</code></td><td>reference by label, not unit</td></tr>
+<tr><td>writable RAM upper</td><td><code>options TMPFS</code></td><td>also stops <code>mdmfs auto</code> from a doomed <code>kldload("tmpfs")</code> <span class="cite">(mdmfs.c:313)</span></td></tr>
+<tr><td>the union overlay</td><td><code>options UNIONFS</code></td><td>static option exists <span class="cite">(options:278)</span>; maturity note in &sect;5</td></tr>
+<tr><td>bind subtrees</td><td><code>options NULLFS</code></td><td>pass-through; not copy-up</td></tr>
+<tr><td>inner / ISO fs</td><td><code>options FFS</code>, <code>CD9660</code></td><td>UFS inside <code>.uzip</code>; cd9660 envelope</td></tr>
+</tbody>
+</table>
+
+<h2 id="noremount">3. Why <code>mount -uw /</code> can&rsquo;t work on a compressed root</h2>
+<p>The read-only-ness is enforced at two independent layers, so promoting the root in place is impossible &mdash; you <em>must</em> overlay: the GEOM provider returns <code>EROFS</code> on any write open <span class="cite">(g_uzip.c:543)</span>; the fs forces <code>MNT_RDONLY</code> / rejects <code>MNT_UPDATE</code> (tarfs <span class="cite">tarfs_vfsops.c:948,1030</span>; cd9660 inherently RO); and the kernel mounts the first root RO regardless <span class="cite">(vfs_mountroot.c:786&ndash;792)</span>. This is also why, on the live union, launchd must <em>not</em> blindly <code>mount -uw /</code> (&sect;7).</p>
+
+<h2 id="axis1">4. Axis 1 &mdash; the read-only root primitive</h2>
+<div class="axis">
+<table>
+<thead><tr><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+<tbody>
+<tr><td><strong>geom_uzip</strong> of a UFS image</td><td><strong>block-random-access</strong> decompress (suits a desktop root); zlib/LZMA/zstd; mature; matches the &ldquo;uzip&rdquo; model</td><td>two layers (GEOM + UFS); <code>mkuzip</code> build; LZMA CPU cost</td></tr>
+<tr><td><strong>tarfs</strong> (<code>.tar.zst</code>)</td><td>most modern; trivial tooling (<code>tar</code>); zstd; one layer; FreeBSD OCI uses it</td><td><strong>sequential</strong> decompress &mdash; heavier on random reads; needs an overlay regardless</td></tr>
+<tr><td><strong>cd9660</strong> (plain ISO)</td><td>simplest; what every FreeBSD ISO ships <span class="cite">(mkisoimages.sh:85)</span></td><td>no fs-level compression</td></tr>
+<tr><td><strong>md + UFS (mfsBSD)</strong></td><td>writable root, zero overlay</td><td>uncompressed in RAM; RAM-bound</td></tr>
+</tbody>
+</table>
+</div>
+<p><span class="pill pill-good">Lead</span> <strong>geom_uzip of a UFS image</strong> for the live desktop root; <strong>tarfs-zstd</strong> the modern alternative to prototype head-to-head on boot/launch latency.</p>
+
+<h2 id="axis2">5. Axis 2 &mdash; the writable overlay</h2>
+<div class="axis">
+<table>
+<thead><tr><th>Option</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td><strong>tmpfs upper + unionfs over <code>/</code></strong> (whole <code>/</code> writable, copy-up, RAM)</td><td><span class="pill pill-warn">primary, with care</span> the true live experience; gated by unionfs maturity</td></tr>
+<tr><td><strong>disk-backed upper + unionfs</strong> (persists across reboot)</td><td><span class="pill pill-neutral">persistence variant</span> &ldquo;live USB with save&rdquo;</td></tr>
+<tr><td><strong>tmpfs on <code>/var</code>+<code>/tmp</code> only</strong> (root stays RO)</td><td><span class="pill pill-good">safe fallback</span> what FreeBSD ships <span class="cite">(rc.d/var:64; rc.d/tmp:43)</span>; no unionfs</td></tr>
+</tbody>
+</table>
+</div>
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">unionfs honesty</span> Rewritten in the 14.x era and much improved, but still the least-trusted overlay (&ldquo;USE AT YOUR OWN RISK&rdquo;; deletes/renames of lower objects need whiteout support on the upper &mdash; which <code>tmpfs</code> provides). Use <code>tmpfs</code> as the upper and test your workload. If it proves flaky, the guaranteed-stable design is RO root + <code>tmpfs</code> on <code>/var</code>+<code>/tmp</code> with a few symlinks &mdash; FreeBSD&rsquo;s exact shipped model.</p>
+</div>
+<p>One reassurance: unionfs <em>can</em> be mounted over an already-active <code>/</code> &mdash; the &ldquo;cannot union mount root&rdquo; rejection only blocks unionfs from being the <code>MNT_ROOTFS</code> mount itself <span class="cite">(union_vfsops.c:104)</span>. Open files of the running init stay valid (the lower stays reachable through the union), exactly as the kernel&rsquo;s own <code>vfs_mountroot_shuffle</code> re-covers <code>/dev</code> with devfs vnodes live <span class="cite">(vfs_mountroot.c:382&ndash;409)</span>.</p>
+
+<h2 id="axis3">6. Axis 3 &mdash; where the overlay is established (kernel, Option&nbsp;B)</h2>
+<p>The kernel mounts exactly one fs at <code>/</code>, RO, then execs PID&nbsp;1. The overlay must happen after that. <strong>Recommended: the kernel does it</strong>, in a small hook in <code>vfs_mountroot()</code> &mdash; gated by a kenv the live image declares (&sect;7) &mdash; right after the RO lower is mounted and before <code>set_rootvnode</code> finalizes (around <code>vfs_mountroot.c:1086</code>): mount a <code>tmpfs</code>, stack <code>unionfs</code> over the root vnode, re-point <code>rootvnode</code>, reusing the vnode-repointing machinery the kernel already trusts in <code>vfs_mountroot_shuffle</code> <span class="cite">(vfs_mountroot.c:303&ndash;423)</span>. The union must <em>not</em> carry <code>MNT_ROOTFS</code> (the lower keeps it).</p>
+<div class="callout callout-good">
+<p><span class="pill pill-good">Why kernel beats launchd here</span> <code>/</code> is writable <em>before</em> PID&nbsp;1 is exec&rsquo;d, so launchd and everything it runs see a writable root &mdash; no userland race, no ordering hazards. And because the kernel creates the layers, it can mount the lower and the <code>tmpfs</code> upper <code>MNT_IGNORE</code>, leaving <strong>one clean <code>/</code></strong> in every mount-enumerating tool (&sect;9). One audited C path; strictly more modern than <code>rc.initdiskless</code>; no rescue.</p>
+</div>
+<p>Option&nbsp;A (launchd builds the overlay) reaches the same end-state with no kernel patch and is the natural fallback / first step; Option&nbsp;C (a <code>/rescue/init</code> shell) is <strong>rejected</strong> &mdash; unwanted and unnecessary. The launchd capability-probe (&sect;7) is needed in <em>all</em> cases regardless, so it does double duty as Option&nbsp;A&rsquo;s mechanism and Option&nbsp;B&rsquo;s safety check. <span class="cite">Cost of B: a carried patch in <code>nextbsd-kernel</code> (<code>patches/</code> + <code>src-overlay/conf/</code>, never a freebsd-src edit) and validating unionfs at root.</span></p>
+
+<h2 id="liveinstalled">7. Live vs installed: how the kernel decides, and why launchd stays dumb</h2>
+<h3>The trigger is declared, not hardcoded</h3>
+<p>Detecting <code>/dev/cd9660/NextBSD</code> by name is brittle (it misses uzip-on-USB and VirtualBox). Instead, <strong>the live image declares its nature in its own <code>loader.conf</code></strong>, and the loader carries that off whatever media it booted:</p>
+<pre><code># /boot/loader.conf — ships ON the live ISO only
+vfs.root.mountfrom="cd9660:/dev/iso9660/NEXTBSD"   # or  ufs:/dev/md0.uzip
+vfs.root.overlay="tmpfs"                            # ← the kernel hook's trigger</code></pre>
+<p>The hook is a one-liner gate: <code>if (kern_getenv("vfs.root.overlay")) build_overlay();</code>. Fully deterministic, one kernel image, every carrier. Belt-and-suspenders: also auto-enable when the root provider is read-only by nature (cd9660/tarfs are <code>VFCF_READONLY</code>; a geom_uzip provider rejects write-opens), so a hand-rolled RO image with no flag still does the sane thing.</p>
+<h3>The unifying rule</h3>
+<table>
+<thead><tr><th>Boot source</th><th>root provider</th><th>kernel decision</th></tr></thead>
+<tbody>
+<tr><td>Live ISO &mdash; optical / USB / VirtualBox</td><td>cd9660 or uzip (RO)</td><td><strong>overlay</strong>: tmpfs + union &rarr; writable live <code>/</code></td></tr>
+<tr><td>Installed system on <code>ada0</code></td><td>ufs/ffs (RW)</td><td><strong>no overlay</strong>: plain root</td></tr>
+<tr><td>GPT disk-image <code>dd</code>&rsquo;d to USB</td><td>ufs (RW)</td><td><strong>no overlay</strong> &mdash; an installed system on a stick</td></tr>
+</tbody>
+</table>
+<h3>launchd reacts to state, not identity</h3>
+<p>launchd still has its root-writability step &mdash; but a blind <code>mount -uw /</code> on the live union would <strong>fail</strong> (unionfs rejects <code>MNT_UPDATE</code>, <code>union_vfsops.c:112&ndash;114</code>) and today that&rsquo;s fatal. The fix needs zero live/installed knowledge &mdash; gate on the actual state:</p>
+<pre><code>struct statfs sb; statfs("/", &amp;sb);
+if (sb.f_flags &amp; MNT_RDONLY)
+    mount_uw("/");     // installed UFS (ro-first) → remount rw, as today
+// else: already writable (kernel built the union) → do nothing</code></pre>
+<ul>
+<li><strong>Live</strong>: kernel built the union &rarr; <code>/</code> writable &rarr; <code>MNT_RDONLY</code> clear &rarr; launchd <strong>skips</strong> (and so never hits the union with <code>MNT_UPDATE</code>).</li>
+<li><strong>Installed</strong>: ro-first UFS &rarr; <code>MNT_RDONLY</code> set &rarr; launchd remounts rw, unchanged.</li>
+</ul>
+<h3>The runtime &ldquo;am I live?&rdquo; signal</h3>
+<p>For consumers that genuinely need identity (an installer offering to install; services that differ): read back the same declaration &mdash; <code>kenv -q vfs.root.overlay</code> (set &rArr; live, empty &rArr; installed). One source of truth: the kenv that triggers the kernel overlay <em>is</em> the userland live flag. Optionally the kernel mirrors it as a read-only <code>kern.live_media</code> sysctl set only when it actually builds the overlay, so userland reads kernel truth. The installed system reads empty because the installer writes a <em>fresh</em> target <code>loader.conf</code> (&sect;8) &mdash; it must not <code>cpdup</code> the live one&rsquo;s overlay line.</p>
+
+<h2 id="install">8. Installing from the live ISO (cpdup &rarr; plain rw-UFS)</h2>
+<p>The classic, robust live-CD install &mdash; and it composes perfectly with the above. The same ISO runs live <em>and</em> installs; the installed system diverges only by two facts the kernel reads at boot (root fstype + the absent overlay flag).</p>
+<ol>
+<li>Live system is up with the union <code>/</code> (writable, full toolkit).</li>
+<li><code>gpart</code> the target; <code>newfs</code> a UFS on <code>ada0p?</code>; mount it at <code>/mnt</code>.</li>
+<li><strong><code>cpdup</code></strong> the system tree to <code>/mnt</code>, excluding <code>/dev /mnt /tmp</code> + the upper. Two flavours &mdash; your call: clone the <strong>merged <code>/</code></strong> (captures live tweaks) or the <strong>pristine RO lower</strong> (factory-clean; preferred for installs).</li>
+<li>Write the target&rsquo;s <em>plain</em> config: <code>/mnt/etc/fstab</code> &rarr; <code>ufs:/dev/ufs/ROOTFS rw</code>, and <code>/mnt/boot/loader.conf</code> <strong>without</strong> <code>vfs.root.overlay</code>.</li>
+<li>Bootcode + <code>efibootmgr</code> <strong>un-chrooted, against <code>/mnt/...</code></strong> (&sect;9) &rarr; clean, dedup&rsquo;d EFI entries.</li>
+<li>Reboot &rarr; kernel mounts the UFS root, no overlay flag + RW provider &rarr; <strong>plain installed system, no union, ever.</strong></li>
+</ol>
+<div class="callout">
+<p><span class="pill pill-neutral">Consequence to plan for</span> The <strong>live ISO is a superset of the installed base.</strong> You slimmed UFS userland out of the installed system (<code>newfs</code>/<code>fsck</code>/<code>mount_ufs</code>, 2026-05-27) &mdash; but the installer needs them <em>in the live image</em>: <code>gpart</code>, <code>newfs_ffs</code>, <code>fsck_ffs</code>, <code>cpdup</code>, <code>efibootmgr</code>. So <code>build.sh</code>&rsquo;s ISO path carries an installer-toolkit layer the cloned target doesn&rsquo;t keep.</p>
+</div>
+
+<h2 id="tools">9. Tool &amp; bootloader compatibility (efibootmgr, df)</h2>
+<h3>The <code>/sysroot</code> efibootmgr bug &mdash; and why our design avoids it for free</h3>
+<p>Real-world evidence: <a href="https://github.com/gershwin-desktop/gershwin-on-freebsd/issues/14">gershwin-on-freebsd #14/#15</a>, where the live ISO produces mangled EFI entries (<code>ebsd\loader.efi</code> = <code>\EFI\freebsd\loader.efi</code> with the first 8 chars &mdash; <code>strlen("/sysroot")</code> &mdash; stripped). The cause is <code>efibootmgr.c:1047</code>:</p>
+<pre><code>abspath[strlen(abspath) - strlen(relpath) - 1] = '\0';</code></pre>
+<p>A raw <code>strlen()</code>-offset prefix strip with <strong>no check that the mount is actually a prefix</strong>. It only misfires when the global mount table reports a mountpoint with a stale prefix (<code>/sysroot/media/x</code>) that userland&rsquo;s view (<code>/media/x</code>) lacks &mdash; a property of a <strong>reroot/pivot-to-<code>/sysroot</code></strong> model. NextBSD&rsquo;s design <strong>has no <code>/sysroot</code></strong>: the kernel mounts root at <code>/</code> and overlays in place (no pivot, no chroot), so <code>rootvnode</code> is <code>/</code> and every mountpoint name is rooted at <code>/</code>. The mount table is <em>structurally incapable</em> of the divergence &mdash; so the bug can&rsquo;t fire, with <strong>no patch to efibootmgr</strong> (keeping the never-touch-freebsd-src rule clean).</p>
+<p>The only remaining variable is the installer&rsquo;s <em>own</em> efibootmgr call: run it <strong>un-chrooted</strong> with explicit <code>/mnt/...</code> paths (not inside a target chroot whose view diverges from <code>getfsstat</code>). Going further &mdash; making <code>getfsstat(2)</code> report chroot-relative mountpoints &mdash; is possible but a deep, broad semantic change; <strong>rejected as overkill</strong>.</p>
+<h3>Don&rsquo;t patch <code>df</code> &mdash; use <code>MNT_IGNORE</code></h3>
+<p>Because the kernel (Option&nbsp;B) creates the layers, it mounts the lower and upper with <code>MNT_IGNORE</code> &mdash; which <code>df</code> already honors by default (<code>bin/df/df.c:258</code>; the flag is literally documented &ldquo;do not show entry in df&rdquo;, <code>mount.h:421</code>). Result: every mount-enumerating tool (df, <code>diskarbitrationd</code>, the GUI disk layer) sees <strong>one clean <code>/</code></strong>, while <code>MNT_ROOTFS</code> stays on the lower so root-introspection still finds the truth. No tool is patched; the topology is presented honestly-but-cleanly via a standard flag.</p>
+<h3>Duplicate EFI entries (gershwin #14) &mdash; installer logic, separately</h3>
+<p>Each install adding a fresh <code>BootXXXX</code> is an <em>installer</em> dedup problem, not solved by the overlay or any efibootmgr path fix: before adding, check for an existing entry with the <strong>same device-path target</strong> (not the <code>FreeBSD</code> label) and skip it; honor intentional parallel installs by matching exact target. Track in the installer, not base.</p>
+
+<h2 id="recommend">10. Recommendation &amp; decision matrix</h2>
+<table>
+<thead><tr><th>Decision</th><th>Recommended</th><th>Alternative</th></tr></thead>
+<tbody>
+<tr><td>RO root primitive</td><td><strong>geom_uzip</strong> of a UFS image</td><td>tarfs-zstd (prototype both)</td></tr>
+<tr><td>Writable overlay</td><td><strong>tmpfs upper + unionfs over <code>/</code></strong></td><td>tmpfs on <code>/var</code>+<code>/tmp</code> only (guaranteed-stable)</td></tr>
+<tr><td>Where it&rsquo;s built</td><td><strong>kernel</strong> <code>vfs_mountroot</code> hook (Option&nbsp;B), <code>MNT_IGNORE</code> layers</td><td>launchd overlay (Option&nbsp;A) as no-patch first step</td></tr>
+<tr><td>Live vs installed</td><td><strong><code>vfs.root.overlay</code> kenv</strong> declared by the live image + RO-provider auto-detect</td><td>&mdash;</td></tr>
+<tr><td>launchd root step</td><td><strong>gate on <code>MNT_RDONLY</code></strong> (skip if writable)</td><td>&mdash;</td></tr>
+<tr><td>Install</td><td><strong><code>cpdup</code> &rarr; plain rw-UFS</strong>, fresh no-overlay <code>loader.conf</code>, un-chrooted efibootmgr</td><td>&mdash;</td></tr>
+<tr><td>Artifacts</td><td><strong>both</strong>: live <code>.iso</code> + the existing rw-UFS GPT image</td><td>&mdash;</td></tr>
+</tbody>
+</table>
+
+<h2 id="ci">11. CI for ISO + image, and what gets touched where</h2>
+<ul>
+<li><strong>One staged <code>rootfs/</code></strong> &rarr; two envelopes: <code>makefs -t ffs</code> &rarr; GPT disk image (today); <code>mkuzip</code> + <code>makefs -t cd9660</code> (or <code>mkisoimages.sh</code>) &rarr; the live <code>.iso</code>.</li>
+<li><strong>Boot-test both</strong>: disk image via the existing GPT path; live ISO via <code>qemu -cdrom</code>, asserting (a) <code>mount</code> shows <code>unionfs on /</code>, (b) a write to <code>/</code> succeeds, (c) <code>df</code> shows a single clean <code>/</code>, (d) the daemon stack starts. A <code>cpdup</code>-install smoke test (install to a scratch disk, reboot it, confirm plain rw-UFS / no union) is the strong follow-up.</li>
+<li><strong>Publish both</strong>, dated, per #70.</li>
+</ul>
+<table>
+<thead><tr><th>Repo</th><th>Change</th></tr></thead>
+<tbody>
+<tr><td><strong>nextbsd-kernel</strong></td><td>bake the &sect;2 FS tokens into <code>config/NEXTBSD</code> (as with #37); add the <strong>Option&nbsp;B <code>vfs.root.overlay</code> hook</strong> (with <code>MNT_IGNORE</code> layers) as a <code>patches/</code> + <code>src-overlay/conf/</code> fragment.</td></tr>
+<tr><td><strong>nextbsd</strong> (build.sh)</td><td><code>mkuzip</code>+ISO the same <code>rootfs</code>; live <code>loader.conf</code> with <code>vfs.root.overlay</code>; the <strong>launchd <code>MNT_RDONLY</code>-gated</strong> root step; the <strong>cpdup installer</strong> + toolkit layer; publish + boot-test both. Closes #70 and lands the live model.</td></tr>
+<tr><td><strong>CI</strong></td><td>add the <code>qemu -cdrom</code> live-ISO boot test (+ cpdup-install smoke) next to the disk-image test; both gate publish.</td></tr>
+</tbody>
+</table>
+
+<h2 id="caveats">12. Honest caveats &amp; open questions</h2>
+<ul>
+<li><strong>unionfs at root is the one real risk</strong> &mdash; stress it (parallel rename/unlink, package ops) before declaring it default; the <code>tmpfs</code>-only-<code>/var</code>+<code>/tmp</code> fallback is always there.</li>
+<li><strong>tarfs vs uzip is empirical</strong> &mdash; measure boot-to-login and cold app-launch on both.</li>
+<li><strong>Option&nbsp;B unionfs-near-root</strong> must not inherit <code>MNT_ROOTFS</code> and must keep <code>/dev</code> visible; new code to write and test.</li>
+<li><strong>The kenv must not leak to the target</strong> &mdash; the installer writes a fresh <code>loader.conf</code>; do not copy the live overlay line.</li>
+<li><strong>Installer efibootmgr must run un-chrooted</strong> with <code>/mnt</code> paths.</li>
+<li><strong>Live-image toolkit superset</strong> &mdash; carry <code>newfs</code>/<code>fsck</code>/<code>gpart</code>/<code>cpdup</code>/<code>efibootmgr</code> on the ISO even though the slim installed base dropped them.</li>
+<li><strong>Memory accounting</strong> for the RAM upper on long live sessions; document a cap and the persistence-upper option.</li>
+<li><strong>Open question (resolved):</strong> live ISO both runs live <em>and</em> installs (cpdup), one image, one kernel.</li>
+</ul>
+
+<h2 id="refs">13. References</h2>
+<p class="cite">freebsd-src @ <code>releng/15.0</code>. FS option gate <code>sys/conf/options:260&ndash;279</code>; tokens <code>:119,138,278</code>. Source gating <code>sys/conf/files:3664&ndash;3678,3755&ndash;3759</code>. RO enforcement <code>sys/geom/uzip/g_uzip.c:543,766</code>; <code>sys/fs/tarfs/tarfs_vfsops.c:948,1030,1246</code>; <code>tarfs_io.c:30</code>. Root mount <code>sys/kern/vfs_mountroot.c:69&ndash;86,303&ndash;423,786&ndash;792,1078&ndash;1155</code>. PID&nbsp;1/init_path <code>sys/kern/init_main.c:716&ndash;797</code>. md preload <code>sys/dev/md/md.c:175,2046&ndash;2129</code>; <code>stand/defaults/loader.conf:89&ndash;90</code>. unionfs <code>sys/fs/unionfs/union_vfsops.c:104,112&ndash;114,270&ndash;272</code>. tmpfs/<code>MNT_IGNORE</code>/df <code>sys/sys/mount.h:421</code>; <code>bin/df/df.c:249&ndash;258</code>; <code>sbin/mdmfs/mdmfs.c:310&ndash;319</code>. Live media <code>release/amd64/mkisoimages.sh:78,85</code>; <code>libexec/rc/rc.d/var:64</code>; <code>rc.d/tmp:43&ndash;55</code>; <code>rc.d/root:21&ndash;30</code>. efibootmgr bug <code>usr.sbin/efibootmgr/efibootmgr.c:1045&ndash;1047</code>. NextBSD <code>build.sh:2843&ndash;2910</code>. External: <a href="https://github.com/gershwin-desktop/gershwin-on-freebsd/issues/14">gershwin-on-freebsd #14/#15</a>.</p>
+
+<p class="footnote">Draft design record, 2026-06-09 &mdash; reviewed locally, not pushed. The through-line that held across the whole investigation: <em>launchd owns root writability, the kernel ships everything baked, and nothing pivots</em> &mdash; which is what makes the writable live root, the clean <code>df</code>, the cpdup install, and the absence of the <code>/sysroot</code> efibootmgr bug all fall out of the same few decisions.</p>
+
+</div>
+</body>
+</html>

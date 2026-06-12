@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD library resolution: finding /usr/local/lib without a boot service — design</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+  .axis { background:white; border:1px solid var(--border); border-radius:4px; padding:4px 20px 8px; margin:14px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; relates to <a href="https://github.com/nextbsd-redux/nextbsd/issues/278">nextbsd&nbsp;#278</a> (pkg/ports lib resolution), <a href="https://github.com/nextbsd-redux/nextbsd/issues/277">#277</a> (path_helper), and the <a href="nextbsd-live-root-overlay-plan.html">live-root design</a></p>
+
+<h1>NextBSD library resolution: finding <code>/usr/local/lib</code> without a boot service</h1>
+
+<p class="lede">NextBSD runs the stock FreeBSD ports tree (pkg) on an Apple-shaped system &mdash; launchd PID&nbsp;1, Apple userland, no rc.d. pkg binaries link <em>bare sonames</em> (<code>libpcre2-8.so.0</code>) and rely on the runtime linker to find them in <code>/usr/local/lib</code> &mdash; but NextBSD registers no such path, so <code>git</code> dies at exec: <code>ld-elf.so.1: Shared object "libpcre2-8.so.0" not found</code>. The reflexive fix &mdash; a boot-time <code>ldconfig</code> one-shot &mdash; is exactly the rc.d pattern we're leaving behind, and it turns out it is <em>not</em> how Apple does it either. This doc maps the real solution space from three angles: FreeBSD's rtld internals, NextBSD's current build, and Apple's dyld model.</p>
+
+<p class="meta">2026-06-10. Synthesized from three parallel source investigations: <code>freebsd-src@releng/15.0</code> (rtld + ldconfig), the <code>nextbsd</code> build (<code>build.sh</code>, overlay, vendored launchd), and Apple's dyld / dyld-shared-cache model. Citations are <code>file:line</code> unless noted. A design spike for #278.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Recommendation in three moves</span></p>
+<ul>
+<li><strong>Bake <code>/usr/local/lib</code> into rtld's compiled default search path</strong> (Lever&nbsp;B) &mdash; a one-line build override in the <code>nextbsd-freebsd-compat</code> rtld build (<code>-DSTANDARD_LIBRARY_PATH="/lib:/usr/lib:/usr/local/lib"</code>). No file, no daemon, no boot step &mdash; and it is the <em>only</em> lever that also covers setuid/setgid binaries. Fixes the reported failure outright.</li>
+<li><strong>For the long tail of arbitrary pkg lib dirs, regenerate a <em>persistent</em> hints file on <em>package change</em>, never at boot</strong> (Lever&nbsp;D+A) &mdash; a <strong>launchd <code>WatchPaths</code> daemon</strong> (no <code>RunAtLoad</code>) over <code>/usr/local/libdata/ldconfig</code> runs <code>ldconfig</code> into a persistent path when a port adds/removes a lib dir; rtld reads it via a globally-set <code>LD_ELF_HINTS_PATH</code>. The hints live in the <em>writable</em> layer (tmpfs upper / disk), never baked. This is the FreeBSD analog of <code>update_dyld_shared_cache</code>: Apple rebuilds its cache at <em>install</em> time, not at boot.</li>
+<li><strong>Keep first-party binaries self-describing</strong> (Lever&nbsp;C) &mdash; the <code>-Wl,-rpath,/usr/lib/system</code> convention NextBSD <em>already</em> uses <em>is</em> the Apple model. That's the north star; it just can't be retrofitted onto the stock ports tree.</li>
+</ul>
+<p><strong>Explicitly rejected:</strong> a boot-time <code>ldconfig</code> one-shot LaunchDaemon. Apple has no equivalent, it's the rc.d pattern, and it's unnecessary given the above.</p>
+</div>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Locked after review</span> what the back-and-forth settled:</p>
+<ul>
+<li><strong>Ship a prebuilt baseline at build time &mdash; the Apple model.</strong> Apple ships a <em>prebuilt</em> dyld shared cache baked into the OS image; the analog is <code>build.sh</code> generating the initial <code>/var/db/ld-elf.so.hints</code> from the base's lib dirs (the existing <code>ldconfig</code> prime, <strong>redirected to the persistent path and extended</strong>). It's a <em>build</em> step, not a boot step. Lever&nbsp;B (compiled default) remains primary and is the only setuid-safe lever; the prebuilt baseline gives <code>LD_ELF_HINTS_PATH</code> a valid target from boot&nbsp;one and covers any base lib dir beyond the compiled default; the <code>WatchPaths</code> daemon keeps it fresh on package change. Three moments &mdash; compile / image-build / package-change &mdash; mapping to the linker built-in / shipped cache / <code>update_dyld_shared_cache</code>.</li>
+<li><strong>The tail is real and self-evident.</strong> <code>/usr/local/libdata/ldconfig/</code> on a live box already holds <code>gcc14</code> &rarr; <code>/usr/local/lib/gcc14</code>, <code>perl5</code> &rarr; <code>/usr/local/lib/perl5/5.42/mach/CORE</code>, <code>pkg</code> &rarr; <code>/usr/local/lib/compat/pkg</code> &mdash; version-specific subdirs Lever&nbsp;B can't hardcode. One <code>WatchPaths</code> on that directory covers all present and future ports.</li>
+<li><strong>The mechanism is launchd-native, not a pkg fork.</strong> The vendored launchd defines <code>WatchPaths</code>/<code>QueueDirectories</code> and has the <code>EVFILT_VNODE</code> machinery, so a <code>WatchPaths</code> daemon (no <code>RunAtLoad</code>, with <code>ThrottleInterval</code>) is the path-watch trigger &mdash; cleaner than a pkg trigger and decoupled from pkg. (A pkg trigger remains a viable fallback if the WatchPaths job-activation path turns out not to be fully ported.)</li>
+<li><strong>It stays one-shot-free, and that's consistent.</strong> An audit of <code>/System/Library/LaunchDaemons</code> found NextBSD runs <em>zero</em> boot one-shots today &mdash; every daemon is persistent (<code>KeepAlive</code>) or on-demand (<code>syslogd</code>/<code>aslmanager</code> are socket/trigger-activated, not boot scans). A boot <code>ldconfig</code> would be the lone exception.</li>
+<li><strong>Persistence holds.</strong> NextBSD has no rc.d, so no <code>cleanvar</code>/<code>cleartmp</code> wipes <code>/var</code> at boot, and nothing tmpfs-mounts over it. The generated hints persist on disk (installed) and track the ephemeral session in lockstep with the pkg installs themselves (live ISO).</li>
+</ul>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#problem">The problem, precisely</a></li>
+<li><a href="#apple">The Apple model &mdash; no service, self-describing, cache-at-install</a></li>
+<li><a href="#rtld">FreeBSD's rtld &mdash; the search order and the four levers</a></li>
+<li><a href="#current">Where NextBSD is today</a></li>
+<li><a href="#options">Option matrix</a></li>
+<li><a href="#recommend">Recommendation &amp; how it maps to Apple</a></li>
+<li><a href="#setuid">The setuid caveat (why Lever B is mandatory)</a></li>
+<li><a href="#impl">Implementation</a></li>
+<li><a href="#open">Open questions to confirm</a></li>
+<li><a href="#refs">References</a></li>
+</ol>
+</div>
+
+<h2 id="problem">1. The problem, precisely</h2>
+<p>A FreeBSD ports binary records each dependency as a bare <code>DT_NEEDED</code> soname &mdash; <code>libpcre2-8.so.0</code> &mdash; with <em>no path</em>. It is <strong>not self-describing</strong>; it trusts the system to know where <code>/usr/local/lib</code> is. On stock FreeBSD that knowledge comes from the <code>ld-elf.so.hints</code> file that <code>rc.d/ldconfig</code> rebuilds at every boot. NextBSD has no rc.d and never builds those hints, so the runtime linker only searches its compiled-in default (<code>/lib:/usr/lib</code>) and the lookup fails.</p>
+<p>Observed on a booted T460s: <code>ldd git</code> shows <code>libpcre2-8.so.0 =&gt; not found</code> and <code>libintl.so.8 =&gt; not found</code> &mdash; both <em>are</em> installed in <code>/usr/local/lib</code> &mdash; while the base libs in <code>/lib</code> resolve fine. The one-line confirmation: <code>ldconfig -m /usr/local/lib</code> makes <code>git --version</code> run. The question is not <em>whether</em> to point rtld at <code>/usr/local/lib</code>, but <em>how</em> &mdash; without a boot-time scan.</p>
+
+<h2 id="apple">2. The Apple model &mdash; no service, self-describing, cache-at-install</h2>
+<p>macOS does not use <code>ld-elf</code>; it uses <strong>dyld</strong>, which has <strong>no <code>ldconfig</code>, no hints file, and no <code>ld.so.cache</code></strong>. Resolution is performed <em>in-process</em> at <code>exec</code>/<code>dlopen</code> from paths baked into each Mach-O:</p>
+<ul>
+<li><strong>Install name (<code>LC_ID_DYLIB</code>)</strong> &mdash; every dylib carries its own canonical path; the static linker copies it verbatim into each client as an <code>LC_LOAD_DYLIB</code>. If it's an absolute path, dyld walks straight to it &mdash; no search, no registry.</li>
+<li><strong><code>@rpath</code> / <code>@loader_path</code> / <code>@executable_path</code></strong> &mdash; placeholders resolved against the client's <code>LC_RPATH</code> entries (or the loader/executable directory). The ELF analog of <code>@loader_path</code> is <code>$ORIGIN</code>.</li>
+</ul>
+<p>The <strong>dyld shared cache</strong> is the closest thing to "a service," but it holds <em>OS libraries only</em>, is built by the installer (<code>update_dyld_shared_cache</code>) at <strong>install/update time</strong> (not boot, and only effective after reboot), and is <em>never</em> a registry for third-party libraries. Homebrew (<code>/usr/local</code> or <code>/opt/homebrew</code>) and MacPorts (<code>/opt/local</code>) resolve their libs by <strong>rewriting install names to absolute prefix paths at package/pour time</strong> with <code>install_name_tool</code> (Homebrew's <code>keg_relocate</code>). The binaries are made self-describing; nothing scans the disk.</p>
+
+<div class="callout">
+<p><span class="pill pill-neutral">Takeaway</span> A dislike of boot one-shots matches Apple <em>exactly</em>. macOS has <strong>zero</strong> boot-time linker indexing &mdash; no daemon is consulted for routine resolution at all. The only "cache" is an OS-image artifact rebuilt by the installer, never at boot, never for third-party libs. So the Apple-faithful instinct is: <strong>self-describing binaries, fixed at package time; any global cache is an event-driven, install-time, persistent artifact &mdash; not a boot step.</strong></p>
+</div>
+
+<h2 id="rtld">3. FreeBSD's rtld &mdash; the search order and the four levers</h2>
+<p>For a bare soname (driver <code>find_library()</code>, <span class="cite">rtld.c:1915</span>), rtld searches in order <span class="cite">(rtld.c:1969&ndash;2005)</span>: <code>DT_RPATH</code> &rarr; <code>LD_LIBRARY_PATH</code> &rarr; <code>DT_RUNPATH</code> &rarr; <code>LD_LIBRARY_PATH_FDS</code> &rarr; <strong>the hints file</strong> <span class="cite">(rtld.c:1996)</span> &rarr; <strong>the compiled standard path</strong> <span class="cite">(rtld.c:2001)</span>. With no rpath/runpath and no <code>LD_LIBRARY_PATH</code>, only the last two can save a pkg binary. Four levers fall out:</p>
+
+<div class="axis">
+<h3>(a) Relocate the hints to a persistent file &mdash; <code>LD_ELF_HINTS_PATH</code></h3>
+<p>The hints path defaults to <code>/var/run/ld-elf.so.hints</code> <span class="cite">(rtld_paths.h:48&ndash;54)</span> but is overridable at runtime by the <code>LD_ELF_HINTS_PATH</code> environment variable <span class="cite">(rtld.c:385, read at 756, opened at 2148)</span>. Set it globally (e.g. in launchd's PID&nbsp;1 environment, inherited by every child) to a non-tmpfs path and rtld reads persistent hints. <span class="pill pill-warn">caveat</span> it's flagged <code>unsecure</code> and is purged for setuid/setgid binaries <span class="cite">(rtld.c:385,738&ndash;743)</span>, which then fall back to the compiled default path.</p>
+</div>
+
+<div class="axis">
+<h3>(b) Bake <code>/usr/local/lib</code> into the compiled default path</h3>
+<p><code>STANDARD_LIBRARY_PATH</code> is <code>"/lib:/usr/lib"</code> <span class="cite">(rtld_paths.h:76&ndash;78)</span> and is guarded by <code>#ifndef</code> &mdash; so it is overridable by a <code>-DSTANDARD_LIBRARY_PATH=...</code> in <code>CFLAGS</code> at build time, <strong>with no source edit</strong>. Baking <code>"/lib:/usr/lib:/usr/local/lib"</code> resolves the bare-soname case at search step&nbsp;7 with <em>zero hints, zero service</em>, and it covers setuid binaries too. The most robust single lever.</p>
+</div>
+
+<div class="axis">
+<h3>(c) Per-binary <code>$ORIGIN</code> / RUNPATH (the self-describing route)</h3>
+<p>rtld supports <code>$ORIGIN</code>-relative runpaths <span class="cite">(rtld.c:1251,1264)</span> &mdash; the FreeBSD analog of Apple's <code>@loader_path</code>. This is the genuinely Apple-native answer, but it requires every binary to carry the runpath; the stock ports tree links bare sonames by design, so it can't be retrofitted wholesale (and <code>$ORIGIN</code> is also disabled for setuid). Right for <em>first-party</em> binaries only &mdash; which NextBSD already does (&sect;4).</p>
+</div>
+
+<div class="axis">
+<h3>(d) Regenerate persistent hints on package change, never at boot</h3>
+<p>The hints format is a position-independent header plus a single colon-separated dir string &mdash; no inodes, timestamps, or host state <span class="cite">(elfhints.c:266&ndash;319; elf-hints.h:35&ndash;46)</span>, little-endian by default. So a hints file is <strong>bakeable and cross-boot stable</strong>, and <code>ldconfig</code> can be told to write <em>any</em> path. Run it from a <strong>pkg install/deinstall trigger</strong> to a persistent file; pair with lever&nbsp;(a) so rtld reads it. Event-driven, persisted, no boot one-shot &mdash; the structural twin of <code>update_dyld_shared_cache</code>.</p>
+</div>
+
+<p>For completeness, stock FreeBSD's <code>rc.d/ldconfig</code> default <code>ldconfig_paths</code> is <code>/usr/lib/compat ${localbase}/lib ${localbase}/lib/compat/pkg</code> and <code>ldconfig_local_dirs=${localbase}/libdata/ldconfig</code> (the per-package drop-in convention) &mdash; the dir set any replacement must reproduce.</p>
+
+<h2 id="current">4. Where NextBSD is today</h2>
+<ul>
+<li><strong>First-party binaries are already Apple-style.</strong> Every NextBSD/Apple-stack binary links <code>-Wl,-rpath,/usr/lib/system</code> (dozens of sites in <code>build.sh</code>). <code>build.sh:748&ndash;758</code> states the philosophy outright: hints are primed only for <code>/usr/lib/system</code> because "our binaries &hellip; all bake <code>-Wl,-rpath,/usr/lib/system</code> at link time, matching Apple's macOS convention where <code>LC_RPATH</code> load commands make each binary self-describing and <code>ld-elf.so.conf</code>-style global registries aren't used." <strong>This is Lever&nbsp;C, already shipped.</strong></li>
+<li><strong>The priming never lists <code>/usr/local/lib</code>.</strong> <code>chroot rootfs ldconfig -m /usr/lib /usr/lib/system</code> (re-run after each Apple-lib install) builds hints covering only those two dirs &mdash; which is exactly why ports binaries fail.</li>
+<li><strong><code>/var/run</code> is <em>not</em> tmpfs.</strong> It is a plain baked directory; nothing &mdash; not launchd, not fstab, not the live union &mdash; mounts a tmpfs over it. A build-baked hints file therefore <em>survives reboot on both the installed UFS image and the live uzip union</em>. <span class="pill pill-warn">to confirm</span> yet the tested ISO had <em>no</em> <code>/var/run/ld-elf.so.hints</code> at runtime &mdash; so either the priming isn't reaching the uzip or it fails silently (&sect;9). Either way it would never have listed <code>/usr/local/lib</code>.</li>
+<li><strong>rtld + ldconfig are from-source and influenceable &mdash; in the right repo.</strong> They ship in the <code>nextbsd-base</code> artifact built by <strong>nextbsd-freebsd-compat</strong>'s from-source <code>/usr/src</code> build. So Lever&nbsp;B's <code>-D</code> override lives there &mdash; <em>not</em> in nextbsd-kernel (kernel-only src-overlay) and <em>never</em> in freebsd-src.</li>
+<li><strong>launchd's writable hook</strong> is <code>launchd_root_make_writable()</code> <span class="cite">(launchd.c:424, called at 313)</span>, which runs <em>after</em> <code>jobmgr_init()</code> and <em>before</em> <code>launchd_scan_launchdaemons()</code> <span class="cite">(launchd.c:352)</span> &mdash; i.e. root is rw before any daemon. It only remounts <code>/</code>; it touches no tmpfs and no <code>/var/run</code>. (This is where an "after root rw" step <em>would</em> anchor, if we were doing one &mdash; we're not.)</li>
+<li><strong>The overlay <code>/etc</code> ships none of</strong> <code>ld-elf.so.conf</code>, <code>shells</code>, <code>man.conf</code>, <code>manpath.config</code>, <code>profile</code>, <code>csh.cshrc</code> (overlay has only <code>asl.conf, fstab, group, hosts, login.conf, master.passwd, motd.template, nsswitch.conf, pam.d/, ssh/</code>). The missing config is tracked in #278.</li>
+</ul>
+
+<h2 id="options">5. Option matrix</h2>
+<table>
+<tr><th>Option</th><th>Verdict</th><th>Apple-alignment</th><th>Covers setuid?</th><th>Boot step?</th></tr>
+<tr><td><strong>Boot-time <code>ldconfig</code> LaunchDaemon</strong> (one-shot)</td><td><span class="pill pill-bad">reject</span></td><td>None &mdash; Apple has no boot linker step</td><td>n/a</td><td><strong>yes</strong> (the rc.d pattern)</td></tr>
+<tr><td><strong>B &mdash; compiled default incl. <code>/usr/local/lib</code></strong></td><td><span class="pill pill-good">primary</span></td><td>Neutral (a sane default; no registry)</td><td><strong>yes</strong></td><td>no</td></tr>
+<tr><td><strong>D+A &mdash; persistent hints, rebuilt on pkg change, read via <code>LD_ELF_HINTS_PATH</code></strong></td><td><span class="pill pill-good">secondary (the tail)</span></td><td>Strong &mdash; twin of <code>update_dyld_shared_cache</code> (install-time, persistent)</td><td>no (env purged)</td><td>no (event-driven)</td></tr>
+<tr><td><strong>C &mdash; self-describing first-party binaries (rpath/<code>$ORIGIN</code>)</strong></td><td><span class="pill pill-good">already shipped</span></td><td>Exact &mdash; the dyld model</td><td>no</td><td>no</td></tr>
+<tr><td><strong>Self-describe the whole ports tree</strong> (rpath fixup at pkg time)</td><td><span class="pill pill-neutral">north star, impractical</span></td><td>Exact &mdash; Homebrew <code>keg_relocate</code></td><td>no</td><td>no</td></tr>
+<tr><td>Static baked hints only (no rebuild trigger)</td><td><span class="pill pill-warn">half-measure</span></td><td>Weak</td><td>no</td><td>no, but stale on user pkg installs</td></tr>
+</table>
+
+<h2 id="recommend">6. Recommendation &amp; how it maps to Apple</h2>
+<p>NextBSD ships the stock ports tree, so the pure-Apple answer (self-describe every binary) isn't retrofittable. The faithful-<em>and</em>-pragmatic shape is a layered one, none of it a boot service:</p>
+<ol>
+<li><strong>Lever&nbsp;B (foundation).</strong> Bake <code>/usr/local/lib</code> (and <code>/usr/lib/system</code>) into rtld's compiled default in nextbsd-freebsd-compat. Config-free, boot-free, covers setuid, survives the union and tmpfs entirely. This alone fixes the reported <code>libpcre2-8.so.0</code> failure for the common case (libs in <code>/usr/local/lib</code>).</li>
+<li><strong>Lever&nbsp;D+A (the tail).</strong> A pkg install/deinstall trigger regenerates a <em>persistent</em> hints file (e.g. <code>/var/db/ld-elf.so.hints</code>) covering the full ports dir set (<code>/usr/local/lib/compat/pkg</code> + every <code>libdata/ldconfig</code> drop-in); rtld reads it via <code>LD_ELF_HINTS_PATH</code> set once in launchd's PID&nbsp;1 environment. <strong>This is the macOS analogy made literal:</strong> pkg is the "installer," the trigger is <code>update_dyld_shared_cache</code>, the file is the shared cache &mdash; rebuilt on package change, persisted, never at boot.</li>
+<li><strong>Lever&nbsp;C (keep).</strong> First-party/vendored components stay self-describing via <code>-Wl,-rpath</code> (and <code>$ORIGIN</code> where relative) &mdash; the existing convention, which is the truest Apple model.</li>
+</ol>
+<p>In practice <strong>Lever&nbsp;B may be all most users ever need</strong> (almost every ports lib lands in <code>/usr/local/lib</code>); D+A is the completeness layer for packages that scatter libs elsewhere. Crucially, the user's instinct is vindicated twice over: a boot one-shot is both un-Apple <em>and</em> unnecessary.</p>
+
+<h2 id="setuid">7. The setuid caveat (why Lever B is mandatory)</h2>
+<p>Both the <code>LD_ELF_HINTS_PATH</code> env lever (a) and <code>$ORIGIN</code> runpaths (c) are purged for setuid/setgid binaries <span class="cite">(rtld.c:738&ndash;743, 1269)</span> &mdash; a tainted binary ignores them and falls back to the <em>compiled</em> default path. So any setuid pkg binary that needs a ports lib can only be served by <strong>Lever&nbsp;B</strong> (the compiled default) or by a real file at the literal compiled hints path. This is the decisive reason B is the non-negotiable foundation and D+A is an augmentation, not a substitute.</p>
+
+<h2 id="impl">8. Implementation</h2>
+<ul>
+<li><strong>Lever B:</strong> in <strong>nextbsd-freebsd-compat</strong>, add a build override for <code>libexec/rtld-elf</code> &mdash; <code>CFLAGS+= -DSTANDARD_LIBRARY_PATH=\"/lib:/usr/lib:/usr/lib/system:/usr/local/lib\"</code> (via a Makefile fragment / src-overlay, not a freebsd-src edit). Verify with <code>ld-elf.so.1 -v</code> ("Default lib path").</li>
+<li><strong>Lever D:</strong> ship a pkg trigger (e.g. <code>/usr/local/etc/pkg/triggers/</code> or a base <code>@postexec</code>) that runs <code>ldconfig -f /var/db/ld-elf.so.hints &lt;dir set&gt;</code> on install/deinstall. The dir set = <code>/usr/lib /usr/lib/system /usr/lib/compat /usr/local/lib</code> + expansion of <code>/usr/local/libdata/ldconfig/*</code>.</li>
+<li><strong>Lever A glue:</strong> set <code>LD_ELF_HINTS_PATH=/var/db/ld-elf.so.hints</code> in launchd's PID&nbsp;1 environment so all children inherit it (vendored launchd, or <code>launchctl setenv</code> very early). Confirm it reaches ssh/login sessions.</li>
+<li><strong>Config files:</strong> ship <code>/etc/ld-elf.so.conf</code> (listing <code>/usr/local/lib</code>) in <code>overlays/etc/</code> as the canonical ldconfig input, alongside the other missing base <code>/etc</code> files from #278.</li>
+<li><strong>Fix the priming</strong> (or retire it): either confirm why the baked <code>/var/run</code> hints are absent at runtime and make the build prime <code>/usr/local/lib</code> too, or drop the priming once Lever&nbsp;B lands and it's redundant.</li>
+</ul>
+
+<h2 id="open">9. Open questions to confirm</h2>
+<ul>
+<li><strong>Why was <code>/var/run/ld-elf.so.hints</code> absent on the tested ISO</strong> when <code>build.sh</code> primes it and <code>/var/run</code> isn't tmpfs? (Priming not reaching the uzip? <code>ldconfig -m</code> failing in the chroot with no pre-existing hints? A clean step? Or the tested ISO predates the priming.) Resolve before trusting any baked-hints path.</li>
+<li><strong>Does <code>LD_ELF_HINTS_PATH</code> set in launchd's PID&nbsp;1 env actually reach all children</strong> &mdash; getty/login shells <em>and</em> ssh sessions &mdash; given the same propagation quirks we hit with <code>PATH</code> (#277)?</li>
+<li><strong>Perf of Lever&nbsp;B:</strong> an extra <code>stat()</code> of <code>/usr/local/lib</code> on every search miss. Almost certainly negligible, but worth a sanity check on a daemon-heavy boot.</li>
+<li><strong>Compat dirs:</strong> do we need <code>/usr/lib/compat</code> / <code>/usr/local/lib/compat/pkg</code> in the compiled default, or only in the event-driven hints?</li>
+</ul>
+
+<h2 id="refs">10. References</h2>
+<p><strong>freebsd-src@releng/15.0:</strong> <code>libexec/rtld-elf/rtld.c</code> (search order 1969&ndash;2005; <code>LD_ELF_HINTS_PATH</code> 385/756/2148; <code>$ORIGIN</code> 1251/1264; setuid purge 738&ndash;743/1269), <code>libexec/rtld-elf/rtld_paths.h</code> (<code>_PATH_ELF_HINTS</code> 48&ndash;54; <code>STANDARD_LIBRARY_PATH</code> 76&ndash;78), <code>sbin/ldconfig/elfhints.c</code> (hints writer 266&ndash;319), <code>include/elf-hints.h</code> (format 35&ndash;46), <code>libexec/rc/rc.d/ldconfig</code> + <code>libexec/rc/rc.conf</code> (defaults).</p>
+<p><strong>nextbsd:</strong> <code>build.sh:748&ndash;758</code> (priming + rpath philosophy), the <code>-Wl,-rpath,/usr/lib/system</code> sites, <code>overlays/etc/fstab</code>, <code>src/launchd/src/launchd.c:313,424</code> (make-writable + ordering); rtld/ldconfig sourced from <strong>nextbsd-freebsd-compat</strong>.</p>
+<p><strong>Apple:</strong> <a href="https://developer.apple.com/library/archive/documentation/DeveloperTools/Conceptual/DynamicLibraries/100-Articles/RunpathDependentLibraries.html">Run-Path Dependent Libraries</a>, <a href="https://keith.github.io/xcode-man-pages/dyld.1.html">dyld(1)</a>, <a href="https://keith.github.io/xcode-man-pages/install_name_tool.1.html">install_name_tool(1)</a>, <a href="https://theapplewiki.com/wiki/Dev:Dyld_shared_cache">dyld_shared_cache</a>, Homebrew <code>keg_relocate</code>.</p>
+
+<p class="footnote">Spike for <a href="https://github.com/nextbsd-redux/nextbsd/issues/278">nextbsd&nbsp;#278</a>. Investigations: FreeBSD rtld/ldconfig, NextBSD build/overlay/launchd, Apple dyld &mdash; run in parallel and synthesized here. The throughline: NextBSD already does the Apple thing for its own binaries (self-describing rpath); the gap is only the <em>stock ports tree</em>, and the fix is a compiled default + an install-time persistent cache &mdash; never a boot service.</p>
+
+</div>
+</body>
+</html>

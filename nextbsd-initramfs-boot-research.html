@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD live ISO boot transports — initramfs research</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0 auto; max-width: 920px; padding: 2.5rem 1.5rem 6rem;
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    color: var(--fg); background: var(--bg);
+  }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.45rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .25rem; }
+  p, li { color: var(--fg); }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre {
+    background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+    overflow-x: auto; font-size: .85rem; line-height: 1.45;
+    border-left: 3px solid var(--accent2);
+  }
+  pre code { background: none; padding: 0; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr {
+    background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent);
+    padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem;
+  }
+  .tldr h3 { margin-top: 0; color: var(--accent); }
+  .pill {
+    display: inline-block; font-size: .75rem; padding: 1px 8px; border-radius: 999px;
+    background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+    font-weight: 600; letter-spacing: .02em;
+  }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+    padding: 1rem 1.1rem;
+  }
+  .card h4 { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  blockquote {
+    margin: 1rem 0; padding: .5rem 1rem; border-left: 3px solid var(--accent);
+    background: #fff8f3; color: #333;
+  }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .keypath { background: var(--code-bg); padding: 2px 4px; border-radius: 3px; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .85em; color: #333; }
+  .footnote { font-size: .85rem; color: var(--muted); }
+  .nav { position: sticky; top: 0; background: var(--bg); padding: .5rem 0; margin: -2.5rem -1.5rem 2rem; padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule); font-size: .88rem; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .yes { color: var(--ok); font-weight: 600; }
+  .no  { color: var(--bad); font-weight: 600; }
+  .maybe { color: var(--warn); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#symptom">Symptom</a>
+  <a href="#wall">The handoff wall</a>
+  <a href="#why">Why it fails</a>
+  <a href="#physics">Firmware limits</a>
+  <a href="#linux">How Linux fixes it</a>
+  <a href="#nextbsd">NextBSD equivalent</a>
+  <a href="#components">geom_ventoy / exFAT / iSCSI</a>
+  <a href="#plan">Implementation</a>
+  <a href="#diagnose">Diagnosing real HW</a>
+  <a href="#refs">References</a>
+</nav>
+
+<h1>Why a FreeBSD live ISO won't boot under Ventoy / iPXE</h1>
+<p class="subtitle">The bootloader&ndash;kernel handoff wall, what Linux's initramfs really does about it, and what the NextBSD equivalent looks like. Background research for <a href="https://github.com/nextbsd-redux/nextbsd/issues/288">nextbsd#288</a>.</p>
+
+<section id="tldr" class="tldr">
+  <h3>TL;DR</h3>
+  <ul>
+    <li><strong>The bootloader is not what fails.</strong> On Ventoy and iPXE the FreeBSD loader reads the kernel + mfsroot fine. The thing that's missing &mdash; <code>/dev/iso9660/&lt;LABEL&gt;</code> &mdash; is created by the <em>kernel</em>, after the loader has already handed off and exited. Swapping bootloaders (GRUB, Apple's boot-132, &hellip;) changes nothing, because none of them is present when that device is supposed to appear.</li>
+    <li><strong>It's a hard firmware wall, not a FreeBSD bug.</strong> At <code>ExitBootServices()</code> the UEFI Block&nbsp;I/O the loader used is destroyed (spec-illegal to call afterward); on legacy BIOS an amd64 long-mode kernel physically cannot call real-mode <code>INT&nbsp;13h</code>. So a Ventoy vdisk or an iPXE SAN device &mdash; which exist <em>only</em> as firmware emulation &mdash; vanish the instant the kernel starts.</li>
+    <li><strong>Two physics classes.</strong> <em>Real block devices</em> (burned CD/DVD, dd'd USB, VM virtual CD) are genuine hardware the kernel re-drives &mdash; these work, modulo discovery timing. <em>Firmware-emulated / fragmented media</em> (Ventoy, iPXE&nbsp;sanboot, PXE/MEMDISK) cannot be re-reached by the kernel at all.</li>
+    <li><strong>Linux hits the exact same wall and never mounts the ISO at runtime.</strong> Its trick is the <em>initramfs</em>: kernel mountroot stays dumb; the RAM-resident initramfs is smart. For Ventoy it reconstructs the ISO from the <em>real</em> USB stick (mount exFAT + loop-mount, or a <code>dm-linear</code> segment remap). For iPXE it <em>fetches the root over the network</em> (dracut <code>livenet</code> / casper <code>netboot=url</code>, NFS, or iSCSI+iBFT). "Ubuntu boots over iPXE" means network-fetch-to-RAM, not a mounted CD.</li>
+    <li><strong>NextBSD already has the initramfs.</strong> It's the <code>mfsroot</code> + <code>/init</code> (<a href="https://github.com/nextbsd-redux/nextbsd">nextbsd-work</a> <code>build.sh</code>). The work is teaching <code>/init</code> the same find-the-root smarts: an <em>ordered probe</em> &mdash; local cd9660 &rarr; Ventoy reconstruct &rarr; network fetch.</li>
+    <li><strong>Recommended:</strong> Phase&nbsp;0 harden local-media discovery (longer/finer wait, scan <code>da*</code>) &mdash; fixes CD/DVD/USB/VM and likely the real-hardware case in hand; Phase&nbsp;1 network-fetch for iPXE (the Ubuntu path); Phase&nbsp;2 Ventoy after a feasibility spike (exFAT vs. baked-in <code>geom_ventoy</code> vs. a user-formatted data partition).</li>
+  </ul>
+</section>
+
+<h2 id="symptom">1. The symptom</h2>
+<p>The NextBSD live ISO boots end-to-end from a real USB stick and in a VM, but <a href="https://github.com/nextbsd-redux/nextbsd/issues/288">#288</a> reports it failing under <strong>Ventoy</strong> and <strong>PXE/iPXE</strong> with a tell-tale console trail:</p>
+<pre><code>[init] media: rootfs.uzip-MISSING
+mdconfig: realpath: No such file or directory
+[init] uzip dev: md1.uzip-ABSENT
+mount: /dev/md1.uzip: No such file or directory
+[init] rofs lower: /rofs-EMPTY
+[init] union assembled; ...
+exec: /sbin/launchd: not found  ->  init died
+panic: Going nowhere without my init!</code></pre>
+<p>Crucially, this is <strong>not</strong> the classic upstream "<code>cd9660 mountroot error 19</code>" panic. NextBSD's kernel root is <code>ufs:/dev/md0</code> &mdash; the in-RAM mfsroot &mdash; which mounts fine on every transport. The failure is one layer up, in the userland <code>/init</code> script: it mounts <code>cd9660:/dev/iso9660/NEXTBSD</code> to reach a loose <code>rootfs.uzip</code> on the boot media, and that device never appears. The same trail can also show up on <strong>real hardware</strong> (observed on a Dell Wyse&nbsp;5070 / Intel J4105 thin client) &mdash; see &sect;9 for why the <em>same symptom</em> there usually has a <em>different, easier cause</em>.</p>
+
+<h2 id="wall">2. The bootloader&ndash;kernel handoff wall</h2>
+<p>The central misconception is "the bootloader failed to produce <code>/dev/cd9660</code>." The bootloader does not produce that device at all. There are two separate device worlds with a hard wall between them:</p>
+<pre><code>   BOOTLOADER world                  | ExitBootServices |   KERNEL world
+   (FreeBSD loader / GRUB / boot-132) |   -- handoff --  |   (FreeBSD kernel)
+                                      |                  |
+   reads files via FIRMWARE:         |                  |   builds /dev from SCRATCH
+   * UEFI Block I/O protocol         |                  |   via its OWN native drivers:
+   * BIOS INT 13h                    |                  |   * xhci/umass -> da0
+   "disk0:" / currdev                |                  |   * ahci/ata   -> cd0/ada0
+                                     ---> firmware dies  |   * geom_label -> /dev/iso9660/LABEL</code></pre>
+<p>When you boot via Ventoy or iPXE, the bootloader <em>succeeds</em> &mdash; firmware (Ventoy's INT&nbsp;13h hook / iPXE's EFI Block&nbsp;I/O) is alive and serving the emulated disk, so the kernel and mfsroot load. Then <code>ExitBootServices()</code> fires, the firmware disk service is destroyed, and the kernel starts over with its <em>own</em> drivers talking to <em>real silicon</em>. <code>/dev/cd9660</code> (really <code>/dev/cd0</code> or <code>/dev/iso9660/&lt;LABEL&gt;</code>) is created <strong>here, by the kernel</strong>, only when <code>geom_label</code> tastes a provider carrying the ISO PVD magic <code>CD001</code> at offset <code>0x8000</code> (<code>sys/geom/label/g_label_iso9660.c</code>).</p>
+<blockquote><strong>Therefore a different bootloader cannot fix this.</strong> Every bootloader does the same thing: read via firmware, hand off, exit. None is present when the kernel builds <code>/dev</code>. (And Apple's <strong>boot-132</strong> boots a Mach-O XNU kernel, not the FreeBSD ELF kernel NextBSD runs &mdash; it's both the wrong layer <em>and</em> the wrong kernel.)</blockquote>
+
+<h2 id="why">3. Why it fails, per transport</h2>
+<table>
+  <tr><th>Transport</th><th>What the kernel sees</th><th>Why no <code>/dev/cd9660</code></th></tr>
+  <tr><td>Burned CD/DVD</td><td><code>cd0</code> via <code>ahci</code>/<code>ata</code> &mdash; real</td><td class="yes">Works &mdash; geom_label tastes it</td></tr>
+  <tr><td>dd'd USB stick</td><td><code>da0</code> via <code>xhci</code>/<code>umass</code> &mdash; real, whole-device ISO</td><td class="yes">Works &mdash; modulo discovery timing</td></tr>
+  <tr><td>VM virtual CD</td><td><code>cd0</code>/<code>ada0</code> &mdash; real emulated controller</td><td class="yes">Works</td></tr>
+  <tr><td><strong>Ventoy</strong></td><td><code>da0</code> = the <em>raw USB stick</em>; the ISO is a (often fragmented) <em>file</em> in Ventoy's exFAT partition</td><td class="maybe">No <code>CD001</code> at <code>da0</code> offset <code>0x8000</code> &rarr; geom_label finds nothing. Device is real, just not an ISO image at sector&nbsp;0.</td></tr>
+  <tr><td><strong>iPXE sanboot</strong></td><td>nothing &mdash; the "disk" was firmware/network emulation, gone at handoff</td><td class="no">No hardware for any native driver to attach</td></tr>
+  <tr><td><strong>PXE / MEMDISK</strong></td><td>nothing &mdash; INT&nbsp;13h RAM-disk shim, invisible to a long-mode kernel</td><td class="no">Same firmware wall</td></tr>
+</table>
+<p>The important nuance: <strong>Ventoy is not a firmware-wall problem.</strong> The USB stick is real hardware the kernel enumerates as <code>da0</code>; the ISO is merely a fragmented file on it that nothing reconstructs. iPXE/PXE/MEMDISK are the true firmware-wall cases (no real device exists).</p>
+
+<h2 id="physics">4. The firmware limits (the hard constraints)</h2>
+<div class="grid">
+  <div class="card">
+    <h4>UEFI &mdash; Block I/O dies at <code>ExitBootServices</code></h4>
+    <p>UEFI splits into <em>Boot Services</em> (the handle/protocol machinery, incl. <code>EFI_BLOCK_IO_PROTOCOL</code> and all firmware device drivers) and a tiny <em>Runtime Services</em> table (<code>GetTime</code>, <code>GetVariable</code>, <code>ResetSystem</code>, &hellip;). There is <strong>no block, disk, file, or network I/O in Runtime Services.</strong> The spec: after <code>ExitBootServices()</code> "it is illegal to call any boot service." The loader calls it on every boot; the kernel keeps only Runtime Services (EFI vars / RTC / reset).</p>
+  </div>
+  <div class="card">
+    <h4>BIOS &mdash; no <code>INT 13h</code> from a long-mode kernel</h4>
+    <p><code>INT&nbsp;13h</code> is a real-mode entry point. amd64 runs in long mode, which has no virtual-8086 mode, so the i386-era "thunk to V8086 to call BIOS" trick is architecturally impossible. FreeBSD's V8086 code (<code>sys/i386/i386/vm86.c</code>) is i386-only and never used for disk I/O. The BIOS disk path lives only in <code>stand/</code>, before the jump to the kernel.</p>
+  </div>
+  <div class="card">
+    <h4>No "lazy" loader-staged block device</h4>
+    <p><code>md&nbsp;-t&nbsp;preload</code> / <code>MD_ROOT</code> (the <code>md_image</code> path) is <strong>fully RAM-resident</strong> &mdash; the loader copies the whole image into staging memory (bounded by <code>EFI_STAGING_SIZE</code>, historically ~64&nbsp;MB). The only file-backed mode, <code>md&nbsp;-t&nbsp;vnode</code>, needs the backing file on an <em>already-mounted</em> filesystem &mdash; circular for our case.</p>
+  </div>
+  <div class="card">
+    <h4>The contradiction</h4>
+    <p>"Keep <code>rootfs.uzip</code> on the media, decompress on demand" + "firmware-emulated medium" is <strong>fundamentally contradictory</strong>. For Ventoy/iPXE/PXE the only technically-real choices are <em>RAM-load the root</em> (loader delivers it) or <em>network-root</em> (NFS/iSCSI). There is no third option.</p>
+  </div>
+</div>
+
+<h2 id="linux">5. How Linux actually fixes it</h2>
+<p>Linux hits the same wall and "fixes" it by never asking the kernel to mount the boot device. Everything hard happens in the <strong>initramfs</strong> &mdash; a RAM image the bootloader hands over <em>before</em> <code>ExitBootServices</code>, so it survives the wall. The kernel's mountroot stays dumb; the initramfs is full userland and does the work, split by transport:</p>
+
+<h3>5.1 Ventoy &mdash; reconstruct the ISO from the real stick</h3>
+<p>The kernel sees the real USB stick (<code>sdX</code>); the ISO is just a fragmented file on it. The initramfs reconstructs it two ways:</p>
+<ol>
+  <li><strong>Mount the data partition (exFAT) and loop-mount the ISO file.</strong> The filesystem resolves fragmentation transparently &mdash; loop-mounting a file never cares whether it's contiguous. This is what Debian/Ubuntu's <code>iso-scan</code>/<code>findiso</code> hooks do. The enabler: <strong>Linux has had exFAT in-kernel since 5.4</strong>, and Ventoy's data partition is exFAT.</li>
+  <li><strong>Device-mapper / vtoyboot.</strong> Inject a <code>dm-linear</code> target that remaps the ISO's on-disk byte segments into a contiguous virtual device (used mainly for persistence). <em>This is the Linux analog of FreeBSD's <code>geom_ventoy</code>.</em></li>
+</ol>
+
+<h3>5.2 iPXE / PXE &mdash; fetch the root over the network</h3>
+<p>No real device exists, so the initramfs pulls the root over the network into RAM:</p>
+<ul>
+  <li><strong>HTTP squashfs</strong> &mdash; dracut <code>root=live:http://&hellip;</code> / <code>livenet</code>, or casper <code>netboot=url url=http://&hellip;iso</code> (downloads + loop-mounts). The <em>common</em> path. Root in RAM.</li>
+  <li><strong>NFS root</strong> &mdash; kernel mounts <code>/</code> over NFS.</li>
+  <li><strong>iSCSI + iBFT</strong> &mdash; the one case a real block device persists: a kernel iSCSI initiator reads the iBFT table iPXE left and reconnects the target.</li>
+</ul>
+<blockquote><strong>Debunking "Linux mounts the ISO over iPXE."</strong> It does not. "Ubuntu boots fine over iPXE" means <em>kernel + initrd loaded by iPXE, then the initrd fetches the squashfs/ISO over the network into RAM.</em> The block device is never mounted by the running kernel. So "boot like Ubuntu" <em>is</em> the fetch-to-RAM pattern.</blockquote>
+
+<h2 id="nextbsd">6. The NextBSD equivalent</h2>
+<p>Linux's whole trick &mdash; <em>kernel mountroot stays dumb, the initramfs is smart</em> &mdash; maps directly onto NextBSD, because <strong>NextBSD already has the initramfs: the <code>mfsroot</code> + <code>/init</code></strong> (the <code>md_image</code> the loader preloads, then <code>init_path=/init</code>). Today <code>/init</code> does exactly one thing &mdash; wait for <code>/dev/iso9660/NEXTBSD</code>, mount cd9660, find <code>rootfs.uzip</code> &mdash; then assemble a tmpfs+unionfs overlay and <code>sysctl vfs.pivot=/rofs</code> into it.</p>
+<p>The fix is to make <code>/init</code> an <strong>ordered probe</strong>, the same shape as Linux's <code>iso-scan</code>&nbsp;&rarr;&nbsp;<code>livenet</code> chain:</p>
+<pre><code>locate rootfs.uzip:
+  1. LOCAL cd9660   -> CD/DVD, dd-USB, VM virtual CD   (wait on cd0/da*/iso9660-label)
+  2. VENTOY         -> mount the data partition, loop-mount the .iso, cd9660 it
+  3. NETWORK        -> dhclient + fetch the uzip/ISO over HTTP/NFS  (iPXE/PXE)
+  else panic with a clear, specific message</code></pre>
+<p>Each strategy just has to end with a path to <code>rootfs.uzip</code>; the existing union + <code>vfs.pivot</code> + <code>exec /sbin/launchd</code> tail is unchanged.</p>
+
+<h3>6.1 Architecture parity</h3>
+<table>
+  <tr><th>Linux</th><th>NextBSD</th></tr>
+  <tr><td>initramfs (RAM, bootloader-delivered)</td><td><code>mfsroot</code> <code>md_image</code> + <code>/init</code></td></tr>
+  <tr><td><code>iso-scan</code> / loop-mount exFAT</td><td><em>gap</em> &mdash; no in-base exFAT (see &sect;7.2)</td></tr>
+  <tr><td>vtoyboot <code>dm-linear</code> remap</td><td><code>geom_ventoy</code> GEOM remap (see &sect;7.1)</td></tr>
+  <tr><td>dracut <code>livenet</code> / casper <code>netboot=url</code></td><td><code>/init</code> <code>dhclient</code> + <code>fetch</code> the uzip (see &sect;8 Phase&nbsp;1)</td></tr>
+  <tr><td>NFS root (<code>root=nfs:</code>)</td><td>in-base <code>vfs.root.mountfrom="nfs:"</code> (diskless)</td></tr>
+  <tr><td>iSCSI + iBFT (<code>rd.iscsi.ibft</code>)</td><td><code>isboot</code> + native <code>iscsi</code> &mdash; but a kld (see &sect;7.3)</td></tr>
+</table>
+
+<h2 id="components">7. Component assessment</h2>
+
+<h3>7.1 <code>geom_ventoy</code> &mdash; BSD-licensed, but bake-in doesn't self-trigger <span class="pill warn">caveat</span></h3>
+<ul>
+  <li><strong>License:</strong> <code>SPDX-License-Identifier: BSD-2-Clause-FreeBSD</code>, a documented derivative of FreeBSD's <code>sys/geom/concat/g_concat.c</code> (the pjd 2004&ndash;2005 copyright is retained). No GPL taint &mdash; the GPL parts are Ventoy's GRUB layer, never linked into the kernel. <strong>Safe to bake in and redistribute</strong> (as a NextBSD-owned patch/overlay, never an edit to the fork).</li>
+  <li><strong>KBI:</strong> a single ~1.2k-line file pinned to <code>G_VERSION</code>; a <code>15.x/</code> source dir already exists and <code>g_ventoy_class</code> is byte-identical to 14.x. Per-major refresh cost is small.</li>
+  <li><strong>The catch:</strong> the class needs Ventoy's <em>segment map</em> (the fragmented ISO's byte ranges). Ventoy delivers it &mdash; via an in-memory magic-guarded struct <em>or</em> <code>hint.ventoy.*</code> loader hints &mdash; <strong>only when it detects and injects its own <code>geom_ventoy.ko</code> anchor</strong> (it keys on <code>/boot/kernel/geom_ventoy.ko</code> in the ISO). A statically baked-in class with no <code>.ko</code> on the ISO gets neither the map nor the hints, so it tastes nothing. Making bake-in actually function requires Ventoy-side cooperation: ship a stub <code>.ko</code> anchor so Ventoy fills the map, or get Ventoy to emit <code>hint.ventoy.*</code> for NextBSD unconditionally.</li>
+</ul>
+
+<h3>7.2 exFAT &mdash; the clean Linux path is blocked on FreeBSD <span class="pill bad">gap</span></h3>
+<p>The cleanest "do what Linux does" for Ventoy is mount the data partition + loop-mount the ISO file. <strong>FreeBSD base has no exFAT</strong> &mdash; support is the FUSE port <code>fusefs-exfat</code> (a module + userland), impractical in early <code>/init</code>. Options: port/bake a read-only exFAT reader (most work), or require the Ventoy data partition be a FreeBSD-mountable FS (UFS, or FAT32 for ISOs &lt;&nbsp;4&nbsp;GB) and loop-mount that &mdash; zero kernel work, but a user-formatting requirement.</p>
+
+<h3>7.3 iSCSI + iBFT &mdash; the one true runtime block device, but a kld <span class="pill warn">policy clash</span></h3>
+<p>iPXE <code>sanboot iscsi:</code> writes an iBFT table; FreeBSD's <code>isboot</code> reads it and re-attaches the target with the native initiator, so the kernel genuinely sees a persistent device at runtime &mdash; the only non-RAM, in-kernel iPXE path. But <code>isboot</code> is a <strong>port/module (<code>net/isboot-kmod</code>)</strong>. NextBSD uses <strong>kexts, not <code>kldload</code></strong>, and prefers baked-into-kernel; a baked-in iSCSI-root would have to compile the initiator + iBFT path into the <code>NEXTBSD</code> kernel. Heavier than the network-fetch path and target-infrastructure-dependent.</p>
+
+<h2 id="plan">8. Implementation plan</h2>
+<p>All of this is module-free &mdash; <code>/init</code> + <code>loader.conf</code> + baked-in-kernel bits. No klds, no bootloader swap, no edit to the freebsd-src fork (loader/userland changes ride the overlay-patch / build mechanism the same way kernel patches do).</p>
+
+<h3>Phase 0 &mdash; Harden local-media discovery <span class="pill ok">cheap, do first</span></h3>
+<ul>
+  <li>Bump the root-mount wait and poll it finer; wait on <code>cd0/1</code>, <code>da0..N</code>, and <code>iso9660/*</code>, not just two node names. <em>The timeout is an upper bound with early-exit</em> &mdash; fast media still proceeds in ~1&ndash;2&nbsp;s (see &sect;9).</li>
+  <li>Probe-mount each candidate and accept only if <code>/media/rootfs.uzip</code> exists (so a whole-device dd'd ISO is found as <code>da0</code>).</li>
+  <li>Fixes burned CD/DVD, dd'd USB, VM &mdash; the majority of users &mdash; and very likely the real-hardware (Wyse&nbsp;5070) case. Pure <code>/init</code> + <code>loader.conf</code>.</li>
+</ul>
+
+<h3>Phase 1 &mdash; Network fetch for iPXE/PXE <span class="pill warn">the "boot like Ubuntu" path</span></h3>
+<ul>
+  <li>When strategies 1&ndash;2 find nothing, <code>/init</code> brings up the NIC (<code>dhclient</code>), then <code>fetch -o /tmp/rootfs.uzip ${live_url}/rootfs.uzip</code> into tmpfs and <code>mdconfig -f</code> it &mdash; literally casper <code>netboot=url</code>, FreeBSD-side.</li>
+  <li>URL comes from a kenv/loader var (e.g. <code>live.fetch_url</code>), set in the iPXE script's <code>imgargs</code> / DHCP option.</li>
+  <li>Needs the NIC driver <strong>baked into the kernel</strong> (compiled in, not a kext/kld) and <code>dhclient</code>+<code>fetch</code> added to the mfsroot tool set. Root is RAM-resident here &mdash; unavoidable (no device exists), and exactly what Ubuntu does.</li>
+</ul>
+
+<h3>Phase 2 &mdash; Ventoy <span class="pill warn">spike first</span></h3>
+<p>Pick among: <strong>(2a)</strong> bake a read-only exFAT reader so <code>/init</code> can loop-mount the ISO (most Linux-faithful, most work); <strong>(2b)</strong> bake in <code>geom_ventoy</code> + ship a stub anchor and confirm Ventoy fills the map (&sect;7.1); <strong>(2c)</strong> require a FreeBSD-mountable Ventoy data partition (UFS/FAT32) + loop-mount in <code>/init</code> (zero kernel work, documented stopgap).</p>
+
+<h3>PR breakdown</h3>
+<ol>
+  <li><strong>PR&nbsp;1 (Phase&nbsp;0)</strong> &mdash; <code>/init</code> ordered-probe scaffold + local-media hardening + timeout. Self-contained. (<code>nextbsd-work</code>)</li>
+  <li><strong>PR&nbsp;2 (Phase&nbsp;1)</strong> &mdash; network-fetch strategy + bake NIC drivers into <code>config/NEXTBSD</code> + add <code>dhclient</code>/<code>fetch</code> to mfsroot. (<code>nextbsd-work</code> + <code>nextbsd-kernel</code>)</li>
+  <li><strong>Spike &rarr; PR&nbsp;3 (Phase&nbsp;2)</strong> &mdash; commit to 2a/2b/2c with real data.</li>
+</ol>
+
+<h2 id="diagnose">9. Diagnosing real hardware &mdash; same symptom, different cause</h2>
+<p>On a real machine (e.g. the Dell Wyse&nbsp;5070 / J4105) the <em>same</em> <code>rootfs.uzip-MISSING</code> line usually has a <em>different, easier</em> cause than Ventoy:</p>
+<table>
+  <tr><th>Cause</th><th>Tell</th><th>Fix</th></tr>
+  <tr><td>Device appears <strong>late</strong> (slow USB/CAM probe) or under an unscanned name</td><td>Can mount it by hand after waiting</td><td class="yes">Phase&nbsp;0 (timing/discovery)</td></tr>
+  <tr><td>Device <strong>truly absent</strong> (USB/xHCI or eMMC driver)</td><td><code>/dev/da0</code> never appears even after waiting</td><td class="maybe">Deeper driver bug (Gemini&nbsp;Lake)</td></tr>
+  <tr><td>Firmware-emulated medium (Ventoy/iPXE)</td><td>Never mountable by hand at all</td><td class="no">&sect;5&ndash;&sect;8</td></tr>
+</table>
+<p><strong>The disambiguating test</strong> (boot the ISO with <kbd>-s</kbd> &mdash; <code>/init</code> drops to a miniroot shell; wait ~10&ndash;15&nbsp;s, then):</p>
+<pre><code>ls /dev/da* /dev/cd* /dev/iso9660/
+mount -t cd9660 -o ro /dev/da0 /media   # try da1/cd0 too
+ls /media                               # rootfs.uzip there?
+# if present: geom disk list / camcontrol devlist</code></pre>
+<p>On a real dd'd stick you can <em>always</em> eventually mount it by hand &mdash; that proves timing/discovery (Phase&nbsp;0), not the firmware wall. On Ventoy you never can. That single manual mount tells you which problem you're solving before writing any code.</p>
+<p class="footnote">On NextBSD's mountroot: the kernel roots from <code>ufs:/dev/md0</code> (the mfsroot), present instantly &mdash; so <code>vfs.mountroot.timeout</code> barely applies. The wait that matters is the userland <code>/init</code> poll loop, which early-exits the moment the device node exists. Raising it to 10&nbsp;s costs nothing on fast media; the full 10&nbsp;s is only spent when no local cd9660 is coming &mdash; which is precisely the signal to fall through to the next strategy.</p>
+
+<h2 id="refs">10. References</h2>
+
+<h3>NextBSD / project</h3>
+<ul>
+  <li>Issue &mdash; <a href="https://github.com/nextbsd-redux/nextbsd/issues/288">nextbsd#288: ISO won't boot via Ventoy/PXE</a></li>
+  <li>Live-ISO build + mfsroot <code>/init</code> &mdash; <code>nextbsd-work/build.sh</code> (the <code>/init</code> heredoc, <code>zz-live.conf</code>, <code>makefs</code> mfsroot step)</li>
+  <li>The in-kernel pivot primitive &mdash; <code>nextbsd-kernel/src-overlay/sys/kern/vfs_pivot.c</code></li>
+  <li>Companion site research &mdash; <a href="freebsd-squashfs-research.html">SquashFS on FreeBSD</a>, <a href="freebsd-livecd-plan.html">FreeBSD Live ISO plan</a></li>
+</ul>
+
+<h3>FreeBSD source</h3>
+<ul>
+  <li><a href="https://github.com/freebsd/freebsd-src/blob/main/sys/kern/vfs_mountroot.c">sys/kern/vfs_mountroot.c</a> &mdash; <code>root_mount_timeout</code>, the device-present poll, the mountroot prompt</li>
+  <li><a href="https://github.com/freebsd/freebsd-src/blob/main/sys/geom/label/g_label_iso9660.c">sys/geom/label/g_label_iso9660.c</a> &mdash; PVD taste at <code>0x8000</code>, the <code>CD001</code> magic, <code>iso9660/&lt;LABEL&gt;</code></li>
+  <li><a href="https://github.com/freebsd/freebsd-src/blob/main/stand/common/boot.c">stand/common/boot.c</a> &mdash; <code>getrootmount</code> / <code>currdev</code> &rarr; <code>vfs.root.mountfrom</code></li>
+  <li><a href="https://man.freebsd.org/cgi/man.cgi?md(4)">md(4)</a>, <a href="https://man.freebsd.org/cgi/man.cgi?query=diskless">diskless(8)</a>, <a href="https://github.com/jnielsendotnet/isboot">isboot (iBFT)</a></li>
+</ul>
+
+<h3>Firmware &amp; prior art</h3>
+<ul>
+  <li><a href="https://uefi.org/specs/UEFI/2.9_A/07_Services_Boot_Services.html">UEFI 2.9A &sect;7 &mdash; Boot Services / ExitBootServices</a></li>
+  <li><a href="https://github.com/ventoy/Ventoy/tree/master/Unix/ventoy_unix_src/FreeBSD">Ventoy &mdash; geom_ventoy source (BSD-2-Clause)</a>, <a href="https://github.com/ventoy/Ventoy/issues/2775">Ventoy#2775 (pfSense/FreeBSD mount error 19)</a></li>
+  <li><a href="https://www.ventoy.net/en/plugin_vtoyboot.html">vtoyboot (Linux dm mechanism)</a>, <a href="https://www.ventoy.net/en/doc_memdisk.html">Ventoy memdisk mode</a></li>
+  <li><a href="https://man7.org/linux/man-pages/man7/dracut.cmdline.7.html">dracut.cmdline(7) &mdash; livenet / root=live:</a>, <a href="https://ipxe.org/cmd/sanboot">iPXE sanboot</a></li>
+  <li><a href="https://mfsbsd.vx.sk/">mfsBSD</a> &mdash; the FreeBSD md-root / PXE precedent</li>
+</ul>
+
+<hr>
+<p class="footnote">Synthesized from the nextbsd#288 investigation &mdash; parallel research passes across freebsd-src (loader&rarr;kernel root handoff, geom_label, vfs_mountroot), Ventoy/vtoyboot and iPXE prior art, the UEFI/BIOS firmware limits, and the local NextBSD <code>mfsroot</code>/<code>vfs_pivot</code> build. Corrects two common assumptions: that a bootloader swap could help, and that Linux mounts the ISO device at runtime over iPXE. Background reference for the #288 fix plan.</p>
+
+</body>
+</html>

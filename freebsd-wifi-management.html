@@ -78,6 +78,7 @@
   <a href="#compare">vs wpa_supplicant</a>
   <a href="#shipped">What we ship</a>
   <a href="#hypothetical">Hypothetical wifid-fbsd</a>
+  <a href="#whodoeswhat">Who does what</a>
   <a href="#refs">References</a>
 </nav>
 
@@ -348,7 +349,7 @@
 
 <h2 id="hypothetical">5. Hypothetical: a wifid-shaped daemon for FreeBSD</h2>
 
-<p>If we ever wanted Apple-shape WiFi management on FreeBSD — exposing a CoreWLAN-equivalent API to apps — the realistic shape would be a thin daemon (call it <code>wifid-fbsd</code> or <code>org.freebsd.wifid</code>) that:</p>
+<p>If we ever wanted Apple-shape WiFi management on FreeBSD — exposing a CoreWLAN-equivalent API to apps — the realistic shape would be a thin daemon — launchd label <code>com.apple.wifid</code>, Apple's own name (the shipped system keeps Apple's exact labels: <code>com.apple.configd</code>, <code>com.apple.IPConfiguration</code>, …; see the <a href="freebsd-keychain-port-plan.html#naming">Keychain plan's naming note</a>) — that:</p>
 
 <ol>
   <li><strong>Talks to <code>wpa_supplicant</code> via its UNIX control socket</strong> (<code>/var/run/wpa_supplicant/&lt;iface&gt;</code>). Standard protocol: <code>STATUS</code>, <code>SCAN</code>, <code>SCAN_RESULTS</code>, <code>LIST_NETWORKS</code>, <code>ADD_NETWORK</code>, <code>SET_NETWORK</code>, <code>ENABLE_NETWORK</code>, <code>SELECT_NETWORK</code>, plus event monitoring (<code>ATTACH</code> + async events: <code>CTRL-EVENT-CONNECTED</code>, <code>CTRL-EVENT-DISCONNECTED</code>, <code>CTRL-EVENT-SSID-TEMP-DISABLED</code>).</li>
@@ -396,10 +397,165 @@
   <li><strong>iwd</strong> (Intel's WiFi daemon, Linux) replaces wpa_supplicant entirely with a smaller, more modern codebase — D-Bus API, but no significant FreeBSD interest because of cfg80211 dependency.</li>
 </ul>
 
-<h2 id="open">6. Open questions</h2>
+<h2 id="whodoeswhat">6. Who does what: <code>wifid</code> responsibilities mapped onto <code>wpa_supplicant</code> vs <code>iwd</code></h2>
+
+<p>The word <em>supplicant</em> is the source of most confusion in this whole area, so pin it down first:</p>
+<ul>
+  <li><strong>Supplicant (strict IEEE 802.1X sense)</strong> — the client that <em>authenticates</em> to the network: it runs the EAP exchange against the RADIUS server, and nothing else. This is exactly what Apple's <code>eapolclient</code> is.</li>
+  <li><strong>Supplicant (colloquial, "<code>wpa_supplicant</code>" sense)</strong> — the whole userspace WiFi protocol process: EAP auth <em>plus</em> the WPA 4-way handshake / key management <em>plus</em> driving scan and association. Much broader.</li>
+</ul>
+<p>Apple <em>split</em> those two apart (narrow <code>eapolclient</code> + closed <code>wifid</code> for everything else); <code>wpa_supplicant</code> and <code>iwd</code> <em>fuse</em> them into one process. That mismatch is why a one-to-one comparison needs the table below rather than a single sentence.</p>
+
+<p>So what does <code>wifid</code> actually own? Everything except the EAP exchange: scanning, AP selection, the association state machine, the WPA2/WPA3 4-way handshake (often firmware-offloaded via <code>IO80211</code>), key installation, roaming, autojoin policy, profile/keychain storage, and the Apple-proprietary peer-to-peer features. <code>eapolclient</code> is spawned by <code>wifid</code> only for Enterprise networks, runs the EAP method, derives the PMK, and hands it back to <code>wifid</code> over Mach IPC — then it's done.</p>
+
+<p>Here is each <code>wifid</code> responsibility mapped onto the two open-source engines. The reading: <strong>iwd is closer to <code>wifid</code> on exactly the rows where <code>wpa_supplicant</code> is weak (policy, profiles, API shape), but loses decisively on the one row that gates a FreeBSD port (driver backend) — and on license.</strong></p>
+
+<table>
+<thead>
+<tr><th>Apple component</th><th><code>wpa_supplicant</code></th><th><code>iwd</code></th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>eapolclient</code> (EAP / 802.1X)</td>
+  <td><span class="yesno yes">✅ built in</span> — full EAP method set</td>
+  <td><span class="yesno yes">✅ built in</span> — own EAP stack on <code>ell</code> (TLS / PEAP / TTLS / PWD / SIM / AKA, WPA3-Enterprise incl. 192-bit)</td>
+</tr>
+<tr>
+  <td><code>wifid</code>: 4-way handshake / SAE / key mgmt</td>
+  <td><span class="yesno yes">✅ built in</span></td>
+  <td><span class="yesno yes">✅ built in</span> — userspace; full WPA3-SAE</td>
+</tr>
+<tr>
+  <td><code>wifid</code>: scan / associate driving</td>
+  <td><span class="yesno yes">✅</span> via <code>driver_bsd.c</code> → <strong>net80211</strong></td>
+  <td><span class="yesno partial">⚠️ nl80211 / cfg80211 only</span> — no net80211, <strong>no FreeBSD path</strong></td>
+</tr>
+<tr>
+  <td><code>wifid</code>: autojoin / policy / roaming heuristics</td>
+  <td><span class="yesno no">❌ minimal</span> — just a <code>priority</code> field</td>
+  <td><span class="yesno yes">✅ strong &amp; built in</span> — autoconnect, RSSI ranking, FT/802.11r, 802.11k neighbor reports</td>
+</tr>
+<tr>
+  <td><code>wifid</code>: profiles / known-networks / keychain</td>
+  <td><span class="yesno no">❌</span> flat <code>wpa_supplicant.conf</code></td>
+  <td><span class="yesno partial">✅ partial</span> — first-class <code>KnownNetwork</code> model, auto-managed per-SSID profile files, <code>Agent</code> for credential prompts (but flat files, no keychain)</td>
+</tr>
+<tr>
+  <td><code>wifid</code>: AWDL / Continuity / AirDrop</td>
+  <td><span class="yesno no">❌</span> — P2P stack exists, no Apple glue</td>
+  <td><span class="yesno no">❌</span> — limited P2P, no Apple glue</td>
+</tr>
+</tbody>
+</table>
+
+<p>One more dimension that isn't a <code>wifid</code> sub-feature but matters a lot for "Apple-shape" — the <strong>control API style</strong>, i.e. how a management layer above it issues commands and reads state:</p>
+
+<table class="compact">
+<thead>
+<tr><th>Dimension</th><th><code>wpa_supplicant</code></th><th><code>iwd</code></th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>Control API shape</td>
+  <td>Line-oriented <strong>text</strong> command stream (<code>SCAN</code>, <code>ADD_NETWORK</code>, …) over a UNIX socket</td>
+  <td><strong>D-Bus object model</strong> — <code>Station</code> / <code>Device</code> / <code>Network</code> / <code>KnownNetwork</code> / <code>Agent</code> objects with properties, methods, signals</td>
+</tr>
+</tbody>
+</table>
+
+<div class="resolved">
+<strong>Net conclusion — blueprint vs engine.</strong> <code>iwd</code>'s <code>KnownNetwork</code> / <code>Agent</code> / <code>Station</code> objects map almost one-to-one onto CoreWLAN's <code>CWNetwork</code> / credential-prompt / <code>CWInterface</code>, and it already contains the autojoin/roaming "brain" that <code>wpa_supplicant</code> lacks — so it is the better <em>design reference</em> for what <code>wifid-fbsd</code> should expose. But <code>iwd</code> is welded to Linux's nl80211/cfg80211 (no net80211 backend) and is LGPL-2.1 (can't go in base), so it is not shippable here. <code>wpa_supplicant</code> wins the two non-negotiable rows — runs on net80211 <em>today</em> and is BSD-licensed. So the <code>wifid</code> we reconstruct on FreeBSD is: <strong><code>wpa_supplicant</code> for the protocol engine (rows 1–3), <code>wifid-fbsd</code> for the brain (rows 4–5), with <code>iwd</code>'s object model as the design reference for the brain's API.</strong> <code>iwd</code> contributes ideas; <code>wpa_supplicant</code> contributes code.</div>
+
+<h3 id="glossary">6.1 Glossary — what each of these things actually is</h3>
+
+<table class="compact">
+<thead>
+<tr><th>Term</th><th>What it is</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><strong>AWDL</strong><br>(Apple Wireless Direct Link)</td>
+  <td>Apple's proprietary peer-to-peer WiFi protocol. Lets two Apple devices talk directly without a shared access point by having the WiFi radio time-slice between the normal infrastructure network and an ad-hoc AWDL channel. It is the transport layer underneath AirDrop, AirPlay peer-to-peer, and Continuity features. Closed and Apple-specific; there is no open-source equivalent (the reverse-engineered <code>OWL</code> / "Open Wireless Link" research project is the only outside implementation).</td>
+</tr>
+<tr>
+  <td><strong>AirDrop</strong></td>
+  <td>Apple's ad-hoc file-sharing feature. Uses <strong>Bluetooth LE</strong> to discover nearby devices and negotiate, then brings up an <strong>AWDL</strong> WiFi link for the actual high-speed transfer. So AirDrop = discovery (BLE + Bonjour/mDNS) + transport (AWDL). Reproducing it needs both the AWDL layer and the Bonjour service-discovery layer (see the mDNSResponder plan).</td>
+</tr>
+<tr>
+  <td><strong>Continuity</strong></td>
+  <td>The umbrella name for Apple's cross-device handoff features — Handoff, Universal Clipboard, Instant Hotspot, iPhone-as-webcam, etc. Many of them ride on AWDL + BLE + Bonjour, coordinated by higher-level daemons. WiFi-relevant only insofar as several Continuity features depend on AWDL being available.</td>
+</tr>
+<tr>
+  <td><strong>P2P / Wi-Fi Direct</strong></td>
+  <td>The <em>standard</em> (Wi-Fi Alliance) peer-to-peer WiFi mechanism — the open-standard analog of AWDL. <code>wpa_supplicant</code> ships a full P2P stack; <code>iwd</code>'s is limited. Neither speaks AWDL, so neither interoperates with AirDrop without an additional Apple-protocol layer on top.</td>
+</tr>
+<tr>
+  <td><strong>EAP</strong><br>(Extensible Authentication Protocol)</td>
+  <td>The authentication framework used by <em>Enterprise</em> WiFi (802.1X). Not one protocol but a family of methods — EAP-TLS (client certs), PEAP / EAP-TTLS (username+password inside a TLS tunnel), EAP-FAST, EAP-SIM / EAP-AKA (cellular SIM-based). This is the <em>only</em> part Apple open-sourced, as <code>eapolclient</code> in the <code>eap8021x</code> repo.</td>
+</tr>
+<tr>
+  <td><strong>EAPOL</strong><br>(EAP over LAN)</td>
+  <td>The link-layer framing that carries EAP messages (and the 4-way handshake's key frames) between the client and the access point. The "EAPOL state machine" is the logic that sequences those frames.</td>
+</tr>
+<tr>
+  <td><strong>4-way handshake</strong></td>
+  <td>The WPA/WPA2/WPA3 key-exchange that runs <em>after</em> authentication. Using a shared master key (the PMK — from the WiFi password for Personal, or from EAP for Enterprise), client and AP exchange four messages to derive and install the per-session encryption keys (PTK/GTK). On Apple this is owned by <code>wifid</code> (often firmware-offloaded), not <code>eapolclient</code>.</td>
+</tr>
+<tr>
+  <td><strong>PMK / PTK / GTK</strong></td>
+  <td>The key hierarchy. <strong>PMK</strong> (Pairwise Master Key) is the root secret for a session. <strong>PTK</strong> (Pairwise Transient Key) encrypts unicast traffic for one client. <strong>GTK</strong> (Group Temporal Key) encrypts broadcast/multicast for everyone on the AP. The 4-way handshake derives PTK/GTK from the PMK.</td>
+</tr>
+<tr>
+  <td><strong>SAE</strong><br>(Simultaneous Authentication of Equals)</td>
+  <td>The handshake that replaces the WPA2-PSK password exchange in <strong>WPA3-Personal</strong>. Resistant to offline dictionary attacks (you can't crack the password by capturing the handshake). Also called "Dragonfly." Both <code>wpa_supplicant</code> and <code>iwd</code> implement it fully.</td>
+</tr>
+<tr>
+  <td><strong>OWE</strong><br>(Opportunistic Wireless Encryption)</td>
+  <td>"Enhanced Open" — encrypts traffic on <em>open</em> (passwordless) networks via an unauthenticated Diffie-Hellman exchange, so a café network gets encryption without a shared password. RFC 8110.</td>
+</tr>
+<tr>
+  <td><strong>WPA3-Enterprise 192-bit</strong><br>(Suite B / CNSA)</td>
+  <td>The high-security Enterprise tier: AES-256-GCMP encryption, mandatory protected management frames and server-certificate validation, defense/government-grade cipher suites. In <code>wpa_supplicant</code> it's the <code>WPA-EAP-SUITE-B-192</code> key-mgmt mode.</td>
+</tr>
+<tr>
+  <td><strong>PMF / 802.11w</strong><br>(Protected Management Frames)</td>
+  <td>Cryptographic protection for WiFi management frames (deauth/disassoc), which were historically unprotected and spoofable. Optional under WPA2, <em>mandatory</em> under WPA3.</td>
+</tr>
+<tr>
+  <td><strong>802.11r (FT)</strong></td>
+  <td>Fast BSS Transition — lets a client roam between access points on the same network without redoing the full authentication+handshake each time, so voice/video calls don't drop. The "roaming" part of autojoin policy.</td>
+</tr>
+<tr>
+  <td><strong>802.11k / 802.11v</strong></td>
+  <td>Radio Resource Management (k) and BSS Transition Management (v) — the AP gives the client a "neighbor report" of nearby APs and can steer it to a better one, so roaming decisions are informed rather than blind.</td>
+</tr>
+<tr>
+  <td><strong>net80211</strong></td>
+  <td>FreeBSD's in-kernel 802.11 stack — the layer WiFi drivers plug into and that userspace supplicants drive. <code>wpa_supplicant</code> talks to it through <code>driver_bsd.c</code>. The FreeBSD analog of Apple's <code>IO80211Family</code>.</td>
+</tr>
+<tr>
+  <td><strong>nl80211 / cfg80211</strong></td>
+  <td>Linux's in-kernel 802.11 stack (<code>cfg80211</code>) and the netlink API to it (<code>nl80211</code>). <code>iwd</code> is built exclusively on this — which is precisely why it doesn't run on FreeBSD's net80211 without a major porting effort.</td>
+</tr>
+<tr>
+  <td><strong><code>ell</code></strong><br>(Embedded Linux Library)</td>
+  <td>Intel's small utility/crypto library that <code>iwd</code> is built on (instead of OpenSSL + glib). Keeps <code>iwd</code> dependency-light, but is itself Linux-oriented and LGPL-2.1 — another thing that would have to be ported.</td>
+</tr>
+<tr>
+  <td><strong><code>KnownNetwork</code> / <code>Agent</code> (iwd)</td>
+  <td><code>iwd</code> D-Bus objects. <code>KnownNetwork</code> = a remembered network with auto-managed profile storage and autoconnect ranking (the analog of a saved WiFi profile / CoreWLAN configuration). <code>Agent</code> = the interface <code>iwd</code> calls back into when it needs a credential, i.e. the "prompt the user for the password" hook (the analog of Apple's keychain/UI prompt flow).</td>
+</tr>
+<tr>
+  <td><strong>CoreWLAN</strong><br>(<code>CWInterface</code> / <code>CWNetwork</code>)</td>
+  <td>Apple's <em>public</em> Objective-C WiFi API for apps. <code>CWInterface</code> = a WiFi adapter (scan, associate, power); <code>CWNetwork</code> = a discovered network. This is the API surface <code>wifid-fbsd</code> would replicate so Gershwin apps look like Mac apps.</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="open">7. Open questions</h2>
 
 <div class="open-q">
-<strong>Q1. Should we ship a launchd plist for wpa_supplicant?</strong> Today wpa_supplicant runs only when user-initiated. A plist (<code>org.freebsd.wpa_supplicant.plist</code>) running per wifi iface at boot would auto-associate to known SSIDs from <code>/etc/wpa_supplicant.conf</code>. Trivial to add — just hasn't been a priority given Phase 1 was wired-network focused.
+<strong>Q1. Should we ship a launchd plist for wpa_supplicant?</strong> Today wpa_supplicant runs only when user-initiated. A plist (<code>fi.w1.wpa_supplicant.plist</code> — wpa_supplicant is third-party, so by the shipped convention it takes its upstream's reverse-DNS, like <code>com.openssh.sshd</code>, rather than a <code>com.apple.*</code> name) running per wifi iface at boot would auto-associate to known SSIDs from <code>/etc/wpa_supplicant.conf</code>. Trivial to add — just hasn't been a priority given Phase 1 was wired-network focused.
 </div>
 
 <div class="open-q">
@@ -414,7 +570,7 @@
 <strong>Q4. P2P / Wi-Fi Direct support?</strong> Apple uses this for AirDrop. wpa_supplicant has full P2P stack. Wiring it up needs a discovery + transfer layer above (Apple has the AWDL/Bonjour layer). Punt to a future Bonjour / mDNSResponder phase.
 </div>
 
-<h2 id="refs">7. References</h2>
+<h2 id="refs">8. References</h2>
 
 <ul>
   <li><strong>Apple's open-source EAP code:</strong> <a href="https://github.com/apple-oss-distributions/eap8021x">github.com/apple-oss-distributions/eap8021x</a></li>

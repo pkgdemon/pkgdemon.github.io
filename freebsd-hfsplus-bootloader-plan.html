@@ -63,7 +63,7 @@
 <h2>Contents</h2>
 <ol>
   <li><a href="#problem">What we're solving</a></li>
-  <li><a href="#boot132">Apple boot-132 &mdash; what it is and what it can do</a></li>
+  <li><a href="#boot132">Apple boot-132 (BIOS) &mdash; what it is, plus the UEFI boot path</a></li>
   <li><a href="#modern-forks">Modern descendants: OpenCore, Clover, Chameleon</a></li>
   <li><a href="#freebsd-loader">FreeBSD's <code>stand/loader</code> today</a></li>
   <li><a href="#option-a">Option A &mdash; Port boot-132 / OpenCore</a></li>
@@ -87,7 +87,7 @@
 
 <p>The HFS+ kmod port (separate plan) handles all post-kernel HFS+ access regardless of which option we pick here.</p>
 
-<h2 id="boot132">2. Apple boot-132 &mdash; what it is and what it can do</h2>
+<h2 id="boot132">2. Apple boot-132 (BIOS) &mdash; what it is, plus the UEFI boot path</h2>
 
 <table>
 <tr><th>Attribute</th><th>Status</th></tr>
@@ -109,6 +109,151 @@
 </ol>
 
 <p>The handoff at the end of stage 2 is <strong>completely Darwin-specific</strong>: Mach boot-args page, kext cache pointer, specific xnu entry contract. Pointing this code at FreeBSD's <code>kernel.bin</code> means replacing the entire handoff and the kext-cache logic with FreeBSD's <code>elf_freebsd_exec</code>/loader interaction &mdash; at which point you've reimplemented <code>stand/loader</code>, just badly.</p>
+
+<figure style="margin:22px 0 26px;text-align:center;">
+<svg viewBox="0 0 840 590" width="100%" style="max-width:840px;border:1px solid #d8d4c8;border-radius:6px;background:#fafaf7;font-family:-apple-system,Helvetica,Arial,sans-serif;">
+  <defs>
+    <marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#b8472a"/>
+    </marker>
+  </defs>
+  <text x="420" y="24" text-anchor="middle" font-size="15" font-weight="700" fill="#b8472a">Anatomy of a classic HFS+ boot volume (pre-EFI / pre-APFS)</text>
+
+  <!-- boot chain -->
+  <g font-size="12.5" font-weight="600" fill="#1a1a1a" text-anchor="middle">
+    <rect x="8"   y="44" width="116" height="44" rx="5" fill="#f3e7df" stroke="#b8472a"/>
+    <text x="66"  y="64">Firmware</text><text x="66" y="80" font-size="10.5" font-weight="400" fill="#555">(BIOS)</text>
+    <rect x="152" y="44" width="132" height="44" rx="5" fill="#f3e7df" stroke="#b8472a"/>
+    <text x="218" y="64">boot0</text><text x="218" y="80" font-size="10.5" font-weight="400" fill="#555">MBR sector 0</text>
+    <rect x="320" y="44" width="156" height="44" rx="5" fill="#f3e7df" stroke="#b8472a"/>
+    <text x="398" y="64">boot1h</text><text x="398" y="80" font-size="10.5" font-weight="400" fill="#555">HFS+ boot blocks</text>
+    <rect x="512" y="44" width="160" height="44" rx="5" fill="#f3e7df" stroke="#b8472a"/>
+    <text x="592" y="64">boot (stage 2)</text><text x="592" y="80" font-size="10.5" font-weight="400" fill="#555">the file /boot</text>
+    <rect x="708" y="44" width="124" height="44" rx="5" fill="#e8f1e3" stroke="#2d6f3b"/>
+    <text x="770" y="64">XNU</text><text x="770" y="80" font-size="10.5" font-weight="400" fill="#555">/mach_kernel</text>
+  </g>
+  <g stroke="#b8472a" stroke-width="1.5" marker-end="url(#ah)">
+    <line x1="124" y1="66" x2="150" y2="66"/><line x1="284" y1="66" x2="318" y2="66"/>
+    <line x1="476" y1="66" x2="510" y2="66"/><line x1="672" y1="66" x2="706" y2="66"/>
+  </g>
+
+  <!-- volume layout -->
+  <rect x="8" y="112" width="824" height="328" rx="6" fill="#ffffff" stroke="#d8d4c8"/>
+  <text x="24" y="134" font-size="13" font-weight="700" fill="#1a1a1a">HFS+ volume &mdash; the bootable disk (what boot-132 reads)</text>
+
+  <rect x="24" y="148" width="792" height="44" rx="4" fill="#f0ece2" stroke="#d8d4c8"/>
+  <text x="38" y="168" font-size="12" font-weight="600" fill="#1a1a1a">Volume boot blocks (reserved sectors)</text>
+  <text x="38" y="184" font-size="10.5" fill="#555">&#8594; boot1h: partition boot sector &mdash; walks the HFS+ catalog B-tree to find /boot</text>
+
+  <rect x="24" y="204" width="792" height="224" rx="4" fill="#fbfaf6" stroke="#d8d4c8"/>
+  <text x="38" y="226" font-size="12" font-weight="700" fill="#1a1a1a">/ &mdash; volume root (HFS+ catalog B-tree)</text>
+
+  <g font-family="SF Mono,Menlo,Consolas,monospace">
+    <rect x="40" y="238" width="760" height="40" rx="4" fill="#f3e7df" stroke="#b8472a"/>
+    <text x="54" y="256" font-size="12.5" font-weight="700" fill="#b8472a">/boot</text>
+    <text x="54" y="272" font-size="10.5" font-family="-apple-system,Helvetica,Arial,sans-serif" fill="#555">stage-2 boot loader &mdash; a FILE at the root, NOT a directory</text>
+
+    <rect x="40" y="282" width="760" height="40" rx="4" fill="#f3e7df" stroke="#b8472a"/>
+    <text x="54" y="300" font-size="12.5" font-weight="700" fill="#b8472a">/mach_kernel</text>
+    <text x="54" y="316" font-size="10.5" font-family="-apple-system,Helvetica,Arial,sans-serif" fill="#555">the XNU kernel image, loaded by stage 2</text>
+
+    <rect x="40" y="326" width="760" height="40" rx="4" fill="#ffffff" stroke="#d8d4c8"/>
+    <text x="54" y="344" font-size="12" fill="#1a1a1a">/System/Library/Extensions.mkext</text>
+    <text x="54" y="360" font-size="10.5" font-family="-apple-system,Helvetica,Arial,sans-serif" fill="#555">prelinked kext cache (the drivers XNU needs at boot)</text>
+
+    <rect x="40" y="370" width="760" height="42" rx="4" fill="#ffffff" stroke="#d8d4c8"/>
+    <text x="54" y="388" font-size="11.5" fill="#1a1a1a">/Library/Preferences/SystemConfiguration/com.apple.Boot.plist</text>
+    <text x="54" y="404" font-size="10.5" font-family="-apple-system,Helvetica,Arial,sans-serif" fill="#555">kernel boot-args / config parsed by stage 2</text>
+  </g>
+
+  <!-- note -->
+  <rect x="8" y="452" width="824" height="128" rx="4" fill="#fbf3df" stroke="#8a5a00"/>
+  <rect x="8" y="452" width="4" height="128" fill="#8a5a00"/>
+  <g font-size="11.5" fill="#3a2e10" font-family="-apple-system,Helvetica,Arial,sans-serif">
+    <text x="24" y="476" font-weight="700">macOS never had a /boot directory.</text>
+    <text x="24" y="496">In the HFS+ era, &#8220;/boot&#8221; was the stage-2 loader <tspan font-weight="700">file</tspan> at the volume root, and the kernel was /mach_kernel.</text>
+    <text x="24" y="514">Modern macOS is APFS: the boot files moved into a hidden APFS &#8220;Preboot&#8221; volume (boot.efi +</text>
+    <text x="24" y="532">kernelcache / BootKernelExtensions.kc), and the System volume is a sealed read-only snapshot.</text>
+    <text x="24" y="550">That is why <tspan font-family="SF Mono,Menlo,monospace">ls /</tspan> on a current Mac shows bin/sbin/System/&#8230; but no /boot and no mach_kernel.</text>
+  </g>
+</svg>
+<figcaption style="font-size:0.85rem;color:#555;margin-top:8px;">Classic HFS+ boot chain and on-disk layout. boot-132 expects every one of these Darwin-specific artifacts (<code>mach_kernel</code>, <code>Extensions.mkext</code>, <code>com.apple.Boot.plist</code>) &mdash; none of which a FreeBSD/NextBSD system produces &mdash; which is the core reason §5 recommends against porting it.</figcaption>
+</figure>
+
+<h3 id="uefi">The UEFI boot path (Apple EFI &middot; generic UEFI &middot; FreeBSD <code>loader.efi</code>)</h3>
+
+<p>boot-132 is a <em>BIOS</em> loader: the chain above (<code>boot0</code> MBR sector &rarr; <code>boot1h</code> partition sector &rarr; the <code>/boot</code> file) is pure MBR/BIOS and has <strong>no UEFI equivalent</strong>. Under UEFI the firmware itself owns a filesystem driver, reads the GPT, and launches a PE/COFF <code>.efi</code> application off a partition &mdash; there is no <code>boot0</code>/<code>boot1h</code> sector chain at all. Three cases matter for HFS+:</p>
+
+<figure style="margin:22px 0 26px;text-align:center;">
+<svg viewBox="0 0 840 470" width="100%" style="max-width:840px;border:1px solid #d8d4c8;border-radius:6px;background:#fafaf7;font-family:-apple-system,Helvetica,Arial,sans-serif;">
+  <defs><marker id="ah2" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#b8472a"/></marker></defs>
+  <text x="420" y="24" text-anchor="middle" font-size="15" font-weight="700" fill="#b8472a">UEFI boot &mdash; and where HFS+ fits (contrast with the BIOS chain above)</text>
+
+  <text x="14" y="78" font-size="11" font-weight="700" fill="#555">Apple Mac</text>
+  <text x="14" y="91" font-size="11" font-weight="700" fill="#555">(EFI)</text>
+  <g font-size="12" font-weight="600" fill="#1a1a1a" text-anchor="middle">
+    <rect x="110" y="46" width="186" height="54" rx="5" fill="#f3e7df" stroke="#b8472a"/>
+    <text x="203" y="69">Apple EFI firmware</text><text x="203" y="86" font-size="10.5" font-weight="400" fill="#555">built-in HFS+ driver</text>
+    <rect x="330" y="46" width="196" height="54" rx="5" fill="#ffffff" stroke="#d8d4c8"/>
+    <text x="428" y="69">boot.efi</text><text x="428" y="86" font-size="10" font-weight="400" fill="#555">/System/Library/CoreServices</text>
+    <rect x="560" y="46" width="150" height="54" rx="5" fill="#ffffff" stroke="#d8d4c8"/>
+    <text x="635" y="69">kernelcache</text><text x="635" y="86" font-size="10.5" font-weight="400" fill="#555">(prelinkedkernel)</text>
+    <rect x="744" y="46" width="88" height="54" rx="5" fill="#e8f1e3" stroke="#2d6f3b"/>
+    <text x="788" y="77">XNU</text>
+  </g>
+  <g stroke="#b8472a" stroke-width="1.5" marker-end="url(#ah2)">
+    <line x1="296" y1="73" x2="328" y2="73"/><line x1="526" y1="73" x2="558" y2="73"/><line x1="710" y1="73" x2="742" y2="73"/>
+  </g>
+
+  <text x="14" y="178" font-size="11" font-weight="700" fill="#555">Generic</text>
+  <text x="14" y="191" font-size="11" font-weight="700" fill="#555">UEFI</text>
+  <g font-size="12" font-weight="600" fill="#1a1a1a" text-anchor="middle">
+    <rect x="110" y="150" width="186" height="54" rx="5" fill="#f0ece2" stroke="#d8d4c8"/>
+    <text x="203" y="173">UEFI firmware</text><text x="203" y="190" font-size="10.5" font-weight="400" fill="#555">reads FAT (ESP) only</text>
+    <rect x="330" y="150" width="244" height="54" rx="5" fill="#f3e7df" stroke="#b8472a"/>
+    <text x="452" y="171">ESP (FAT): EFI HFS+ driver</text><text x="452" y="188" font-size="10" font-weight="400" fill="#555">VBoxHfs.efi / HfsPlus.efi + OpenCore/Clover</text>
+    <rect x="608" y="150" width="180" height="54" rx="5" fill="#ffffff" stroke="#d8d4c8"/>
+    <text x="698" y="173">HFS+ volume</text><text x="698" y="190" font-size="10.5" font-weight="400" fill="#555">kernel + kexts</text>
+  </g>
+  <g stroke="#b8472a" stroke-width="1.5" marker-end="url(#ah2)">
+    <line x1="296" y1="177" x2="328" y2="177"/><line x1="574" y1="177" x2="606" y2="177"/>
+  </g>
+
+  <text x="14" y="278" font-size="10.5" font-weight="700" fill="#555">FreeBSD/</text>
+  <text x="14" y="291" font-size="10.5" font-weight="700" fill="#555">NextBSD</text>
+  <g font-size="12" font-weight="600" fill="#1a1a1a" text-anchor="middle">
+    <rect x="110" y="250" width="186" height="54" rx="5" fill="#f0ece2" stroke="#d8d4c8"/>
+    <text x="203" y="273">UEFI firmware</text><text x="203" y="290" font-size="10.5" font-weight="400" fill="#555">reads FAT (ESP)</text>
+    <rect x="330" y="250" width="186" height="54" rx="5" fill="#e8f1e3" stroke="#2d6f3b"/>
+    <text x="423" y="273">ESP (FAT): loader.efi</text><text x="423" y="290" font-size="10.5" font-weight="400" fill="#555">FreeBSD UEFI loader</text>
+    <rect x="550" y="250" width="282" height="54" rx="5" fill="#ffffff" stroke="#d8d4c8"/>
+    <text x="691" y="271">kernel + loader.conf via libsa</text><text x="691" y="288" font-size="10" font-weight="400" fill="#555">UFS/ZFS today; HFS+ only with the Option B reader</text>
+  </g>
+  <g stroke="#b8472a" stroke-width="1.5" marker-end="url(#ah2)">
+    <line x1="296" y1="277" x2="328" y2="277"/><line x1="516" y1="277" x2="548" y2="277"/>
+  </g>
+
+  <rect x="8" y="326" width="824" height="134" rx="4" fill="#f3e7df" stroke="#b8472a"/>
+  <rect x="8" y="326" width="4" height="134" fill="#b8472a"/>
+  <g font-size="11.5" fill="#1a1a1a">
+    <text x="24" y="348" font-weight="700">Vs. BIOS (the diagram above):</text>
+    <text x="24" y="368">&bull; No boot0/boot1h raw sectors &mdash; UEFI runs a .efi application off a partition, read via the firmware's own FS driver.</text>
+    <text x="24" y="386">&bull; Only Apple's firmware reads HFS+ natively, so boot.efi loads straight off the HFS+ system volume.</text>
+    <text x="24" y="404">&bull; Generic UEFI firmware reads only FAT (the ESP); HFS+-at-boot needs an EFI HFS+ driver (what OpenCore/Clover ship).</text>
+    <text x="24" y="422">&bull; FreeBSD's loader.efi finds the kernel through shared stand/libsa FS code &mdash; the same place an HFS+ reader (Option B)</text>
+    <text x="44" y="440">would live, so one ~1.5&ndash;3 kLOC reader serves BIOS and UEFI both.</text>
+  </g>
+</svg>
+<figcaption style="font-size:0.85rem;color:#555;margin-top:8px;">The three UEFI realities for HFS+. boot-132 (the BIOS diagram above) has no place here &mdash; UEFI HFS+ support is either firmware-native (Apple), an EFI driver (OpenCore/Clover), or a <code>libsa</code> reader shared by <code>loader</code>/<code>loader.efi</code> (Option B).</figcaption>
+</figure>
+
+<ul>
+  <li><strong>Apple Intel Macs.</strong> Apple's EFI firmware ships a built-in HFS+ driver, so it reads the HFS+ system volume directly and launches <code>/System/Library/CoreServices/boot.efi</code>, which loads the prelinkedkernel/kernelcache and hands off to XNU. "Boot from HFS+" worked <em>because the firmware itself could read HFS+</em> &mdash; there was never a <code>/boot</code> file or a <code>boot1h</code> sector involved on EFI Macs.</li>
+  <li><strong>Generic PC UEFI (hackintosh).</strong> Stock firmware reads only FAT (the EFI System Partition). To boot HFS+ you must first load an EFI HFS+ driver (<code>VBoxHfs.efi</code> / <code>HfsPlus.efi</code>) &mdash; exactly what OpenCore/Clover ship, and the only reusable ~3&ndash;5k LOC buried in them (see &sect;3).</li>
+  <li><strong>FreeBSD / NextBSD.</strong> Firmware &rarr; ESP (FAT) &rarr; <code>loader.efi</code>, which finds the kernel through the shared <code>stand/libsa</code> filesystem readers. It can't read HFS+ today &mdash; the same gap as the BIOS loader, and fixable in the same place: a <code>libsa</code> HFS+ reader compiles into <em>both</em> <code>loader</code> (BIOS) and <code>loader.efi</code> (UEFI), so one reader covers both firmwares.</li>
+</ul>
+
+<p>This is why the recommendation is firmware-agnostic. <strong>Option C</strong> (UFS/ZFS for <code>/boot</code> + the FAT ESP that UEFI already requires, HFS+ for data) needs <em>nothing</em> on either BIOS or UEFI. <strong>Option B</strong>'s single <code>libsa</code> reader serves both. Only <strong>boot-132 (Option A) is BIOS-only</strong> &mdash; UEFI support would mean bolting on a separate EFI HFS+ driver (OpenCore territory), which is the bulk of why §5 rejects it.</p>
 
 <h2 id="modern-forks">3. Modern descendants: OpenCore, Clover, Chameleon</h2>
 

@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD unionfs inode-collision fix — design plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.c { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  table.compact td, table.compact th { padding: .35rem .55rem; font-size: .88rem; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .gap { background: #fff5f5; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .gap strong { color: var(--bad); }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .risk { background: #fff5f5; border: 1px solid #e7b8bf; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .93rem; }
+  .risk strong { color: var(--bad); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .rec { background: #eef4f8; border: 1px solid #bcd4e2; border-left: 4px solid var(--accent2); padding: 1rem 1.25rem; margin: 1.25rem 0; border-radius: 6px; }
+  .rec strong { color: var(--accent2); }
+  .yesno { font-weight: 600; }
+  .yesno.yes { color: var(--ok); }
+  .yesno.no  { color: var(--bad); }
+  .yesno.partial { color: var(--warn); }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#bug">The bug</a>
+  <a href="#cause">Root cause</a>
+  <a href="#notool">No toolchain fix</a>
+  <a href="#xino">overlayfs xino</a>
+  <a href="#fix">The fix</a>
+  <a href="#alts">Alternatives</a>
+  <a href="#risks">Risks</a>
+  <a href="#test">Testing</a>
+  <a href="#rollout">Rollout</a>
+  <a href="#appendix">Appendix: inodes</a>
+  <a href="#refs">References</a>
+</nav>
+
+<h1>NextBSD unionfs inode-collision fix — design plan <span class="pill info">Design / proposal</span></h1>
+<p class="subtitle">Why distinct headers silently vanish during builds on the NextBSD live root (<code>unknown type name 'GS_EXPORT'</code>, <code>'cups_lang_t'</code>, <code>'OBJC_PUBLIC'</code>, <code>encode_NSInteger</code>), why it's a unionfs <code>(device,inode)</code> collision and not a code bug, and a permanent kernel-side fix modelled on Linux overlayfs's <code>xino</code>. Companion to issue <a href="https://github.com/nextbsd-redux/nextbsd/issues/332">#332</a>.</p>
+
+<section id="tldr" class="tldr">
+  <h3>TL;DR</h3>
+  <ul>
+    <li><strong>Symptom:</strong> on the live unionfs root, clang randomly reports a type/macro as undefined (<code>GS_EXPORT</code>, <code>cups_lang_t</code>, <code>OBJC_PUBLIC</code>, <code>encode_NSInteger</code>) even though the defining header is <code>#include</code>d and the identical source builds fine on stock FreeBSD.</li>
+    <li><strong>Cause:</strong> clang's include-once logic (<code>#pragma once</code>, <code>#import</code>, include-guard optimization) identifies files by <code>UniqueID = (st_dev, st_ino)</code>, never by path. NextBSD's unionfs gives <em>every</em> layer the same <code>st_dev</code> and passes each underlying layer's inode number through unchanged, so an upper-layer header and an unrelated lower-layer header can land on the same <code>(st_dev, st_ino)</code>. clang then treats the second as a re-include of the first and <strong>silently skips it</strong> — no diagnostic at the <code>#include</code> line. Confirmed on <code>thinkpad-t460s</code>: <code>/usr/include</code>, <code>/usr/local/include</code>, and <code>/System/Library/Headers</code> all report device <code>1090584323</code>.</li>
+    <li><strong>No toolchain escape hatch.</strong> There is no clang flag to make include-once path-based; upstream LLVM has adjudicated this exact scenario as a <em>filesystem</em> bug. The fix must live in the kernel's unionfs vnode layer.</li>
+    <li><strong>The fix:</strong> make unionfs present a globally-unique <code>(st_dev, st_ino)</code> for every distinct file, modelled on Linux overlayfs's <code>xino</code> feature. Keep one <code>st_dev</code> for the mount, but reserve the high bit of the 64-bit fileid as a layer tag (upper vs lower) in <code>unionfs_getattr()</code>, and mirror the identical remap onto <code>d_fileno</code> in <code>unionfs_readdir()</code> so <code>stat(2)</code> and <code>readdir(3)</code> agree. NextBSD's union is exactly two layers, so one tag bit is provably collision-free.</li>
+    <li><strong>Interim (already in use):</strong> an inode-bust sweep (rewrite headers in place to force fresh inodes) across <code>/System/Library/Headers</code>, <code>/usr/include</code>, <code>/usr/local/include</code>, <code>/Developer</code>. It unblocked the GNUstep build, but it is whack-a-mole — every copy-up or new port re-collides.</li>
+    <li><strong>Risks</strong> are real but bounded: larger 64-bit inode numbers (EOVERFLOW for any 32-bit-<code>ino_t</code> consumer), a per-<code>readdir</code> bounce-buffer cost, copy-up identity churn, NFS-export caveats, and a one-time inode-number change for anything caching them. All are manageable; see <a href="#risks">§8</a>.</li>
+  </ul>
+</section>
+
+<h2 id="bug">1. The bug, as observed</h2>
+<p>During <code>make install</code> of the GNUstep stack on the live root, clang fails on different files each layer of the build, always with the same shape — a type or macro that <em>is</em> defined in an included header is reported undefined:</p>
+<table class="compact">
+<thead><tr><th>Build unit</th><th>Error</th><th>Defining header that got skipped</th></tr></thead>
+<tbody>
+<tr><td>libs-back <code>gpbs.m</code></td><td><code>unknown type name 'GS_EXPORT'</code></td><td><code>GNUstepBase/GSVersionMacros.h</code></td></tr>
+<tr><td>libs-gui <code>GSCUPSPrintOperation.m</code></td><td><code>unknown type name 'cups_lang_t'</code></td><td><code>/usr/local/include/cups/language.h</code></td></tr>
+<tr><td>libobjc2 <code>arc.mm</code></td><td><code>unknown type name 'OBJC_PUBLIC'</code></td><td><code>objc/objc-visibility.h</code></td></tr>
+<tr><td>libs-gui <code>NSActionCell.m</code></td><td><code>call to undeclared function 'encode_NSInteger'</code></td><td><code>GSGuiPrivate.h</code></td></tr>
+</tbody>
+</table>
+<p>Two tells point away from "broken code": (1) the <code>#include</code>/<code>#import</code> line itself raises no error — the failure surfaces far downstream at first use of the missing symbol; and (2) <strong>the identical sources build cleanly on stock FreeBSD</strong>. So the variable is the environment — specifically the filesystem — not the code.</p>
+
+<h3>1.1 Evidence from the box</h3>
+<pre class="shell"><code>$ mount | grep -iE 'union|cow'
+&lt;above&gt;:/cow on / (unionfs, local)
+tmpfs on /cow (tmpfs, local)
+
+$ stat -f '%d  %N' /System/Library/Headers /usr/include /usr/local/include
+1090584323  /System/Library/Headers
+1090584323  /usr/include
+1090584323  /usr/local/include          # one device id across all three trees
+
+$ stat -f '%d:%i  %N' /usr/local/include/cups/language.h
+1090584323:25678  /usr/local/include/cups/language.h   # low inode number → collision-prone</code></pre>
+<p>The live root is a unionfs: a writable <code>tmpfs</code> upper layer (<code>/cow</code>) over a read-only uzip/<code>cd9660</code> lower layer, all presented under a single device id (<code>1090584323</code>). Inode numbers in each layer are allocated independently from low values, so collisions across layers are not just possible — they're likely for the densely-numbered early inodes that system headers occupy.</p>
+
+<h2 id="cause">2. Root cause</h2>
+<p>Three facts combine into the bug.</p>
+
+<h3>2.1 clang identifies files by <code>(device, inode)</code>, not path</h3>
+<p>clang's <code>FileManager</code> uniques files by inode so that two names for one file (symlinks, hardlinks) are treated as a single file. The identity token is <code>llvm::sys::fs::UniqueID</code> — a pair <code>(Device, File)</code> populated on POSIX directly from <code>st_dev</code> and <code>st_ino</code>. Distinct paths that <code>stat</code> to the same pair collapse onto one <code>FileEntry</code>:</p>
+<pre class="c"><code>// clang/lib/Basic/FileManager.cpp
+// "See if we have already opened a file with the same inode.
+//  This occurs when one dir is symlinked to another, for example."
+FileEntry *&amp;UFE = UniqueRealFiles[Status.getUniqueID()];</code></pre>
+<p>All three re-inclusion-skipping mechanisms — the <strong>multiple-include optimization</strong> (include guards), <strong><code>#pragma once</code></strong>, and Objective-C <strong><code>#import</code></strong> — record their state in a <code>HeaderFileInfo</code> keyed on that <code>FileEntry</code> identity, and consult it in <code>HeaderSearch::ShouldEnterIncludeFile()</code>. None of them is path-based.</p>
+
+<h3>2.2 unionfs collapses <code>st_dev</code> and passes inode numbers through</h3>
+<p>In FreeBSD/NextBSD unionfs (files <code>sys/fs/unionfs/union_subr.c</code>, <code>union_vnops.c</code>):</p>
+<ul>
+  <li><strong>One device id for the whole mount.</strong> <code>unionfs_mount()</code> calls <code>vfs_getnewfsid(mp)</code>, and <code>unionfs_getattr()</code> overwrites every file's <code>va_fsid</code> with the mount's single fsid — so upper and lower files all report the same <code>st_dev</code>.</li>
+  <li><strong>Inode numbers pass straight through.</strong> <code>unionfs_getattr()</code> calls the underlying upper-or-lower <code>VOP_GETATTR</code> and rewrites only <code>va_fsid</code>; <code>va_fileid</code> (→ <code>st_ino</code>) is whatever the backing <code>tmpfs</code> or <code>cd9660</code> returned. <code>unionfs_readdir()</code> likewise delegates wholesale to the underlying directory's <code>VOP_READDIR</code>, so each <code>d_fileno</code> is the raw underlying inode number.</li>
+</ul>
+<p>Result: two genuinely different files — one upper, one lower — can carry the same <code>(st_dev, st_ino)</code>.</p>
+
+<h3>2.3 The collision → silent skip</h3>
+<div class="ascii-diagram">  #include &lt;cups/cups.h&gt;
+     └─ #include "language.h"   ← stats to (1090584323 : 25678)
+                                  but (…:25678) was ALREADY seen earlier in the TU
+                                  (a different header on the other layer)
+        → FileManager returns the SAME FileEntry
+        → ShouldEnterIncludeFile() sees "already included / #pragma once"
+        → returns Skip — NO lexer pushed, NO diagnostic
+  …
+  cups_lang_t *lang;   ← error: unknown type name 'cups_lang_t'   (300 lines later)</div>
+<p>From clang's point of view this is the <em>normal, desired</em> behaviour that makes <code>#pragma once</code> work — it has no way to know the OS handed it two different files under one identity. That's why there is no warning at the include site.</p>
+
+<h2 id="notool">3. Why there is no toolchain-side fix</h2>
+<p>This exact scenario (a union/FUSE overlay presenting colliding inodes to clang) was raised upstream and adjudicated: clang "determines if two different names refer to the same file based on the inode returned by <code>stat()</code>," and the resolution was that this is a <strong>filesystem bug, not a clang bug</strong> (the real-world fix there was the FUSE <code>-o use_ino</code> mount option). There is no <code>-fno-…</code> switch that reroutes <code>#pragma once</code> / <code>#import</code> / the multiple-include optimization off <code>UniqueID</code> and onto path strings — the identity key is structural in <code>FileManager</code>/<code>HeaderSearch</code>/<code>Preprocessor</code>, not policy-gated.</p>
+<div class="gap"><strong>Conclusion:</strong> the only correct, durable fix is for unionfs to present a unique <code>(st_dev, st_ino)</code> per distinct file. Everything else (the inode-bust sweep, avoiding the overlay) is mitigation.</div>
+
+<h2 id="xino">4. Prior art — Linux overlayfs <code>xino</code></h2>
+<p>overlayfs hit this identical bug (it broke <code>tar</code>'s hardlink detector, <code>du -x</code>, <code>yum</code>, and the same cpp include-once class) and fixed it in Linux 4.17 with the <strong><code>xino</code></strong> feature. The design is the template for our fix:</p>
+<ul>
+  <li><strong>One <code>st_dev</code>, tagged <code>st_ino</code>.</strong> Keep a single device id for the overlay mount and steal the <em>high</em> bits of <code>st_ino</code> to encode a per-layer fsid (upper = 0), partitioning one inode-number space across layers. The high bits are used "because the underlying filesystems rarely use the high inode number bits."</li>
+  <li><strong>Tag width scales with layer count.</strong> overlayfs uses <code>ilog2(numfs&nbsp;-&nbsp;1)&nbsp;+&nbsp;2</code> bits, capped so it never exceeds 30, with one low bit of the tag region reserved for an overflow-mapping range. Layout: <code>[ fsid tag | 1 reserved bit | real inode number ]</code>.</li>
+  <li><strong>Modes <code>off</code>/<code>on</code>/<code>auto</code>.</strong> <code>on</code> force-enables and warns (rate-limited) on overflow; <code>auto</code> enables when persistent <code>st_ino</code> is achievable and stays silent on the overflow fallback.</li>
+  <li><strong>Overflow is per-inode, never a hard failure.</strong> If a real inode number is too large to coexist with the tag, overlayfs keeps the pair unique by other means — real ino + a unique <em>pseudo</em> <code>st_dev</code> for non-dirs, or a non-persistent overlay ino for dirs — rather than colliding.</li>
+  <li><strong>Identity stability across copy-up</strong> is handled separately via the <code>trusted.overlay.origin</code> xattr / <code>index</code>, so a file's <code>st_ino</code> doesn't change when it's written and copied to the upper layer.</li>
+  <li><strong>64-bit only.</strong> Setting high bits yields large inode numbers; on 32-bit <code>ino_t</code>, <code>stat()</code> returns <code>EOVERFLOW</code> rather than silently truncating (which would reintroduce collisions).</li>
+</ul>
+<p>NextBSD's unionfs is simpler than overlayfs — exactly <strong>two</strong> layers (one upper, one lower), not an arbitrary stack — so a single tag bit suffices and the bit-budget arithmetic collapses to "set bit 63 for upper."</p>
+
+<h2 id="fix">5. The fix — layer-tagged fileid in unionfs</h2>
+<div class="rec"><strong>Approach:</strong> keep unionfs's single <code>st_dev</code>, and in <code>unionfs_getattr()</code> OR the top bit of the 64-bit <code>va_fileid</code> for upper-layer files (clear it for lower). Mirror the <em>identical</em> remap onto <code>d_fileno</code> in <code>unionfs_readdir()</code>. Two layers ⇒ two disjoint inode sub-spaces ⇒ <code>(st_dev, st_ino)</code> is unique by construction. clang's identity key becomes unique again and headers stop vanishing.</div>
+
+<h3>5.1 Source layout &amp; touch points</h3>
+<p>NextBSD builds against the FreeBSD tree (fork <code>nextbsd-redux/freebsd-src</code>) plus a thin patch series in <code>nextbsd-kernel/patches/</code>; no unionfs inode logic is currently patched out-of-tree. Note the FreeBSD file names are <code>union.h</code> / <code>union_subr.c</code> / <code>union_vnops.c</code> (functions are <code>unionfs_*</code>):</p>
+<table class="compact">
+<thead><tr><th>Location</th><th>Today</th><th>Change</th></tr></thead>
+<tbody>
+<tr><td><code>union.h</code> — <code>struct unionfs_node</code></td><td>tracks <code>un_uppervp</code> / <code>un_lowervp</code>; layer predicate is <code>un_uppervp != NULLVP</code></td><td>add the tag macro + helper</td></tr>
+<tr><td><code>union_vnops.c</code> — <code>unionfs_getattr()</code></td><td>copies underlying attrs, rewrites only <code>va_fsid</code>; <code>va_fileid</code> passes through</td><td>OR/clear bit 63 of <code>va_fileid</code> per layer</td></tr>
+<tr><td><code>union_vnops.c</code> — <code>unionfs_readdir()</code></td><td>delegates to underlying <code>VOP_READDIR</code> straight into the user <code>uio</code>; <code>d_fileno</code> raw</td><td>bounce-buffer, tag each <code>d_fileno</code> to match getattr</td></tr>
+</tbody>
+</table>
+
+<h3>5.2 The helper</h3>
+<pre class="c"><code>/* union.h */
+#define UNIONFS_FILEID_UPPER_BIT  (1ULL &lt;&lt; 63)
+
+static __inline uint64_t
+unionfs_remap_fileid(bool upper, uint64_t id)
+{
+    return (upper ? (id | UNIONFS_FILEID_UPPER_BIT)
+                  : (id &amp; ~UNIONFS_FILEID_UPPER_BIT));
+}
+/* upper = (unp-&gt;un_uppervp != NULLVP) — the existing layer predicate */</code></pre>
+
+<h3>5.3 <code>unionfs_getattr()</code></h3>
+<p>Adjacent to the two existing <code>va_fsid</code> assignments (upper and lower return paths), after the underlying <code>VOP_GETATTR</code> succeeds:</p>
+<pre class="c"><code>/* upper path */
+ap-&gt;a_vap-&gt;va_fsid   = ap-&gt;a_vp-&gt;v_mount-&gt;mnt_stat.f_fsid.val[0];
+ap-&gt;a_vap-&gt;va_fileid |= UNIONFS_FILEID_UPPER_BIT;        /* NEW */
+
+/* lower path */
+ap-&gt;a_vap-&gt;va_fsid    = ap-&gt;a_vp-&gt;v_mount-&gt;mnt_stat.f_fsid.val[0];
+ap-&gt;a_vap-&gt;va_fileid &amp;= ~UNIONFS_FILEID_UPPER_BIT;       /* NEW (defensive) */</code></pre>
+
+<h3>5.4 <code>unionfs_readdir()</code> — the hard half</h3>
+<p>Because <code>VOP_READDIR</code> writes <code>struct dirent</code> records (with <code>d_fileno</code>) directly into the caller's <code>uio</code>, the tag has to be applied <em>after</em> the underlying readdir but <em>before</em> the data reaches userspace. Route the three call sites through a helper that reads into a kernel bounce buffer, walks the dirents, tags each <code>d_fileno</code>, then <code>uiomove</code>s the rewritten block:</p>
+<pre class="c"><code>for (struct dirent *dp = kbuf; (char *)dp &lt; kbuf + nbytes;
+     dp = (struct dirent *)((char *)dp + dp-&gt;d_reclen)) {
+    if (dp-&gt;d_reclen == 0) break;
+    dp-&gt;d_fileno = unionfs_remap_fileid(upper, dp-&gt;d_fileno);
+}
+/* then uiomove(kbuf, nbytes, uio); preserve d_off / NFS cookie merge */</code></pre>
+<p>The <code>upper</code> flag is <em>per source directory</em>, not per entry: in the merged case the upper pass tags <code>upper=true</code>, the lower pass <code>upper=false</code> — correct, because each entry's fileid belongs to the layer whose directory produced it. <strong>This must agree with <code>getattr</code> or <code>stat(2)</code> and <code>readdir(3)</code> disagree, which breaks <code>find</code>, <code>fts(3)</code>, and <code>tar</code>.</strong></p>
+
+<h2 id="alts">6. Alternatives considered</h2>
+<table>
+<thead><tr><th>Option</th><th>Idea</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>A. Layer-tagged fileid (this plan)</strong></td>
+  <td>Single <code>st_dev</code>, high-bit layer tag on <code>va_fileid</code> + <code>d_fileno</code>.</td>
+  <td><span class="pill ok">Chosen</span> overlayfs-proven; collision-free by construction for 2 layers; keeps one-device semantics that <code>find -xdev</code>/<code>du -x</code>/<code>tar</code> expect.</td>
+</tr>
+<tr>
+  <td>B. Per-layer real <code>st_dev</code></td>
+  <td>Report each underlying layer's true <code>st_dev</code> instead of one mount fsid; different devices ⇒ no <code>(dev,ino)</code> collision.</td>
+  <td><span class="pill warn">Rejected</span> Less code, but <code>readdir</code> carries no device so <code>d_fileno</code> stays ambiguous, and a single tree now spans multiple device ids — breaks <code>find -xdev</code> / <code>du -x</code> / <code>tar --one-file-system</code>. overlayfs explicitly avoided this.</td>
+</tr>
+<tr>
+  <td>C. Separate filesystem for the build root</td>
+  <td>Mount <code>/Developer</code>, <code>/usr/local</code>, the headers on a dedicated real FS (own device id), or build on a disk install rather than the live union.</td>
+  <td><span class="pill info">Good interim / no-kernel</span> Sidesteps unionfs entirely (distinct device ⇒ no collision). Doesn't fix the union root itself; best as the stopgap while A lands.</td>
+</tr>
+<tr>
+  <td>D. Inode-bust sweep</td>
+  <td>Rewrite headers in place (<code>cp</code>+<code>mv</code>) to force fresh, higher inode numbers before each build.</td>
+  <td><span class="pill bad">Band-aid only</span> What we ran to unblock GNUstep. Non-deterministic and recurs on every copy-up / new port. Scaffolding, not a fix.</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="risks">7. Risks &amp; implications of the fix</h2>
+<p>The change is small in lines but touches core VFS paths (<code>getattr</code>, <code>readdir</code>) and changes a user-visible value (<code>st_ino</code>). The risks, with mitigations:</p>
+
+<div class="risk"><strong>R1 — Larger 64-bit inode numbers → <code>EOVERFLOW</code> for 32-bit <code>ino_t</code> consumers.</strong> Setting bit 63 produces very large <code>st_ino</code> values for every upper-layer file. Any caller using a 32-bit <code>ino_t</code> (a <code>compat32</code>/<code>freebsd11</code> ABI <code>stat</code> shim, an old binary, code built without 64-bit <code>ino_t</code>) will get <code>EOVERFLOW</code> rather than a truncated number.
+<br><em>Mitigation:</em> FreeBSD has had 64-bit <code>ino_t</code> since the ino64 work (FreeBSD 12), so modern NextBSD userland is fine. Audit the <code>freebsd11_stat</code>/<code>compat32</code> translation paths and decide deliberately to fail with <code>EOVERFLOW</code> (correct) rather than truncate (silently reintroduces collisions). Confirm the toolchain — clang, <code>make</code>, <code>install</code> — is 64-bit-<code>ino_t</code>-clean, since it is the consumer this whole effort exists to satisfy.</div>
+
+<div class="risk"><strong>R2 — Per-<code>readdir</code> bounce-buffer cost.</strong> Tagging <code>d_fileno</code> means copying every directory read through a kernel buffer and walking the dirents, instead of letting the underlying FS write straight to the user <code>uio</code>. That's an extra allocation + copy + scan per <code>readdir</code> call.
+<br><em>Mitigation:</em> directory reads are already syscall-bounded and chunked; size the bounce buffer to the existing read granularity and reuse it across the merged upper/lower passes. The cost is proportional to entries returned, not to tree size. Build workloads do a lot of <code>readdir</code>, so benchmark a <code>find /usr</code> and a full GNUstep rebuild before/after; expect low-single-digit percentage, not a step change.</div>
+
+<div class="risk"><strong>R3 — <code>st_ino</code> changes across copy-up.</strong> When a lower file is modified, unionfs creates an upper shadow; afterward the file reports the upper tmpfs inode (now with bit 63 set) instead of the lower cd9660 inode. The inode number changes mid-life. This is <em>already</em> true today (raw tmpfs ino ≠ raw cd9660 ino); the tag doesn't worsen it, but it remains a property.
+<br><em>Mitigation:</em> acceptable for a live/build root. Unlike overlayfs we are <em>not</em> proposing an <code>origin</code>-xattr identity-stability layer (overkill for an ephemeral root). Document it; if a future consumer needs stable identity across writes, that's a separate <code>index</code>-style feature.</div>
+
+<div class="risk"><strong>R4 — Bit-63 exhaustion on large-inode lower filesystems.</strong> The OR-tag is collision-free only if the underlying FS never legitimately uses bit 63. <code>tmpfs</code>, <code>cd9660</code>/uzip, and UFS (32-bit inodes) never do. <strong>ZFS does not bound object IDs to 63 bits</strong>, so a ZFS-backed layer could in principle carry a fileid with bit 63 set, and OR-ing would alias it onto an upper file.
+<br><em>Mitigation:</em> NextBSD's live lower layer is uzip/<code>cd9660</code> and the upper is <code>tmpfs</code> — both safe, so ship the simple tag now. Add a mount-time assertion/guard: if either backing FS can produce inode numbers ≥ 2<sup>63</sup>, refuse the tag mode (or switch to an overlayfs-style per-inode fallback). Don't silently OR on a ZFS layer.</div>
+
+<div class="risk"><strong>R5 — <code>stat</code>/<code>readdir</code> divergence if the two remaps drift.</strong> If a code path tags <code>va_fileid</code> but a <code>readdir</code> path is missed (or vice-versa), <code>stat(2)</code> and <code>d_fileno</code> disagree for the same file — which breaks <code>find</code>, <code>fts(3)</code>, <code>tar</code>, and NFS readdirplus in new, subtler ways than the original bug.
+<br><em>Mitigation:</em> a <em>single</em> shared <code>unionfs_remap_fileid()</code> helper used by both paths (never inline the bit-twiddle twice), plus a regression test asserting <code>stat(dir/entry).st_ino == </code> the entry's <code>d_fileno</code> for every entry, including <code>.</code> and <code>..</code> across shadowed/lower-only parents.</div>
+
+<div class="risk"><strong>R6 — NFS export of the union root.</strong> If the union root is NFS-exported, the tagged getattr fileid must also flow through <code>VOP_VPTOFH</code>/<code>VFS_FHTOVP</code>, or the file-handle-derived inode won't match the stat inode. unionfs's NFS-export path is already fragile (the readdir cookie-merge).
+<br><em>Mitigation:</em> the live build root is not NFS-exported, so this is out of scope — but <strong>document that the union root is not NFS-exportable</strong> with this patch, and audit the <code>vptofh</code>/<code>fhtovp</code> path before anyone tries.</div>
+
+<div class="risk"><strong>R7 — One-time inode-number churn.</strong> Every upper-layer file's <code>st_ino</code> changes the day this lands. Anything that recorded inode numbers before (a ccache/precompiled-header cache keyed on identity, a backup tool's hardlink index, an <code>mtree</code> manifest) sees a one-time discontinuity.
+<br><em>Mitigation:</em> low impact on an ephemeral live root; flush build/identity caches once after deploying the patched kernel. Note it in the changelog.</div>
+
+<div class="risk"><strong>R8 — Hardlinks must stay layer-deterministic.</strong> Two hardlinks to one upper file must still map to one inode. They do, because the tag is layer-constant and the underlying fileid is shared — but the invariant must be preserved (don't make the tag depend on path or dirent). Cross-layer copy-up breaking a hardlink is a pre-existing unionfs property, unchanged here.</div>
+
+<div class="risk"><strong>R9 — Maintenance / upstreamability.</strong> This is carried as an out-of-tree kernel patch (<code>patches/0007-unionfs-layer-tagged-fileid.patch</code>), so it must be re-validated on every FreeBSD rebase and risks divergence.
+<br><em>Mitigation:</em> the change is self-contained and overlayfs-justified; propose it upstream to FreeBSD (a <code>mount_unionfs -o xino</code>-style option) so it eventually lands in-tree and stops being a carry.</div>
+
+<div class="resolved"><strong>Net:</strong> no risk here is a blocker. R1 (64-bit <code>ino_t</code>) and R4 (ZFS bit-63) are the two to verify up front; both are satisfied by the current live-root composition (64-bit userland, tmpfs+cd9660 layers). The rest are documentation, a shared helper, and a benchmark.</div>
+
+<h2 id="test">8. Testing &amp; validation</h2>
+<h3>8.1 Collision detector (run before &amp; after)</h3>
+<p>FreeBSD <code>stat -f</code>: <code>%d</code> = <code>st_dev</code>, <code>%i</code> = <code>st_ino</code>. Distinct paths sharing a <code>dev:ino</code> are exactly what clang mis-dedups:</p>
+<pre class="shell"><code>#!/bin/sh
+# collide.sh — report DISTINCT regular-file paths sharing (st_dev, st_ino).
+# Usage: ./collide.sh /usr/include /usr/local/include /System/Library/Headers /Developer
+set -eu
+tmp=$(mktemp /tmp/collide.XXXXXX); trap 'rm -f "$tmp"' EXIT
+find "$@" -type f -print0 | xargs -0 stat -f '%d:%i	%N' | sort &gt; "$tmp"
+awk -F'\t' '{ if ($1==pk &amp;&amp; $2!=pp){ if(!s[$1]++) print "COLLISION "$1"\n  "pp; print "  "$2 }
+              pk=$1; pp=$2 }' "$tmp"
+awk -F'\t' 'k[$1]++{c=1} END{exit !c}' "$tmp" &amp;&amp; { echo "FAIL: dup (dev,ino)"; exit 1; }
+echo "OK: every path has a unique (st_dev, st_ino)"</code></pre>
+<p>(True hardlinks legitimately share a pair; on the union root you expect <em>zero</em> shared keys between distinct logical files, so any hit is suspect — optionally <code>cmp</code> flagged pairs and only fail when contents differ.)</p>
+
+<h3>8.2 Kernel regression test (deliberate overlap)</h3>
+<p>Construct the pathological condition on purpose with two fresh backing FSes whose first files share a low inode number, union-mount, then assert every presented file has a distinct identity:</p>
+<pre class="shell"><code>mdconfig -a -t swap -s 16m -u 0; newfs -U /dev/md0; mount /dev/md0 /mnt/lower
+mdconfig -a -t swap -s 16m -u 1; newfs -U /dev/md1; mount /dev/md1 /mnt/upper
+: &gt; /mnt/lower/a.h        # first file on md0 → ino X
+: &gt; /mnt/upper/b.h        # first file on md1 → same ino X, different backing dev
+mount_unionfs /mnt/upper /mnt/lower
+n=$(find /mnt/lower -type f | wc -l)
+u=$(find /mnt/lower -type f -print0 | xargs -0 stat -f '%d:%i' | sort -u | wc -l)
+[ "$n" -eq "$u" ] || { echo "FAIL: union presents colliding (dev,ino)"; exit 1; }</code></pre>
+<p>A correct fix makes <code>n == u</code>. Wire it in as a kyua/ATF test so it runs on every kernel build. Add a companion test asserting <code>stat</code> ↔ <code>d_fileno</code> agreement (R5), including <code>.</code>/<code>..</code>.</p>
+
+<h3>8.3 End-to-end</h3>
+<p>Clean-rebuild the real workload in dependency order on the union root and grep the logs for the collision signatures:</p>
+<pre class="shell"><code>for p in libs-base libs-gui libs-back; do ( cd /Developer/Library/Sources/$p &amp;&amp; gmake clean &amp;&amp; gmake 2&gt;&amp;1 | tee /tmp/$p.log ); done
+! grep -E 'unknown type name|undeclared|undefined macro|implicit declaration' /tmp/libs-*.log
+./collide.sh /usr/include /usr/local/include /System/Library/Headers /Developer</code></pre>
+<p>Pass = all three link, zero collision-signature errors, and the detector reports a clean sweep.</p>
+
+<h2 id="rollout">9. Implementation checklist &amp; rollout</h2>
+<ol>
+  <li>Add <code>UNIONFS_FILEID_UPPER_BIT</code> + <code>unionfs_remap_fileid()</code> to <code>union.h</code>.</li>
+  <li>Tag <code>va_fileid</code> in both <code>unionfs_getattr()</code> return paths.</li>
+  <li>Bounce-buffer + tag <code>d_fileno</code> in <code>unionfs_readdir()</code>'s three call sites; preserve <code>d_off</code>/cookie merge.</li>
+  <li>Mount-time guard (R4): refuse/῾fallback if a backing FS can emit inode numbers ≥ 2<sup>63</sup>.</li>
+  <li>kyua/ATF tests: deliberate-overlap uniqueness, <code>stat</code>↔<code>readdir</code> agreement, copy-up inode change.</li>
+  <li>Carry as <code>nextbsd-kernel/patches/0007-unionfs-layer-tagged-fileid.patch</code> + <code>series</code> entry; gate behind <code>mount_unionfs -o xino</code> if you want it opt-in initially.</li>
+  <li>Benchmark <code>readdir</code>-heavy paths (R2) before/after.</li>
+  <li>Retire the inode-bust sweep from the build scripts once CI is green on the patched kernel.</li>
+  <li>Propose upstream to FreeBSD (R9).</li>
+</ol>
+
+<h2 id="open">10. Open questions</h2>
+<div class="open-q"><strong>Q1. Opt-in or always-on?</strong> Ship as a <code>mount_unionfs -o xino</code> option (safe, opt-in, matches overlayfs) or make it the default for the live root? Leaning: default-on for the live root, option-gated in-tree.</div>
+<div class="open-q"><strong>Q2. Guard vs. fallback for large-inode layers (R4).</strong> For now the live layers are safe; do we add the full overlayfs-style per-inode fallback, or just assert and refuse the mode on unsafe backing FSes? Leaning: assert+refuse now, fallback only if a ZFS-backed layer becomes real.</div>
+<div class="open-q"><strong>Q3. Do we ever need copy-up identity stability (R3)?</strong> Only if a build tool caches <code>(dev,ino)</code> across writes and breaks. No evidence yet; defer the <code>origin</code>-xattr equivalent unless one shows up.</div>
+
+<h2 id="appendix">Appendix A — inodes, <code>df</code>, and the "2.1G ifree" question</h2>
+<p>Background for reading the live root's storage state, and a units gotcha worth pinning down because it looks alarming and isn't.</p>
+
+<h3>A.1 What an inode is</h3>
+<p>An <strong>inode</strong> ("index node") is the structure that stores everything about <em>one</em> file <strong>except its name</strong>: type, permissions, owner, timestamps, size, link count, and pointers to the data blocks. The name lives separately, in the directory entry that points at the inode. <strong>Every file, directory, and symlink consumes exactly one inode</strong> — and the <code>(st_dev, st_ino)</code> pair from that inode is the very identity clang keys include-once on (§2.1), which is what this whole plan is about.</p>
+<p>A filesystem therefore has <strong>two independent capacity limits</strong>, and either can be exhausted alone:</p>
+<ul>
+  <li><strong>Bytes</strong> — data-block space (<code>df</code>'s <code>Size</code>/<code>Used</code>/<code>Avail</code>).</li>
+  <li><strong>Inodes</strong> — how <em>many</em> files, regardless of size (<code>df</code>'s <code>iused</code>/<code>ifree</code>/<code>%iused</code>).</li>
+</ul>
+<p>A million tiny files can use every inode while gigabytes of bytes sit free; one huge file can fill the bytes with inodes to spare.</p>
+
+<h3>A.2 The inode columns — and the units gotcha</h3>
+<table class="compact">
+<thead><tr><th>Column</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>iused</code></td><td>inodes in use (files that exist)</td></tr>
+<tr><td><code>ifree</code></td><td>inodes still available</td></tr>
+<tr><td><code>%iused</code></td><td>inodes used, as a percentage</td></tr>
+</tbody>
+</table>
+<div class="resolved"><strong>The gotcha:</strong> in the inode columns, <code>G</code> means giga as a <em>count</em> (≈ 2.1 <strong>billion inodes</strong>), <strong>not</strong> 2.1 gigabytes of memory. <code>ifree 2.1G</code> is room for ~2.1 billion files; it has nothing to do with how much RAM the machine has. So "only 2.1G free inodes on an 8 GB box" is a category error — it's a file <em>count</em>, not a byte <em>size</em>.</div>
+
+<h3>A.3 Sample from the live root</h3>
+<pre class="shell"><code>$ df -h
+Filesystem            Size   Used  Avail Capacity iused  ifree %iused  Mounted on
+&lt;above&gt;:/cow           13G   6.9G   6.1G    53%    143k   2.1G    0%   /
+/dev/md0             7.1M   3.5M   3.0M    54%      31    991    3%   /
+/dev/md1.uzip        6.3G   5.6G   173M    98%    115k   9.7k   92%   /rofs
+tmpfs                6.7G   606M   6.1G     9%     18k   2.1G    0%   /cow</code></pre>
+
+<h3>A.4 Why ~2.1G, and why it isn't the RAM number</h3>
+<p><code>2.1G</code> is right around <strong>2<sup>31</sup> (≈ 2,147,483,648)</strong> — the signed-32-bit max. That's <code>tmpfs</code>'s default way of saying <em>"don't meaningfully cap by inode count."</em> It is a default ceiling, not anything derived from physical memory.</p>
+<p>The limit that <em>is</em> memory-derived is the <strong>byte</strong> size: <code>tmpfs</code> is RAM-backed, so FreeBSD defaults its <code>Size</code> to roughly available memory (≈ 6.7 G of an 8 GB box, the rest reserved for the kernel). <strong>The 6.1 G <code>Avail</code> on <code>/cow</code> is the real build budget</strong>, and it's the ceiling that actually binds — every file also costs memory, so you'd exhaust those 6.1 GB (file data + inode structures) long before creating 2 billion files. Inode count: effectively infinite. Byte size: the one to watch.</p>
+
+<h3>A.5 Reading the rest of the rows</h3>
+<table class="compact">
+<thead><tr><th>Mount</th><th>Reading</th></tr></thead>
+<tbody>
+<tr><td><code>tmpfs → /cow</code></td><td>Writable upper layer. Inode cap ≈ 2.1 G (≈ unlimited), byte cap 6.7 G (RAM-bound). All build output lands here.</td></tr>
+<tr><td><code>&lt;above&gt;:/cow → /</code></td><td>The <strong>unionfs</strong>. <code>iused 143k</code> ≈ lower (115k) + upper (18k); <code>ifree 2.1G</code> comes from the writable tmpfs — the only layer you can create files on.</td></tr>
+<tr><td><code>/dev/md1.uzip → /rofs</code></td><td>Read-only compressed lower layer. <code>%iused 92%</code> looks scary but is fine — a packed read-only image with exactly the files it needs; it never grows.</td></tr>
+<tr><td><code>/dev/md0 → /</code></td><td>Tiny mfsroot boot scaffold — a <em>traditional</em> FS with inodes <strong>pre-allocated at <code>newfs</code> time</strong> (1022 total, 991 free), unlike tmpfs's dynamic allocation.</td></tr>
+<tr><td><code>iso9660</code>, <code>devfs</code></td><td>Report <code>0</code> inodes — they don't expose a POSIX inode count to <code>df</code>.</td></tr>
+</tbody>
+</table>
+<p><strong>Bottom line:</strong> <code>0%</code> inodes used and 6.1 G of byte-space free — the live root is neither inode- nor space-constrained for builds.</p>
+
+<h3>A.6 Tie-back to the collision bug</h3>
+<p>The huge <code>ifree</code> count and the inode <em>numbering</em> are unrelated. <code>tmpfs</code> hands out inode <em>numbers</em> sequentially from <strong>low values</strong> as files are created (hence <code>language.h</code> = <code>25678</code>, <code>GSVersionMacros.h</code> = <code>14323</code>), which is exactly why they collide with the low-numbered system headers on the lower layer (§2.2). Having billions of <em>free</em> inodes does nothing to spread the <em>numbers</em> apart — only the high-bit layer tag in §5 does that.</p>
+
+<h2 id="refs">11. References</h2>
+<ul>
+  <li><strong>Issue:</strong> <a href="https://github.com/nextbsd-redux/nextbsd/issues/332">nextbsd-redux/nextbsd#332 — COW overlay inode collisions cause Clang to silently skip source headers</a></li>
+  <li><strong>FreeBSD unionfs source:</strong> <a href="https://github.com/freebsd/freebsd-src/tree/main/sys/fs/unionfs">sys/fs/unionfs</a> (<code>union.h</code>, <code>union_subr.c</code>, <code>union_vnops.c</code>, <code>union_vfsops.c</code>)</li>
+  <li><strong>clang file identity:</strong> <a href="https://clang.llvm.org/doxygen/classclang_1_1FileManager.html">FileManager</a> · <a href="https://github.com/llvm/llvm-project/blob/main/llvm/include/llvm/Support/FileSystem/UniqueID.h">UniqueID.h</a> · <a href="https://github.com/llvm/llvm-project/blob/main/clang/lib/Lex/HeaderSearch.cpp">HeaderSearch.cpp</a> · <a href="https://github.com/llvm/llvm-project/blob/main/clang/lib/Lex/PPDirectives.cpp">PPDirectives.cpp</a></li>
+  <li><strong>"filesystem bug, not clang bug":</strong> <a href="https://lists.llvm.org/pipermail/cfe-dev/2012-November/026137.html">cfe-dev — using clang on unionfs</a> (the <code>-o use_ino</code> precedent)</li>
+  <li><strong>overlayfs xino:</strong> <a href="https://docs.kernel.org/filesystems/overlayfs.html">Documentation/filesystems/overlayfs.rst</a> · <a href="https://github.com/torvalds/linux/blob/master/fs/overlayfs/inode.c">ovl_map_dev_ino</a> · <a href="https://github.com/torvalds/linux/commit/926e94d79baf76ce7a4d26c3116b6d85a77a475b">commit 926e94d7 (auto-enable + overflow fallback)</a></li>
+  <li><strong>32-bit overflow:</strong> <a href="https://man7.org/linux/man-pages/man2/stat.2.html">stat(2) — EOVERFLOW</a> · FreeBSD <a href="https://man.freebsd.org/cgi/man.cgi?query=stat&amp;sektion=1">stat(1)</a> (<code>%d</code>/<code>%i</code>)</li>
+  <li><strong>Companion plans:</strong> <a href="nextbsd-live-root-overlay-plan.html">live-root overlay</a>, <a href="gershwin-livecd-unionfs-plan.html">livecd unionfs</a></li>
+</ul>
+
+</body>
+</html>

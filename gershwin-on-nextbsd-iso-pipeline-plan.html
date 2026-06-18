@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gershwin on NextBSD — build &amp; live-ISO pipeline — Design Plan</title>
+<style>
+  :root{
+    --fg:#1f2328;
+    --fg-soft:#57606a;
+    --bg:#ffffff;
+    --bg-soft:#f6f8fa;
+    --border:#d0d7de;
+    --accent:#0969da;
+    --accent-dark:#0a4ea3;
+    --green:#1a7f37;
+    --red:#cf222e;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    color:var(--fg);background:var(--bg);line-height:1.6;-webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:920px;margin:0 auto;padding:40px 24px 100px;}
+
+  header.masthead{
+    border:1px solid var(--border);border-radius:8px;padding:28px 28px;margin-bottom:36px;
+    position:relative;background:var(--bg-soft);
+  }
+  header.masthead::after{content:none;}
+  .logo{font-size:12px;letter-spacing:3px;color:var(--accent);text-transform:uppercase;margin-bottom:12px;font-weight:600;}
+  h1{font-size:30px;line-height:1.2;margin:0 0 12px;color:var(--fg);letter-spacing:-0.3px;}
+  h1 .blink{display:none;}
+  @keyframes blink{50%{opacity:0;}}
+  .subtitle{color:var(--fg-soft);font-size:15px;max-width:78ch;}
+  .meta-row{margin-top:20px;display:flex;flex-wrap:wrap;gap:8px;font-size:12px;}
+  .tag{border:1px solid var(--border);border-radius:999px;padding:3px 11px;color:var(--fg-soft);letter-spacing:0.5px;background:#fff;}
+
+  h2{font-size:21px;color:var(--fg);margin:52px 0 10px;letter-spacing:-0.2px;padding-bottom:6px;border-bottom:1px solid var(--border);}
+  h2 .num{
+    display:inline-block;color:#fff;background:var(--accent);border-radius:6px;
+    padding:1px 10px;margin-right:12px;font-size:16px;font-weight:600;
+  }
+  h3{font-size:16px;color:var(--fg);margin:30px 0 6px;}
+  .lead{color:var(--fg);max-width:82ch;margin:0 0 8px;font-size:15px;}
+  .lead.dim{color:var(--fg-soft);}
+  p,li{font-size:15px;}
+  a{color:var(--accent);text-decoration:none;}
+  a:hover{text-decoration:underline;}
+  b,strong{color:var(--fg);font-weight:600;}
+  em{color:var(--fg);font-style:italic;}
+
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:18px 0 4px;font-size:12.5px;}
+  .flow .node{border:1px solid var(--border);border-radius:6px;padding:7px 12px;color:var(--fg);background:var(--bg-soft);white-space:nowrap;}
+  .flow .arr{color:var(--fg-soft);}
+  .flow .node.cond{border-style:dashed;}
+  .flow .node.host{border-color:var(--border);}
+  .flow .node.vm{border-color:var(--green);color:var(--green);background:#eafbef;}
+
+  table.spec{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;}
+  table.spec th,table.spec td{border:1px solid var(--border);padding:8px 12px;text-align:left;vertical-align:top;}
+  table.spec th{color:var(--fg);background:var(--bg-soft);font-weight:600;}
+  table.spec td{color:var(--fg);}
+  table.spec tr:nth-child(even) td{background:#fbfcfd;}
+  table.spec code{color:var(--accent-dark);}
+
+  ul.notes{margin:12px 0 0;padding:0;list-style:none;display:grid;gap:8px;}
+  ul.notes li{border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:4px;padding:9px 14px;font-size:14px;color:var(--fg);background:var(--bg-soft);}
+  ul.notes li b{color:var(--fg);}
+  ul.notes li.warn{border-left-color:var(--red);background:#fff5f5;}
+  ul.notes li.warn b{color:var(--red);}
+  ul.notes li.ok{border-left-color:var(--green);background:#eafbef;}
+  ul.notes li.ok b{color:var(--green);}
+
+  .code{margin:18px 0 8px;background:var(--code-bg);border:1px solid var(--border);border-radius:6px;position:relative;overflow-x:auto;}
+  .code .code-label{position:absolute;top:0;right:0;background:#eaeef2;color:var(--fg-soft);font-size:10px;letter-spacing:1px;padding:3px 9px;border-bottom-left-radius:6px;border-left:1px solid var(--border);border-bottom:1px solid var(--border);}
+  pre.code-body{margin:0;padding:26px 18px 18px;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;font-size:13px;line-height:1.5;color:var(--fg);white-space:pre;}
+  pre.code-body .c{color:#6e7781;}
+  pre.code-body .k{color:#0550ae;}
+  pre.code-body .s{color:var(--green);}
+  code.inl{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:0.88em;color:var(--accent-dark);background:#eff1f3;padding:1px 5px;border-radius:4px;}
+  .key{display:inline-block;border:1px solid var(--border);padding:0 6px;font-size:11px;color:var(--fg);border-radius:3px;margin:0 1px;background:#fff;}
+
+  footer{margin-top:70px;padding-top:22px;border-top:1px solid var(--border);color:var(--fg-soft);font-size:13px;}
+  hr.div{border:none;border-top:1px solid var(--border);margin:36px 0;}
+  .pill{display:inline-block;font-size:10px;letter-spacing:0.5px;padding:2px 8px;border:1px solid var(--border);border-radius:999px;color:var(--fg-soft);margin-left:6px;vertical-align:middle;background:#fff;}
+  .pill.warn{border-color:var(--red);color:var(--red);}
+  .pill.ok{border-color:var(--green);color:var(--green);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="logo">Gershwin · NextBSD</div>
+    <h1>Gershwin on NextBSD — build &amp; live-ISO pipeline<span class="blink">_</span></h1>
+    <p class="subtitle">How the (currently empty) <code class="inl">pkgdemon/gershwin-on-nextbsd</code> repo grabs the latest NextBSD <code class="inl">.img.zip</code>, builds the Gershwin desktop into its rootfs, and repackages the result into a live ISO that boots <em>identically</em> to NextBSD's own — 2-stage MFS, on-demand uzip, unionfs, and <code class="inl">vfs.pivot</code>. Plus the three launchd services (<b>loginwindow</b>, <b>dshelper</b>, <b>gdomap</b>) the desktop overlay must ship.</p>
+    <div class="meta-row">
+      <span class="tag">DESIGN PLAN</span>
+      <span class="tag">CI / GITHUB ACTIONS</span>
+      <span class="tag">vmactions/freebsd-vm</span>
+      <span class="tag">LIVE ISO · vfs.pivot</span>
+      <span class="tag">launchd PID 1</span>
+    </div>
+  </header>
+
+  <p class="lead">This plan is the output of reviewing the empty target repo against its two upstreams: <a href="https://github.com/nextbsd-redux/nextbsd">nextbsd-redux/nextbsd</a> (image/ISO build &amp; boot model) and <a href="https://github.com/pkgdemon/freebsd-launchd-mach">pkgdemon/freebsd-launchd-mach</a> (launchd job conventions). It specifies what <code class="inl">gershwin-on-nextbsd</code> must contain and how its CI must work.</p>
+
+  <div class="flow">
+    <span class="node host">① ubuntu-latest: fetch .img.zip</span><span class="arr">──▶</span>
+    <span class="node vm">② FreeBSD VM: extract rootfs</span><span class="arr">──▶</span>
+    <span class="node vm">③ chroot: build Gershwin → /System</span><span class="arr">──▶</span>
+    <span class="node vm">④ repackage live ISO (step-7)</span><span class="arr">──▶</span>
+    <span class="node host">⑤ ubuntu-latest: qemu boot-verify</span>
+  </div>
+
+  <!-- =================== 1 =================== -->
+  <h2><span class="num">1</span>The one fact that drives the whole design</h2>
+  <p class="lead">NextBSD ships <b>two artifacts from the same staged rootfs, with two different boot models</b>. Getting this right is the difference between a bootable ISO and a brick:</p>
+  <table class="spec">
+    <tr><th>Artifact</th><th>Boot model</th><th>Role here</th></tr>
+    <tr><td><code>NextBSD-amd64-&lt;stamp&gt;.img.zip</code></td><td>Plain GPT disk, <b>read-write UFS root</b>. Kernel mounts <code>freebsd-ufs/ROOTFS</code> directly → <code>/sbin/launchd</code>. No uzip / unionfs / pivot.</td><td><b>Our input.</b> The rw UFS root is the easiest thing to mount, modify, and re-package.</td></tr>
+    <tr><td><code>NextBSD-amd64-&lt;stamp&gt;.iso.zip</code></td><td>The <b>2-stage MFS → on-demand uzip → unionfs → <code>vfs.pivot</code></b> live pipeline (nextbsd&nbsp;#70).</td><td><b>Our output shape.</b> We reproduce this from a modified rootfs so the Gershwin ISO boots the same way.</td></tr>
+  </table>
+  <ul class="notes">
+    <li class="warn"><b>Don't be misled:</b> the header comment in NextBSD's <code class="inl">build.sh</code> says "no uzip/unionfs" — that comment is scoped to the <code class="inl">.img</code> only. <b>Step 7</b> of the same file still builds the full uzip/unionfs/pivot ISO. That step-7 block is what we lift.</li>
+    <li><b>The kernel does the magic.</b> <code class="inl">sysctl vfs.pivot</code> is a NextBSD-kernel-only knob (<code class="inl">sys/kern/vfs_pivot.c</code>, in the separate <code class="inl">nextbsd-kernel</code> repo). A stock FreeBSD kernel <em>cannot</em> boot this ISO. The downloaded <code class="inl">.img</code> already contains the right kernel at <code class="inl">/boot/kernel/kernel</code> — we never build a kernel.</li>
+  </ul>
+
+  <!-- =================== 2 =================== -->
+  <h2><span class="num">2</span>Why it must run inside a FreeBSD VM</h2>
+  <p class="lead">Every image/ISO tool is <b>FreeBSD-only</b> and absent on a Linux runner: <code class="inl">makefs</code>, <code class="inl">mkuzip</code>, <code class="inl">mkimg</code>, <code class="inl">mkisoimages.sh</code>, <code class="inl">mdconfig</code>, plus the <code class="inl">chroot</code>+<code class="inl">pkg bootstrap</code> phase and UFS/cd9660 mounts. NextBSD's own CI solves this exactly the way we will:</p>
+  <ul class="notes">
+    <li class="ok"><b>This vindicates vmactions</b> — just not the way we first tried. We are <em>not</em> booting the NextBSD image with vmactions (it has no custom-image input and only ships prepared FreeBSD images). We use <code class="inl">vmactions/freebsd-vm</code> purely as the <b>FreeBSD build environment</b> (it runs as root, gives us <code class="inl">makefs</code>/<code class="inl">mkuzip</code>/<code class="inl">mdconfig</code> from base, and rsyncs our workspace in/out). NextBSD's <code class="inl">build.yml</code> does identically with <code class="inl">release: '15.0'</code>.</li>
+    <li><b>Boot-verification is Linux-native.</b> Only <code class="inl">qemu-system-x86 + ovmf + expect</code> are needed to boot the finished ISO and assert the markers — that runs on the <code class="inl">ubuntu-latest</code> host after copyback, mirroring NextBSD's <code class="inl">tests/iso-boot-test.sh</code>.</li>
+  </ul>
+
+  <!-- =================== 3 =================== -->
+  <h2><span class="num">3</span>Repo layout for <code style="font-size:0.8em">gershwin-on-nextbsd</code></h2>
+  <p class="lead">The repo is a thin <b>orchestrator + desktop overlay</b>. It does not fork the Gershwin build — it drives <a href="https://github.com/gershwin-desktop/gershwin-developer">gershwin-developer</a> (which already has a working NextBSD build path) and adds the launchd overlay plus the ISO tooling.</p>
+  <div class="code"><span class="code-label">PROPOSED TREE</span><pre class="code-body">.github/workflows/build-iso.yml          <span class="c"># the pipeline (§4)</span>
+tools/
+  make-gershwin-iso.sh                    <span class="c"># orchestrates extract → chroot build → repackage (runs in the VM)</span>
+  make-live-iso.sh                        <span class="c"># step-7 repackage, adapted from nextbsd build.sh (§5)</span>
+  iso-boot-test.sh                        <span class="c"># qemu+OVMF+expect boot check (adapted from nextbsd tests/)</span>
+overlays/
+  System/Library/LaunchDaemons/           <span class="c"># laid over the rootfs exactly like nextbsd's overlays/ (§6)</span>
+    org.gnustep.gdomap.plist
+    org.gershwin.dshelper.plist
+    org.gershwin.loginwindow.plist
+README.md</pre></div>
+  <ul class="notes">
+    <li><b>Overlay convention is inherited verbatim:</b> NextBSD lays <code class="inl">overlays/.</code> over the rootfs with <code class="inl">cp -aR</code> <em>before</em> packaging, and <code class="inl">overlays/System/Library/LaunchDaemons/*.plist</code> → <code class="inl">/System/Library/LaunchDaemons/</code>. We add our three plists into that same tree. (Config that lives under <code class="inl">/etc</code> would go under <code class="inl">overlays/private/etc/</code> because <code class="inl">/etc</code> is a symlink into <code class="inl">/private</code> — not needed for these three services.)</li>
+    <li><b>gershwin-developer</b> is checked out as a second repo in CI; its <code class="inl">Bootstrap.sh</code> / <code class="inl">Checkout.sh</code> / <code class="inl">Install-System-Domain.sh</code> already key off <code class="inl">/usr/lib/system</code> to take the NextBSD branch.</li>
+  </ul>
+
+  <!-- =================== 4 =================== -->
+  <h2><span class="num">4</span>The pipeline — <code style="font-size:0.8em">build-iso.yml</code></h2>
+  <p class="lead">Five stages. Stages ① and ⑤ run natively on the Linux runner; ②–④ run inside the FreeBSD VM.</p>
+  <div class="code"><span class="code-label">.github/workflows/build-iso.yml</span><pre class="code-body"><span class="k">name</span>: Build Gershwin-on-NextBSD live ISO
+<span class="k">on</span>: [push, workflow_dispatch]
+
+<span class="k">jobs</span>:
+  <span class="k">build-iso</span>:
+    <span class="k">runs-on</span>: ubuntu-latest
+    <span class="k">timeout-minutes</span>: 240
+    <span class="k">steps</span>:
+      <span class="c"># --- ① HOST: fetch the latest NextBSD rw disk image ---</span>
+      - <span class="k">uses</span>: actions/checkout@v4                       <span class="c"># gershwin-on-nextbsd (overlays + tools)</span>
+      - <span class="k">uses</span>: actions/checkout@v4                       <span class="c"># the Gershwin build driver</span>
+        <span class="k">with</span>:
+          <span class="k">repository</span>: gershwin-desktop/gershwin-developer
+          <span class="k">path</span>: gershwin-developer
+      - <span class="k">uses</span>: jlumbroso/free-disk-space@main             <span class="c"># rootfs + obj trees are multi-GB</span>
+      - <span class="k">name</span>: Resolve + download latest NextBSD .img.zip
+        <span class="k">env</span>: { GH_TOKEN: <span class="s">"${{ github.token }}"</span> }
+        <span class="k">run</span>: |
+          URL=$(gh api repos/nextbsd-redux/nextbsd/releases/tags/continuous \
+                --jq '.assets[]|select(.name|test("amd64.*\\.img\\.zip$")).browser_download_url' | head -1)
+          curl -fL -o nextbsd.img.zip       "$URL"
+          curl -fL -o nextbsd.img.zip.sha256 "$URL.sha256"
+          sha256sum -c nextbsd.img.zip.sha256
+          unzip -p nextbsd.img.zip '*.img' &gt; nextbsd.img
+
+      <span class="c"># --- ②③④ VM: extract rootfs, chroot-build Gershwin, repackage ISO ---</span>
+      - <span class="k">name</span>: Build live ISO inside FreeBSD
+        <span class="k">uses</span>: vmactions/freebsd-vm@v1
+        <span class="k">with</span>:
+          <span class="k">release</span>: <span class="s">'15.0'</span>           <span class="c"># must match the NEXTBSD kernel's FreeBSD base (see §5)</span>
+          <span class="k">mem</span>: 8192
+          <span class="k">cpu</span>: 4
+          <span class="k">usesh</span>: true
+          <span class="k">sync</span>: rsync
+          <span class="k">copyback</span>: true          <span class="c"># brings out/*.iso back to the host</span>
+          <span class="k">prepare</span>: pkg install -y bash git rsync zip
+          <span class="k">run</span>: |
+            sh ./tools/make-gershwin-iso.sh "$PWD/nextbsd.img" "$PWD/gershwin-developer"
+
+      <span class="c"># --- ⑤ HOST: boot the ISO under qemu/OVMF and assert the pivot + login markers ---</span>
+      - <span class="k">name</span>: Boot-verify the ISO
+        <span class="k">run</span>: |
+          sudo apt-get update &amp;&amp; sudo apt-get install -y qemu-system-x86 ovmf expect
+          ./tools/iso-boot-test.sh out/Gershwin-NextBSD-*.iso
+      - <span class="k">uses</span>: actions/upload-artifact@v4
+        <span class="k">with</span>: { name: gershwin-nextbsd-iso, path: out/*.iso, if-no-files-found: error }</pre></div>
+
+  <h3>Stage ②③ — extract &amp; chroot-build (<code style="font-size:0.85em">tools/make-gershwin-iso.sh</code>)</h3>
+  <p class="lead">Chroot-building userland into the NextBSD rootfs is <b>the exact pattern NextBSD already uses</b> to build its Apple userland suites (<code class="inl">chroot $WORK/rootfs …</code>), so it is a proven path, not a gamble.</p>
+  <div class="code"><span class="code-label">tools/make-gershwin-iso.sh (runs as root in the FreeBSD VM)</span><pre class="code-body"><span class="c">#!/bin/sh</span>
+set -eu
+IMG=$1; DEVELOPER=$2
+WORK=$PWD/work; ROOTFS=$WORK/rootfs
+mkdir -p "$ROOTFS" out
+
+<span class="c"># ② extract the NextBSD rootfs out of the .img's 3rd GPT partition (freebsd-ufs/ROOTFS)</span>
+md=$(mdconfig -a -t vnode -f "$IMG")
+mount "/dev/${md}p3" /mnt
+tar -C /mnt -cf - . | tar -C "$ROOTFS" -xpf -        <span class="c"># copy to a roomy plain dir (img has only +1.5G headroom)</span>
+umount /mnt; mdconfig -d -u "${md#md}"
+
+<span class="c"># ③ build Gershwin into the rootfs via chroot (net for pkg + git clone)</span>
+mount -t devfs devfs "$ROOTFS/dev"
+cp /etc/resolv.conf "$ROOTFS/private/etc/resolv.conf"
+mkdir -p "$ROOTFS/build"
+tar -C "$DEVELOPER" -cf - . | tar -C "$ROOTFS/build" -xpf -
+chroot "$ROOTFS" /bin/sh -eu -c '
+    cd /build
+    sh Library/Scripts/Bootstrap.sh      <span class="c"># pkg install nextbsd.txt prerequisites</span>
+    sh Library/Scripts/Checkout.sh       <span class="c"># clone the ~15 component repos</span>
+    make install                         <span class="c"># installs the SYSTEM domain into /System</span>
+'
+rm -rf "$ROOTFS/build" "$ROOTFS/private/etc/resolv.conf"
+umount "$ROOTFS/dev"
+
+<span class="c"># overlay our launchd plists on top of the built rootfs (same as nextbsd's cp -aR overlays)</span>
+cp -aR overlays/. "$ROOTFS/"
+chown -RH 0:0 "$ROOTFS/System/Library/LaunchDaemons"
+
+<span class="c"># ④ repackage into a live ISO that boots like NextBSD's</span>
+sh ./tools/make-live-iso.sh "$ROOTFS" out/Gershwin-NextBSD.iso</pre></div>
+  <ul class="notes">
+    <li class="warn"><b>Risk to validate first:</b> a few <code class="inl">configure</code> tests <em>execute</em> compiled probe binaries. If any probe needs a Mach syscall (<code class="inl">mach.ko</code>), it will fail under the VM's stock FreeBSD kernel inside the chroot. Mitigation if it bites: boot the <code class="inl">.img</code> under qemu-KVM and build inside the running guest instead (slower, more plumbing). <b>The chroot path should be proven with a throwaway run before committing to it.</b></li>
+    <li><b>Partition index:</b> <code class="inl">p3</code> is the <code class="inl">freebsd-ufs/ROOTFS</code> from NextBSD's <code class="inl">mkimg</code> layout (p1 freebsd-boot, p2 efi, p3 ufs). Confirm with <code class="inl">gpart show md0</code> on first run.</li>
+  </ul>
+
+  <!-- =================== 5 =================== -->
+  <h2><span class="num">5</span>Stage ④ — the live-ISO repackage</h2>
+  <p class="lead"><code class="inl">tools/make-live-iso.sh</code> is <b>NextBSD <code>build.sh</code> step 7, adapted</b> to take a prebuilt rootfs. It is self-contained given the rootfs (which already carries the NEXTBSD kernel, <code class="inl">boot/cdboot</code>, <code class="inl">boot/loader.efi</code>, and the mfsroot tool set) plus FreeBSD's <code class="inl">mkisoimages.sh</code>.</p>
+  <div class="code"><span class="code-label">tools/make-live-iso.sh — the four sub-steps (lifted from build.sh step 7)</span><pre class="code-body"><span class="c"># 7b. compact UFS of the rootfs (no headroom), then geom_uzip-compress it</span>
+makefs -t ffs -B little -o version=2,label=NBROOT "$WORK/rootfs.iso.ufs" "$ROOTFS"
+mkuzip -o "$WORK/rootfs.uzip" "$WORK/rootfs.iso.ufs"
+
+<span class="c"># 7c. build the stage-1 mfsroot: minimal tools + their transitive .so closure + /init</span>
+<span class="c">#     tools: sh sleep ls mount umount mount_cd9660 mount_unionfs mdconfig sysctl</span>
+<span class="c">#     /init = mount cd9660 media → mdconfig -t vnode rootfs.uzip → mount md*.uzip /rofs</span>
+<span class="c">#            → tmpfs /cow → mount_unionfs /cow /rofs → sysctl vfs.pivot=/rofs → exec /sbin/launchd</span>
+makefs -t ffs -B little -o version=2,label=MFSROOT -b 3m "$WORK/mfsroot.img" "$MFS"
+
+<span class="c"># 7d. assemble the ISO staging dir + the loader config that drives the 2-stage boot</span>
+cp -a "$ROOTFS/boot/." "$ISOROOT/boot/"
+cp "$WORK/mfsroot.img"  "$ISOROOT/boot/mfsroot.img"
+cp "$WORK/rootfs.uzip"  "$ISOROOT/rootfs.uzip"
+cat &gt; "$ISOROOT/boot/loader.conf.d/zz-live.conf" &lt;&lt;'EOF'
+mfsroot_load="YES"
+mfsroot_type="md_image"
+mfsroot_name="/boot/mfsroot.img"
+init_path="/init"
+vfs.root.mountfrom="ufs:/dev/md0"
+EOF
+
+<span class="c"># 7e. bake the bootable cd9660 (El-Torito BIOS + UEFI ESP) via FreeBSD's release script</span>
+MKISO=$(find "$WORK/freebsd-src" -path '*/release/amd64/mkisoimages.sh' | head -1)
+sh "$MKISO" -b GERSHWIN "$OUT_ISO" "$ISOROOT"</pre></div>
+  <ul class="notes">
+    <li><b>One deliberate change from upstream:</b> the cd9660 volume label <code class="inl">-b GERSHWIN</code> (vs NextBSD's <code class="inl">NEXTBSD</code>). The label becomes the GEOM node <code class="inl">/dev/iso9660/GERSHWIN</code> that <code class="inl">/init</code> mounts — so the <code class="inl">/init</code> heredoc's mount loop must look for <code class="inl">GERSHWIN</code>. Keep the two in sync or just keep <code class="inl">NEXTBSD</code> and change nothing.</li>
+    <li class="warn"><b><code>mkisoimages.sh</code> + <code>release: '15.0'</code> must match the NEXTBSD kernel's base.</b> The script comes from FreeBSD <code class="inl">src.txz</code>; fetch the version matching the kernel baked into the downloaded <code class="inl">.img</code>. Mismatch risks an El-Torito/loader combo the kernel won't boot. Confirm the base version from the NextBSD release (or <code class="inl">uname</code> inside the extracted rootfs).</li>
+    <li><b>What we never touch:</b> kernel, base packages, the Apple userland suites — all inherited intact from the downloaded image. We only add <code class="inl">/System</code> (Gershwin) + the three plists, then re-wrap.</li>
+  </ul>
+
+  <h3>Stage ⑤ — boot-verify (<code style="font-size:0.85em">tools/iso-boot-test.sh</code>)</h3>
+  <p class="lead">Adapt NextBSD's <code class="inl">tests/iso-boot-test.sh</code>: boot the ISO with <code class="inl">qemu -cdrom</code> under OVMF, drive the serial console with <code class="inl">expect</code>, and gate on these markers in order:</p>
+  <table class="spec">
+    <tr><th>Marker</th><th>Proves</th></tr>
+    <tr><td><code>vfs.pivot: / is now unionfs</code></td><td>The 2-stage MFS → uzip → unionfs → pivot pipeline fired (kernel printed it).</td></tr>
+    <tr><td><code>login:</code></td><td>launchd reached multi-user; the rootfs is sound.</td></tr>
+    <tr><td><b>(new)</b> <code>ls /System/Applications</code> non-empty / a gdomap-up probe</td><td>Gershwin actually landed in the image and its launchd jobs loaded. <span class="pill">add</span></td></tr>
+  </table>
+
+  <!-- =================== 6 =================== -->
+  <h2><span class="num">6</span>The three launchd services</h2>
+  <p class="lead"><b>These already exist</b> — we don't author them. <a href="https://github.com/pkgdemon/gershwin-on-freebsd">pkgdemon/gershwin-on-freebsd</a> already runs launchd (its <code class="inl">freebsd-launchd</code>) as PID 1 and ships all three as launchd plists under <code class="inl">resources/overlays/System/Library/LaunchDaemons/</code>. Same mechanism as NextBSD, so this is <b>copy + path translation, not design</b>. They install exactly like NextBSD's overlays — <code class="inl">cp -R overlays/System/. → /System/</code>, and launchd's boot-time scan of <code class="inl">/System/Library/LaunchDaemons/</code> loads them (no <code class="inl">launchctl load</code>, no rc.d; <code class="inl">RunAtLoad=true</code> starts them).</p>
+
+  <h3>The getty → loginwindow swap <span class="pill ok">confirmed pattern</span></h3>
+  <p class="lead"><code class="inl">gershwin-on-freebsd</code> does precisely the swap you described, and we mirror it on NextBSD: <b>don't ship the getty LaunchDaemon; ship loginwindow instead.</b> On FreeBSD it omits <code class="inl">org.freebsd.getty.{console,vty0}.plist</code> at install time (its <code class="inl">build.sh</code> <code class="inl">build_launchd()</code> skips them with a <code class="inl">case</code> in the install loop, because a text getty fights launchd over the tty). On NextBSD the equivalent is one line in <code class="inl">make-gershwin-iso.sh</code> after the overlay copy:</p>
+  <div class="code"><span class="code-label">getty drop (in tools/make-gershwin-iso.sh, after cp -aR overlays)</span><pre class="code-body"><span class="c"># NextBSD ships getty as com.apple.getty.plist — remove it; loginwindow is the login UI</span>
+rm -f "$ROOTFS/System/Library/LaunchDaemons/com.apple.getty.plist"
+<span class="c"># our overlay already added org.gershwin.loginwindow.plist in its place</span></pre></div>
+  <ul class="notes">
+    <li><b>All other NextBSD LaunchDaemons are inherited unchanged</b> — configd, syslogd, mDNSResponder, kextd, DiskArbitration, IPConfiguration, sshd, etc. come straight from the downloaded image. We only subtract getty and add these three.</li>
+  </ul>
+
+  <h3>gdomap <span class="pill ok">verbatim from gershwin-on-freebsd</span></h3>
+  <p class="lead">GNUstep Distributed Objects port mapper (UDP/TCP 538) — required by dshelper. Not a Mach service; it binds its own socket, so no <code class="inl">MachServices</code>. The <code class="inl">-f</code> flag is <b>mandatory and the single most important correctness detail</b>: it keeps gdomap in the foreground so launchd tracks the real PID. Without it gdomap forks, the parent exits 0, <code class="inl">KeepAlive</code> respawns — but the forked child still holds UDP 538, so the respawn fails with <em>"Unable to bind … gdomap is already running"</em> and loops forever.</p>
+  <div class="code"><span class="code-label">overlays/System/Library/LaunchDaemons/org.gnustep.gdomap.plist</span><pre class="code-body">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;            &lt;string&gt;org.gnustep.gdomap&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt;
+    &lt;array&gt;
+        &lt;string&gt;/System/Library/Tools/gdomap&lt;/string&gt;   <span class="c">&lt;!-- exact path from gershwin-on-freebsd --&gt;</span>
+        &lt;string&gt;-f&lt;/string&gt;                            <span class="c">&lt;!-- foreground / no fork — REQUIRED --&gt;</span>
+    &lt;/array&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;             &lt;true/&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;             &lt;true/&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</pre></div>
+  <ul class="notes"><li><b>No <code>-a</code> flag:</b> gdomap auto-detects interfaces (the rc.d version's <code class="inl">-a /var/run/gdomap-iface.conf</code> ifconfig/awk pipeline is dropped). It does need <b>networking up</b> — <code class="inl">KeepAlive</code> covers an early start.</li></ul>
+
+  <h3>dshelper <span class="pill ok">verbatim from gershwin-on-freebsd</span></h3>
+  <p class="lead">Gershwin's DirectoryServices daemon (user/group/auth lookups). Persistent (<code class="inl">RunAtLoad</code>+<code class="inl">KeepAlive</code>). It registers via GNUstep Distributed Objects through gdomap — so <b>no <code>MachServices</code> and no <code>Sockets</code></b>. It depends on gdomap; if it starts first it crashes and launchd respawns it until gdomap's port is up (the repo deliberately split the old composite <code class="inl">rc.d/dshelper</code> — which started gdomap inline — into two one-process jobs).</p>
+  <div class="code"><span class="code-label">overlays/System/Library/LaunchDaemons/org.gershwin.dshelper.plist</span><pre class="code-body">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;            &lt;string&gt;org.gershwin.dshelper&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt;
+    &lt;array&gt;&lt;string&gt;/System/Library/Tools/dshelper&lt;/string&gt;&lt;/array&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;             &lt;true/&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;             &lt;true/&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</pre></div>
+  <ul class="notes"><li><b>Build-time init:</b> <code class="inl">gershwin-on-freebsd</code> runs <code class="inl">dscli init</code> once during system configuration to initialize Directory Services — the NextBSD image build must do the same (inside the chroot, after <code class="inl">make install</code>).</li></ul>
+
+  <h3>loginwindow <span class="pill ok">verbatim from gershwin-on-freebsd</span></h3>
+  <p class="lead">Correction applied: this is <b>not</b> authored from scratch — <code class="inl">gershwin-on-freebsd</code> already ships it. It's a system LaunchDaemon (root, boot) that runs a wrapper, <code class="inl">/System/Library/Scripts/LoginWindow.sh</code>, which sources <code class="inl">GNUstep.sh</code>, sets <code class="inl">DISPLAY=:0</code>, and <code class="inl">exec</code>s the GNUstep greeter at <code class="inl">/System/Library/CoreServices/Applications/LoginWindow.app/LoginWindow</code>. State lives in <code class="inl">/Local/Library/Preferences/LoginWindow.plist</code> (<code class="inl">lastLoggedInUser</code>, <code class="inl">lastSession=/System/Library/Scripts/Gershwin.sh</code>).</p>
+  <div class="code"><span class="code-label">overlays/System/Library/LaunchDaemons/org.gershwin.loginwindow.plist</span><pre class="code-body">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;            &lt;string&gt;org.gershwin.loginwindow&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt;
+    &lt;array&gt;&lt;string&gt;/System/Library/Scripts/LoginWindow.sh&lt;/string&gt;&lt;/array&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;             &lt;true/&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;             &lt;true/&gt;
+    &lt;key&gt;StandardOutPath&lt;/key&gt;       &lt;string&gt;/var/log/LoginWindow.log&lt;/string&gt;
+    &lt;key&gt;StandardErrorPath&lt;/key&gt;     &lt;string&gt;/var/log/LoginWindow.log&lt;/string&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</pre></div>
+  <ul class="notes">
+    <li class="warn"><b>The real gap is the display server, not loginwindow.</b> The wrapper hardcodes <code class="inl">DISPLAY=:0</code>, but on FreeBSD the X/display at <code class="inl">:0</code> is brought up by <b>rc.d</b> (<code class="inl">initgfx</code>, <code class="inl">slim</code>) — which <em>does not run</em> under launchd PID 1. <code class="inl">gershwin-on-freebsd</code> ships <b>no launchd job for the display server</b>, so a NextBSD launchd job to start X at <code class="inl">:0</code> (plus dbus, networking) must be authored. That, not the three plists, is the new work.</li>
+    <li><b>Ordering</b> across all three is implicit: logical chain <code class="inl">gdomap → dshelper → loginwindow</code>, enforced only by <code class="inl">KeepAlive</code> retry — there are no explicit dependency keys. If NextBSD's (stricter, Apple-derived) launchd dislikes crash-respawn ordering, consider adding real ordering.</li>
+  </ul>
+
+  <hr class="div">
+
+  <!-- =================== 7 =================== -->
+  <h2><span class="num">7</span>Open questions &amp; first-run validation</h2>
+  <p class="lead">Ordered by how much they can sink the plan. Each should be settled by a throwaway CI run before the pipeline is declared working.</p>
+  <table class="spec">
+    <tr><th>#</th><th>Question</th><th>How to settle it</th></tr>
+    <tr><td>1</td><td><b>Does the chroot build survive configure-time probe execution?</b> (Mach-dependent probes under the VM's FreeBSD kernel.)</td><td>One throwaway run of stage ③ only; if a probe needs <code>mach.ko</code>, fall back to booting the <code>.img</code> under qemu-KVM and building in-guest.</td></tr>
+    <tr><td>2</td><td><b>Which FreeBSD <code>release</code> matches the NEXTBSD kernel base?</b> Drives both <code>vmactions</code> and the <code>mkisoimages.sh</code> source.</td><td><code>uname</code>/<code>freebsd-version</code> in the extracted rootfs; pin <code>release:</code> + the <code>src.txz</code> to it.</td></tr>
+    <tr><td>3</td><td><b>gdomap no-fork flag + SYSTEM-domain path.</b></td><td>Check gnustep-base's gdomap options + the install layout from <code>Install-System-Domain.sh</code>.</td></tr>
+    <tr><td>4</td><td><b>dshelper shape</b> — persistent Mach helper, DO daemon, or one-shot?</td><td>Read <code>gershwin-components/DirectoryServices</code>.</td></tr>
+    <tr><td>5</td><td><b>loginwindow as System daemon</b> — can it own the console + start the display server without session-type support?</td><td>Spike Option A on the booted ISO.</td></tr>
+    <tr><td>6</td><td><b>GPT partition index</b> of the UFS root in the <code>.img</code>.</td><td><code>gpart show md0</code> on first run (expected <code>p3</code>).</td></tr>
+    <tr><td>7</td><td><b>ISO size vs. runner disk.</b> uzip of base+Apple userland+Gershwin.</td><td><code>free-disk-space</code> already added; watch the VM's disk during <code>makefs</code>/<code>mkuzip</code>.</td></tr>
+  </table>
+
+  <h2><span class="num">✦</span>Summary</h2>
+  <ul class="notes">
+    <li class="ok"><b>The backbone is settled:</b> ubuntu-latest fetches the NextBSD <code class="inl">.img.zip</code> → a FreeBSD VM extracts the rootfs, chroot-builds Gershwin into <code class="inl">/System</code>, and re-runs NextBSD <code>build.sh</code> step-7 to emit a <code class="inl">vfs.pivot</code> live ISO → the host boot-verifies it under qemu/OVMF. Every piece mirrors a proven NextBSD mechanism.</li>
+    <li><b>The new code</b> in <code class="inl">gershwin-on-nextbsd</code> is small: one workflow, three short tool scripts (two adapted from NextBSD), and three launchd plists.</li>
+    <li class="warn"><b>The real work is in the unknowns of §7</b> — chroot-vs-qemu build, the loginwindow session story, and the gdomap/dshelper specifics — not in the pipeline scaffolding.</li>
+  </ul>
+
+  <footer>
+    Gershwin on NextBSD — build &amp; live-ISO pipeline design plan · derived from review of nextbsd-redux/nextbsd (build.sh step 6/7, boot model) and pkgdemon/freebsd-launchd-mach (launchd conventions) · all commands illustrative, validate against a first CI run.
+  </footer>
+
+</div>
+</body>
+</html>

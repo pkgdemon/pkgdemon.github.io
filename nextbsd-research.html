@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>NextBSD Research &middot; Joe Maloney</title>
+<style>
+  body {
+    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    max-width: 760px;
+    margin: 40px auto;
+    padding: 0 20px;
+    color: #222;
+    line-height: 1.6;
+  }
+  header {
+    border-bottom: 1px solid #ccc;
+    padding-bottom: 16px;
+    margin-bottom: 24px;
+  }
+  h1 { font-size: 1.8em; margin: 0 0 4px; }
+  header p { margin: 0; color: #666; }
+  h2 {
+    font-size: 1.25em;
+    margin-top: 2em;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 4px;
+  }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 8px; }
+  a { color: #0366d6; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .guides li { margin-bottom: 12px; }
+  .guides .desc { color: #666; font-size: 0.92em; display: block; }
+  footer {
+    margin-top: 3em;
+    padding-top: 16px;
+    border-top: 1px solid #eee;
+    color: #888;
+    font-size: 0.9em;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>NextBSD Research</h1>
+  <p><a href="index.html">&larr; Back to home</a> &middot; <a href="https://github.com/pkgdemon">github.com/pkgdemon</a></p>
+</header>
+
+<h2>NextBSD</h2>
+<ul class="guides">
+  <li>
+    <a href="nextbsd-unionfs-inode-collision-fix-plan.html?v=20260616">NextBSD unionfs inode-collision fix &mdash; design plan <span class="pill info">Design / proposal</span></a>
+    <span class="desc">Permanent kernel-side fix for issue #332: the live unionfs root gives every layer the same <code>st_dev</code> and passes underlying inode numbers through, so an upper-layer header and an unrelated lower-layer header collide on <code>(st_dev, st_ino)</code> &mdash; and clang, which keys <code>#pragma once</code>/<code>#import</code>/include-guard dedup on file identity not path, silently skips the second (the <code>GS_EXPORT</code> / <code>cups_lang_t</code> / <code>OBJC_PUBLIC</code> / <code>encode_NSInteger</code> failures, none reproducible on stock FreeBSD). No clang flag can fix it (upstream LLVM calls it a filesystem bug). Fix modelled on Linux overlayfs <code>xino</code>: keep one <code>st_dev</code>, reserve the high bit of the 64-bit fileid as a layer tag in <code>unionfs_getattr()</code>, mirror it onto <code>d_fileno</code> in <code>unionfs_readdir()</code> (two layers ⇒ collision-free by construction). Exact <code>union_vnops.c</code>/<code>union.h</code> touch points, alternatives (per-layer <code>st_dev</code>, separate build FS, the inode-bust sweep), a full <strong>risks &amp; implications</strong> section (32-bit <code>ino_t</code> EOVERFLOW, readdir bounce-buffer cost, copy-up churn, ZFS bit-63 exhaustion, NFS export), a deliberate-overlap kyua regression test + collision detector, and rollout. Retires the inode-bust build-script workaround.</span>
+  </li>
+  <li>
+    <a href="nextbsd-initramfs-boot-research.html?v=20260611">Why a live ISO won&rsquo;t boot under Ventoy / iPXE &mdash; the initramfs research <span class="pill info">Research</span></a>
+    <span class="desc">Why the FreeBSD ISO fails under Ventoy/iPXE (and sometimes real hardware): the bootloader&ndash;kernel handoff wall &mdash; <code>/dev/iso9660/&lt;LABEL&gt;</code> is created by the <em>kernel</em> after the loader has handed off and exited, so swapping bootloaders (GRUB, Apple&rsquo;s boot-132) can&rsquo;t help, and at <code>ExitBootServices</code> the firmware Block&nbsp;I/O dies (amd64 long mode can&rsquo;t call <code>INT&nbsp;13h</code> either). Two physics classes: real block devices (CD/DVD/dd-USB/VM &mdash; work, modulo discovery timing) vs. firmware-emulated/fragmented media (Ventoy/iPXE/MEMDISK &mdash; the kernel can&rsquo;t re-reach them). How Linux <em>actually</em> fixes it &mdash; the initramfs, not a mounted ISO: reconstruct from the real stick (exFAT loop-mount / <code>dm-linear</code>) for Ventoy, network-fetch (dracut <code>livenet</code> / casper <code>netboot=url</code> / NFS / iSCSI+iBFT) for iPXE. The NextBSD equivalent: <code>mfsroot</code>+<code>/init</code> <em>is</em> the initramfs &mdash; turn <code>/init</code> into an ordered probe. Includes the <code>geom_ventoy</code> (BSD-2-Clause) / exFAT-gap / <code>isboot</code> assessment, a phased plan, and the single-user disambiguation test for real hardware. Background for #288.</span>
+  </li>
+  <li>
+    <a href="nextbsd-server-installer-design.html?v=20260608">NextBSD Server Installer &mdash; dialog-based installer design <span class="pill pill-warn">Design doc</span></a>
+    <span class="desc">Screen-by-screen design for a text-mode, dialog-driven server installer &mdash; amber-on-black TUI mockups for each phase rendered as illustrative box-drawing renders. Flow: <strong>Install / Upgrade</strong> (Upgrade gated until an existing install is probed), <strong>whole-disk selection</strong> showing volume labels + filesystem type broken out per disk (not just device ids), <strong>account + hostname</strong> (username/password/confirm with a hostname auto-suggested as <code>joe-thinkpad-t460</code> from username&nbsp;+&nbsp;DMI model, still editable), a <strong><code>cpdup</code> clone</strong> progress gauge (live filesystem cloned to the destination volume, no archive extraction), and a <strong>finish</strong> screen with Reboot / Shutdown. Build identity follows the <code>continuous</code> rolling release (timestamp + short commit). Includes the hostname-derivation logic, disk-column source mapping, and a palette/visual-language reference for a <code>bsddialog(1)</code> / ncurses implementation.</span>
+  </li>
+  <li>
+    <a href="nextbsd-ci-pipeline-plan.html?v=20260603">NextBSD CI Pipeline Plan <span class="pill ok">Live</span></a>
+    <span class="desc">Automated FreeBSD cross-build pipeline on GitHub Actions free-tier Linux runners: daily fork sync, Docker-layered toolchain containers on GHCR, kernel/modules/base cross-builds, and the <code>nextbsd</code> ISO assembler. Targets <code>releng/15.0</code> for pkg ABI compatibility; zero self-hosted runners, no open ports. <strong>Now live end-to-end</strong> and refactored around rolling, CI-gated <code>continuous</code> releases (producers publish on green <code>main</code>; consumers ingest the release, never in-flight PR artifacts), with PR validation on every repo, arm64 base parity, and a PR-only kernel boot smoke test. See &sect;0 for the June&nbsp;2026 status.</span>
+  </li>
+  <li>
+    <a href="gershwin-on-nextbsd-iso-pipeline-plan.html?v=20260617">Gershwin on NextBSD &mdash; build &amp; live-ISO pipeline <span class="pill pill-warn">Design plan</span></a>
+    <span class="desc">How the (currently empty) <code>pkgdemon/gershwin-on-nextbsd</code> repo grabs the latest NextBSD <code>.img.zip</code>, builds the Gershwin desktop into its rootfs, and repackages the result into a live ISO that boots identically to NextBSD&rsquo;s own &mdash; 2-stage MFS, on-demand uzip, unionfs, and <code>vfs.pivot</code>. Covers why the repackage must run inside a FreeBSD VM, the repo layout, the <code>build-iso.yml</code> pipeline and live-ISO repackage stage, and the three launchd services (<code>loginwindow</code>, <code>dshelper</code>, <code>gdomap</code>) the desktop overlay must ship.</span>
+  </li>
+  <li>
+    <a href="gershwin-developer-nextbsd-ci-plan.html?v=20260617">gershwin-developer &mdash; NextBSD build CI (vmactions chroot) <span class="pill pill-warn">Plan</span></a>
+    <span class="desc">Add a fourth build target to <code>gershwin-developer</code>&rsquo;s <code>build.yml</code> &mdash; alongside FreeBSD, Arch, and Debian &mdash; that verifies Gershwin compiles on NextBSD. The trick earlier lacked: don&rsquo;t boot the NextBSD image, chroot-build into its rootfs inside a FreeBSD VM. Documents where the job fits in <code>build.yml</code>, the one make-or-break risk, and what the check does and doesn&rsquo;t prove. The job scrapped two iterations ago, now actually feasible.</span>
+  </li>
+  <li>
+    <a href="nextbsd-linux-crossbuild-image-plan.html?v=20260602">NextBSD &mdash; cross-build the Apple userland + image on native Linux <span class="pill pill-warn">Single-PR plan</span></a>
+    <span class="desc">Move the NextBSD image build off the <code>vmactions/freebsd-vm</code> qemu VM (~17&nbsp;min) onto a native Linux runner that cross-compiles the entire Apple/Darwin userland for FreeBSD with Clang&nbsp;19 &mdash; zero FreeBSD packages, no chroot, the bootable UFS image assembled on Linux, <code>qemu</code> used only to boot-test (which already runs on ubuntu). Reuses the proven cross-build pattern from <code>nextbsd-kernel-toolchain</code> / <code>-kernel</code> / <code>-kernel-modules</code> / <code>-freebsd-compat</code>. Component-by-component plan for all 32 <code>src/</code> components + <code>mach.ko</code>, the two net-new CMake toolchain files (libdispatch, ICU), Linux image assembly (makefs/mkimg), and a boot-contract parity oracle. Unlocks a faster arm64 ISO as a free matrix leg.</span>
+  </li>
+  <li>
+    <a href="nextbsd-ci-testing-strategy-plan.html?v=20260603">NextBSD CI &mdash; testing coupled cross-repo changes (strategy options) <span class="pill pill-warn">Decision plan</span> <span class="pill ok">Backbone shipped</span></a>
+    <span class="desc">How to boot-test changes that span two repos <em>before either merges</em> &mdash; motivating case: a <code>nextbsd-kernel</code> PR raising the dynamic syscall-slot limit plus a <code>nextbsd</code> PR dropping <code>mach.ko</code>&rsquo;s syscall multiplexor. Visual comparison of five strategies (continuous-release + latest-green pin, artifact-override inputs, full monorepo, partial monorepo, hybrid integration meta-workflow) with a per-stage <strong>time-to-test</strong> cost model across today&rsquo;s VM and native-cross worlds, a ratings matrix, and a NOW-vs-after-crossbuild recommendation. Confirms 5 current CI gaps (no PR triggers / no kernel boot test / latest-main-only ingest / a modules patch-ref desync / arm64 asymmetry).</span>
+  </li>
+  <li>
+    <a href="freebsd-mach-kmod-syscall-slots-impl-plan.html?v=20260603">mach.ko syscall slots &mdash; implementation plan (widen the band, drop the mux) <span class="pill ok">Plan ready</span></a>
+    <span class="desc">Now that NextBSD ships its own kernel, the fix for the 10-slot Mach syscall ceiling is to widen FreeBSD&rsquo;s <code>lkmnosys</code> band in the <code>NEXTBSD</code> kernel (a <code>syscalls.master</code> patch in nextbsd-kernel) so each Mach trap gets its own slot and the multiplexor goes away. Measured need ~32 slots; provision ~48. Includes a measured effort-scope of the XNU-style separate trap table (the kernel hook is a cheap C-only change, but first-of-its-kind on FreeBSD and its Apple-canonical-number benefit is moot because libmach resolves by name), and confirms IOKit needs no XNU <code>libsyscall</code>. Two-PR rollout: widen the band, then drop the mux. Supersedes the audit spike&rsquo;s &ldquo;kernel-patch disqualified&rdquo; verdict.</span>
+  </li>
+  <li>
+    <a href="freebsd-hwregd-busystate-impl-plan.html?v=20260603">IOKit busyState / waitQuiet &mdash; implementation plan (Apple-shape kmod autoload) <span class="pill ok">Plan ready</span></a>
+    <span class="desc">The &ldquo;right way&rdquo; to drive kmod autoload: a real device-quiescence signal (<code>IOServiceWaitQuiet</code> / <code>IORegistryEntryGetBusyState</code> / <code>IOKitWaitQuiet</code>) over Mach, replacing FreeBSD&rsquo;s devctl-plus-a-timer heuristic. A balanced <code>device_match_start</code>/<code>device_match_end</code> hook wrapping <code>device_probe_and_attach()</code> in the <code>NEXTBSD</code> kernel feeds a mach.ko <code>bus_busy</code> counter + a <code>mach_wait_quiet</code> syscall; hwregd flips on quiescence and libIOKit implements the Apple APIs. Makes concrete (and corrects the counter design of) the deferred plan in the #67 options doc, now that NextBSD ships its own kernel. Tracked by #176; two-PR rollout like the syscall work.</span>
+  </li>
+  <li>
+    <a href="freebsd-ko-to-kext-conversion-plan.html?v=20260603">FreeBSD <code>.ko</code> &rarr; Apple <code>.kext</code> conversion <span class="pill pill-warn">Plan</span></a>
+    <span class="desc">Convert NextBSD&rsquo;s kernel modules from FreeBSD <code>.ko</code> to Apple <code>.kext</code> bundles in <code>/System/Library/Extensions</code> &mdash; the Apple-shaped <em>format</em>, established before the kextd loader port. Code-grounded 3-agent scope: a <code>.kext</code> bundle wraps the unmodified <code>.ko</code> (still <code>kld</code>-loaded), <code>Info.plist</code> <code>IOKitPersonalities</code> generated from <code>MODULE_PNP_INFO</code> feed the userspace matcher NextBSD already has (libIOKit&rarr;hwregd); a full XNU <code>OSKext</code> is explicitly out of scope (the path ravynOS left FreeBSD for). Includes the firmware answer (gpu <code>.ko</code>-firmware vs wifi <code>/boot/firmware</code> &rarr; <code>Contents/Resources</code>) and the boot-critical caveat. Novel &mdash; nobody packages <code>.ko</code> as <code>.kext</code> today.</span>
+  </li>
+  <li>
+    <a href="nextbsd-apple-device-matching-plan.html?v=20260603">Eliminating standalone hwregd &mdash; Apple-shaped device matching &amp; autoload <span class="pill pill-warn">Convergence plan</span></a>
+    <span class="desc">How to retire NextBSD&rsquo;s standalone devctl-socket + timer <code>hwregd</code> daemon and converge toward Apple&rsquo;s shape &mdash; in-kernel matching + match-notifications &amp; <code>busyState</code>/<code>waitQuiet</code> over Mach + a launchd-activated loader (Apple keeps <code>kextd</code>/<code>kernelmanagerd</code>; the win is event-driven, not zero daemons). Umbrella over #67 (settle window), #176 (busyState), and #168 (<code>EVFILT_MACHPORT</code> / fold into configd). Phased roadmap from a 3-agent scope of Apple XNU/IOKit + kext_tools, the NextBSD hwregd/configd/launchd/mach.ko tree, and FreeBSD kqueue internals.</span>
+  </li>
+  <li>
+    <a href="nextbsd-graphics-plan.html?v=20260609">NextBSD graphics &mdash; virtual-GPU DRM kexts, an end-to-end CI test, and the NVIDIA/VirtualBox tracks <span class="pill pill-warn">Porting plan</span></a>
+    <span class="desc">The drm-kmod &rarr; Intel/AMD/Radeon kexts autoload via the in-kernel matcher, but that path is untested end-to-end &mdash; qemu emulates no real GPU. Port a <em>virtual</em>-GPU DRM driver (bochs first &mdash; it binds qemu&rsquo;s default <code>-vga std</code> as a raw <code>IOPCIPrimaryMatch</code> node) to unlock KMS-in-VMs <em>and</em> the first true match&rarr;autoload&rarr;bind CI test. Scopes bochs/vboxvideo/virtio-gpu/vmwgfx, the shared blocker (drm-kmod&rsquo;s missing <code>drm_gem_vram</code>/<code>shmem</code> helpers &rarr; a <code>drm_extra_helpers.ko</code>), the repo split (unmodified <code>drm-kmod</code> fork + a <code>nextbsd-graphics</code> kext factory + a recipe-only NVIDIA-legacy repo), and a phased roadmap. From a 7-agent scope.</span>
+  </li>
+  <li>
+    <a href="nextbsd-inkernel-iokit-feasibility.html?v=20260605">In-kernel IOKit for NextBSD &mdash; feasibility &amp; the matching-location decision <span class="pill pill-warn">Decision doc</span></a>
+    <span class="desc">The single fork under the kextd milestone: does driver&ndash;device <strong>matching</strong> live in the kernel (Apple-faithful &mdash; the kernel decides, kextd just loads) or in userland (faster, but a divergence)? Deep 2-agent review of FreeBSD newbus internals + Apple&rsquo;s XNU IOKit / IOCatalogue / kextd, with per-option effort &amp; risk and the &ldquo;do I edit the kernel to add device IDs?&rdquo; clarification (no &mdash; IDs live in kext personalities). Companion to the hwregd convergence plan; for joint review before any kextd code.</span>
+  </li>
+  <li>
+    <a href="nextbsd-evfilt-machport-native-plan.html?v=20260608">Native <code>EVFILT_MACHPORT</code> migration &amp; pipe-bridge removal &mdash; #168 plan <span class="pill pill-warn">Plan ready</span></a>
+    <span class="desc">Move <em>all</em> Mach-event delivery onto the kernel&rsquo;s native <code>EVFILT_MACHPORT</code> filter (slot -16) and <strong>delete the module-era pipe-bridge</strong> (task #39 Path B: <code>register_event_bell</code> + self-pipe + <code>EVFILT_READ</code>) &mdash; the workaround from when a <code>.ko</code> couldn&rsquo;t add a kqueue filter slot, now obsolete since <code>patches/0003</code> reserves the slot. Synthesized from a 7-agent survey of nextbsd-kernel + nextbsd + freebsd-src. Root-causes the PR #250 boot panic (a use-after-free on the port set in <code>filt_machportattach</code> &mdash; drops the pset lock with no reference, then <code>knlist_add</code> touches freed/reallocated memory at <code>0x70</code> under concurrent <code>move_member</code>, amplified by uninitialized worker-thread Mach state, #148) and gives the exact kernel fix. Fixes task #41 (unreliable <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code>) at the root, retiring the <code>pthread</code>+<code>mach_msg</code> polling loops in <code>sc_link_watch</code>/<code>IOKitNotify</code>/<code>SCNotify</code>. 6-stage PR-gated rollout + a new concurrency stress test that reproduces the panic.</span>
+  </li>
+  <li>
+    <a href="nextbsd-mach-builtin-plan.html?v=20260603">mach.ko &rarr; kernel built-in (<code>options COMPAT_MACH</code>) <span class="pill pill-warn">Scoping</span></a>
+    <span class="desc">Compile the out-of-tree Mach module <em>into</em> the <code>NEXTBSD</code> kernel instead of loading it as a <code>.ko</code> &mdash; the answer to &ldquo;how do we load <code>mach.ko</code> once <code>loader.conf</code> is gone?&rdquo; and the foundational step of #180 (eliminate <code>loader.conf</code>). Mostly build-system wiring: the MIG server stubs are pre-committed (no codegen in the kernel build) and the syscalls already register via a <code>SYSINIT</code>/<code>kern_syscall_register</code> (no <code>syscalls.master</code> regen). Source migrates <code>nextbsd/src/mach_kmod</code> &rarr; <code>nextbsd-kernel</code> <code>sys/compat/mach/</code>, wired by a small <code>sys/conf/{options,files}</code> patch; the fork is never touched. Gated by the boot smoke test.</span>
+  </li>
+  <li>
+    <a href="nextbsd-kext-proof-of-concept-plan.html?v=20260603">Prove kexts work &mdash; minimal kextload + converter + PR CI <span class="pill pill-warn">Scoping</span></a>
+    <span class="desc">Walking-skeleton proof that a FreeBSD <code>.ko</code> wrapped as a <code>.kext</code> loads via an Apple-shaped tool, gated by CI. Cheap because <code>nextbsd</code> already ships <code>CFBundle</code> (opens the bundle + Info.plist) and <code>libIOKit</code> &mdash; so the proof needs <em>no</em> <code>OSKext</code>: a minimal <code>kextload</code>/<code>kextstat</code>/<code>kextunload</code> trio over <code>kld</code> (Phase 1, in <code>nextbsd</code>) + a converter and PR CI that <code>kextload</code>s one leaf module in a booted VM (Phase 2, in <code>nextbsd-kernel-modules</code>). The full <code>kext_tools</code>/<code>OSKext</code> port is deferred but ticketed so it isn&rsquo;t lost. Approach (a) chosen. <span class="pill ok">Proven &amp; merged</span></span>
+  </li>
+  <li>
+    <a href="nextbsd-oskext-port-plan.html?v=20260604">Faithful kext_tools / OSKext port <span class="pill pill-warn">Plan (#182)</span></a>
+    <span class="desc">Port Apple&rsquo;s real <code>OSKext</code> engine (bundle discovery, dependency-graph resolution, validation, personalities) onto NextBSD with a <code>kld</code> backend &mdash; the faithful follow-on to the PoC, gating bulk conversion (#179) and kextd (#177). Code-grounded scope: <code>OSKext.c</code> ≈ 21k LOC but ~75% ports unchanged (CFBundle parsing, dep-graph math, validation); only ~25% re-backs from XNU (<code>kext_request</code>&rarr;<code>kldload</code>, <code>IOCatalogueSendData</code>&rarr;hwregd, KXLD/mkext deleted). Pre-SIP base avoids codesign/kernelcache. Multi-week, phased; Phase 1 (dependency resolution) is the first shippable milestone.</span>
+  </li>
+  <li>
+    <a href="nextbsd-kld-to-kext-naming-plan.html?v=20260607">kld &rarr; kext: naming + categorization <span class="pill pill-warn">Plan (#179)</span></a>
+    <span class="desc">Groundwork for the bulk <code>.ko</code>&rarr;<code>.kext</code> conversion: a complete catalog of all 474 FreeBSD kernel modules in the tree &mdash; what each is, its category (driver / filesystem / network / crypto / KPI / &hellip;), and a proposed Apple-style <code>org.nextbsd.*</code> bundle id + <code>.kext</code> name. Built from a read-only review of <code>freebsd-src/sys/modules</code> by parallel agents. Surfaces the open decisions before #179: naming style, kext-vs-built-into-kernel split, sub-component/firmware handling, exclusions.</span>
+    <ul>
+      <li>
+        <a href="nextbsd-kld-to-kext-catalog.html?v=20260607">Raw module catalog &mdash; all 474 modules</a>
+        <span class="desc">The unedited, first-pass per-module table behind the naming plan: one row per <code>sys/modules/</code> entry &mdash; ko name, dir, category, purpose, proposed bundle id + <code>.kext</code> name, notes. Kept verbatim as the groundwork record the polished plan was distilled from.</span>
+      </li>
+    </ul>
+  </li>
+</ul>
+
+<footer>
+  <p><a href="index.html">&larr; Back to home</a></p>
+</footer>
+
+</body>
+</html>

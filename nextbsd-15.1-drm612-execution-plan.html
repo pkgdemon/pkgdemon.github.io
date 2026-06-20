@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD: executing the releng/15.1 bump &amp; drm-kmod 6.12 (per-repo runbook)</title>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1f2328; --muted: #5a6069; --accent: #8a3324;
+    --rule: #e3e1d9; --code-bg: #f1efe7; --ok: #1f7a3d; --warn: #9a6a00; --bad: #a32020;
+  }
+  html, body { background: var(--bg); color: var(--fg);
+    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+    font-size: 17px; line-height: 1.6; margin: 0; padding: 0; }
+  main { max-width: 860px; margin: 3rem auto; padding: 0 1.5rem 4rem; }
+  h1 { font-size: 1.8rem; color: var(--accent); border-bottom: 2px solid var(--accent); padding-bottom: 0.4rem; margin-bottom: 0.6rem; }
+  .sub { color: var(--muted); font-style: italic; margin-top: 0; }
+  h2 { color: var(--accent); font-size: 1.25rem; margin-top: 2.4rem; margin-bottom: 0.6rem; }
+  h3 { font-size: 1.05rem; margin-top: 1.5rem; margin-bottom: 0.3rem; }
+  p { margin: 0.8rem 0; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px;
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.86em; }
+  pre { background: var(--code-bg); border: 1px solid var(--rule); border-radius: 4px;
+    padding: 1rem; overflow-x: auto; font-size: 13px; line-height: 1.45;
+    font-family: "SF Mono", Menlo, Consolas, monospace; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: var(--accent); color: #fff; font-weight: 600; }
+  tr:nth-child(even) td { background: #f4f2ea; }
+  ul { padding-left: 1.3rem; } li { margin: 0.35rem 0; }
+  ol { padding-left: 1.4rem; }
+  aside { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.8rem 1rem; margin: 1.2rem 0; font-size: 0.95rem; }
+  .verdict { border-left-color: var(--ok); background: #eef6f0; }
+  .gap { border-left-color: var(--bad); background: #f8eeee; }
+  .yes { color: var(--ok); font-weight: 600; }
+  .no { color: var(--bad); font-weight: 600; }
+  .partial { color: var(--warn); font-weight: 600; }
+  .cite { color: var(--muted); font-size: 0.85em; }
+  .pill { display: inline-block; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.03em; padding: 1px 7px; border-radius: 10px; vertical-align: middle; }
+  .p336 { background: #e4ecf6; color: #234e8a; }
+  .p337 { background: #f3e9d8; color: #8a5a14; }
+  .step { background: #fff; border: 1px solid var(--rule); border-radius: 6px; padding: 0.4rem 1rem 0.6rem; margin: 0.8rem 0; }
+  .step h3 { margin-top: 0.6rem; }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.9rem; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>NextBSD: executing the <code>releng/15.1</code> bump &amp; <code>drm-kmod</code> 6.12</h1>
+<p class="sub">The per-repo runbook for issues <a href="https://github.com/nextbsd-redux/nextbsd/issues/336">#336</a> (base 15.0&rarr;15.1) and <a href="https://github.com/nextbsd-redux/nextbsd/issues/337">#337</a> (graphics kexts 6.6&rarr;6.12 + firmware) &mdash; from a six-agent scope of the whole build chain, June 2026.</p>
+
+<aside>
+<strong>This is the <em>execution</em> plan.</strong> The prior <strong>decision</strong> document &mdash; <em>should</em> we do this, and what is the hard gate &mdash; lives at
+<a href="https://pkgdemon.github.io/nextbsd-drm612-upgrade-plan.html?v=20260618">nextbsd-drm612-upgrade-plan.html</a>.
+That settled the verdict: <code>drm-612-kmod</code> hard-requires <code>__FreeBSD_version &ge; 1500509</code>; our <code>releng/15.0</code> is <code>1500068</code> (excluded), <code>releng/15.1</code> is <code>1501000</code> (ok), and the pkg ABI <code>FreeBSD:15:amd64</code> is preserved across the bump. This document takes that as given and answers <strong>exactly what to change, in which repo, in what order, and what to verify.</strong>
+</aside>
+
+<h2>1. The four headline findings (verified during scoping)</h2>
+<aside class="verdict">
+<ol>
+<li><strong>The kernel patch stack applies to 15.1 with zero rebase.</strong> All 7 <code>patches/series</code> target files are <strong>byte-identical</strong> between <code>releng/15.0</code> and <code>releng/15.1</code> (same last-touch commit SHA). <code>files.linuxkpi_video</code> still mirrors 15.1&rsquo;s <code>linuxkpi_video</code> Makefile 1:1. <span class="cite">The single biggest de-risk &mdash; no patch authoring needed.</span></li>
+<li><strong>6.12&rsquo;s <code>drm.ko</code> adds <span class="yes">no new baked dependency.</span></strong> Its <code>MODULE_DEPEND</code> set on <code>6.12-lts</code> is <code>agp, iicbus, iic, iicbb, pci, mem, linuxkpi, linuxkpi_video, dmabuf, lindebugfs</code> &mdash; every one already satisfied by <code>config/NEXTBSD</code> (<code>device iic</code> + <code>options LINDEBUGFS</code>), <code>COMPAT_LINUXKPI</code>, and <code>files.linuxkpi_video</code>. The &ldquo;new hard-dep surfaces at kext-load&rdquo; fear from the decision plan <strong>does not materialise</strong> for the drm core.</li>
+<li><strong>The i915 personality generator <span class="no">breaks on 6.12</span> &mdash; the one real surprise.</strong> 6.12 restructured <code>i915_pciids.h</code>; the old <code>INTEL_VGA_DEVICE(0x….)</code> form the generator&rsquo;s regex keys on matches <strong>zero</strong> lines, so the build hits the <code>[ -n ]</code> guard and <code>exit 1</code>s &mdash; it blocks #337 rather than silently shipping empty. The fix is <em>not</em> a one-line regex swap (the header&rsquo;s full macro set both over- and under-claims what the driver binds); it&rsquo;s a preprocessor expansion off the driver&rsquo;s <code>pciidlist[]</code> yielding <strong>364</strong> IDs &mdash; fully designed in <a href="#i915fix">&sect;3.7</a>. <strong>amdgpu (308 rows) and radeon (699 rows) are unaffected.</strong></li>
+<li><strong>The ISO repo and pkg ABI need <span class="yes">almost nothing.</span></strong> <code>nextbsd</code> ingests &ldquo;latest <code>continuous</code>&rdquo; with no version pins; <code>PKG_ABI</code> strips the minor (<code>FreeBSD:15:amd64</code>) so it&rsquo;s already correct. The real cost is concentrated upstream: the toolchain rebuild, and the <em>runtime-not-CI</em> risks in <code>nextbsd-freebsd-compat</code> (Lever B, krb5) and the i915 generator.</li>
+</ol>
+</aside>
+
+<h2>2. The build chain &amp; dispatch topology</h2>
+<p>Six repos, wired by <code>repository_dispatch</code>. The bump must propagate in dependency order; each arrow is an automatic cross-repo dispatch (on a real upstream change, not PRs). Your <strong>manual checkpoint</strong> sits right after the sync.</p>
+<pre>freebsd-src (fork)        sync-fork.yml  ──upstream-updated──▶  toolchain
+   releng/15.1                                                     │
+        ▲                                                          ├──toolchain-updated──▶  nextbsd-kernel
+   [YOU VERIFY HERE]                                               └──toolchain-updated──▶  nextbsd-freebsd-compat
+                                                                          │                        │
+   nextbsd-kernel ──kernel-updated──▶ nextbsd-kernel-modules             │                        │
+        │  publishes kernel-obj + nextbsd-kernel to  ◀── continuous ──┐  │                        │
+        ▼                                                             │  ▼                        ▼
+   (continuous: kernel-obj-*.tar.gz, nextbsd-kernel-*.tar.gz)         (continuous: graphics-kexts.tar.gz)   (continuous: nextbsd-base-*.tar.gz)
+        └──────────────────────────────┬───────────────────────────────────────────┬───────────────────────┘
+                                        ▼  base-updated / latest-continuous pull
+                                   nextbsd (ISO assembler)  ── boot-test ──▶  image</pre>
+<p>Note the toolchain fans out to <strong>both</strong> <code>nextbsd-kernel</code> and <code>nextbsd-freebsd-compat</code> in parallel. The ISO repo pulls all three upstream artifacts (kernel, modules, compat) from their rolling <code>continuous</code> tags &mdash; no pins &mdash; so 15.1 artifacts flow in automatically once published.</p>
+
+<h2>3. Per-repo scope</h2>
+<p>Pills mark which ticket each edit serves: <span class="pill p336">#336</span> base bump, <span class="pill p337">#337</span> drm 6.12. &ldquo;Decoy&rdquo; = a <code>FREEBSD_BRANCH</code> env that <em>looks</em> like the pin but is never dereferenced (the real source version arrives baked in the toolchain image).</p>
+
+<h3>3.1 &nbsp;<code>nextbsd-redux/freebsd-src</code> &mdash; the sync fork <span class="pill p336">#336</span></h3>
+<p>Pure upstream mirror, <strong>no NextBSD-local commits on the releng branches</strong> (confirmed: fork <code>releng/15.0</code> is byte-identical to upstream; this upholds the &ldquo;never touch freebsd-src&rdquo; rule). <code>releng/15.1</code> <strong>already exists</strong> in the fork but is stale &mdash; sitting at <em>15.1-RC2</em>, ~18 commits behind upstream <code>releng/15.1</code> HEAD (<code>96841ea0</code>, 2026-06-12). The sync is fast-forward-only (GitHub merge-upstream API), so it cannot lose work or force-push.</p>
+<table>
+<thead><tr><th>File:line</th><th>Now</th><th>Edit</th></tr></thead>
+<tbody>
+<tr><td><code>sync-fork.yml:20</code></td><td><code>ref: releng/15.0</code></td><td>&rarr; <code>15.1</code></td></tr>
+<tr><td><code>sync-fork.yml:28</code></td><td><code>gh repo sync --branch releng/15.0</code></td><td>&rarr; <code>15.1</code></td></tr>
+<tr><td><code>sync-fork.yml:35</code></td><td><code>git fetch origin releng/15.0</code></td><td>&rarr; <code>15.1</code></td></tr>
+<tr><td><code>sync-fork.yml:36</code></td><td><code>git rev-parse origin/releng/15.0</code></td><td>&rarr; <code>15.1</code></td></tr>
+<tr><td><code>sync-fork.yml:50</code></td><td><code>client_payload[branch]=releng/15.0</code></td><td>&rarr; <code>15.1</code> (dispatch to toolchain)</td></tr>
+<tr><td><code>sync-fork.yml:9</code></td><td>comment &ldquo;operates exclusively on releng/15.0&rdquo;</td><td>&rarr; <code>15.1</code> (cosmetic)</td></tr>
+</tbody>
+</table>
+<p>A global <code>releng/15.0&rarr;releng/15.1</code> replace in this one file is correct (0 other refs anywhere in the repo). <strong>Decision for you:</strong> replace 15.0 entirely (clean bump, the issue&rsquo;s intent) vs. sync both branches through a transition window.</p>
+
+<h3>3.2 &nbsp;<code>nextbsd-redux/nextbsd-kernel-toolchain</code> &mdash; the container <span class="pill p336">#336</span></h3>
+<p>Clones the fork at <code>${FREEBSD_BRANCH}</code> into <code>/usr/src</code> and bakes a <code>kernel-toolchain</code> stage; the GHCR image <em>is</em> the source artifact downstream builds inside. This is the <strong>first repo to actually change</strong> after the fork. Clang/LLVM stays <strong>19</strong> for 15.1 (both cut from <code>stable/15</code>) &mdash; do not bump it. <code>__FreeBSD_version</code> is not baked here; it rides in the cloned tree.</p>
+<table>
+<thead><tr><th>File:line</th><th>Edit</th></tr></thead>
+<tbody>
+<tr><td><code>build-toolchain.yml:19</code></td><td><code>FREEBSD_BRANCH: releng/15.0 &rarr; 15.1</code> (the value CI uses; flows to build-args at <code>:88</code>)</td></tr>
+<tr><td><code>Dockerfile.amd64:5</code></td><td><code>ARG FREEBSD_BRANCH=releng/15.0 &rarr; 15.1</code></td></tr>
+<tr><td><code>Dockerfile.arm64:5</code></td><td><code>ARG FREEBSD_BRANCH=releng/15.0 &rarr; 15.1</code></td></tr>
+<tr><td><code>README.md:7</code> / <code>Dockerfile.*:12</code></td><td>doc/comment &ldquo;15.0&rdquo;/&ldquo;Clang 19&rdquo; wording (cosmetic)</td></tr>
+</tbody>
+</table>
+<aside class="gap"><strong>Watch-out &mdash; tag skew.</strong> The GHCR tags (<code>amd64-latest</code>, <code>amd64-fbsd-&lt;sha&gt;</code>) carry <strong>no <code>15.x</code> marker</strong>. Any downstream repo that <em>hardcodes</em> a specific image tag instead of consuming the dispatch <code>client_payload</code> would silently keep building on the old 15.0 image. Confirm kernel/modules/compat each read the dispatched tag dynamically (they do today &mdash; verify after merge).</aside>
+
+<h3>3.3 &nbsp;<code>nextbsd-redux/nextbsd-kernel</code> &mdash; patches + config + overlay <span class="pill p336">#336</span> <span class="pill p337">#337</span></h3>
+<p>The small <strong>patch repo</strong> (not a source fork). Headline from &sect;1: the 7-patch stack is clean on 15.1. The <code>FREEBSD_BRANCH</code> env here is a <strong>decoy</strong> (never read &mdash; the branch lives in the toolchain Dockerfiles).</p>
+<table>
+<thead><tr><th>Patch</th><th>Target(s)</th><th>15.1 risk</th></tr></thead>
+<tbody>
+<tr><td><code>0001</code> widen lkmnosys band</td><td><code>syscalls.master</code> (tail-append 599&ndash;646)</td><td class="yes">Very low &mdash; file identical; tables regenerated via <code>make sysent</code></td></tr>
+<tr><td><code>0002</code> newbus quiesce hook</td><td><code>subr_bus.c</code>, <code>eventhandler.h</code></td><td class="yes">Very low &mdash; both identical</td></tr>
+<tr><td><code>0003</code> reserve <code>EVFILT_MACHPORT</code></td><td><code>sys/event.h</code></td><td class="yes">None &mdash; 15.1 still <code>SYSCOUNT 15</code>; clean</td></tr>
+<tr><td><code>0004</code> firmware_path raw search</td><td><code>subr_firmware.c</code></td><td class="partial">Low &mdash; largest (~120 lines); identical today, the canary</td></tr>
+<tr><td><code>0005</code> coredumps off</td><td><code>kern_ucoredump.c</code></td><td class="yes">None &mdash; one-liner</td></tr>
+<tr><td><code>0006</code> unionfs rename dir target</td><td><code>union_vnops.c</code></td><td class="partial">Low &mdash; hand-authored zero-index hunk; identical tree</td></tr>
+<tr><td><code>0007</code> unionfs tagged fileid</td><td><code>union_vnops.c</code>, <code>union.h</code></td><td class="partial">Low &mdash; large; disjoint hunks from 0006; order matters (0006&rarr;0007)</td></tr>
+</tbody>
+</table>
+<p><strong>Edits:</strong> <code>build.yml:15</code> <code>FREEBSD_BRANCH&rarr;15.1</code> (decoy, cosmetic) and <code>build.yml:323</code> <code>vmactions release: '15.0'&rarr;'15.1'</code> (real &mdash; the smoke-test VM that md-mounts/injects the kernel; keep aligned for KBI hygiene). The build also appends <code>mach_knote_enqueue</code> to stock <code>kern_event.c</code> at <code>build.yml:135</code> &mdash; depends on <code>knote_enqueue</code> staying static-callable (kqueue unchanged on 15.1, low risk). Verify <code>config(8)</code> accepts every <code>config/NEXTBSD</code> device name (<code>em</code>, <code>ig4</code>, <code>ietp</code>, <code>iichid</code>, the <code>h*</code> HID leaves) against 15.1&rsquo;s GENERIC on the first build.</p>
+<p><strong>If 6.12 had needed a new baked dep</strong> (it does not &mdash; &sect;1.2): config-level deps go next to the graphics block at <code>config/NEXTBSD:41-42</code>; an option-less helper module mirrors <code>files.linuxkpi_video</code> (new <code>src-overlay/conf/files.&lt;mod&gt;</code> + a <code>cat &gt;&gt; conf/files</code> wire-in step). Kept here for the record.</p>
+
+<h3>3.4 &nbsp;<code>nextbsd-redux/nextbsd-kernel-modules</code> &mdash; where both tickets land <span class="pill p336">#336</span> <span class="pill p337">#337</span></h3>
+<p>The repo that builds the graphics kexts. The DRM version lives in exactly one literal; the 15.1-ness arrives via the ingested kernel-obj, not a local pin.</p>
+<table>
+<thead><tr><th>File:line</th><th>Edit</th><th>Ticket</th></tr></thead>
+<tbody>
+<tr><td><code>build.yml:28</code></td><td><code>FREEBSD_BRANCH: releng/15.0 &rarr; 15.1</code> &mdash; the load-bearing pin; drives the release-notes string</td><td><span class="pill p336">#336</span></td></tr>
+<tr><td><code>build.yml:225</code></td><td><code>--branch 6.6-lts &rarr; 6.12-lts</code> &mdash; the <strong>single</strong> DRM literal (no submodule/var)</td><td><span class="pill p337">#337</span></td></tr>
+<tr><td><code>build.yml:454, 621, 674</code></td><td><code>FW_TAG=20260519 &rarr;</code> newer linux-firmware tag &mdash; <strong>three un-shared copies, edit all</strong> (boot-test sample / iwlwifi kext / graphics kexts) or they desync</td><td><span class="pill p337">#337</span></td></tr>
+<tr><td><code>build.yml:223, 186-187</code></td><td>step name + comments &ldquo;6.6-lts &hellip; drm-66-kmod &hellip; releng/15.0&rdquo; (cosmetic)</td><td>both</td></tr>
+<tr><td><code>build.yml:530</code></td><td><code>vmactions release: '15.0'</code> (host VM for UFS inject) &rarr; <code>'15.1'</code> optional/availability only</td><td><span class="pill p336">#336</span></td></tr>
+<tr><td><code>tools/gen-i915-personalities.sh:47</code></td><td class="no"><strong>REWRITE the ID regex</strong> &mdash; see below</td><td><span class="pill p337">#337</span></td></tr>
+</tbody>
+</table>
+<aside class="gap"><strong>The i915 generator breaks on 6.12 &mdash; full fix in <a href="#i915fix">&sect;3.7</a>.</strong> 6.12&rsquo;s <code>include/drm/intel/i915_pciids.h</code> no longer uses the flat <code>INTEL_VGA_DEVICE(0x….)</code> form the generator&rsquo;s regex keys on (it matches <strong>0</strong> lines &rarr; empty <code>IntelGraphics.kext</code>). The fix is <em>not</em> a naive <code>grep MACRO__(0x…)</code> of the header &mdash; that over-claims <code>xe</code>-only platforms the driver can&rsquo;t bind. The correct extraction is preprocessor-driven off the driver&rsquo;s own <code>pciidlist[]</code> (<strong>364</strong> bound IDs). amdgpu/radeon need no change. <strong>See &sect;3.7 for the implementation-ready diff.</strong></aside>
+<aside class="gap"><strong>Graphics kexts are never load-tested in CI.</strong> <code>kext-smoke-test</code> (<code>build.yml:396-572</code>) loads only <code>nmdm</code>/<code>iwlwifi</code>/<code>em</code> &mdash; no graphics kext. Any dependency/KBI breakage surfaces at <strong>boot on real hardware</strong>, not in CI. Recommend adding a graphics-kext load smoke test before shipping 6.12. (Mitigated this round by &sect;1.2: no new drm.ko dep.)</aside>
+<p><strong>Firmware size:</strong> bundling is whole-vendor <code>cp -RL</code> (<code>build.yml:687</code>), no per-GPU subsetting; amdgpu alone is &ldquo;hundreds of MB&rdquo; (the workflow says so at <code>:663</code>) and a newer <code>FW_TAG</code> only grows it, inflating <code>graphics-kexts.tar.gz</code> and the ISO. Subsetting to matched ASICs, or splitting firmware into a non-ISO asset, is a design change &mdash; out of scope for the one-line flip but flagged.</p>
+
+<h3>3.5 &nbsp;<code>nextbsd-redux/nextbsd-freebsd-compat</code> &mdash; the curated base <span class="pill p336">#336</span></h3>
+<p>The <code>FREEBSD_BRANCH: releng/15.0</code> at <code>build.yml:18</code> is <strong>vestigial</strong> (never dereferenced; <code>/usr/src</code> comes baked in the toolchain image). So there is no load-bearing pin here &mdash; but this repo carries the migration&rsquo;s sharpest <em>runtime-not-CI</em> risks:</p>
+<ul>
+<li class="no"><strong>Lever B is the #1 silent failure.</strong> The <code>-DSTANDARD_LIBRARY_PATH</code> append (<code>build.yml:101-104</code>, scoped via <code>.if ${.CURDIR:M*/libexec/rtld-elf}</code>) is what puts <code>/System/Library/Libraries</code> + <code>/usr/local/lib</code> on rtld&rsquo;s compiled-in path. If 15.1 renames the macro or moves the rtld dir, it compiles clean and <strong>silently produces a stock rtld</strong> &mdash; the whole GNUstep desktop stops resolving libs. <strong>Verify post-build:</strong> <code>strings .../ld-elf.so.1 | grep -F '/System/Library/Libraries'</code>. (There is no ldconfig boot job to fall back on, by design.)</li>
+<li class="partial"><strong>krb5 closure is the most fragile compile.</strong> The build leans on 15.0 specifics: <code>MK_KERBEROS=no</code>/<code>MK_MITKRB5</code> defaults, the <code>compile_et</code> header-staging dance (<code>build.yml:128-164</code>), and the <code>libkrb5.so.122</code> soname. A 15.1 MIT-krb5 bump or <code>MK_*</code> flip needs <code>KRBFLAGS</code>/staging rework, and downstream <code>curl</code>/<code>git</code>/<code>pkg</code> linkage re-pointed.</li>
+<li class="partial"><strong>C++ trio vs ports clang.</strong> <code>libc++</code>/<code>libcxxrt</code>/<code>libcompiler_rt</code> assume &ldquo;matches ports clang 19&rdquo; (<code>srclist.txt:50-55</code>). If 15.1 ships libc++ 20, revisit that invariant.</li>
+<li><strong>libc / libthr / rtld must move as a unit</strong> &mdash; shared private <code>__libc_interposing[]</code> table; never mix 15.1 rtld/libthr with 15.0 libc.</li>
+<li><strong>No-clobber-Apple-libs.</strong> A new transitive <code>DT_NEEDED</code> in any 15.1 component could stage a FreeBSD lib that shadows an Apple-provided one. Diff the 15.1 <code>/stage</code> lib set vs the Apple inventory on <code>root@1</code>/<code>root@2</code> before shipping. Reconcile the setuid re-apply guard (<code>build.yml:209</code>) against srclist setuid entries.</li>
+</ul>
+<p><strong>Edits:</strong> <code>build.yml:18</code> &rarr; <code>15.1</code> (documentary) + comment refresh (<code>build.yml:130,223</code>, <code>srclist.txt:53,185,240,242</code>). The substance is the post-build verification list above, gated before the <code>continuous</code> cascade to the ISO.</p>
+
+<h3>3.6 &nbsp;<code>nextbsd-redux/nextbsd</code> &mdash; the ISO assembler <span class="pill p336">#336</span></h3>
+<p><strong>Net: near-zero substantive change.</strong> Pure &ldquo;latest <code>continuous</code>&rdquo; pass-through &mdash; base, kernel, and kexts are pulled by version-agnostic patterns, so 15.1 artifacts flow in the moment upstream publishes them. <code>PKG_ABI</code> is <code>FreeBSD:${MAJOR}:${ARCH}</code> (<code>build.sh:31</code>) &rarr; <code>FreeBSD:15:amd64</code> for all 15.x &mdash; <span class="no">must not be hardcoded to a minor</span>. The image&rsquo;s displayed identity is a build timestamp, not a FreeBSD version. <code>IGNORE_OSVERSION=yes</code> everywhere means a 15.0 <em>build host</em> can assemble a 15.1 image fine.</p>
+<table>
+<thead><tr><th>File:line</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td><code>build.sh:31</code> <code>PKG_ABI=FreeBSD:15:amd64</code></td><td class="no">KEEP &mdash; ABI-stable, derived by stripping minor</td></tr>
+<tr><td><code>build.sh:652</code> <code>grep 'releng/15.0'</code> (non-fatal diagnostic)</td><td class="partial">Bump to <code>15.1</code> or generalise to <code>releng/15</code> &mdash; cosmetic, else the print goes silent</td></tr>
+<tr><td><code>build.yml:100-102,280-281,398-399</code> matrix <code>freebsd:'15.0'</code></td><td>Optional &mdash; build-host VM only; bump <em>only if</em> vmactions offers a 15.1 image (else keep host at 15.0)</td></tr>
+<tr><td><code>tests/boot-test.sh</code></td><td class="partial"><strong>Recommend ADD</strong> a <code>sysctl kern.osreldate</code> &ge; <code>1500509</code> assertion &mdash; the acceptance floor is gated <em>nowhere</em> today</td></tr>
+</tbody>
+</table>
+
+<h3 id="i915fix">3.7 &nbsp;Deep dive: the i915 6.12 personality generator fix <span class="pill p337">#337</span></h3>
+<p>An empty match table is a non-shipper, so this gets its own fully-scoped fix. The breakage, the trap, and the implementation:</p>
+
+<p><strong>What broke.</strong> <code>tools/gen-i915-personalities.sh:48-52</code> extracts IDs with
+<code>grep -oE 'INTEL_VGA_DEVICE\(0x[0-9A-Fa-f]+'</code> over <code>i915_pciids.h</code>. On 6.12 that header has <strong>zero</strong> such literal rows &mdash; IDs moved into <code>MACRO__(0x….)</code> entries inside per-platform <code>INTEL_&lt;PLAT&gt;_IDS(MACRO__, …)</code> macros &mdash; so <code>IDS</code> is empty and the script trips its own <code>[ -n "$IDS" ]</code> guard. The output contract it must preserve: an <code>IOKitPersonalities</code> dict whose <code>IOPCIPrimaryMatch</code> is space-separated <code>0x&lt;device&gt;&lt;vendor&gt;</code> words (e.g. <code>0x59168086</code>), vendor hardcoded <code>8086</code>, <code>IOProbeScore=10000</code>. <span class="cite">Consumed verbatim by <code>ko2kext.sh -p</code> into the kext <code>Info.plist</code>.</span></p>
+
+<aside class="gap"><strong>The trap that makes this non-trivial.</strong> The authoritative ID set is the driver&rsquo;s <code>pciidlist[]</code> in <code>i915_pci.c:798-874</code> (terminated by <code>MODULE_DEVICE_TABLE(pci, pciidlist)</code> and <code>LKPI_PNP_INFO(pci, i915kms, pciidlist)</code>), which references <strong>75</strong> <code>INTEL_&lt;PLAT&gt;_IDS</code> macros. Two ways to get it wrong:
+<ul>
+<li><strong>Over-claim:</strong> scraping every <code>MACRO__(0x…)</code> from the <em>header</em> pulls in <code>INTEL_LNL_IDS</code> (Lunar Lake) and <code>INTEL_BMG_IDS</code> (Battlemage) &mdash; <code>xe</code>-only platforms with <span class="no">no driver in 6.12-lts</span>. The kext would advertise IDs it can&rsquo;t initialise.</li>
+<li><strong>Under-claim:</strong> listing only the <em>directly-referenced</em> macro names misses that <code>INTEL_MTL_IDS</code> (<code>i915_pciids.h:792</code>) <strong>transitively includes <code>INTEL_ARL_IDS</code></strong> &mdash; so Arrow Lake IDs (<code>0x7d41/7d51/7d67/7dd1/b640</code>) <em>are</em> bound, via Meteor Lake, and must stay in.</li>
+</ul>
+Only full macro expansion of the exact pciidlist rows gets both right: <strong>364 unique IDs</strong> (LNL/BMG absent, ARL present).</aside>
+
+<p><strong>The fix &mdash; let the C preprocessor expand the driver&rsquo;s own list.</strong> Redefine the <code>INTEL_VGA_DEVICE</code> callback to emit a tagged id, replay <code>i915_pci.c</code>&rsquo;s <code>INTEL_&lt;PLAT&gt;_IDS(INTEL_VGA_DEVICE, …)</code> rows, and scrape. This resolves all nesting (MTL&rarr;ARL) for free, auto-excludes anything not in pciidlist, and tracks future drm-kmod bumps. The generator takes a new <code>i915_pci.c</code> arg; only the extraction block changes, output stays byte-identical:</p>
+<pre>REFS=$(grep -E 'INTEL_[A-Z0-9_]+_IDS[[:space:]]*\(INTEL_VGA_DEVICE' "$PCI_C" | sed -E 's@/\*.*@@')
+IDS=$(
+  {
+    printf '#include "%s"\n'              "$SRC"
+    printf '#undef INTEL_VGA_DEVICE\n'
+    printf '#define INTEL_VGA_DEVICE(id, info) @@id@@\n'
+    printf 'int nbkm_i915_ids[] = {\n%s\n};\n' "$REFS"
+  } | "${CC:-cc}" -E -P -xc - 2&gt;/dev/null \
+    | grep -oE '@@0x[0-9A-Fa-f]+@@' | grep -oE '0x[0-9A-Fa-f]+' \
+    | tr 'A-F' 'a-f' | sort -u
+)
+[ -n "$IDS" ] || { echo "i915 pciidlist expansion produced no ids" &gt;&amp;2; exit 1; }</pre>
+<p>The host runner (<code>drm-kmod</code> job, <code>build.yml:271</code>) has <code>cc</code>/<code>clang</code>; the header is self-contained (no <code>-I</code> needed). The build step gains a locator and passes it &mdash; and tighten the <code>find</code> to the moved path:</p>
+<pre>I915H=$(find /tmp/drm-kmod -path '*drm/intel/i915_pciids.h' | head -1)
+I915C=$(find /tmp/drm-kmod -path '*gpu/drm/i915/i915_pci.c'   | head -1)
+"$T/gen-i915-personalities.sh" "$I915H" "$I915C" org.nextbsd.kext.intelgraphics IntelGraphics &gt; pers/IntelGraphics.iokitpersonalities</pre>
+
+<p><strong>CI gate &mdash; close the hole that hid this.</strong> The current selftest (<code>tests/personalities-selftest.sh</code>) feeds the generator a <em>synthetic old-form</em> <code>INTEL_VGA_DEVICE(0x….)</code> fixture, so it would have stayed green against the real 6.12 break. Three layers:</p>
+<ol>
+<li><strong>Update the fixture</strong> to 6.12 shape (a <code>MACRO__(0x…)</code> header + a tiny <code>i915_pci.c</code> stub), asserting MTL&rarr;ARL expansion lands and an <code>xe</code>-only id does <em>not</em>.</li>
+<li><strong>Real-source count band</strong> after generation: <code>N=$(grep -oE '0x[0-9a-f]{8}' pers/IntelGraphics.iokitpersonalities | sort -u | wc -l); [ "$N" -ge 300 ] &amp;&amp; [ "$N" -le 450 ]</code> (~364 expected). This alone would have caught the empty table.</li>
+<li><strong>Driver cross-check in the FreeBSD VM</strong> (<code>build.yml:528+</code>): <code>kldxref</code>/<code>pnpinfo</code> the built <code>i915kms.ko</code> (its <code>LKPI_PNP_INFO</code> table), normalise to <code>0x&lt;dev&gt;8086</code>, and assert set-equality with the generated match words &mdash; ground-truth parity that fails loudly on any future header drift.</li>
+</ol>
+<p class="cite">Fallback if a compiler is ever absent: a pure-shell recursive macro-expansion seeded from the pciidlist macro names (must replicate the preprocessor&rsquo;s fixpoint nesting &mdash; more fragile, kept only as a backstop). When NextBSD later adds an <code>xe</code> kext, LNL/BMG/standalone-ARL get their own generator off <code>xe</code>&rsquo;s <code>pciidlist</code> &mdash; not this one.</p>
+
+<h2>4. Ordered runbook</h2>
+<p>Follow the dependency chain. Each step has a gate &mdash; do not cascade until it&rsquo;s green.</p>
+
+<div class="step">
+<h3>Step 0 &mdash; Sync the fork to 15.1 <span class="pill p336">#336</span></h3>
+<p>Edit <code>sync-fork.yml</code> (&sect;3.1, five literals), merge to <code>main</code>, run via <code>workflow_dispatch</code>. First run fast-forwards <code>releng/15.1</code> from RC2 to upstream HEAD and will cascade a full rebuild &mdash; expected.</p>
+</div>
+<div class="step">
+<h3>Step 1 &mdash; <span style="color:var(--accent)">[YOUR MANUAL CHECKPOINT]</span> Verify the 15.1 source is current</h3>
+<pre>gh api "repos/nextbsd-redux/freebsd-src/compare/freebsd:releng%2F15.1...nextbsd-redux:releng%2F15.1" \
+  --jq '{status, ahead_by, behind_by}'      # expect {"status":"identical","ahead_by":0,"behind_by":0}
+
+gh api repos/nextbsd-redux/freebsd-src/contents/sys/sys/param.h?ref=releng/15.1 \
+  --jq '.content' | base64 -d | grep __FreeBSD_version   # expect 1501000  (&ge; 1500509)</pre>
+<p>You asked to do this yourself &mdash; this is the gate before anything downstream builds on 15.1.</p>
+</div>
+<div class="step">
+<h3>Step 2 &mdash; Rebuild the toolchain image <span class="pill p336">#336</span></h3>
+<p>Edit the 4 <code>FREEBSD_BRANCH</code> pins (&sect;3.2), merge. <strong>Gate:</strong> a PR build first (PRs never publish) to smoke-test the 15.1 clone + <code>kernel-toolchain</code> stage before it pushes <code>:latest</code> and dispatches downstream. Confirm clang stays 19.</p>
+</div>
+<div class="step">
+<h3>Step 3 &mdash; Rebuild the kernel on 15.1 <span class="pill p336">#336</span></h3>
+<p>Edit <code>build.yml:15</code> (decoy) + <code>:323</code> (smoke-test VM). <strong>Gate:</strong> <code>git apply</code> of all 7 patches succeeds (expected clean per &sect;1.1); <code>config(8)</code> accepts every NEXTBSD device; <code>buildkernel</code> green; boot-smoke-test passes. The kernel publishes <code>kernel-obj-*</code> + <code>nextbsd-kernel-*</code> to <code>continuous</code> and dispatches modules.</p>
+</div>
+<div class="step">
+<h3>Step 4 &mdash; Rebuild the curated base on 15.1 <span class="pill p336">#336</span></h3>
+<p>(Runs in parallel with Step 3 &mdash; toolchain dispatches both.) After build: <strong>verify Lever B</strong> (<code>strings ld-elf.so.1 | grep /System/Library/Libraries</code>), confirm krb5 soname/flags, diff <code>/stage</code> libs vs Apple inventory for clobbers, reconcile the setuid guard. <strong>Do not let <code>continuous</code> cascade to the ISO until these pass.</strong></p>
+</div>
+<div class="step">
+<h3>Step 5 &mdash; Bump graphics kexts to 6.12 + firmware <span class="pill p337">#337</span></h3>
+<p>Now on a 15.1 kernel-obj: flip <code>build.yml:225</code> to <code>6.12-lts</code>, bump all three <code>FW_TAG</code> copies, and <strong>rewrite <code>gen-i915-personalities.sh</code></strong> per the implementation-ready diff in <a href="#i915fix">&sect;3.7</a> (preprocessor-driven, 364 IDs). <strong>Gates:</strong> required <code>.ko</code> set still produced (<code>i915kms/amdgpu/radeonkms</code>); i915 ID count is non-zero and matches <code>kldxref</code>; <code>OSBundleLibraries</code> chain still valid (no new drm.ko dep, per &sect;1.2). Watch <code>graphics-kexts.tar.gz</code> size.</p>
+</div>
+<div class="step">
+<h3>Step 6 &mdash; Assemble &amp; boot-test the ISO <span class="pill p336">#336</span> <span class="pill p337">#337</span></h3>
+<p>15.1 artifacts flow in automatically. Optional: bump <code>build.sh:652</code> diagnostic; add the <code>kern.osreldate</code> assertion to <code>boot-test.sh</code>. <strong>Final acceptance:</strong> boot the image, <code>sysctl kern.osreldate</code> &ge; <code>1500509</code> (expect <code>1501000</code>), launchd/kexts/networking up, <strong>a supported GPU brings up KMS against the 6.12 <code>drm.ko</code></strong>, <code>pkg install</code> still works (<code>FreeBSD:15:amd64</code>).</p>
+</div>
+
+<h2>5. Risk register (ranked)</h2>
+<table>
+<thead><tr><th>#</th><th>Risk</th><th>Where</th><th>Surfaces</th><th>Mitigation</th></tr></thead>
+<tbody>
+<tr><td>1</td><td class="no">i915 generator extracts 0 IDs on 6.12 (old regex form gone)</td><td>modules <code>gen-i915-*.sh:48-52</code></td><td>Build &mdash; generate step <code>exit 1</code>s on the empty set (blocks #337; selftest stays green on its synthetic fixture)</td><td><a href="#i915fix">&sect;3.7</a>: preprocessor rewrite off <code>pciidlist</code> (364 IDs); count-band + <code>kldxref</code> parity gate</td></tr>
+<tr><td>2</td><td class="no">Lever B silently drops <code>/System/Library/Libraries</code></td><td>compat <code>build.yml:101-104</code></td><td>Runtime (desktop can&rsquo;t load libs)</td><td><code>strings ld-elf.so.1 | grep</code> post-build</td></tr>
+<tr><td>3</td><td class="partial">New 6.12 <code>MODULE_DEPEND</code> not baked</td><td>kernel config / modules</td><td>Kext load on real HW</td><td class="yes">Resolved &mdash; 6.12 drm.ko adds no new dep (&sect;1.2)</td></tr>
+<tr><td>4</td><td class="partial">krb5 closure fails to compile on 15.1</td><td>compat <code>build.yml:128-164</code></td><td>Build</td><td>Re-check soname/<code>MK_*</code>; adjust <code>KRBFLAGS</code></td></tr>
+<tr><td>5</td><td class="partial">Toolchain tag skew (no <code>15.x</code> marker)</td><td>toolchain GHCR tags</td><td>Silent 15.0 carry-over</td><td>Confirm downstream reads dispatch payload, not literal tags</td></tr>
+<tr><td>6</td><td class="partial">Firmware bloat inflates ISO</td><td>modules <code>build.yml:687</code></td><td>ISO size</td><td>Per-ASIC subset or split FW asset (design change)</td></tr>
+<tr><td>7</td><td>Graphics kexts not load-tested in CI</td><td>modules smoke-test</td><td>Boot only</td><td>Add graphics-kext load test</td></tr>
+<tr><td>8</td><td>No <code>osreldate</code> floor gate in CI</td><td>nextbsd <code>boot-test.sh</code></td><td>&mdash;</td><td>Add <code>sysctl kern.osreldate</code> assertion</td></tr>
+</tbody>
+</table>
+
+<h2>6. Acceptance &mdash; mapped to the tickets</h2>
+<ul>
+<li><span class="pill p336">#336</span> Full chain (toolchain&rarr;kernel&rarr;modules&rarr;compat&rarr;ISO) builds green on <code>releng/15.1</code>; booted image reports <code>kern.osreldate &ge; 1500509</code>; launchd boot, kexts (incl. graphics 6.6 <em>pre-#337</em>), networking still work; <code>pkg install</code> works (<code>FreeBSD:15:amd64</code>).</li>
+<li><span class="pill p337">#337</span> On the 15.1 image, <code>IOGraphics</code>/<code>IntelGraphics</code>/<code>AMDGraphics</code>/<code>RadeonGraphics</code> load against the 6.12 <code>drm.ko</code>, firmware is found, and a supported GPU brings up KMS. <em>(Reminder from the decision plan: 6.12 still has no Intel <code>xe</code> &mdash; Lunar Lake / Battlemage stay unsupported.)</em></li>
+</ul>
+
+<h2>Sources &amp; method</h2>
+<p>Scope produced by six parallel read-only agents over the NextBSD build chain (June 2026), each reporting file:line edits, rebase risk, and runtime-vs-CI failure surfaces. Cross-repo facts verified directly against GitHub:</p>
+<ul>
+<li>Patch-stack parity: last-touch commit SHAs of all 7 target files identical on <code>nextbsd-redux/freebsd-src</code> <code>releng/15.0</code> vs <code>releng/15.1</code>; <code>__FreeBSD_version</code> <code>1500068</code> vs <code>1501000</code> from <code>sys/sys/param.h</code>.</li>
+<li>drm.ko deps: <code>MODULE_DEPEND(drmn, …)</code> in <code>freebsd/drm-kmod</code> <code>6.12-lts</code> <code>drivers/gpu/drm/drm_os_freebsd.c</code> (<code>01682db0</code>, 2026-06-14).</li>
+<li>i915 restructure: <code>include/drm/intel/i915_pciids.h</code> on <code>6.12-lts</code> &mdash; <code>MACRO__(0x….)</code> form, <code>INTEL_&lt;PLAT&gt;_IDS()</code> macros, 0 <code>INTEL_VGA_DEVICE(0x….)</code> literals; amdgpu <code>amdgpu_drv.c</code> (308 rows), radeon <code>drm_pciids.h</code> (699 rows).</li>
+<li>Decision context: <a href="https://pkgdemon.github.io/nextbsd-drm612-upgrade-plan.html?v=20260618">nextbsd-drm612-upgrade-plan.html</a>; tickets <a href="https://github.com/nextbsd-redux/nextbsd/issues/336">#336</a>, <a href="https://github.com/nextbsd-redux/nextbsd/issues/337">#337</a>.</li>
+</ul>
+
+<footer>
+NextBSD 15.1 &amp; drm-kmod 6.12 execution plan &middot; six-agent scope of <code>freebsd-src</code> &middot; <code>kernel-toolchain</code> &middot; <code>nextbsd-kernel</code> &middot; <code>nextbsd-kernel-modules</code> &middot; <code>nextbsd-freebsd-compat</code> &middot; <code>nextbsd</code>, with direct <code>drm-kmod 6.12-lts</code> verification &middot; June 2026.
+</footer>
+
+</main>
+</body>
+</html>

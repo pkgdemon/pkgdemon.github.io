@@ -61,7 +61,7 @@ That settled the verdict: <code>drm-612-kmod</code> hard-requires <code>__FreeBS
 <h2>1. The four headline findings (verified during scoping)</h2>
 <aside class="verdict">
 <ol>
-<li><strong>The kernel patch stack applies to 15.1 with zero rebase.</strong> All 7 <code>patches/series</code> target files are <strong>byte-identical</strong> between <code>releng/15.0</code> and <code>releng/15.1</code> (same last-touch commit SHA). <code>files.linuxkpi_video</code> still mirrors 15.1&rsquo;s <code>linuxkpi_video</code> Makefile 1:1. <span class="cite">The single biggest de-risk &mdash; no patch authoring needed.</span></li>
+<li><strong>The kernel patch stack rebases onto 15.1 with two small, mechanical edits.</strong> <span class="no">(Correction &mdash; the original scoping predicted <em>zero</em> drift; that was wrong, caught by the live <code>Apply patches</code> CI failure. See <a href="#addendum-patches">&sect;7.5</a>.)</span> <strong>5 of 7</strong> patch targets are byte-identical between <code>releng/15.0</code> and <code>releng/15.1</code> and applied clean; <strong>0001</strong> (lkmnosys band) and <strong>0004</strong> (firmware_path) drifted because 15.1 touched <code>syscalls.master</code> and <code>subr_firmware.c</code>. Both fixes were mechanical (no new logic). <code>files.linuxkpi_video</code> still mirrors 15.1&rsquo;s <code>linuxkpi_video</code> Makefile 1:1. <span class="cite">Still a major de-risk &mdash; minimal patch authoring (PR&nbsp;#47).</span></li>
 <li><strong>6.12&rsquo;s <code>drm.ko</code> adds <span class="yes">no new baked dependency.</span></strong> Its <code>MODULE_DEPEND</code> set on <code>6.12-lts</code> is <code>agp, iicbus, iic, iicbb, pci, mem, linuxkpi, linuxkpi_video, dmabuf, lindebugfs</code> &mdash; every one already satisfied by <code>config/NEXTBSD</code> (<code>device iic</code> + <code>options LINDEBUGFS</code>), <code>COMPAT_LINUXKPI</code>, and <code>files.linuxkpi_video</code>. The &ldquo;new hard-dep surfaces at kext-load&rdquo; fear from the decision plan <strong>does not materialise</strong> for the drm core.</li>
 <li><strong>The i915 personality generator <span class="no">breaks on 6.12</span> &mdash; the one real surprise.</strong> 6.12 restructured <code>i915_pciids.h</code>; the old <code>INTEL_VGA_DEVICE(0x….)</code> form the generator&rsquo;s regex keys on matches <strong>zero</strong> lines, so the build hits the <code>[ -n ]</code> guard and <code>exit 1</code>s &mdash; it blocks #337 rather than silently shipping empty. The fix is <em>not</em> a one-line regex swap (the header&rsquo;s full macro set both over- and under-claims what the driver binds); it&rsquo;s a preprocessor expansion off the driver&rsquo;s <code>pciidlist[]</code> yielding <strong>364</strong> IDs &mdash; fully designed in <a href="#i915fix">&sect;3.7</a>. <strong>amdgpu (308 rows) and radeon (699 rows) are unaffected.</strong></li>
 <li><strong>The ISO repo and pkg ABI need <span class="yes">almost nothing.</span></strong> <code>nextbsd</code> ingests &ldquo;latest <code>continuous</code>&rdquo; with no version pins; <code>PKG_ABI</code> strips the minor (<code>FreeBSD:15:amd64</code>) so it&rsquo;s already correct. The real cost is concentrated upstream: the toolchain rebuild, and the <em>runtime-not-CI</em> risks in <code>nextbsd-freebsd-compat</code> (Lever B, krb5) and the i915 generator.</li>
@@ -116,14 +116,14 @@ That settled the verdict: <code>drm-612-kmod</code> hard-requires <code>__FreeBS
 <aside class="gap"><strong>Watch-out &mdash; tag skew.</strong> The GHCR tags (<code>amd64-latest</code>, <code>amd64-fbsd-&lt;sha&gt;</code>) carry <strong>no <code>15.x</code> marker</strong>. Any downstream repo that <em>hardcodes</em> a specific image tag instead of consuming the dispatch <code>client_payload</code> would silently keep building on the old 15.0 image. Confirm kernel/modules/compat each read the dispatched tag dynamically (they do today &mdash; verify after merge).</aside>
 
 <h3>3.3 &nbsp;<code>nextbsd-redux/nextbsd-kernel</code> &mdash; patches + config + overlay <span class="pill p336">#336</span> <span class="pill p337">#337</span></h3>
-<p>The small <strong>patch repo</strong> (not a source fork). Headline from &sect;1: the 7-patch stack is clean on 15.1. The <code>FREEBSD_BRANCH</code> env here is a <strong>decoy</strong> (never read &mdash; the branch lives in the toolchain Dockerfiles).</p>
+<p>The small <strong>patch repo</strong> (not a source fork). Corrected headline (&sect;1.1, &sect;7.5): <strong>5 of 7</strong> patches are clean on 15.1; <code>0001</code> and <code>0004</code> needed a mechanical rebase. The <code>FREEBSD_BRANCH</code> env here is a <strong>decoy</strong> (never read &mdash; the branch lives in the toolchain Dockerfiles).</p>
 <table>
 <thead><tr><th>Patch</th><th>Target(s)</th><th>15.1 risk</th></tr></thead>
 <tbody>
-<tr><td><code>0001</code> widen lkmnosys band</td><td><code>syscalls.master</code> (tail-append 599&ndash;646)</td><td class="yes">Very low &mdash; file identical; tables regenerated via <code>make sysent</code></td></tr>
+<tr><td><code>0001</code> widen lkmnosys band</td><td><code>syscalls.master</code></td><td class="no"><strong>DRIFTED</strong> &mdash; 15.1 added base syscalls 599&ndash;602; band shifted <code>599&ndash;646 &rarr; 603&ndash;650</code> (PR&nbsp;#47); <code>make sysent</code> regenerates companions</td></tr>
 <tr><td><code>0002</code> newbus quiesce hook</td><td><code>subr_bus.c</code>, <code>eventhandler.h</code></td><td class="yes">Very low &mdash; both identical</td></tr>
 <tr><td><code>0003</code> reserve <code>EVFILT_MACHPORT</code></td><td><code>sys/event.h</code></td><td class="yes">None &mdash; 15.1 still <code>SYSCOUNT 15</code>; clean</td></tr>
-<tr><td><code>0004</code> firmware_path raw search</td><td><code>subr_firmware.c</code></td><td class="partial">Low &mdash; largest (~120 lines); identical today, the canary</td></tr>
+<tr><td><code>0004</code> firmware_path raw search</td><td><code>subr_firmware.c</code></td><td class="no"><strong>DRIFTED</strong> &mdash; 15.1 fixed the inverted <code>warn</code> bool at <code>:284</code>; removed-line context updated to <code>(flags &amp; FIRMWARE_GET_NOWARN) == 0</code> (PR&nbsp;#47); 91-line refactor hunk already clean</td></tr>
 <tr><td><code>0005</code> coredumps off</td><td><code>kern_ucoredump.c</code></td><td class="yes">None &mdash; one-liner</td></tr>
 <tr><td><code>0006</code> unionfs rename dir target</td><td><code>union_vnops.c</code></td><td class="partial">Low &mdash; hand-authored zero-index hunk; identical tree</td></tr>
 <tr><td><code>0007</code> unionfs tagged fileid</td><td><code>union_vnops.c</code>, <code>union.h</code></td><td class="partial">Low &mdash; large; disjoint hunks from 0006; order matters (0006&rarr;0007)</td></tr>
@@ -161,13 +161,13 @@ That settled the verdict: <code>drm-612-kmod</code> hard-requires <code>__FreeBS
 <p><strong>Edits:</strong> <code>build.yml:18</code> &rarr; <code>15.1</code> (documentary) + comment refresh (<code>build.yml:130,223</code>, <code>srclist.txt:53,185,240,242</code>). The substance is the post-build verification list above, gated before the <code>continuous</code> cascade to the ISO.</p>
 
 <h3>3.6 &nbsp;<code>nextbsd-redux/nextbsd</code> &mdash; the ISO assembler <span class="pill p336">#336</span></h3>
-<p><strong>Net: near-zero substantive change.</strong> Pure &ldquo;latest <code>continuous</code>&rdquo; pass-through &mdash; base, kernel, and kexts are pulled by version-agnostic patterns, so 15.1 artifacts flow in the moment upstream publishes them. <code>PKG_ABI</code> is <code>FreeBSD:${MAJOR}:${ARCH}</code> (<code>build.sh:31</code>) &rarr; <code>FreeBSD:15:amd64</code> for all 15.x &mdash; <span class="no">must not be hardcoded to a minor</span>. The image&rsquo;s displayed identity is a build timestamp, not a FreeBSD version. <code>IGNORE_OSVERSION=yes</code> everywhere means a 15.0 <em>build host</em> can assemble a 15.1 image fine.</p>
+<p><strong>Net: near-zero substantive change.</strong> Pure &ldquo;latest <code>continuous</code>&rdquo; pass-through &mdash; base, kernel, and kexts are pulled by version-agnostic patterns, so 15.1 artifacts flow in the moment upstream publishes them. <code>PKG_ABI</code> is <code>FreeBSD:${MAJOR}:${ARCH}</code> (<code>build.sh:31</code>) &rarr; <code>FreeBSD:15:amd64</code> for all 15.x &mdash; <span class="no">must not be hardcoded to a minor</span>. The image&rsquo;s displayed identity is a build timestamp, not a FreeBSD version. <code>IGNORE_OSVERSION=yes</code> everywhere means a 15.0 <em>build host</em> can <em>run</em> a 15.1 assembly &mdash; but see the <span class="no">correction in &sect;7.1</span>: the build VM also <strong>gap-fills the rootfs</strong> with its own binaries, so its release <em>does</em> end up in the shipped image. The matrix bump below is <strong>required, not optional.</strong></p>
 <table>
 <thead><tr><th>File:line</th><th>Verdict</th></tr></thead>
 <tbody>
 <tr><td><code>build.sh:31</code> <code>PKG_ABI=FreeBSD:15:amd64</code></td><td class="no">KEEP &mdash; ABI-stable, derived by stripping minor</td></tr>
 <tr><td><code>build.sh:652</code> <code>grep 'releng/15.0'</code> (non-fatal diagnostic)</td><td class="partial">Bump to <code>15.1</code> or generalise to <code>releng/15</code> &mdash; cosmetic, else the print goes silent</td></tr>
-<tr><td><code>build.yml:100-102,280-281,398-399</code> matrix <code>freebsd:'15.0'</code></td><td>Optional &mdash; build-host VM only; bump <em>only if</em> vmactions offers a 15.1 image (else keep host at 15.0)</td></tr>
+<tr><td><code>build.yml:100-102,280-281,398-399</code> matrix <code>freebsd:'15.0'</code> + <code>variant:'15.0-RELEASE'</code></td><td class="no"><strong>REQUIRED</strong> (not optional &mdash; correction, &sect;7.1) &mdash; the VM gap-fills the rootfs, so it must be 15.1. <code>15.1-RELEASE</code> <em>is</em> on vmactions/the mirror. Bump both; also drop the version from the job <code>name:</code> labels (PR&nbsp;#341)</td></tr>
 <tr><td><code>tests/boot-test.sh</code></td><td class="partial"><strong>Recommend ADD</strong> a <code>sysctl kern.osreldate</code> &ge; <code>1500509</code> assertion &mdash; the acceptance floor is gated <em>nowhere</em> today</td></tr>
 </tbody>
 </table>
@@ -260,6 +260,7 @@ gh api repos/nextbsd-redux/freebsd-src/contents/sys/sys/param.h?ref=releng/15.1 
 <tr><td>6</td><td class="partial">Firmware bloat inflates ISO</td><td>modules <code>build.yml:687</code></td><td>ISO size</td><td>Per-ASIC subset or split FW asset (design change)</td></tr>
 <tr><td>7</td><td>Graphics kexts not load-tested in CI</td><td>modules smoke-test</td><td>Boot only</td><td>Add graphics-kext load test</td></tr>
 <tr><td>8</td><td>No <code>osreldate</code> floor gate in CI</td><td>nextbsd <code>boot-test.sh</code></td><td>&mdash;</td><td>Add <code>sysctl kern.osreldate</code> assertion</td></tr>
+<tr><td>9</td><td class="no">Build VM gap-fill ships stale 15.0 userland binaries (<code>init</code>, <code>uname</code>, <code>freebsd-version</code>) onto a 15.1 kernel</td><td>nextbsd <code>build.sh:~202</code> + matrix <code>freebsd:'15.0'</code></td><td>Runtime &mdash; CI green, but booted image shows <code>uname -U</code> 15.0 vs <code>uname -K</code> 15.1</td><td>Bump matrix VM to 15.1 (&sect;7.1, PR&nbsp;#341); verify <code>uname -U == uname -K == 1501000</code> on a booted image</td></tr>
 </tbody>
 </table>
 
@@ -268,6 +269,58 @@ gh api repos/nextbsd-redux/freebsd-src/contents/sys/sys/param.h?ref=releng/15.1 
 <li><span class="pill p336">#336</span> Full chain (toolchain&rarr;kernel&rarr;modules&rarr;compat&rarr;ISO) builds green on <code>releng/15.1</code>; booted image reports <code>kern.osreldate &ge; 1500509</code>; launchd boot, kexts (incl. graphics 6.6 <em>pre-#337</em>), networking still work; <code>pkg install</code> works (<code>FreeBSD:15:amd64</code>).</li>
 <li><span class="pill p337">#337</span> On the 15.1 image, <code>IOGraphics</code>/<code>IntelGraphics</code>/<code>AMDGraphics</code>/<code>RadeonGraphics</code> load against the 6.12 <code>drm.ko</code>, firmware is found, and a supported GPU brings up KMS. <em>(Reminder from the decision plan: 6.12 still has no Intel <code>xe</code> &mdash; Lunar Lake / Battlemage stay unsupported.)</em></li>
 </ul>
+
+<h2>7. Execution addendum &mdash; corrections &amp; extra steps from the live bump (20 June 2026)</h2>
+<p>The bump was executed end-to-end on 20 June 2026 (kernel <a href="https://github.com/nextbsd-redux/nextbsd-kernel/pull/47">PR&nbsp;#47</a>, compat <a href="https://github.com/nextbsd-redux/nextbsd-freebsd-compat/pull/27">PR&nbsp;#27</a>, ISO-matrix <a href="https://github.com/nextbsd-redux/nextbsd/pull/341">PR&nbsp;#341</a>). Four findings corrected or extended the scoping above &mdash; including a wrong &ldquo;zero patch drift&rdquo; prediction (&sect;7.5) &mdash; recorded here so the next minor bump (15.1&rarr;15.2) is mechanical.</p>
+
+<h3>7.1 &nbsp;The build VM is a load-bearing source &mdash; the matrix bump is <span class="no">REQUIRED</span>, not optional</h3>
+<p>&sect;3.6 originally rated the <code>matrix.freebsd:'15.0'</code> pin &ldquo;optional, build-host only.&rdquo; <strong>That was wrong.</strong> <code>build.sh</code> (~line 202) gap-fills the rootfs from the <em>VM&rsquo;s</em> <code>/bin /sbin /usr/bin</code> with <code>cp -RpPn</code> (no-clobber) for everything the curated from-source base omits &mdash; which includes <code>init</code>, <code>uname</code>, and <code>freebsd-version</code> (the last <strong>removed</strong> from the base in #300). So a 15.0 VM bakes 15.0 userland binaries into a 15.1 image.</p>
+<aside class="gap"><strong>Symptom on the first 15.1 image (booted on real hardware):</strong>
+<pre>uname -K            = 1501000      # kernel   -> 15.1  OK  (the real running kernel)
+uname -U            = 1500068      # userland -> 15.0  WRONG (VM-copied 15.0 uname binary)
+freebsd-version -u  = 15.0-RELEASE-p10           WRONG (stale VM binary, dated when 15.0-p10 shipped)
+nextbsd-version     = 20260620-163936            OK  (the NextBSD build stamp; the intended tool)</pre>
+The kernel and the from-source base (libc, fbsdglue, &hellip;) were already 15.1; only the VM gap-fillers lagged.</aside>
+<p><strong>Fix:</strong> bump <code>matrix.freebsd 15.0&rarr;15.1</code> and <code>variant 15.0-RELEASE&rarr;15.1-RELEASE</code> in all three matrix blocks (PR&nbsp;#341). The plan&rsquo;s &ldquo;only if vmactions offers a 15.1 image&rdquo; conditional is resolved: <strong><code>15.1-RELEASE</code> is present</strong> on the mirror (<code>.../releases/amd64/15.1-RELEASE/base.txz</code> &rarr; HTTP 200) and accepted by <code>vmactions/freebsd-vm</code>. The job <code>name:</code> labels were also made version-agnostic (<code>build (&#36;{{ matrix.arch }})</code>) so they stop drifting each bump &mdash; <code>variant</code> still drives the distfiles cache key + <code>FREEBSD_VARIANT</code>.</p>
+
+<h3>7.2 &nbsp;<code>workflow_dispatch</code> builds but never publishes/cascades &mdash; use <code>repository_dispatch</code></h3>
+<p>Every repo gates its <em>publish-to-<code>continuous</code></em> and downstream cascade on <code>github.event_name == 'push' || 'repository_dispatch'</code> &mdash; <strong>never</strong> <code>workflow_dispatch</code>. So a manual run (or a PR merge in a repo with no <code>push</code> trigger) <strong>builds and validates but leaves <code>continuous</code> stale.</strong> This bit the bump three times before it was understood.</p>
+<table>
+<thead><tr><th>Repo</th><th>Publishes on</th><th>To actually publish/cascade after a manual change</th></tr></thead>
+<tbody>
+<tr><td><code>nextbsd-kernel</code></td><td><code>push</code> to main publishes <code>continuous</code>; module cascade only on <code>repository_dispatch</code></td><td>merge cascades publish; for the full chain, dispatch the toolchain</td></tr>
+<tr><td><code>nextbsd-freebsd-compat</code></td><td>publish gates only on <code>ref==main</code> (so <code>workflow_dispatch</code> on main <em>does</em> publish); <strong>no <code>push</code> trigger</strong>; ISO cascade only on <code>repository_dispatch</code></td><td><code>workflow_dispatch</code> on main to publish; then <code>base-updated</code> for the ISO</td></tr>
+<tr><td><code>nextbsd</code> (ISO)</td><td><code>release</code> job excludes <code>workflow_dispatch</code>; <strong>no <code>push</code> trigger</strong> on the build</td><td><code>gh api repos/nextbsd-redux/nextbsd/dispatches -f event_type=base-updated</code></td></tr>
+</tbody>
+</table>
+<p>Rule of thumb: <strong>a manual dispatch is for <em>validation</em>; a <code>repository_dispatch</code> (or the toolchain re-cascade) is for <em>shipping</em>.</strong></p>
+
+<h3>7.3 &nbsp;Cache purge &mdash; optional hygiene, <span class="partial">not a fix</span></h3>
+<p>No cache caused any version skew. <code>ccache</code> is content-addressed (a 15.1 source compile yields 15.1 objects every time &mdash; it cannot emit a stale-version <em>binary</em>); the distfiles cache is keyed on <code>variant</code> (<code>build.yml:121</code>), so it <strong>auto-invalidates</strong> when <code>variant</code> flips to <code>15.1-RELEASE</code>. The stale binaries came from the <em>VM image</em>, which we don&rsquo;t cache. For a clean-slate rebuild guarantee only:</p>
+<pre>for r in nextbsd-kernel-toolchain nextbsd-kernel nextbsd-kernel-modules nextbsd-freebsd-compat nextbsd; do
+  gh cache delete --all -R nextbsd-redux/$r
+done
+# then re-cascade the whole chain from the top:
+gh workflow run "Build Toolchain Containers" -R nextbsd-redux/nextbsd-kernel-toolchain --ref main</pre>
+
+<h3>7.4 &nbsp;Verification on a booted image</h3>
+<ul>
+<li><code>uname -K</code> == <code>uname -U</code> == <code>1501000</code> (kernel <em>and</em> userland both 15.1) &mdash; the single sharpest check; a split here is the &sect;7.1 gap.</li>
+<li><code>sysctl kern.osreldate</code> == <code>1501000</code> (the #336 acceptance floor &ge; <code>1500509</code>).</li>
+<li><code>freebsd-version</code> is gone (preferred, per #300) or reports 15.1; <code>nextbsd-version</code> reports the build timestamp.</li>
+<li><strong>Not</strong> <code>ldd</code> &mdash; it lists a binary&rsquo;s shared-lib deps, it cannot report kernel version. Use <code>uname -K</code> / <code>kern.osreldate</code>.</li>
+</ul>
+
+<h3 id="addendum-patches">7.5 &nbsp;The patch stack <span class="no">did</span> drift &mdash; headline &sect;1.1 was wrong</h3>
+<p>The scoping&rsquo;s biggest claimed de-risk &mdash; &ldquo;all 7 patch targets byte-identical, zero rebase&rdquo; &mdash; <strong>did not hold.</strong> It was caught by the live <code>Apply patches</code> CI step failing, then confirmed against a clean <code>releng/15.1</code> tree. <strong>Two of seven</strong> patches drifted (PR&nbsp;#47); the other five applied unchanged.</p>
+<table>
+<thead><tr><th>Patch</th><th>What changed in 15.1</th><th>Rebase</th></tr></thead>
+<tbody>
+<tr><td><code>0001</code> lkmnosys band</td><td>15.1 added base syscalls <strong>599 <code>kexec_load</code>, 600 <code>pdrfork</code>, 601 <code>pdwait</code>, 602 <code>renameat2</code></strong>, colliding with the band&rsquo;s old <code>599&ndash;646</code> range</td><td>Shifted the 48-slot band to <strong><code>603&ndash;650</code></strong> (first free slot after 602). Safe &mdash; <code>mach_syscall_wire.c</code> auto-allocates via <code>NO_SYSCALL</code>; nothing hardcodes the base. <code>make sysent</code> regenerates companions.</td></tr>
+<tr><td><code>0004</code> firmware_path</td><td>15.1 fixed an inverted <code>warn</code> bool at <code>subr_firmware.c:284</code> &mdash; the same bug 0004 already corrects (semantic convergence)</td><td>Updated the removed-line context to 15.1&rsquo;s <code>(flags &amp; FIRMWARE_GET_NOWARN) == 0</code>; the 91-line refactor hunk was already clean.</td></tr>
+</tbody>
+</table>
+<p><strong>Lesson:</strong> &ldquo;same last-touch SHA on 15.0&rdquo; does <em>not</em> imply identical on 15.1 &mdash; a releng minor can touch any file. The reliable gate is the <code>Apply patches</code> CI step itself (strict + cumulative, in order), not a pre-scan of file SHAs. Both edits were mechanical (no new logic), so the &ldquo;minimal patch authoring&rdquo; spirit held even though &ldquo;zero&rdquo; did not.</p>
 
 <h2>Sources &amp; method</h2>
 <p>Scope produced by six parallel read-only agents over the NextBSD build chain (June 2026), each reporting file:line edits, rebase risk, and runtime-vs-CI failure surfaces. Cross-repo facts verified directly against GitHub:</p>

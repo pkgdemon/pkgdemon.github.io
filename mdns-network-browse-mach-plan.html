@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mDNS Network Browse over Mach — fix plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.plist { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .repo { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: 1rem 1.2rem; margin: 1rem 0; }
+  .repo h4 { margin-top: 0; }
+  .shots { display: flex; flex-wrap: wrap; gap: 1.25rem; margin: 1.25rem 0 1.5rem; }
+  .shots figure { margin: 0; flex: 1 1 240px; }
+  .shots img { width: 100%; height: auto; border: 1px solid var(--rule); border-radius: 6px; background: #fff; display: block; }
+  .shots figcaption { font-size: .85rem; color: var(--muted); margin-top: .4rem; }
+  .shots figcaption strong.bad { color: var(--bad); }
+  .shots figcaption strong.ok { color: var(--ok); }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="index.html">&larr; Home</a>
+  <a href="#tldr">Status</a>
+  <a href="#symptom">Symptom</a>
+  <a href="#flow">Flow</a>
+  <a href="#root">Root cause</a>
+  <a href="#repos">Repos to touch</a>
+  <a href="#daemon">Daemon fix</a>
+  <a href="#client">Client fix</a>
+  <a href="#build">Build</a>
+  <a href="#sharing">Sharing pane</a>
+  <a href="#phases">Phases</a>
+  <a href="#verify">Verify</a>
+</nav>
+
+<h1>mDNS Network Browse over Mach <span class="pill warn">Plan ready</span></h1>
+<p class="subtitle">Why the Workspace File Viewer's <strong>Network</strong> list is empty on NextBSD, and the Mach-IPC fix that lights it up. Drop the AF_UNIX socket transport; finish the <code>dns_sd</code> client protocol over the <code>com.apple.mDNSResponder</code> Mach service &mdash; the Apple way.</p>
+
+<div class="tldr">
+<h3>TL;DR</h3>
+<p>The File Viewer's <strong>Network</strong> node and the standalone <strong>NetworkBrowser</strong> app both browse mDNS via GNUstep <code>NSNetServiceBrowser</code>, which calls <code>libdns_sd</code> underneath. On NextBSD that browse silently returns nothing &mdash; the Network list is empty &mdash; while a Debian box on the same LAN lists <em>ThinkPad-T460s</em>, <em>Joseph's Mac mini</em>, and <em>VirtualBox-ed65a877</em>.</p>
+<p>Root cause: the <code>mDNSResponder</code> daemon advertises its own <code>.local</code> name over multicast (so peers <em>see</em> it), but there is <strong>no working client request/response transport</strong>. The installed <code>libdns_sd</code> is the pure AF_UNIX client stub that connects to <code>/var/run/mDNSResponder</code> &mdash; a socket that is never created (the daemon drops to <code>nobody</code> against root-owned <code>/var/run</code>). The intended Mach transport (<code>mach_bridge.c</code> + a <code>dns_sd.defs</code> MIG IDL) was scoped but <strong>never implemented</strong>: the daemon claims the <code>com.apple.mDNSResponder</code> Mach service and never reads a message from it.</p>
+<p><strong>Fix, per the &ldquo;Mach not sockets&rdquo; doctrine:</strong> implement the <code>dns_sd</code> wire protocol over Mach on both ends &mdash; a MIG-served Mach receive loop in the daemon (wired through <code>EVFILT_MACHPORT</code>, per <a href="nextbsd-evfilt-machport-native-plan.html">#168</a>) and a Mach transport in <code>libdns_sd</code>'s client stub. The UI needs <strong>zero changes</strong>. Almost all the work is one repo: <code>nextbsd-redux/nextbsd</code>.</p>
+</div>
+
+<h2 id="symptom">1. Symptom</h2>
+<p>On the live NextBSD machine (<code>root@thinkpad-t460s</code>, display <code>:0</code>, user <code>admin</code>), GWorkspace's File Viewer shows the sidebar tree <em>Local User / Domains / Volumes / Network</em>. The <strong>Network</strong> section is expanded but <strong>empty</strong>. The Sharing preference pane lists every service (SSH, SFTP, AFP, SMB, VNC) as <em>Off</em>.</p>
+<p>For comparison, <code>admin@debian</code> on the same LAN shows a populated <strong>Network</strong> section. Same File Viewer, same sidebar tree (<em>Local User / Domains / Volumes / Network</em>) &mdash; only the <strong>Network</strong> node differs:</p>
+
+<div class="shots">
+  <figure>
+    <img src="screenshots/mdns-network-nextbsd-empty.png" alt="NextBSD File Viewer sidebar with an empty Network section">
+    <figcaption><strong class="bad">NextBSD (ThinkPad-T460s)</strong> &mdash; the <strong>Network</strong> node is expanded but empty.</figcaption>
+  </figure>
+  <figure>
+    <img src="screenshots/mdns-network-debian-populated.png" alt="Debian File Viewer sidebar listing three discovered network hosts">
+    <figcaption><strong class="ok">Debian (reference)</strong> &mdash; <strong>Network</strong> lists Joseph&rsquo;s Mac mini, VirtualBox-ed65a877, and ThinkPad-T460s.</figcaption>
+  </figure>
+</div>
+
+<table>
+<tr><th>Host</th><th>NextBSD (ThinkPad-T460s)</th><th>Debian (reference)</th></tr>
+<tr><td>Network sidebar</td><td><strong>empty</strong></td><td>Joseph's Mac mini, VirtualBox-ed65a877, ThinkPad-T460s</td></tr>
+<tr><td>Advertises self via mDNS</td><td>yes &mdash; peers see <code>ThinkPad-T460s</code></td><td>yes</td></tr>
+<tr><td>Can browse / discover peers</td><td><strong>no</strong></td><td>yes</td></tr>
+</table>
+<p>The asymmetry is the key clue: NextBSD <em>advertises</em> (Debian sees it) but cannot <em>browse</em>. Advertisement is the multicast engine talking to the wire; browse requires a client API call into the daemon &mdash; and that path is broken.</p>
+
+<h2 id="flow">2. How discovery is supposed to flow</h2>
+<p>Both UI consumers are platform-agnostic and converge on a single transport that lives <em>below</em> Gershwin, inside GNUstep-base's <code>NSNetService</code> &rarr; <code>libdns_sd</code> linkage:</p>
+<div class="ascii-diagram">  File Viewer "Network" node          NetworkBrowser.app
+  (gershwin-workspace)                (gershwin-components)
+   NetworkServiceManager                NetworkBrowser
+   browses _sftp-ssh/_afpovertcp/       browses _services._dns-sd._udp
+   _webdav/_webdavs ._tcp               then &lt;type&gt;._tcp
+            \                             /
+             \                           /
+          GNUstep  NSNetServiceBrowser / NSNetService
+                         |
+                    libdns_sd.so   (DNSServiceBrowse / Resolve)
+                         |
+            == IPC transport ==   &lt;-- BROKEN on NextBSD
+                         |
+                  mDNSResponder daemon  (mDNSCore + mDNSPosix)
+                         |
+                   multicast on the LAN  (advertise works)</div>
+<p>Confirmed in source: the File Viewer's <code>NetworkServiceManager</code> is declared <code>&lt;NSNetServiceBrowserDelegate, NSNetServiceDelegate&gt;</code> and gates on <code>NSClassFromString(@"NSNetServiceBrowser")</code>; its <code>/Network</code> node is a synthetic <code>NetworkFSNode</code> whose children come straight from <code>[[NetworkServiceManager sharedManager] allServices]</code> &mdash; no SMB browse, no autofs, no pre-mounted filesystem. The standalone <code>NetworkBrowser.app</code> uses the same <code>NSNetServiceBrowser</code> API independently. <strong>Same backend, same transport.</strong> Fix the transport once and both light up.</p>
+
+<h2 id="root">3. Root cause</h2>
+<p>Two compounding defects, both verified by reading the port at <code>nextbsd-redux/nextbsd</code> <code>src/mDNSResponder/</code> and probing the running daemon.</p>
+
+<h3>3a. No Mach <code>dns_sd</code> transport exists on either side</h3>
+<ul>
+  <li><strong>Daemon:</strong> <code>mach_bridge.c</code> is a bare skeleton. <code>mDNSResponderMachBridgeInit()</code> does a single <code>bootstrap_check_in(bootstrap_port, "com.apple.mDNSResponder", &amp;svc)</code>, logs <code>MDNS-BOOT-OK</code>, and <strong>discards the receive right</strong>. No <code>mach_msg</code> receive loop, no MIG demux. Its own header admits iter&#8209;3 (&ldquo;Apple-shape <code>dns_sd.defs</code> MIG IDL&rdquo;) was never done. <strong>No <code>.defs</code> file exists anywhere in the tree.</strong></li>
+  <li><strong>Client lib:</strong> <code>libdns_sd</code> is built from <code>mDNSShared/dnssd_clientstub.c</code> &mdash; the cross-platform AF_UNIX variant. <code>dnssd_ipc.h</code> takes the <code>AF_LOCAL</code> branch (<code>USE_TCP_LOOPBACK</code> undefined, no Mach define), so <code>ConnectToServer</code> does <code>socket()/connect()</code> to <code>/var/run/mDNSResponder</code> and <code>deliver_request</code> uses <code>sendmsg</code>. <strong>Zero Mach symbols</strong> in the shipped <code>.so</code> (no <code>bootstrap_look_up</code>, no <code>mach_msg</code>).</li>
+  <li><strong>Event loop:</strong> the daemon's <code>MainLoop</code> / <code>mDNSPosixRunEventLoopOnce</code> is kqueue/select over FDs only. The claimed Mach port is never added to any event source.</li>
+</ul>
+
+<h3>3b. The one transport that does exist (AF_UNIX) is dead at runtime</h3>
+<ul>
+  <li><code>udsserver_init</code> binds <code>/var/run/mDNSResponder</code> &mdash; but the daemon then drops to <code>nobody</code>, and <code>/var/run</code> is root-owned, so the socket never appears (and the running daemon holds only UDP/route sockets, no UNIX stream listener).</li>
+  <li>The launchd plist <code>com.apple.mDNSResponder.plist</code> declares <code>MachServices</code> but has <strong>no <code>Sockets</code></strong> key, so launchd never vends a properly-owned socket either.</li>
+  <li>Net effect: every client <code>DNSServiceBrowse</code> fails with <code>kDNSServiceErr_ServiceNotRunning</code> &rarr; the Network list stays empty. Multicast advertisement is independent of this path, which is why peers still see <code>ThinkPad-T460s</code>.</li>
+</ul>
+
+<div class="resolved">
+<strong>Decision (confirmed):</strong> do <em>not</em> repair the AF_UNIX socket. Apple's stack uses Mach for the <code>dns_sd</code> client protocol, and NextBSD is going Mach-native. Finish the Mach transport and retire (or demote to a disabled fallback) the AF_UNIX path. This aligns with the existing <a href="nextbsd-evfilt-machport-native-plan.html">EVFILT_MACHPORT native migration (#168)</a> doctrine.
+</div>
+
+<h2 id="repos">4. Which repos to touch</h2>
+<p>The fix is overwhelmingly concentrated in one repo. Mapping each source tree to its GitHub home:</p>
+<table>
+<tr><th>Repo</th><th>Org</th><th>What changes</th><th>Scope</th></tr>
+<tr>
+  <td><code>nextbsd</code><br><span class="pill bad">primary</span></td>
+  <td>nextbsd-redux</td>
+  <td>The whole transport fix: new <code>dns_sd.defs</code> MIG IDL; real Mach server in <code>mach_bridge.c</code>; wire the Mach port into the event loop via <code>EVFILT_MACHPORT</code>; add a Mach transport to <code>libdns_sd</code>'s client stub; MIG codegen + link flags in both Makefiles; update <code>com.apple.mDNSResponder.plist</code>. Lives under <code>src/mDNSResponder/</code> and <code>overlays/System/Library/LaunchDaemons/</code>. (Active branch today: <code>mdns-device-info</code>.)</td>
+  <td><strong>Heavy</strong></td>
+</tr>
+<tr>
+  <td><code>gershwin-components</code><br><span class="pill warn">follow-on</span></td>
+  <td>gershwin-desktop</td>
+  <td><strong>Nothing for the Network list.</strong> Separate follow-on only: the <strong>Sharing</strong> pane's <code>sharing-helper.c</code> uses FreeBSD <code>sysrc</code>/<code>service</code>/<code>rc.conf</code> for hostname-set and service status/start-stop &mdash; needs a launchd-native shim. (Branch: <code>feat/nextbsd</code>.) See &sect;8.</td>
+  <td>Medium (independent)</td>
+</tr>
+<tr>
+  <td><code>gershwin-workspace</code><br><span class="pill ok">no change</span></td>
+  <td>gershwin-desktop</td>
+  <td><strong>None.</strong> The File Viewer's <code>/Network</code> node (<code>NetworkServiceManager</code> / <code>NetworkFSNode</code>) is correct as written &mdash; it just needs the transport beneath it to work. (Source ships in <code>developer-display-server.tar.gz</code>.)</td>
+  <td>None</td>
+</tr>
+<tr>
+  <td>GNUstep base<br><span class="pill info">rebuild/relink</span></td>
+  <td>gnustep</td>
+  <td>Likely <strong>no source change</strong> &mdash; <code>NSNetService</code> links <code>libdns_sd</code> at the <code>.so</code> level. If the new Mach client stub keeps the <code>libdns_sd</code> ABI, a rebuilt <code>libdns_sd.so</code> drops in. Verify the <code>NSNetService</code> run-loop integration still works once <code>DNSServiceRefSockFD</code> is replaced by a Mach reply port (see &sect;6).</td>
+  <td>Verify only</td>
+</tr>
+<tr>
+  <td><code>nextbsd-freebsd-compat</code><br><span class="pill ok">n/a</span></td>
+  <td>nextbsd-redux</td>
+  <td><strong>None expected.</strong> srclist only references mDNSResponder in a comment; packaging of the daemon/lib is driven from the <code>nextbsd</code> build, not the compat srclist.</td>
+  <td>None</td>
+</tr>
+</table>
+<div class="open-q">
+<strong>Issue tracking.</strong> Per project doctrine, file the tracking issue in <code>nextbsd-redux/nextbsd</code> even though a follow-on touches <code>gershwin-components</code>. Cross-repo PRs won't auto-close it; close manually.
+</div>
+
+<h2 id="daemon">5. Daemon-side fix (<code>nextbsd-redux/nextbsd</code>)</h2>
+<ol>
+  <li><strong>Add a MIG IDL</strong> &mdash; a new <code>dns_sd.defs</code> (or revive Apple's <code>DNSServiceDiscovery.defs</code>) defining the request routines (browse / register / resolve / queryrecord / enumerate) plus the <code>DNSServiceDiscoveryReply</code> callback subsystem. Generate server (<code>*Server.c</code>) and user (<code>*User.c</code>) stubs with <code>mig</code>.</li>
+  <li><strong>Implement a real Mach server in <code>mach_bridge.c</code></strong> &mdash; after <code>bootstrap_check_in</code>, keep the receive right and dispatch incoming messages through the generated MIG demux, translating each routine into the existing <code>uds_daemon.c</code> request handlers (<code>handle_browse_request</code>, the <code>request_state</code> machinery) so <code>mDNSCore</code> is driven exactly as the socket path drove it. Replies go back to the client's reply port via the generated <code>DNSServiceDiscoveryReply</code> user stub.</li>
+  <li><strong>Wire the Mach port into the event loop</strong> &mdash; the central missing piece. Bridge the receive right to a kqueue <code>EVFILT_MACHPORT</code> source (consistent with #168), rather than a separate <code>mach_msg</code> server thread, so it folds into <code>mDNSPosixRunEventLoopOnce</code>.</li>
+  <li><strong>Retire / demote AF_UNIX</strong> &mdash; drop <code>udsserver_init</code> (or keep behind a build flag, disabled by default). If kept, it must be created by launchd with correct ownership, not bound by the post-drop <code>nobody</code> daemon.</li>
+</ol>
+
+<h2 id="client">6. Client-side fix (<code>libdns_sd</code>, same repo)</h2>
+<ol>
+  <li><strong>Add a Mach transport to <code>dnssd_clientstub.c</code></strong> (or a Mach-backed alternate stub). <code>ConnectToServer</code> must <code>bootstrap_look_up("com.apple.mDNSResponder")</code> for the send right instead of <code>socket()/connect()</code>; <code>deliver_request</code> must <code>mach_msg(MACH_SEND)</code> via the generated MIG user stub instead of <code>sendmsg</code>.</li>
+  <li><strong>Reply delivery</strong> &mdash; allocate a per-<code>DNSServiceRef</code> reply receive port. <code>DNSServiceRefSockFD</code> / <code>DNSServiceProcessResult</code> assume a socket FD today; they need a Mach analog (a port that integrates with client run loops, as Apple's classic lib did). This is the piece GNUstep's <code>NSNetService</code> run-loop integration depends on &mdash; verify it there.</li>
+  <li><strong>Guard the transport with a build define</strong> (analogous to the existing <code>USE_TCP_LOOPBACK</code> switch), e.g. <code>USE_MACH_DNSSD</code>, selecting Mach vs AF_LOCAL at compile time.</li>
+</ol>
+
+<h2 id="build">7. Build &amp; packaging (same repo)</h2>
+<ul>
+  <li><strong>MIG codegen rules</strong> in both <code>Makefile</code> and <code>libdns_sd/Makefile</code>: run <code>mig</code> on the <code>.defs</code>; compile the Server stub into the daemon and the User stub into the lib. Mirror how other NextBSD components consume <code>.defs</code>.</li>
+  <li><strong>Link the lib against Mach/bootstrap</strong>: <code>libdns_sd/Makefile</code> currently links nothing Mach. Add <code>-llaunch</code> (bootstrap) + <code>-lsystem_kernel</code> (<code>mach_msg</code>) and the <code>liblaunch</code> / <code>freebsd-shims</code> includes the daemon Makefile already carries.</li>
+  <li><strong>Plist</strong>: for the pure-Mach path, <code>MachServices</code> already vends the service &mdash; <strong>confirm lazy <code>MachServices</code> spawn actually delivers the receive right</strong> to the daemon (sibling plists for configd/syslogd/notifyd carry notes that lazy <code>MachServices</code> spawn isn't fully wired; verify that gap doesn't also block mDNSResponder). Drop the dead <code>Sockets</code> assumption entirely.</li>
+</ul>
+
+<h2 id="sharing">8. Follow-on: Sharing pane (<code>gershwin-desktop/gershwin-components</code>)</h2>
+<p>Independent of the browse fix, but part of &ldquo;hostname, enabled services, etc.&rdquo; The Sharing pane's mDNS <em>announcement</em> rides the same <code>NSNetService</code> &rarr; <code>libdns_sd</code> path, so it starts working the moment the transport is fixed &mdash; no Sharing code change for announce. The non-mDNS pieces (hostname + service control) need launchd-native rework.</p>
+
+<h3>8a. The hostname symptom</h3>
+<div class="shots">
+  <figure>
+    <img src="screenshots/sharing-hostname-blank-nextbsd.png" alt="NextBSD Sharing pane with an empty Name field and all services Off">
+    <figcaption><strong class="bad">NextBSD Sharing pane</strong> &mdash; the <strong>Name</strong> (hostname) field is blank and every service reads <em>Off</em>, even though the host's name is <code>ThinkPad-T460s</code>.</figcaption>
+  </figure>
+</div>
+<p>The blank field is <strong>not</strong> a helper bug: run as the same <code>admin</code> user that owns the pane, <code>sharing-helper get-hostname</code> returns <code>ThinkPad-T460s</code> with exit code 0. So the value is available but never reaches the text field &mdash; a <strong>UI-layer defect in <code>SharingController</code></strong> (the <code>NSTask</code> output capture / field assignment around the <code>get-hostname</code> call), independent of the platform rework below. The &ldquo;Service Discovery: Available (NSNetService)&rdquo; line is also misleading: the class resolves, but the underlying transport is the broken one from &sect;3, so nothing is actually announced or browsed.</p>
+
+<h3>8b. Hostname + service control: what needs launchd-native rework</h3>
+<table>
+<tr><th>Function</th><th>Today (FreeBSD branch)</th><th>NextBSD fix</th></tr>
+<tr><td>Hostname display</td><td><code>gethostname()</code> via helper &mdash; <em>helper works</em></td><td><span class="pill warn">UI bug</span> field stays blank; fix <code>SharingController</code> output capture (8a)</td></tr>
+<tr><td>Hostname set</td><td><code>sysrc hostname=</code> / edits <code>/etc/rc.conf</code></td><td>launchd-native persistence (hostnamed / a <code>scutil</code>-style setter &mdash; <code>scutil</code> is <strong>absent</strong> today), not <code>rc.conf</code></td></tr>
+<tr><td>Service status</td><td><code>service &lt;name&gt; status</code></td><td><code>launchctl</code> query shim</td></tr>
+<tr><td>Service start/stop</td><td><code>sysrc &lt;name&gt;_enable=YES</code> + <code>service start/stop</code></td><td><code>launchctl</code> load/enable shim</td></tr>
+<tr><td>Boot re-announce</td><td>systemd unit <code>gershwin-sharing-mdns.service</code> (Linux-only)</td><td>LaunchDaemon equivalent, or rely on Sharing UI re-announce on login</td></tr>
+<tr><td>mDNS announce</td><td><code>NSNetService -publish</code></td><td><span class="pill ok">fixed by the transport work</span></td></tr>
+</table>
+
+<h3>8c. Conditional on NextBSD &mdash; do not break FreeBSD / Linux / OpenBSD / NetBSD</h3>
+<p>The platform split in <code>sharing-helper.c</code> is the existing <code>PLATFORM_*</code> ladder. The trap: <strong>NextBSD compiles as <code>__FreeBSD__</code></strong>, so it silently falls into <code>PLATFORM_FREEBSD</code> &mdash; the <code>sysrc</code>/<code>service</code>/<code>rc.conf</code> branch. Two rules follow:</p>
+<ul>
+  <li><strong>Never edit the existing <code>PLATFORM_FREEBSD</code> branch</strong> to use launchd &mdash; that would break real FreeBSD. The change must be <em>additive</em>: a new <code>PLATFORM_NEXTBSD</code> branch. On every other OS the new code is excluded by the preprocessor, so their behavior is byte-for-byte unchanged.</li>
+  <li>A plain <code>#ifdef __FreeBSD__</code> <strong>cannot</strong> tell NextBSD from FreeBSD. Use a discriminator real FreeBSD never matches, checked <strong>first</strong> in the ladder &mdash; a build-injected define set only by the NextBSD build of <code>gershwin-components</code> (the <code>feat/nextbsd</code> branch / NextBSD port):</li>
+</ul>
+<pre><code>/* checked BEFORE __FreeBSD__ — NextBSD also defines __FreeBSD__ */
+#if defined(PLATFORM_NEXTBSD) || defined(NEXTBSD)   /* -DNEXTBSD from the NextBSD build only */
+#  define PLATFORM_NEXTBSD 1
+#elif defined(__linux__)
+#  define PLATFORM_LINUX 1
+#elif defined(__FreeBSD__)
+#  define PLATFORM_FREEBSD 1      /* unchanged — real FreeBSD lands here */
+#elif defined(__OpenBSD__)
+#  define PLATFORM_OPENBSD 1
+#elif defined(__NetBSD__)
+#  define PLATFORM_NETBSD 1
+#endif</code></pre>
+<p><strong>Belt-and-suspenders (recommended):</strong> also pick the service-control backend at <em>runtime</em> &mdash; prefer <code>launchctl</code> when it is present, else fall back to <code>service</code>/<code>sysrc</code> (FreeBSD/NetBSD) or systemd (Linux). That way even a mis-built binary degrades gracefully and regular OSes are never affected regardless of defines. (A <code>__has_include(&lt;servers/bootstrap.h&gt;)</code> Mach-header probe is an alternative compile-time auto-detect, but the build define is more explicit.)</p>
+<div class="resolved">
+<strong>Scope note:</strong> this conditionalization touches <strong>only <code>sharing-helper.c</code></strong> (service + hostname control). The discovery / Network-list fix needs <em>no</em> conditionals in Gershwin at all &mdash; it lives entirely in <code>libdns_sd</code> (the <code>nextbsd</code> repo). GNUstep's <code>NSNetService</code> links whatever <code>libdns_sd</code> the platform ships (avahi-compat on Linux, the Mach-backed one on NextBSD), so the Gershwin discovery code stays 100% platform-agnostic.
+</div>
+
+<h2 id="phases">9. Phased rollout (PR-gated)</h2>
+<div class="phase"><h3>Phase 1 &mdash; MIG IDL + daemon Mach server</h3><p>Add <code>dns_sd.defs</code>, codegen, real receive loop in <code>mach_bridge.c</code> dispatching into <code>uds_daemon</code> handlers. Wire via <code>EVFILT_MACHPORT</code>. Gate: a daemon-side smoke test proves a <code>mach_msg</code> round-trip into <code>mDNSCore</code> and back.</p></div>
+<div class="phase"><h3>Phase 2 &mdash; libdns_sd Mach client transport</h3><p><code>USE_MACH_DNSSD</code> stub: <code>bootstrap_look_up</code> + <code>mach_msg</code> send, reply-port model replacing <code>DNSServiceRefSockFD</code>. Build/link wiring. Gate: in-tree <code>dnssdtest</code>/<code>mdnstest</code> adapted to the Mach model passes <code>DNSServiceBrowse</code> end-to-end.</p></div>
+<div class="phase"><h3>Phase 3 &mdash; GNUstep + UI validation</h3><p>Rebuild/relink GNUstep <code>libdns_sd</code>; verify <code>NSNetService</code> run-loop integration. Gate: File Viewer <strong>Network</strong> node and NetworkBrowser.app both populate on real hardware (the <code>thinkpad-t460s</code> box), matching the Debian reference.</p></div>
+<div class="phase"><h3>Phase 4 &mdash; Sharing pane launchd-native helper</h3><p>(<code>gershwin-components</code>.) Replace <code>sysrc</code>/<code>service</code> calls with <code>launchctl</code> shims; NextBSD hostname-set path; LaunchDaemon re-announce. Gate: Sharing pane toggles a service, status reflects it, and the service appears in another host's Network list.</p></div>
+
+<h2 id="verify">10. Verification</h2>
+<pre class="shell"><code># On the NextBSD box, after the fix:
+# 1. Mach service is claimed AND served (not just claimed)
+launchctl print system/com.apple.mDNSResponder | grep -i mach
+
+# 2. A browse from libdns_sd returns results (CLI, if dns-sd is built)
+dns-sd -B _services._dns-sd._udp local.
+
+# 3. The File Viewer Network node populates (screenshot display :0 as admin)
+DISPLAY=:0 import -window root /tmp/after.png    # compare to the empty "before"
+
+# 4. Cross-check from a peer: NextBSD's own advertised services now resolve
+avahi-browse -art   # (from the Debian reference box)</code></pre>
+<p>Success = the File Viewer <strong>Network</strong> list on NextBSD shows the same peers the Debian box sees, and toggling a service in the Sharing pane makes it appear on other hosts.</p>
+
+<h2 id="refs">11. References</h2>
+<ul>
+  <li>Companion: <a href="freebsd-mdnsresponder-plan.html">FreeBSD mDNSResponder &mdash; porting plan</a> (daemon/advertisement bring-up; this page supersedes its &ldquo;zero Mach surface&rdquo; client-transport assumption).</li>
+  <li>Doctrine: <a href="nextbsd-evfilt-machport-native-plan.html">Native EVFILT_MACHPORT migration (#168)</a> &mdash; the kqueue/Mach integration this fix rides on.</li>
+  <li><a href="mdns-local-fix.html">Fixing <code>.local</code> (mDNS) resolution</a> &mdash; unrelated Debian NSS workaround; not part of this fix.</li>
+  <li>Apple source: <a href="https://github.com/apple-oss-distributions/mDNSResponder">apple-oss-distributions/mDNSResponder</a> (classic <code>DNSServiceDiscovery.defs</code> + <code>mDNSMacOSX/daemon.c</code> Mach path as reference; not vendored here).</li>
+  <li>RFC 6762 (mDNS), RFC 6763 (DNS-SD).</li>
+</ul>
+
+<hr style="margin-top: 3rem; border: none; border-top: 1px solid var(--rule);">
+<p style="color: var(--muted); font-size: .88rem; margin-top: 1rem;"><strong>Filed 2026-06-21.</strong> Root-caused from a 3-agent investigation (daemon/lib Mach gap, Gershwin UI consumer map, existing-plan review) plus live probing of <code>root@thinkpad-t460s</code>. Primary work: <code>nextbsd-redux/nextbsd</code> (<code>src/mDNSResponder/</code>). UI: no change. Follow-on: <code>gershwin-desktop/gershwin-components</code> Sharing pane.</p>
+
+</body>
+</html>

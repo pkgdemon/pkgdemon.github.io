@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD mach_port_request_notification — viability &amp; porting plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+          padding: 1rem 1.1rem; }
+  .card h4 { margin-top: 0; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .phase.done { border-left: 4px solid var(--ok); }
+  .phase.todo { border-left: 4px solid var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  blockquote { margin: 1rem 0; padding: .5rem 1rem; border-left: 3px solid var(--accent);
+               background: #fff8f3; color: #333; }
+  .footnote { font-size: .85rem; color: var(--muted); }
+  ol li, ul li { margin: .25rem 0; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .filename { color: var(--accent); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .risk { background: #fff5e6; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .risk strong { color: var(--warn); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .step-num { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; background: var(--accent); color: white; border-radius: 50%; font-weight: 700; font-size: .85em; margin-right: .35em; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#why">Why</a>
+  <a href="#found">What we found</a>
+  <a href="#gap">The gap</a>
+  <a href="#plan">Plan</a>
+  <a href="#risks">Caveats</a>
+  <a href="#verdict">Verdict</a>
+</div>
+
+<h1>NextBSD <code>mach_port_request_notification</code> <span class="pill info">kernel</span></h1>
+<p class="subtitle">Viability research &amp; porting plan — closing the last libdispatch dead-name fd leak.
+Tracks <a href="https://github.com/nextbsd-redux/nextbsd/issues/347">nextbsd#347</a>;
+follows the userland fixes in <a href="https://github.com/nextbsd-redux/nextbsd/issues/342">#342</a>
+(PRs <a href="https://github.com/nextbsd-redux/nextbsd/pull/343">#343</a>/<a href="https://github.com/nextbsd-redux/nextbsd/pull/344">#344</a>/<a href="https://github.com/nextbsd-redux/nextbsd/pull/345">#345</a>/<a href="https://github.com/nextbsd-redux/nextbsd/pull/346">#346</a>, merged).</p>
+
+<div class="tldr" id="tldr">
+  <h3>TL;DR — <span class="verdict maybe">VIABLE, with caveats</span> &nbsp;<span class="pill ok">effort: Small–Medium</span></h3>
+  <p>The kernel already contains <strong>the complete DEAD_NAME + NO_SENDERS request-and-delivery machinery</strong>
+  and a fully generated, demux-registered MIG routine (<code>mach_port_request_notification</code>, msgid 3215).
+  <strong>No new IPC logic is required.</strong> Two things are missing/broken:</p>
+  <ol>
+    <li><strong>The syscall is never exposed.</strong> libmach calls a FreeBSD syscall (not MIG), and that trap simply
+    doesn't exist — so the userland wrapper falls through to its boot-safe no-op. Fix = a ~55-line shim
+    (one handler + one wire entry), pure pattern-matching against existing port traps.</li>
+    <li><strong>The DEAD_NAME arming is silently broken</strong> in <code>mach_port.c</code>: it open-codes a subset that
+    never grows the request table, never stores <code>ie_request</code>, and drops <code>previous</code>. The
+    <em>correct</em> routine (<code>ipc_right_dnrequest</code>) already exists but is <strong>dead code</strong>.
+    Fix = redirect one <code>switch</code> case to it (~5 lines + a header prototype).</li>
+  </ol>
+  <p><strong>Two load-bearing caveats</strong> (see <a href="#risks">Caveats</a>): (a) libdispatch passes msgid
+  <code>SEND_POSSIBLE</code> (0102) at runtime, which the kernel rejects — the shim must alias it onto the DEAD_NAME
+  path; (b) the shim must return <code>KERN_SUCCESS</code> for any msgid it doesn't service, or it will regress
+  crash-on-error callers (Libnotify, launchd) that today rely on the no-op's fake success — the same failure mode
+  that <a href="https://github.com/nextbsd-redux/nextbsd/pull/344">PR #344</a> hit in CI (kernel panic at boot).</p>
+</div>
+
+<h2 id="why">Why this is needed</h2>
+<p>The fd-leak investigation in <a href="https://github.com/nextbsd-redux/nextbsd/issues/342">#342</a> traced a system-wide
+Mach-port (fd) leak that crashed <code>mDNSResponder</code> and flooded the console with
+<code>ipc_right.c:1645</code> dead-name printfs. The merged userland PRs fixed the dominant per-RPC reply-port leak
+(#343), configd's server-side leak (#345), and hardened mDNSResponder against the crash (#346). One residual remains:</p>
+
+<blockquote>libdispatch's Mach event backend asks the kernel to notify it when a watched peer port dies (so it can
+<code>EV_DELETE</code> the registration and free its wrap port set). With no working notification, dead registrations
+and their port sets accumulate — the <strong>~0.45 fd/s residual</strong> still observed on <code>hostnamed</code>
+while idle.</blockquote>
+
+<p>This <em>cannot</em> be fixed in userland. The libmach wrapper must return <code>KERN_SUCCESS</code> or launchd
+aborts PID 1 (<code>os_assumes_zero</code>) and the kernel panics — <a href="https://github.com/nextbsd-redux/nextbsd/pull/344">CI proved exactly this</a>. The reaper only works once the kernel actually delivers the dead-name notification.</p>
+
+<h2 id="found">What the research found</h2>
+<p class="footnote">Three parallel source-research agents over the kernel overlay (<span class="filename">nextbsd-kernel/src-overlay/sys/compat/mach/</span>) and userland (<span class="filename">libdispatch</span>, <span class="filename">libmach</span>, <span class="filename">Libnotify</span>, <span class="filename">configd</span>).</p>
+
+<h3>The substrate is overwhelmingly present</h3>
+<table>
+  <tr><th>Notification type</th><th>Kernel status</th><th>Verdict</th></tr>
+  <tr><td><strong>DEAD_NAME</strong> (0110)</td>
+      <td>Full path exists: <code>ip_dnrequests</code> table + <code>ipc_port_dnrequest</code>/<code>dngrow</code>/<code>dncancel</code>; fired on port death via <code>ipc_port_destroy</code> → <code>ipc_port_dnnotify</code> → <code>ipc_notify_dead_name</code>. The <em>correct</em> arming routine <code>ipc_right_dnrequest</code> exists but is <strong>never called (dead code)</strong>.</td>
+      <td><span class="pill ok">thin wiring</span></td></tr>
+  <tr><td><strong>NO_SENDERS</strong> (0106)</td>
+      <td>Live and correct — <code>ipc_port_nsrequest</code> + mscount-drop firing in <code>ipc_right.c</code>. <strong>configd already depends on it</strong> (session teardown).</td>
+      <td><span class="pill ok">already works</span></td></tr>
+  <tr><td><strong>SEND_POSSIBLE</strong> (0102)</td>
+      <td>No template, no sender, no request slot, no send-possible tracking anywhere in the overlay.</td>
+      <td><span class="pill warn">needs building — but not required</span></td></tr>
+</table>
+
+<h3>The MIG routine is already built &amp; registered</h3>
+<p>The real C routine <code>mach_port_request_notification()</code> lives at
+<span class="filename">ipc/mach_port.c:1199–1278</span>, and its generated MIG wrapper
+<code>_Xmach_port_request_notification</code> (<span class="filename">mach_port_server.c:3207</span>) is registered in the
+demux table as <strong>msgid 3215</strong>. So the message-port path is wired; the kernel can already <em>service</em>
+the request — it's just unreachable from the userland syscall wrapper.</p>
+
+<h2 id="gap">The gap (exactly two defects)</h2>
+
+<div class="grid">
+  <div class="card">
+    <h4>1 · The syscall doesn't exist</h4>
+    <p>libmach's wrapper (<span class="filename">libmach/mach_traps.c:491</span>) does
+    <code>resolve_syscall("mach_port_request_notification")</code> → a direct FreeBSD syscall, <em>not</em> MIG.
+    That trap has no entry in <span class="filename">mach_syscall_wire.c</span>, no
+    <code>sys_…</code> handler in kernel <span class="filename">mach_traps.c</span>, and no
+    <code>…_args</code> struct. So <code>resolve_syscall</code> returns <code>NO_SYSCALL</code> → boot-safe no-op.</p>
+  </div>
+  <div class="card">
+    <h4>2 · DEAD_NAME arming is broken</h4>
+    <p>Even via MIG, the DEAD_NAME case (<span class="filename">mach_port.c:1254–1272</span>) open-codes a broken
+    subset: ignores <code>KERN_NO_SPACE</code> (never <code>dngrow</code>), never sets <code>entry-&gt;ie_request</code>
+    (orphans the slot — <code>ipc_right_check</code>/dncancel can't find it), no immediate-dead path, and hardcodes
+    <code>*previousp = MACH_PORT_NULL</code>. The complete correct routine <code>ipc_right_dnrequest</code>
+    (<span class="filename">ipc_right.c:247–356</span>) sits unused.</p>
+  </div>
+</div>
+
+<div class="ascii-diagram">  userland                          kernel
+  --------                          ------
+  libdispatch _dispatch_mach_notify_update
+    └─ mach_port_request_notification(... msgid 0102 ...)   ← passes SEND_POSSIBLE, not DEAD_NAME!
+         └─ libmach wrapper: resolve_syscall(...)  ──►  NO_SYSCALL  ──►  no-op KERN_SUCCESS   ✗ leak persists
+
+  WANTED:
+    └─ libmach wrapper  ──►  [NEW] sys_mach_port_request_notification trap
+                                  └─ alias 0102 → DEAD_NAME, else KERN_SUCCESS   (caveats 1 & 2)
+                                      └─ ipc_right_dnrequest()   ← the existing, correct, currently-dead routine
+                                          └─ on port death: ipc_port_dnnotify → ipc_notify_dead_name  ──►  notify port
+                                              └─ libdispatch _dispatch_mach_notify_dead_name reaps reg ✓ leak fixed</div>
+
+<h2 id="plan">Implementation plan</h2>
+
+<div class="phase todo">
+  <h3><span class="step-num">1</span>Expose the syscall trap <span class="pill ok">~55 lines, 2 files</span></h3>
+  <p>Pattern-match against <code>mach_port_insert_right</code> (in-port copyin) + <code>mach_port_allocate</code> (out-param copyout).</p>
+  <ul>
+    <li><span class="filename">mach_traps.c</span> — add <code>sys_mach_port_request_notification_trap()</code>:
+      <code>ipc_object_copyin</code> the <code>notify</code> send-right, call the IPC routine, <code>copyout</code> the
+      <code>previous</code> name. Model: <span class="filename">mach_traps.c:358</span> (insert_right) + <code>:224–253</code> (port in/out).</li>
+    <li><span class="filename">mach_syscall_wire.c</span> — mirror the six <code>mach_port_move_member</code> entries:
+      fwd-decl + guarded wrapper (<code>:291</code>), <code>sysent</code> with <strong><code>.sy_narg = 6</code></strong>
+      (<code>task</code> is implicit = current task, like every port trap), <code>offset</code>/<code>old_sysent</code>
+      globals, <code>SYSCTL_INT(_mach_syscall, …)</code>, and <code>wire_one()</code>/<code>unwire_one()</code>.</li>
+    <li>Confirm/add the <code>mach_port_request_notification_trap_args</code> struct in the generated
+      <code>&lt;sys/mach/_mach_sysproto.h&gt;</code>.</li>
+  </ul>
+  <p class="footnote">7-arg ABI note: the API has 7 params but FreeBSD <code>syscall()</code> passes 6 cleanly. <code>task</code>
+  is dropped (implicit self) and <code>previous</code> is a single out-pointer — fits 6, no <code>mach_msg_trap</code>-style truncation needed.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">2</span>Fix the DEAD_NAME arming <span class="pill ok">~5 lines + 1 prototype</span></h3>
+  <p>Redirect the DEAD_NAME case in <span class="filename">mach_port.c:1254–1272</span> to the existing
+  <code>ipc_right_dnrequest(space, name, /*immediate=*/sync!=0, notify, previousp)</code>
+  (<span class="filename">ipc_right.c:247</span>). Likely needs a prototype added to a header
+  (<code>ipc_right.h</code> isn't in the overlay — confirm visibility). This makes arming actually store
+  <code>ie_request</code>, grow the table, handle already-dead names, and return <code>previous</code>.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">3</span>msgid aliasing + no-op safety <span class="pill warn">load-bearing</span></h3>
+  <p>In the new trap handler (or the routine's <code>switch</code>):</p>
+  <ul>
+    <li><strong>Alias <code>SEND_POSSIBLE</code> (0102) → DEAD_NAME path.</strong> libdispatch passes 0102 at runtime
+    (its <code>event_config.h:246</code> fallback to DEAD_NAME does <em>not</em> fire on NextBSD because
+    <code>notify.h</code> already defines 0102). Apple semantics: a send-possible request implicitly arms immediate
+    dead-name. <em>Alternative:</em> force the <code>event_config.h</code> fallback so libdispatch passes 0110 — smaller
+    kernel change, but a userland-header fix to confirm.</li>
+    <li><strong>Return <code>KERN_SUCCESS</code> for any msgid not serviced</strong> (instead of the routine's
+    <code>KERN_INVALID_VALUE</code>). Otherwise Libnotify (<span class="filename">notifyd/notify_proc.c:79</span>,
+    <code>NOTIFY_INTERNAL_CRASH</code> on 0102), firehose, and launchd regress — they crash on a non-success return
+    today's no-op never gives them.</li>
+  </ul>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">4</span>Verify launchd's demux before general delivery <span class="pill warn">boot-safety gate</span></h3>
+  <p>launchd's <code>core.c</code> isn't in the available trees, so its receive-loop handling of a now-<em>firing</em>
+  notification is unconfirmed. Before enabling real delivery broadly, confirm <code>jobmgr_demux</code> handles the
+  <code>MACH_NOTIFY_*</code> message launchd will start receiving — or gate so launchd's port arms succeed without
+  firing (identical to today). This is the one step that re-touches the boot path that #344 panicked on.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">5</span>Validate <span class="pill info">CI + box</span></h3>
+  <ul>
+    <li>Boot: full ISO build + iso-test must pass (the #344 panic gate).</li>
+    <li>Leak: on the live box, <code>procstat -f $(pgrep hostnamed) | wc -l</code> must go <em>flat</em> over 5–10 min
+    idle (was ~0.45 fd/s). Optionally <code>MACH_DEBUG_WRAP=1</code> to confirm <code>EV_DELETE</code> now fires.</li>
+    <li>No regression: Libnotify / configd / mDNSResponder stay up; launchd boots clean.</li>
+  </ul>
+</div>
+
+<h2 id="risks">Caveats &amp; risks</h2>
+
+<div class="risk"><strong>Caveat 1 — msgid mismatch (load-bearing).</strong> libdispatch requests <code>SEND_POSSIBLE</code> (0102),
+which the kernel routine rejects with <code>KERN_INVALID_VALUE</code>. The fix must alias 0102 → DEAD_NAME (or fix the
+libdispatch header). Get this wrong and the leak is <em>not</em> fixed even with the trap wired.</div>
+
+<div class="risk"><strong>Caveat 2 — don't regress crash-on-error callers.</strong> The handler must preserve the no-op's
+<code>KERN_SUCCESS</code> for unserviced msgids. Libnotify/launchd/firehose treat a non-success return as fatal — this
+is the exact class of bug that panicked the kernel in PR #344.</div>
+
+<div class="risk"><strong>Risk — headers not in the overlay.</strong> <code>ipc_port.h</code> / <code>ipc_right.h</code>
+(struct <code>ipc_port</code>, <code>ipc_entry.ie_request</code>, the <code>ipc_right_dnrequest</code> prototype) live in
+the base FreeBSD <code>sys/mach</code> tree, not the overlay clone — so struct widths and the prototype visibility for
+step 2 must be confirmed against the full kernel source.</div>
+
+<div class="risk"><strong>Risk — SMP locking.</strong> This is an SMP FreeBSD host kernel, not UP Mach.
+<code>ipc_right_dnrequest</code>'s <code>dngrow</code>-retry loop drops and re-takes the space write lock
+(<span class="filename">ipc_right.c:306–315</span>); the lock-ordering assumptions must hold under FreeBSD's locking
+regime, and the dead-name soright must actually deliver via <code>ipc_mqueue_send_always</code> into libdispatch's notify port.</div>
+
+<div class="open-q"><strong>Open question — confirm which <code>notify.h</code> libdispatch compiles against.</strong>
+If libdispatch's build actually excludes the NextBSD <code>notify.h</code> and the <code>event_config.h:246</code>
+DEAD_NAME fallback <em>does</em> fire, then it passes 0110 already and Caveat 1's aliasing is unnecessary — making the
+kernel change even smaller. Verify before choosing Step 3 Option A vs B.</div>
+
+<h2 id="verdict">Effort &amp; verdict</h2>
+<table>
+  <tr><th>Item</th><th>Effort</th><th>Notes</th></tr>
+  <tr><td>Expose syscall trap (step 1)</td><td><span class="pill ok">S</span></td><td>~55 lines, 2–3 files, fully pattern-matched</td></tr>
+  <tr><td>Fix DEAD_NAME arming (step 2)</td><td><span class="pill ok">S</span></td><td>redirect one switch case to existing routine + prototype</td></tr>
+  <tr><td>msgid alias + no-op safety (step 3)</td><td><span class="pill ok">S</span></td><td>a few lines; correctness-critical</td></tr>
+  <tr><td>launchd demux verification (step 4)</td><td><span class="pill warn">M</span></td><td>source not yet in hand; the boot-safety unknown</td></tr>
+  <tr><td>SEND_POSSIBLE proper</td><td><span class="pill info">deferred</span></td><td>not required for the leak fix</td></tr>
+</table>
+
+<p class="verdict maybe" style="font-size:1.1rem;">Verdict: VIABLE — small kernel change, no new IPC subsystem.
+The machinery exists; the work is wiring it up correctly and proving boot-safety.</p>
+
+<p>Recommended sequencing: <strong>Phase A</strong> = steps 1–3 behind the existing boot-safe userland auto-upgrade
+(libmach already calls the trap the moment it appears), with step 4's launchd verification done first or the arm gated.
+<strong>Phase B</strong> (optional) = real <code>SEND_POSSIBLE</code> if a future consumer needs it.</p>
+
+<hr>
+<p class="footnote">Generated from a 3-agent source study of the NextBSD kernel COMPAT_MACH overlay and the libdispatch/libmach/Libnotify/configd userland. File:line citations are against
+<span class="filename">nextbsd-redux/nextbsd-kernel</span> (main) and <span class="filename">nextbsd-redux/nextbsd</span> (main). Tracks <a href="https://github.com/nextbsd-redux/nextbsd/issues/347">nextbsd#347</a>.</p>
+
+</body>
+</html>

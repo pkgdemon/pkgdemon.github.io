@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gershwin installer backends — Linux fix, NextBSD backend, FreeBSD reorg</title>
+<style>
+  :root {
+    --bg: #fbfbf8; --fg: #1a1a1a; --muted: #555; --accent: #b03000; --accent2: #0a4d68;
+    --ok: #1f7a1f; --warn: #b06800; --bad: #b00020; --code-bg: #f0ece4; --rule: #d6cfc0; --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px; overflow-x: auto;
+        font-size: .82rem; line-height: 1.45; border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  a { color: var(--accent2); } a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle; font-weight: 600; letter-spacing: .02em; }
+  .pill.ok { background: #d8efd8; color: var(--ok); } .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad { background: #f5d0d6; color: var(--bad); } .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .9rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; } tr:nth-child(even) td { background: #faf6ed; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem; padding: .75rem 1.5rem;
+         border-bottom: 1px solid var(--rule); font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3;
+         white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .shots { display: flex; flex-wrap: wrap; gap: 1.25rem; margin: 1.25rem 0 1.5rem; }
+  .shots figure { margin: 0; flex: 1 1 320px; }
+  .shots img { width: 100%; height: auto; border: 1px solid var(--rule); border-radius: 6px; background: #fff; display: block; }
+  .shots figcaption { font-size: .85rem; color: var(--muted); margin-top: .4rem; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="index.html">&larr; Home</a>
+  <a href="#tldr">Status</a>
+  <a href="#methods">Two methods</a>
+  <a href="#contract">Contract</a>
+  <a href="#linux">Why Linux fails</a>
+  <a href="#freebsd">FreeBSD</a>
+  <a href="#nextbsd">NextBSD</a>
+  <a href="#reorg">Reorg</a>
+  <a href="#identity">Identity</a>
+  <a href="#phases">Phases</a>
+</nav>
+
+<h1>Gershwin installer backends <span class="pill warn">Plan ready</span></h1>
+<p class="subtitle">Fix the Linux backend (both install methods are broken), add a first-class NextBSD backend, and pull the FreeBSD backend out of the <code>/System/Library/Scripts</code> junk drawer into a properly-named, dispatcher-driven layout. For <code>gershwin-desktop/gershwin-components</code> &rarr; <code>Assistants/InstallationAssistant</code>.</p>
+
+<div class="tldr">
+<h3>TL;DR</h3>
+<p>The InstallationAssistant offers two methods &mdash; <strong>Clone running system to disk</strong> and <strong>Image based installation (from external media)</strong>. On Linux <em>both</em> fail; on FreeBSD they mostly work. The two "methods" are really one pipeline (partition &rarr; format &rarr; rsync &rarr; bootloader &rarr; fstab) that differs by a single variable: the rsync <em>source</em> (<code>/</code> for clone, the detected media for image).</p>
+<p><strong>Linux is broken for three reasons:</strong> (1) the deployed <code>installer-linux.sh</code> drifted from source and lost its <code>--check-image-source</code> handler, so the GUI never even offers the image radio; (2) image detection only matches <code>iso9660</code>, missing Debian's <code>/run/live/medium</code>; (3) the clone path installs the bootloader via <code>chroot grub-install</code>/<code>update-grub</code>, which needs grub + initramfs <em>inside the copied tree</em> &mdash; absent when cloning a live/squashfs system &mdash; and it overwrites <code>/etc/fstab</code>. FreeBSD works because it installs the loader by <strong>copying <code>loader.efi</code> + <code>efibootmgr</code></strong> (no target tooling, no chroot).</p>
+<p><strong>NextBSD has a latent bug:</strong> the ostype rebrand flips <code>uname -s</code>/<code>kern.ostype</code> to <code>NextBSD</code>, so the current boolean <code>IAIsFreeBSD()</code> misclassifies it as <em>Linux</em> and would run the broken Linux backend. It needs its own backend (launchd, label-based UFS root <code>ROOTFS</code>, <code>kextd</code> autoload, hostname via configd/hostnamed &mdash; never <code>rc.conf</code>).</p>
+<p><strong>Plan:</strong> a thin dispatcher + per-OS modules with proper names, an explicit <code>--method</code> flag, a 3-way platform resolver, a home outside <code>/System/Library/Scripts</code>, and a shared first-boot identity reset (machine-id, SSH host keys, stable fstab). All in <code>gershwin-components</code>; no GUI redesign.</p>
+</div>
+
+<h2 id="symptom">1. Symptom &amp; scope</h2>
+<div class="shots">
+  <figure>
+    <img src="screenshots/installer-assistant-installation-type.png" alt="Gershwin InstallationAssistant showing the two installation methods">
+    <figcaption>The <strong>Installation Type</strong> step: <em>Clone running system to disk</em> and <em>Image based installation (from external media)</em> (source detected: <code>/run/live/medium</code>). Captured on Debian. On Linux neither method produces a bootable install; on FreeBSD they mostly work.</figcaption>
+  </figure>
+</div>
+<p>Flow: Welcome &rarr; License &rarr; Installation Type &rarr; Select Destination &rarr; Confirmation &rarr; Installing &rarr; Finished. We want <strong>both</strong> methods working on <strong>Linux, FreeBSD, and NextBSD</strong>, with the backends organized and named sanely.</p>
+
+<h2 id="methods">2. What the two methods mean for an installed system</h2>
+<p>Mechanically the method is <em>one variable</em>: <code>SRC</code>. Both methods then run the identical partition/format/rsync/bootloader/fstab pipeline. There is no separate image extractor &mdash; the image is just a different rsync source dir.</p>
+<table>
+<tr><th>Method</th><th><code>SRC</code></th><th>What it produces</th></tr>
+<tr><td><strong>Clone running system</strong> (default; no <code>--source</code>)</td><td><code>/</code> (the live root)</td><td>Copies the live system's <em>flattened union view</em> (squashfs/uzip + tmpfs overlay merged). Captures in-session changes (pkgs installed live) &mdash; but also drags in live cruft and stale runtime state unless excluded/reset.</td></tr>
+<tr><td><strong>Image based</strong> (<code>--source &lt;path&gt;</code>)</td><td>detected media</td><td>On Linux: loop-mounts the <code>.squashfs</code> inside the medium and copies the <em>pristine</em> rootfs (explicit flatten). On FreeBSD: copies the <code>da0</code> mountpoint as-is. Cleaner identity (no live drift), but ships fixed SSH keys / machine-id unless reset.</td></tr>
+</table>
+<p>The deep correctness consequences (duplicate host keys, stale <code>/var/run</code>, fstab targets, flattening the live overlay) are in <a href="#identity">&sect;8 Identity &amp; correctness</a>. This builds on the union-flatten analysis in <a href="gershwin-livecd-unionfs-plan.html">the live-ISO unionfs plan</a> and the future <code>Copier.framework</code> in <a href="gershwin-native-installer-backend-plan.html">the native installer-backend plan</a>.</p>
+
+<h2 id="contract">3. How it works today: the GUI&harr;backend contract</h2>
+<p>The GUI (<code>InstallationSteps.m</code>) selects a backend script and drives it via <code>NSTask</code>. The contract has three modes and a stdout line-protocol:</p>
+<table>
+<tr><th>Mode</th><th>Invocation</th><th>Returns</th></tr>
+<tr><td>Probe</td><td><code>script --check-image-source</code> (<code>InstallationSteps.m:85-87</code>)</td><td>one line <code>IMAGE_SOURCE:&lt;path&gt;</code> (empty = none). Gates the image radio.</td></tr>
+<tr><td>Enumerate</td><td><code>script --list-disks --debug</code> (<code>:646-647</code>)</td><td>JSON array of <code>{devicePath,name,description,sizeBytes,formattedSize}</code></td></tr>
+<tr><td>Install</td><td><code>[sudo] script --noninteractive --disk &lt;dev&gt; --debug [--source &lt;path&gt;]</code> (<code>:1094-1113</code>)</td><td>progress lines; exit code = success</td></tr>
+</table>
+<ul>
+  <li><strong>Backend selection</strong> is <code>IAInstallerScriptPath()</code> (<code>:60-74</code>) driven by the boolean <code>IAIsFreeBSD()</code> (<code>:23-55</code>): FreeBSD &rarr; <code>installer-FreeBSD</code>, else <code>installer-Linux</code>. Resolved from the <strong>app bundle Resources</strong>, not <code>/System/Library/Scripts</code>.</li>
+  <li><strong>Method is implicit:</strong> Clone = no <code>--source</code>; Image = <code>--source &lt;path&gt;</code>. There is no <code>--method</code> flag (<code>installer-FreeBSD.sh:177-178</code>: <code>SRC="$ARG_SOURCE"</code> else <code>SRC="/"</code>).</li>
+  <li><strong>Progress protocol:</strong> backend emits <code>PROGRESS:phase:percent:message</code> (<code>installer-FreeBSD.sh:36-38</code>), parsed at <code>InstallationSteps.m:1209-1243</code>. <strong>Errors:</strong> exit code only (<code>:1257-1294</code>) &mdash; no structured <code>ERROR:</code> contract.</li>
+</ul>
+
+<h2 id="linux">4. Why both Linux methods fail</h2>
+<h3>4a. Image method is dead before it starts</h3>
+<ul>
+  <li>The <strong>deployed</strong> <code>/System/Library/Scripts/installer-linux.sh</code> diverged from source and <strong>deleted the <code>--check-image-source</code> handler</strong> (source has it at <code>installer-Linux.sh:41-53</code>; deployed arg-parser <code>/tmp/gersh_installer-linux.sh:19-28</code> has no such case). So <code>--check-image-source</code> falls into the catch-all, hits the root guard, prints "must be run as root", exits 1 &mdash; <strong>no <code>IMAGE_SOURCE:</code> line</strong>. <code>IACheckImageSourceAvailable</code> (<code>InstallationSteps.m:87</code>) gets nothing &rarr; the Installation Type step is never added (<code>InstallationAssistant.m:241</code>) &rarr; the image radio is unreachable.</li>
+  <li>Even in source, detection only matches <code>mount … type iso9660</code> (<code>installer-Linux.sh:44</code>), so Debian live media at <code>/run/live/medium</code> (overlay/vfat) is never detected; if forced, the script rsyncs the <em>raw medium</em> instead of the squashfs root.</li>
+</ul>
+<h3>4b. Clone method can't produce a bootable disk</h3>
+<ul>
+  <li><strong>Bootloader via chroot needs target-side tooling.</strong> <code>chroot $MNT grub-install …</code> + <code>update-grub</code> (<code>installer-Linux.sh:463,482,490</code>) require grub packages + a working initramfs <em>inside the copied tree</em> &mdash; absent when cloning a live/squashfs system, so under <code>set -e</code> the install aborts or yields an unbootable disk.</li>
+  <li><strong>fstab overwritten, not generated correctly</strong> (<code>:501</code>, <code>&gt;</code>) &mdash; drops swap / separate <code>/home</code> / bind mounts the source had.</li>
+  <li><strong>Fragile <code>set -e</code> + piped rsync</strong> (<code>:11,:426</code>) aborts on the first vanished file (common when cloning a live <code>/</code>); many tools (<code>mkfs.vfat</code>, <code>parted</code>, <code>blkid</code>, <code>grub*</code>) are unchecked.</li>
+</ul>
+<div class="resolved"><strong>Why FreeBSD works:</strong> it installs the loader by copying <code>/boot/loader.efi</code> &rarr; <code>BOOTX64.EFI</code> + <code>efibootmgr -c</code> (<code>installer-FreeBSD.sh:457-478</code>), or <code>gpart bootcode</code> for BIOS &mdash; no chroot, no target-side packages &mdash; and writes a fresh complete fstab. It succeeds against a blank formatted root.</div>
+
+<h2 id="freebsd">5. The FreeBSD backend (works) &amp; the installed system</h2>
+<p>Pipeline: <code>gpart</code> GPT layout (<code>efi</code> 512M FAT32 + <code>freebsd-ufs</code>, or <code>freebsd-boot</code> 512k + ufs for BIOS) &rarr; <code>newfs -U</code> &rarr; rsync from <code>SRC</code> &rarr; copy loader + <code>efibootmgr</code> &rarr; write <code>loader.conf</code> (<code>vfs.root.mountfrom</code>) and fstab (<code>installer-FreeBSD.sh:362-502</code>). The deployed copy adds a Directory-Services identity reset for clone installs: wipe <code>/Local</code>, <code>chroot dscli init</code> (creates <code>admin</code>/<code>admin</code>), restart <code>dshelper</code> (<code>/tmp/gersh_installer.sh:430-440</code>).</p>
+<p><strong>Known trap:</strong> FreeBSD writes <strong>device-path</strong> fstab (<code>/dev/da1p2</code>, <code>:486</code>) not UUID/label &mdash; if disk enumeration shifts at boot, root can fail to mount. (Linux correctly uses <code>blkid</code> UUIDs.)</p>
+
+<h2 id="nextbsd">6. NextBSD backend</h2>
+<p>NextBSD is FreeBSD-derived, so the FreeBSD backend is the starting point &mdash; but an installed NextBSD differs in ways the FreeBSD path doesn't handle. From the live system's boot config and overlays:</p>
+<table>
+<tr><th>Concern</th><th>FreeBSD backend does</th><th>NextBSD requires</th></tr>
+<tr><td>Platform detection</td><td><code>IAIsFreeBSD()</code> boolean</td><td><span class="pill bad">latent bug</span> rebranded <code>kern.ostype=NextBSD</code> &rarr; classified as <em>Linux</em>. Needs 3-way resolver, NextBSD first.</td></tr>
+<tr><td>init / services</td><td><code>rc.conf</code>, <code>service</code>, <code>sysrc</code></td><td><code>INIT_PATH=/sbin/launchd</code>; <strong>launchd-only</strong>, no <code>rc.conf</code>. Service enablement = LaunchDaemons under <code>/System/Library/LaunchDaemons</code>.</td></tr>
+<tr><td>root device / fstab</td><td>device-path <code>/dev/da1p2</code></td><td><code>ROOTDEVNAME="ufs:/dev/ufs/ROOTFS"</code> &mdash; plain UFS root <strong>labeled <code>ROOTFS</code></strong>; <strong>label-based fstab</strong> (stable across enumeration).</td></tr>
+<tr><td>kernel modules</td><td>n/a</td><td><code>kextd</code> autoload from <code>/System/Library/Extensions</code> &mdash; ensure the dir + any boot kexts land and autoload is wired.</td></tr>
+<tr><td>hostname / identity</td><td><code>sysrc hostname=</code> / <code>/etc/rc.conf</code></td><td>hostname published to <strong>SCDynamicStore (configd) / hostnamed</strong> &mdash; <strong>no file/sysrc path</strong>. Post-install must set it the NextBSD-native way.</td></tr>
+<tr><td>loader.conf</td><td>vanilla FreeBSD knobs</td><td>NextBSD <code>INIT_PATH</code>/<code>ROOTDEVNAME</code> knobs; verify against the rebranded kernel.</td></tr>
+</table>
+<div class="resolved"><strong>Reuse vs fork:</strong> a NextBSD module should <em>reuse</em> the FreeBSD core (gpart/newfs/loader copy/efibootmgr) and <em>override</em> the post-install hooks (fstab by label, launchd service enablement, kextd dir, configd/hostnamed identity, loader.conf knobs). That argues for the dispatcher + per-OS modules design in &sect;7 rather than a third monolith.</div>
+
+<h2 id="reorg">7. Reorganization: naming, placement, selection</h2>
+<h3>7a. Stop the <code>/System/Library/Scripts</code> drift</h3>
+<p>The GNUmakefile installs the scripts <strong>into the app bundle</strong> (<code>InstallationAssistant.app/Resources/</code>, <code>GNUmakefile:12-16</code>), which is what the GUI loads. The flat <code>installer.sh</code>/<code>installer-linux.sh</code> in <code>/System/Library/Scripts</code> (next to <code>Gershwin.sh</code>, <code>LoginWindow.sh</code>, <code>doit</code>) are an <strong>unmanaged, renamed, stale</strong> manual copy. Drop that copy and the rename.</p>
+<h3>7b. Dispatcher + per-OS modules</h3>
+<div class="ascii-diagram">install-backend.sh            # dispatcher: owns the contract (flags, PROGRESS:/IMAGE_SOURCE:/JSON, exit codes)
+install-backend-common.sh     # report_progress, JSON emit, fstab/identity helpers
+modules/freebsd.sh            # os_list_disks / os_check_image_source / os_install_clone / os_install_image
+modules/linux.sh
+modules/nextbsd.sh            # reuses freebsd core, overrides post-install hooks</div>
+<p>Today all three scripts duplicate the arg parser, <code>report_progress</code>, <code>--list-disks</code> JSON and <code>--check-image-source</code> &mdash; which is exactly how the deployed copy drifted and lost a flag. A dispatcher owning the contract makes drift impossible and lets NextBSD be a thin override of FreeBSD.</p>
+<h3>7c. Better names &amp; home</h3>
+<ul>
+  <li>Names: <code>install-backend-{freebsd,linux,nextbsd}.sh</code> (lowercase, deterministic from a platform token) &mdash; no more <code>FreeBSD</code>&harr;<code>installer.sh</code> casing mismatch.</li>
+  <li>Home: keep in the <strong>app bundle Resources</strong> (build-managed, no drift). If a system path is needed, use an Apple-style location like <code>/System/Library/Gershwin/InstallationAssistant/</code> or <code>/usr/libexec/gershwin/installer/</code> &mdash; <em>not</em> the <code>Scripts</code> session bucket. (No rc.d / launchd boot job &mdash; the backend is a one-shot <code>NSTask</code>.)</li>
+</ul>
+<h3>7d. 3-way platform resolver + explicit method</h3>
+<ul>
+  <li>Replace boolean <code>IAIsFreeBSD()</code> with <code>IAPlatformToken()</code> &rarr; <code>@"nextbsd"</code> / <code>@"freebsd"</code> / <code>@"linux"</code>, checking <code>kern.ostype == NextBSD</code> (or a <code>/System</code> marker) <strong>first</strong>. Then <code>pathForResource:[NSString stringWithFormat:@"install-backend-%@", token]</code>. <em>This fixes the latent NextBSD-as-Linux misclassification &mdash; a real runtime bug, not cosmetics.</em></li>
+  <li>Add an explicit <code>--method clone|image</code> flag (one-line addition at <code>InstallationSteps.m:1109</code>; the GUI already knows the method from <code>IAInstallTypeStep</code>) so the contract no longer overloads "<code>--source</code> present" as the method signal.</li>
+</ul>
+
+<h2 id="identity">8. Identity &amp; correctness (shared, all OSes)</h2>
+<p>The biggest cross-cutting gap: installs don't reset machine identity. Both methods need a shared first-boot/post-install reset:</p>
+<ul>
+  <li><strong>Regenerate per-host secrets:</strong> <code>/etc/machine-id</code>, SSH host keys (<code>/etc/ssh/ssh_host_*</code>). Today Linux regenerates none &rarr; <strong>every install ships identical host keys + machine-id</strong> (MITM warnings, D-Bus/journald clashes). FreeBSD's deployed <code>dscli init</code> covers the DS user but not host keys.</li>
+  <li><strong>Stable fstab:</strong> FreeBSD uses fragile device paths; standardize on label/UUID (NextBSD: <code>/dev/ufs/ROOTFS</code> label; FreeBSD: gptid/label; Linux: <code>blkid</code> UUID).</li>
+  <li><strong>Don't clone the live cruft / medium:</strong> exclude the live medium by device, scrub stale <code>/var/run</code> pidfiles (the <code>dshelper.pid</code> &rarr; "admin can't log in" trap), and flatten the union deliberately (see the unionfs plan's <code>find -x | cpio</code> approach and the <code>tmpfs</code>-over-<code>/usr/local/sbin</code> dropped-binaries bug).</li>
+  <li><strong>Default method per OS:</strong> Linux &rarr; <strong>Image</strong> (pristine squashfs, explicit flatten); FreeBSD &rarr; <strong>Clone</strong> (captures the live session, with the DS reset); NextBSD &rarr; Clone-as-FreeBSD initially, with boot/identity overrides verified.</li>
+</ul>
+
+<h2 id="phases">9. Phased plan (PR-gated, all in <code>gershwin-components</code>)</h2>
+<div class="phase"><h3>Phase 1 &mdash; Stop the bleeding on Linux</h3><p>Restore <code>--check-image-source</code> in the Linux backend and broaden detection beyond <code>iso9660</code> (re-enables the image radio); replace chroot-grub with a dependency-checked bootloader step; merge/append fstab instead of overwriting; relax <code>set -e</code> around rsync. Gate: a Debian live image installs and boots via <em>both</em> methods.</p></div>
+<div class="phase"><h3>Phase 2 &mdash; Dispatcher + modules + names</h3><p>Refactor the three monoliths into <code>install-backend.sh</code> + <code>common</code> + <code>modules/{freebsd,linux}.sh</code>; rename per the scheme; delete the <code>/System/Library/Scripts</code> manual copies. GUI: <code>IAPlatformToken()</code> 3-way resolver + explicit <code>--method</code>. Gate: FreeBSD + Linux unchanged behavior through the new dispatcher.</p></div>
+<div class="phase"><h3>Phase 3 &mdash; NextBSD module</h3><p><code>modules/nextbsd.sh</code> reusing the FreeBSD core, overriding: label-based UFS root <code>ROOTFS</code> + label fstab, launchd service enablement, <code>kextd</code> Extensions dir, configd/hostnamed identity, NextBSD <code>loader.conf</code> knobs. Gate: NextBSD installs and boots to launchd on the <code>thinkpad-t460s</code> target.</p></div>
+<div class="phase"><h3>Phase 4 &mdash; Shared identity reset</h3><p>First-boot regeneration of machine-id + SSH host keys; medium-exclude + <code>/var/run</code> scrub in the clone path; per-OS default method. Gate: two installs from one image have distinct host keys/machine-id and both log in.</p></div>
+
+<h2 id="refs">10. References</h2>
+<ul>
+  <li>Companion: <a href="gershwin-native-installer-backend-plan.html">Gershwin native installer backend plan</a> (the future <code>Copier.framework</code> replacing the shell file-walker).</li>
+  <li>Companion: <a href="gershwin-livecd-unionfs-plan.html">Gershwin live-ISO unionfs plan</a> (union-flatten, the dropped-binaries / avahi-corruption traps).</li>
+  <li>Doctrine: launchd-native (no rc.d), Apple-style <code>/System</code> layout, configd/hostnamed identity.</li>
+  <li>Key files: <code>gershwin-components/Assistants/InstallationAssistant/InstallationSteps.m</code> (contract), <code>Resources/installer-{FreeBSD,Linux}.sh</code> (backends), <code>GNUmakefile</code> (deploy), <code>AssistantFramework/GSDiskUtilities.*</code>.</li>
+</ul>
+
+<hr style="margin-top: 3rem; border: none; border-top: 1px solid var(--rule);">
+<p style="color: var(--muted); font-size: .88rem; margin-top: 1rem;"><strong>Filed 2026-06-21.</strong> Root-caused from a 4-agent investigation (Linux failure analysis, FreeBSD/NextBSD backend mechanics, GUI&harr;backend contract + organization, install-method semantics) plus live capture of the InstallationAssistant on Debian. Target repo: <code>gershwin-desktop/gershwin-components</code> (<code>Assistants/InstallationAssistant</code>, branch <code>feat/nextbsd</code>).</p>
+
+</body>
+</html>

@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD — drop CI caching &amp; purge caches</title>
+<style>
+  :root {
+    --bg: #fbfbf8; --fg: #1a1a1a; --muted: #555; --accent: #b03000; --accent2: #0a4d68;
+    --ok: #1f7a1f; --warn: #b06800; --bad: #b00020; --code-bg: #f0ece4; --rule: #d6cfc0; --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px; overflow-x: auto;
+        font-size: .82rem; line-height: 1.45; border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  a { color: var(--accent2); } a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle; font-weight: 600; letter-spacing: .02em; }
+  .pill.ok { background: #d8efd8; color: var(--ok); } .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad { background: #f5d0d6; color: var(--bad); } .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .9rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; } tr:nth-child(even) td { background: #faf6ed; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem; padding: .75rem 1.5rem;
+         border-bottom: 1px solid var(--rule); font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .warnbox { background: #fbeede; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="index.html">&larr; Home</a>
+  <a href="#tldr">Status</a>
+  <a href="#truth">Two truths</a>
+  <a href="#inventory">Cache inventory</a>
+  <a href="#drop">Drop recipe</a>
+  <a href="#purge">Purge</a>
+  <a href="#version">Version fix</a>
+  <a href="#order">Order</a>
+</nav>
+
+<h1>NextBSD &mdash; drop CI caching &amp; purge caches <span class="pill warn">Plan ready</span></h1>
+<p class="subtitle">Remove every caching layer from the <code>nextbsd-redux</code> build chain and purge the stored caches &mdash; via direct commits, in build-chain order. Plus the correction that matters: <strong>this alone does not fix the &ldquo;<code>freebsd-version</code> stuck at 15.0&rdquo; symptom</strong> &mdash; that is a version-pin / stale-image issue, not a cache-replay one.</p>
+
+<div class="tldr">
+<h3>TL;DR</h3>
+<p>Three cache mechanisms span the chain: <strong>ccache</strong> (<code>actions/cache</code> of <code>.ccache</code>) in <code>nextbsd-kernel</code>, <code>nextbsd-freebsd-compat</code>, <code>nextbsd-kernel-modules</code>; a <strong>distfiles</strong> cache in <code>nextbsd</code>; and a <strong>Docker BuildKit GHA layer cache</strong> in <code>nextbsd-kernel-toolchain</code>. Dropping them is mechanical &mdash; <em>except</em> the ccache repos wire the cache into the build via <code>--cross-bindir=${CCACHE_CROSS_BINDIR}</code>, so each <code>make.py</code> call must be <strong>repointed to <code>${CROSS_BINDIR}</code></strong> (the real Clang 19), not just have its cache step deleted.</p>
+<p><strong>Premise correction:</strong> the 15.0 stickiness was <em>not</em> a ccache replay. The kernel sets <code>RELEASE=$(date&nbsp;-u)</code> (a timestamp) and leaves <code>REVISION</code> stock at 15.0 <em>by design</em>; <code>vers.c</code> changes every build, so ccache always misses on it. The real 15.0 came from a <strong>stale baked toolchain image</strong> plus genuine version pins (<code>nextbsd-kernel-modules</code> on <code>releng/15.0</code>, <code>nextbsd/build.sh</code> default <code>15.0</code>). Purging Actions caches does not touch the GHCR toolchain image or those pins.</p>
+<p><strong>Do both, but know what each buys:</strong> dropping cache = determinism + removes a future stale-state foot-gun (worth doing). Fixing <code>freebsd-version</code> = rebuild/refresh the toolchain image + the 15.1 base bump (tracked with the <a href="nextbsd-drm612-upgrade-plan.html">drm-kmod 6.12 / FreeBSD 15.1</a> work).</p>
+</div>
+
+<h2 id="truth">1. Two truths to keep separate</h2>
+<table>
+<tr><th></th><th>Drop cache + purge <span class="pill info">requested</span></th><th>Fix <code>freebsd-version</code> &rarr; 15.1 <span class="pill warn">separate</span></th></tr>
+<tr><td>What it is</td><td>Remove ccache / distfiles / BuildKit GHA cache; delete stored caches</td><td>Refresh the GHCR toolchain image; bump the real 15.0 version pins</td></tr>
+<tr><td>What it fixes</td><td>Non-determinism; stale-state surprises on future bumps; build hygiene</td><td>The actual reported-version stickiness</td></tr>
+<tr><td>Does the other one?</td><td><strong>No</strong> &mdash; cache purge cannot change a baked image tag or a <code>releng/15.0</code> pin</td><td>Independent of caching</td></tr>
+</table>
+<p>This plan covers the requested cache work in full (&sect;2&ndash;&sect;4) and documents the version fix (&sect;5) so the two are not conflated again.</p>
+
+<h2 id="inventory">2. Cache inventory (nextbsd-redux)</h2>
+<table>
+<tr><th>Repo</th><th>Cache</th><th>Mechanism</th></tr>
+<tr><td><code>nextbsd-kernel</code></td><td>ccache</td><td><code>actions/cache@v4</code> of <code>.ccache</code>, key <code>ccache-kernel-${target}-${run_id}</code> + prefix <code>restore-keys</code></td></tr>
+<tr><td><code>nextbsd-freebsd-compat</code></td><td>ccache</td><td>same, <code>ccache-base-${target}-…</code> (8 GiB)</td></tr>
+<tr><td><code>nextbsd-kernel-modules</code></td><td>ccache</td><td>same, <code>ccache-modules-${target}-…</code></td></tr>
+<tr><td><code>nextbsd</code></td><td>distfiles</td><td><code>actions/cache@v4</code> of <code>distfiles</code>, key on <code>hashFiles(pkglist.txt,…)</code> (<code>build.yml:117-121</code>)</td></tr>
+<tr><td><code>nextbsd-kernel-toolchain</code></td><td>BuildKit layer</td><td>Docker <code>cache-from/cache-to: type=gha</code> (<code>build-toolchain.yml:95-96</code>); also publishes the GHCR image downstream pulls</td></tr>
+</table>
+<p><code>freebsd-src</code> (publish-only) and <code>nextbsd-redux.github.io</code> cache nothing &mdash; out of scope. The local <code>nextbsd-ci/</code> directory is a stale, non-git scratch copy (pinned <code>releng/15.0</code>); it is <strong>not</strong> a repo and not in scope.</p>
+
+<h2 id="drop">3. Drop recipe (per repo)</h2>
+
+<h3>3a. ccache repos &mdash; delete steps <em>and</em> repoint the compiler</h3>
+<div class="warnbox"><strong>Load-bearing:</strong> every <code>tools/build/make.py</code> call passes <code>--cross-bindir="${CCACHE_CROSS_BINDIR}"</code> (<code>/opt/ccache-cross</code>, a wrapper dir baked in the toolchain image). Deleting only the cache step leaves the flag pointing at the wrapper. Repoint each call to <code>--cross-bindir="${CROSS_BINDIR}"</code> (<code>/usr/lib/llvm-19/bin</code>, the real Clang 19 the wrapper mirrors &mdash; and exactly what the Dockerfile builds the toolchain with). Do <em>not</em> drop the flag: <code>make.py</code> would then build its own LLVM from source.</div>
+<p>In each repo: remove the job-level <code>env: CCACHE_DIR</code>, the <code>Restore ccache</code> step, the <code>ccache reset counters</code> step, and the <code>ccache stats</code> step; then repoint every <code>--cross-bindir</code>:</p>
+<table>
+<tr><th>Repo</th><th>Delete</th><th>Repoint <code>--cross-bindir</code> (CCACHE_CROSS_BINDIR &rarr; CROSS_BINDIR)</th></tr>
+<tr><td><code>nextbsd-kernel</code></td><td>env <code>CCACHE_DIR</code> (l.21); Restore (l.42-48); reset (l.50-54); stats (l.227-228)</td><td>lines <strong>112</strong>, <strong>220</strong></td></tr>
+<tr><td><code>nextbsd-freebsd-compat</code></td><td>env (l.27); Restore (l.44-50); reset (l.52-56); stats (l.70-71)</td><td>lines <strong>63</strong>, <strong>66</strong>, <strong>182</strong></td></tr>
+<tr><td><code>nextbsd-kernel-modules</code></td><td>env (l.34); Restore (l.66-72); reset (l.74-78); stats (l.106-107)</td><td>lines <strong>99</strong>, <strong>230</strong> (the <code>drm-kmod</code> job has no ccache steps &mdash; only the l.230 repoint)</td></tr>
+</table>
+
+<h3>3b. <code>nextbsd</code> &mdash; distfiles cache</h3>
+<p>Delete the single step at <code>build.yml:117-121</code> (the only <code>actions/cache</code> in the file). distfiles then re-fetch from the pkg mirrors inside the VM each run &mdash; a modest, network-bound cost well under the 120-min timeout. Nothing else references the <code>distfiles</code> path.</p>
+
+<h3>3c. <code>nextbsd-kernel-toolchain</code> &mdash; BuildKit GHA layer cache</h3>
+<p>Remove <code>cache-from: type=gha,…</code> and <code>cache-to: type=gha,mode=max,…</code> at <code>build-toolchain.yml:95-96</code> so every image build is from scratch off current <code>releng/15.1</code> <code>freebsd-src</code>. (Optional follow-up: drop the now-unused <code>/opt/ccache-cross</code> build block + <code>CCACHE_CROSS_BINDIR</code> ENV from <code>Dockerfile.{amd64,arm64}</code> once the workflows stop referencing it.)</p>
+
+<h2 id="purge">4. Purge the stored caches</h2>
+<p><code>gh</code> v2.91 has built-in <code>gh cache delete --all</code>. Caches observed live (read-only):</p>
+<pre class="shell"><code># nextbsd:                 freebsd-15.1-2.2.1-amd64-v2, distfiles-15.1-RELEASE-amd64-&lt;hash&gt;
+# nextbsd-freebsd-compat:   ccache-base-{amd64,arm64}-&lt;run&gt;
+# nextbsd-kernel:           ccache-kernel-{amd64,arm64}-&lt;run&gt;
+# nextbsd-kernel-modules:   ccache-modules-{amd64,arm64}-&lt;run&gt;
+# nextbsd-kernel-toolchain: index-{amd64,arm64}-*, buildkit-blob-* (~2 GiB)
+
+for r in nextbsd nextbsd-freebsd-compat nextbsd-kernel nextbsd-kernel-modules nextbsd-kernel-toolchain; do
+  gh cache delete --all -R nextbsd-redux/$r --succeed-on-no-caches
+done</code></pre>
+<p>REST fallback: iterate <code>gh api /repos/nextbsd-redux/&lt;repo&gt;/actions/caches</code> then <code>gh api --method DELETE …/actions/caches?key=&lt;key&gt;</code>.</p>
+<div class="warnbox"><strong>GHCR image is not an Actions cache.</strong> The toolchain&rsquo;s <code>:&lt;arch&gt;-latest</code> / <code>:&lt;arch&gt;-fbsd-&lt;sha&gt;</code> GHCR tags are what downstream actually pulls; purging Actions caches does not refresh them. To get a clean toolchain: delete the BuildKit GHA cache (above), then re-run <code>build-toolchain.yml</code> (<code>workflow_dispatch</code>), or delete stale GHCR versions: <code>gh api --method DELETE /orgs/nextbsd-redux/packages/container/nextbsd-kernel-toolchain/versions/&lt;id&gt;</code> (needs <code>delete:packages</code> scope).</div>
+
+<h2 id="version">5. The actual <code>freebsd-version</code> fix (cache purge alone won&rsquo;t do it)</h2>
+<p>Root cause, verified in source:</p>
+<ul>
+  <li><strong>ccache is a red herring.</strong> The kernel rebrand sets <code>RELEASE=$(date -u +%Y%m%d-%H%M%S)</code> and leaves <code>REVISION</code> stock at 15.0 <em>by design</em> (<code>nextbsd-kernel/build.yml:64-95</code>: &ldquo;REVISION stays 15.0 so <code>__FreeBSD__</code> stays 15&rdquo;). <code>vers.c</code> changes every build &rarr; ccache always misses on it &rarr; it cannot pin the version.</li>
+  <li><strong>Stale baked toolchain image.</strong> The reported major comes from <code>/usr/src/sys/conf/newvers.sh</code> baked into the GHCR toolchain image. The repo is now on <code>releng/15.1</code>, but an old cached image (BuildKit layer or an un-refreshed GHCR tag) carries 15.0 source. &rarr; Fixed by &sect;3c + &sect;4 (rebuild/refresh the image).</li>
+  <li><strong>Genuine version pins (must be bumped, not cached):</strong> <code>nextbsd-kernel-modules/build.yml:28</code> <code>FREEBSD_BRANCH: releng/15.0</code> (+ <code>:530 release: '15.0'</code>, <code>:186</code> drm <code>6.6-lts</code>); <code>nextbsd/build.sh:15</code> <code>${FREEBSD_VERSION:=15.0}</code> (a bare manual <code>./build.sh</code> silently builds 15.0); stale comment <code>nextbsd/build.yml:17-18</code>.</li>
+</ul>
+<div class="resolved"><strong>By design, leave alone:</strong> kernel <code>REVISION=15.0</code> is intentional (protects <code>__FreeBSD__=15</code> and the compiler target triple). The 15.1 move for <code>nextbsd-kernel-modules</code> is gated on the <a href="nextbsd-drm612-upgrade-plan.html">drm-kmod 6.6&rarr;6.12 / FreeBSD 15.1</a> effort &mdash; bump <code>releng/15.0</code>&rarr;<code>15.1</code> there as part of that, not as cache work.</div>
+
+<h2 id="order">6. Execution &mdash; direct commits, build-chain order</h2>
+<div class="open-q"><strong>Note:</strong> this departs from the usual &ldquo;all NextBSD changes via PR&rdquo; flow &mdash; direct commits to <code>main</code> per request, to avoid PR round-trips. The one real risk is build-chain ordering: a push triggers that repo&rsquo;s build, which consumers ingest via the rolling <code>continuous</code> tag. Commit <strong>upstream&rarr;downstream</strong> so nothing rebuilds against a stale upstream.</p></div>
+<div class="phase"><h3>Order</h3>
+<ol>
+  <li><strong>nextbsd-kernel-toolchain</strong> &mdash; drop BuildKit GHA cache (&sect;3c); let the image rebuild on 15.1 (this is also the version-fix linchpin).</li>
+  <li><strong>nextbsd-kernel</strong> &mdash; drop ccache + repoint (&sect;3a).</li>
+  <li><strong>nextbsd-freebsd-compat</strong> &mdash; drop ccache + repoint (&sect;3a).</li>
+  <li><strong>nextbsd-kernel-modules</strong> &mdash; drop ccache + repoint (&sect;3a).</li>
+  <li><strong>nextbsd</strong> &mdash; drop distfiles cache (&sect;3b).</li>
+  <li><strong>Purge</strong> all five repos&rsquo; Actions caches (&sect;4); refresh the GHCR toolchain image.</li>
+</ol>
+<p>Each commit message should note &ldquo;drop CI cache (determinism); see plan&rdquo; and the <code>--cross-bindir</code> repoint where applicable. After the toolchain rebuilds green, the downstream builds pick up the fresh image with no cache to mask drift.</p>
+</div>
+
+<h2 id="refs">7. References</h2>
+<ul>
+  <li>Companion: <a href="nextbsd-drm612-upgrade-plan.html">drm-kmod 6.12 / FreeBSD 15.1 upgrade</a> (where the real <code>releng/15.0</code>&rarr;<code>15.1</code> base bump is tracked).</li>
+  <li>Key files: <code>nextbsd-{kernel,freebsd-compat,kernel-modules}/.github/workflows/build.yml</code> (ccache), <code>nextbsd/.github/workflows/build.yml</code> (distfiles) + <code>build.sh</code> (version default), <code>nextbsd-kernel-toolchain/.github/workflows/build-toolchain.yml</code> + <code>Dockerfile.{amd64,arm64}</code> (BuildKit cache + the <code>CROSS_BINDIR</code>/<code>CCACHE_CROSS_BINDIR</code> ENV).</li>
+</ul>
+
+<hr style="margin-top: 3rem; border: none; border-top: 1px solid var(--rule);">
+<p style="color: var(--muted); font-size: .88rem; margin-top: 1rem;"><strong>Filed 2026-06-21.</strong> From a 3-agent investigation of the <code>nextbsd-redux</code> build chain (ccache trio, distfiles, toolchain + purge + root-cause) with the contradictory root-cause claims resolved against the kernel rebrand source. Cache-drop is mechanical; the <code>freebsd-version</code> fix is the toolchain-image refresh + the separately-tracked 15.1 base bump.</p>
+
+</body>
+</html>

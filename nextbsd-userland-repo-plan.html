@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nextbsd-userland — cross-build repo split plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8; --fg: #1a1a1a; --muted: #555; --accent: #b03000; --accent2: #0a4d68;
+    --ok: #1f7a1f; --warn: #b06800; --bad: #b00020; --code-bg: #f0ece4; --rule: #d6cfc0; --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1000px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.13rem; margin: 1.6rem 0 .5rem; color: var(--accent2); }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px; overflow-x: auto;
+        font-size: .82rem; line-height: 1.45; border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  a { color: var(--accent2); } a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle; font-weight: 600; }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: 1.1rem 1.3rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .88rem; }
+  th, td { text-align: left; padding: .45rem .6rem; border: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; } tr:nth-child(even) td { background: #faf6ed; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem; padding: .75rem 1.5rem;
+         border-bottom: 1px solid var(--rule); font-size: .86rem; z-index: 10; }
+  .nav a { margin-right: .85rem; text-decoration: none; }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .8rem; line-height: 1.3;
+         white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .warnbox { background: #fbeede; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+<nav class="nav">
+  <a href="index.html">&larr; Home</a>
+  <a href="#tldr">Status</a>
+  <a href="#why">Why</a>
+  <a href="#feasibility">Feasibility</a>
+  <a href="#topology">Topology</a>
+  <a href="#harness">Harness</a>
+  <a href="#order">Build order</a>
+  <a href="#assembler">Assembler</a>
+  <a href="#rework">Rework</a>
+  <a href="#rollout">Rollout</a>
+</nav>
+
+<h1>nextbsd-userland &mdash; a cross-built Apple-userland repo <span class="pill warn">Plan ready</span></h1>
+<p class="subtitle">Split NextBSD's Apple-derived userland into its own repo that cross-compiles on a Linux host (like <code>nextbsd-freebsd-compat</code>), publishes a 4th rolling <code>continuous</code> artifact, drops the in-image build toolchain, and turns <code>nextbsd</code> into a thin ISO assembler.</p>
+
+<div class="tldr">
+<h3>TL;DR</h3>
+<p>Today <code>nextbsd</code> is a hybrid: it ingests 3 artifacts (compat base, kernel, kexts) but then runs <strong>~2,260 lines of in-<code>chroot</code> Apple-userland compilation</strong> using ports <code>cmake</code>/<code>ninja</code>/<code>llvm19</code>. The proposal moves all of that into a new <strong><code>nextbsd-userland</code></strong> repo that cross-builds on Linux with the toolchain image's clang (the same one compat/kernel/modules already use), so <code>nextbsd</code> becomes: <em>download 4 tarballs → layer → uzip → ISO → boot-test</em>.</p>
+<p><strong>Feasibility is better than expected.</strong> Two facts the agents corrected: (1) only <strong>2</strong> components are actually CMake (<code>libdispatch</code>, <code>swift-foundation-icu</code>) &mdash; <code>libCoreFoundation</code> already builds via <code>bsd.lib.mk</code>; (2) the other <strong>18+ components are FreeBSD <code>bsd.lib.mk</code>/<code>bsd.prog.mk</code> Makefiles</strong> with no hardcoded compiler/triple &mdash; dropped into <code>make.py … buildenv</code> they cross-compile with <strong>zero source changes</strong>. The image's <code>buildpkgs.txt</code> (<code>cmake</code>/<code>ninja</code>/<code>pkgconf</code>/<code>llvm19</code>) becomes empty; cmake just runs on the runner for the 2 holdouts.</p>
+<p><strong>The real work</strong> is harness-level, not source: relocate a couple of build-time <em>runs of cross binaries</em> (<code>test_corefoundation</code>, <code>kextdeps</code>) to the boot-test, replace ~26 in-<code>chroot</code> <code>ldd</code>/<code>ldconfig</code> checks with <code>readelf</code>, write 2 CMake cross-toolchain files, and stage the sysroot from compat's <code>continuous</code> base. <code>build.sh</code> shrinks from <strong>~3,245 → ~700 lines</strong>.</p>
+</div>
+
+<h2 id="why">1. Why do this</h2>
+<ul>
+  <li><strong>Kills the in-image build toolchain.</strong> No more <code>cmake</code>/<code>ninja</code>/<code>pkgconf</code>/<code>llvm19</code> baked into the image &mdash; the whole "ship build deps so it can build Gershwin in place" class (and the stale-build-deps bugs) goes away.</li>
+  <li><strong>Userland becomes a first-class artifact</strong> with its own CI, cache, and <code>continuous</code> release &mdash; exactly like kernel/compat/modules. Reproducible, independently testable, cross-built.</li>
+  <li><strong><code>nextbsd</code> becomes a pure assembler</strong> (~700 lines): ingest base + kernel + kexts + userland, layer, package, boot-test. Easy to reason about; fast.</li>
+  <li><strong>Cross-compile on Linux</strong> like FreeBSD does &mdash; no FreeBSD VM needed for the userland build, using the toolchain image clang already in CI.</li>
+</ul>
+
+<h2 id="feasibility">2. Feasibility (what the audit found)</h2>
+<div class="resolved"><strong>The two corrections that de-risk this:</strong>
+<ul>
+<li><strong>Only 2 CMake components:</strong> <code>libdispatch</code> and <code>swift-foundation-icu</code>. <code>libCoreFoundation</code> ships a vendored <code>CMakeLists.txt</code> but <code>build.sh</code> builds it through its <code>bsd.lib.mk</code> <code>Makefile</code> &mdash; already bmake.</li>
+<li><strong>The 18+ Makefile components are CC-agnostic <code>bsd.lib.mk</code>/<code>bsd.prog.mk</code></strong> (<code>LIB=</code>/<code>PROG=</code>/<code>SRCS=</code>/<code>LIBADD=</code>, inherit <code>${CC}</code>). In compat's <code>make.py … buildenv</code> they pick up the cross-clang for free. <strong>No source changes.</strong></li>
+</ul></div>
+<p>So "drop <code>cmake</code>/<code>ninja</code> from the image" is automatic the moment builds leave the image &mdash; the GitHub runner (Ubuntu 24.04) keeps <code>cmake</code>/<code>ninja</code> for the 2 holdouts, cross-compiling them with a toolchain file. The product ships neither.</p>
+
+<h2 id="topology">3. The build chain: 4 repos &rarr; 5</h2>
+<p>Insert <code>nextbsd-userland</code> after compat (it needs compat's base as a link sysroot), parallel to kernel/modules; it becomes the trigger of <code>nextbsd</code>:</p>
+<div class="ascii-diagram">  releng/15.x (freebsd-src)
+       │ push
+       ▼
+  nextbsd-kernel-toolchain  ──────────── builds the per-arch clang cross image
+       │ dispatch: toolchain-updated
+   ┌───┴────────────────────────┬───────────────────────┐
+   ▼                            ▼                         ▼
+ nextbsd-freebsd-compat   nextbsd-kernel          (toolchain image = shared dep)
+ (base continuous)        (kernel-obj continuous)
+   │                            │ dispatch: kernel-updated
+   │                            ▼
+   │                      nextbsd-kernel-modules (kexts continuous)
+   │
+   │ dispatch: base-updated   ◄── RE-POINTED from nextbsd to userland
+   ▼
+ nextbsd-userland  ◄── NEW. sysroot staged from compat continuous;
+ (Apple userland continuous)   cross-builds the Apple stack; parallel to kernel/modules
+   │
+   │ dispatch: userland-updated   ◄── NEW edge → nextbsd
+   ▼
+ nextbsd (ASSEMBLER) ── downloads 4 continuous tarballs (base + kernel + kexts + userland)
+                        → layer → rootfs → mkuzip → ISO → boot-test</div>
+<div class="open-q"><strong>Freshness:</strong> every consumer pulls upstreams from rolling <code>continuous</code> (not run-IDs), so <code>nextbsd</code> ingests whatever each <code>continuous</code> currently holds. Userland is the slowest leg (ICU/CF/launchd), so by the time it dispatches <code>nextbsd</code>, kernel+modules+base are virtually always already refreshed &mdash; the same eventual-consistency the chain tolerates today (modules already lag kernel). If strict 4-way join is ever needed, gate <code>nextbsd</code> on both <code>userland-updated</code> and <code>kernel-modules</code> with a <code>concurrency</code> group. Recommend eventual.</div>
+
+<h2 id="harness">4. nextbsd-userland cross-build harness</h2>
+<p>Mirror compat's <code>build.yml</code> exactly (per-arch toolchain-image container → restore ccache → <code>make.py --cross-bindir=$CROSS_BINDIR toolchain _includes</code> → curated build into <code>/stage</code> via <code>buildenv BUILDENV_SHELL</code> → raw-tar pack → publish job refreshes <code>continuous</code> + cascades). Three additions:</p>
+<ul>
+  <li><strong>Stage the sysroot from compat's <code>continuous</code> base</strong> — <code>gh release download continuous -R …/nextbsd-freebsd-compat --pattern nextbsd-base-&lt;arch&gt;.tar.gz</code>, extract into <code>$SYSROOT</code>. This is a <strong>hard</strong> dependency: userland can't link <code>libc</code>/<code>libsys</code>/headers without it.</li>
+  <li><strong>Host-tool prelude:</strong> build <code>migcom</code> for the <em>runner</em> (x86_64) before the cross buildenv — it must execute during the cross build (7 components run it on their <code>.defs</code>).</li>
+  <li><strong>Re-apply setuid</strong> after the unprivileged cross-install (METALOG records mode 4555 but the raw tar drops the bit): <code>chmod u+s</code> on <code>su</code>/<code>login</code>/<code>passwd</code> before tar, per the base-build METALOG convention.</li>
+</ul>
+<p>Artifact: <code>nextbsd-userland-&lt;arch&gt;.tar.gz</code> — a gzipped tar of <code>/stage</code> rooted at <code>/</code> (so <code>/usr/lib/system/*.so*</code>, <code>/bin</code>, <code>/sbin</code>, <code>/usr/sbin</code>, <code>/usr/lib/pam_*.so.6</code>, <code>/usr/include/*</code>, <code>/usr/tests/freebsd-launchd-mach/*</code>), METALOG and <code>/etc</code>+<code>/var</code> stripped (nextbsd owns config). <code>nextbsd</code> extracts it over the base, userland-over-base (Apple tools overwrite FreeBSD paths — the port-then-drop doctrine).</p>
+
+<h2 id="order">5. Build order (a real DAG)</h2>
+<table>
+<tr><th>Tier</th><th>Components (in order)</th><th>Notes</th></tr>
+<tr><td><strong>0 — host tool</strong></td><td><code>migcom</code> + <code>mig.sh</code></td><td>Built for the <em>runner</em> (not cross); arch-neutral codegen. Consumed by liblaunch, libdispatch, configd, SystemConfiguration, Libnotify, syslog, IPConfiguration.</td></tr>
+<tr><td><strong>1 — foundation libs</strong></td><td><code>libmach</code>→libsystem_kernel → <code>libdispatch</code> (cmake) → <code>libxpc</code> → <code>liblaunch</code> → <code>swift-foundation-icu</code> (cmake) → <code>libCoreFoundation</code></td><td>libmach installs <code>mach/*</code> headers into the sysroot first; dispatch needs migcom (HAVE_MACH); CF needs dispatch+icu+mach.</td></tr>
+<tr><td><strong>2 — daemons/services</strong></td><td><code>launchd</code>+<code>launchctl</code> → <code>configd</code> → <code>libSystemConfiguration</code> → <code>libIOKit</code>+<code>ioreg</code> → <code>kext_tools</code> → <code>Libnotify</code>+<code>notifyd</code> → <code>syslog</code> stack → <code>IPConfiguration</code> → <code>mDNSResponder</code> → <code>DiskArbitration</code> → <code>hostnamed</code></td><td>Each needs Tier-1 libs + its MIG stubs. The kernel-ABI ones (libIOKit <code>/dev/ioregistry</code>, kext_tools <code>/dev/iocatalogue</code>, DiskArbitration) self-SKIP until the matching kernel ingest, same as today.</td></tr>
+<tr><td><strong>3 — PAM + commands</strong></td><td><code>OpenPAM</code> → <code>pam_modules</code> → <code>file_cmds</code>/<code>shell_cmds</code>/<code>text_cmds</code>/<code>adv_cmds</code>/<code>system_cmds</code></td><td>Leaf, order-independent. The cleanest cross candidates (<code>make … install DESTDIR=</code>).</td></tr>
+</table>
+<p>LaunchDaemon plists, <code>/etc/pam.d/*</code>, and <code>/etc/asl.conf</code> ship <strong>with their daemons from userland</strong> (a daemon is useless without its plist — keeping them together prevents drift). <code>ssh-bonjour</code> (the <code>_ssh._tcp</code> register helper) moves to userland; <strong>OpenSSH itself stays in the assembler</strong>.</p>
+
+<h2 id="assembler">6. nextbsd becomes the assembler</h2>
+<p><strong>Delete</strong> one contiguous block — <code>build.sh:421</code> (file_cmds) through <code>:2685</code> (pam_modules), plus OpenSSH/ssh-bonjour <code>:2746-2819</code>: all 29 <code>make -C src/…</code> invocations, the 54 <code>cc -o …/test_*</code>/daemon compiles, the 2 in-chroot <code>cmake -G Ninja</code> heredocs, the ports-llvm19 toolchain shim, the MIG-codegen loops, and every interleaved <code>ldconfig</code>/<code>ldd</code> verify. The <code>src/</code> tree moves to the new repo.</p>
+<p><strong>Keep</strong> (the assembler residue): base-tarball extract + <code>/etc</code>/<code>/var</code> hand-build; pkg bootstrap + <code>certctl</code> rehash; kernel ingest + <code>kldxref</code> + driver-kext install; overlay apply + <code>pwd_mkdb</code>/<code>cap_mkdb</code> regen; version/<code>os-release</code> stamp; libscan ELF closure; <code>makefs</code>/ESP/<code>mkimg</code> disk image; <code>mkuzip</code>/mfsroot/<code>mkisoimages.sh</code> live ISO. Net: <strong>~3,245 → ~700 lines.</strong></p>
+<div class="warnbox"><strong>Assembler keeps a runtime dependency on userland binaries.</strong> The overlay step <em>invokes</em> Apple's <code>pwd_mkdb</code>/<code>cap_mkdb</code> (from userland) to regenerate <code>/etc/*.db</code> after <code>nextbsd</code> lays its own <code>master.passwd</code>/<code>login.conf</code> — so the userland tarball must be layered in <em>before</em> the overlay step. And <code>nextbsd-version</code>'s <code>$IMG_DATE</code> "single source of truth" means the template ships from userland but the <code>@@VERSION@@</code> stamp stays in the assembler.</div>
+
+<h3>buildpkgs.txt / pkglist.txt deltas</h3>
+<p><code>buildpkgs.txt</code> (<code>cmake</code>/<code>ninja</code>/<code>pkgconf</code>/<code>llvm19</code>) — all four are consumed <em>only</em> by the in-chroot Apple builds; with those gone, <strong>drop all four</strong> (keep a comment-only stub for <code>set -u</code> safety). <code>BUILD_PKGS</code> becomes empty, so the toolchain shim + purge blocks become no-ops. <code>pkglist.txt</code> is already fully commented out — <strong>no change</strong>. (This supersedes the current PR #348, which keeps llvm19 for the in-image build that this plan removes.)</p>
+
+<h2 id="rework">7. The real work: chroot-assumption rework</h2>
+<p>The component <em>builds</em> don't use the chroot — they're host <code>bmake</code>. The chroot is used only for verification and a few runtime steps. Three classes need rework:</p>
+<table>
+<tr><th>Step</th><th>Assumption</th><th>Fix</th><th>Effort</th></tr>
+<tr><td>21 bsd.mk components</td><td>host <code>${CC}</code> on a FreeBSD VM</td><td>run in <code>make.py buildenv</code> → cross-clang; <code>SYSROOT/DESTDIR=/stage</code></td><td>Low (no source change)</td></tr>
+<tr><td><code>libdispatch</code> / <code>swift-foundation-icu</code> cmake</td><td>in-chroot <code>cmake -G Ninja</code> + native clang</td><td>host cmake/ninja + a <code>cross-&lt;arch&gt;.cmake</code> toolchain file (<code>CMAKE_C_COMPILER=$CROSS_BINDIR/clang</code>, <code>--sysroot=/stage</code>, <code>CMAKE_INSTALL_LIBDIR=lib/system</code>)</td><td>Medium (1 file)</td></tr>
+<tr><td><code>test_corefoundation</code> (:1429), <code>kextdeps</code> (:2005)</td><td><strong>runs a cross-built target binary on the build host</strong> — fails under cross</td><td>move the runtime assertion to the post-boot test (<code>run.sh</code> already runs there); keep compile+<code>readelf</code> as the build gate</td><td>Low — <em>highest risk if missed</em></td></tr>
+<tr><td>~26 <code>chroot ldd</code>/<code>ldconfig -m</code> verify/prime sites</td><td>run FreeBSD target binaries in-chroot</td><td>drop hint-priming (Lever-B <code>STANDARD_LIBRARY_PATH</code> already resolves <code>/usr/lib/system</code> without hints); replace <code>ldd</code> asserts with <code>readelf -d</code> (DT_NEEDED/RPATH) via cross binutils</td><td>Low–medium (mechanical, many sites)</td></tr>
+<tr><td>OpenSSH <code>./configure</code></td><td>autoconf native build</td><td>cross <code>--host</code> + cache vars — <em>but OpenSSH stays in the assembler</em>, so out of userland scope</td><td>n/a here</td></tr>
+</table>
+<p><code>bsd.lib.mk</code> doesn't auto-create <code>INCSDIR</code>/<code>/usr/lib/system</code>, so the curated build shell must pre-<code>mkdir</code> every install dir (build.sh already does this per-component — carry those lines into the harness).</p>
+
+<h2 id="rollout">8. Phased rollout (keep the green chain intact)</h2>
+<div class="phase"><h3>Phase 0 — stand up nextbsd-userland in parallel, non-cascading</h3><p>New repo = the <code>src/</code> tree + <code>build-userland.sh</code> (the migrated, cross-shaped §3a3–§3z) + the <code>build.yml</code>. <strong>No downstream dispatch</strong>; compat still triggers <code>nextbsd</code>. Trigger userland by <code>workflow_dispatch</code> only; iterate the cross-build until it publishes a green amd64 <code>continuous</code>. <code>nextbsd</code> untouched and green throughout.</p></div>
+<div class="phase"><h3>Phase 1 — dual-source verify behind a flag</h3><p>Add the 4th download + a <code>NEXTBSD_USERLAND_FROM_ARTIFACT</code> gate to <code>nextbsd/build.sh</code>: when set, skip the §3* builds and <code>tar -xzf</code> the userland artifact instead. Run under <code>workflow_dispatch</code> and compare the boot-test markers (<code>LIBSYSTEM-KERNEL-OK</code>, <code>CONFIGD-*</code>, <code>SC-*</code>, <code>IOKIT-*</code>, <code>HOSTNAMED-*</code>) against a known-good in-chroot build. The <code>/usr/tests/*</code> binaries now arrive inside the tarball, so <code>run.sh</code> works unchanged.</p></div>
+<div class="phase"><h3>Phase 2 — flip the cascade (one coordinated PR-pair)</h3><p>Re-point compat's <code>base-updated</code> dispatch from <code>nextbsd</code> to <code>nextbsd-userland</code>; add userland's <code>userland-updated</code> → <code>nextbsd</code>; change <code>nextbsd</code>'s <code>repository_dispatch.types</code> to <code>[userland-updated]</code>; make the artifact path the default. No window where nothing dispatches <code>nextbsd</code>.</p></div>
+<div class="phase"><h3>Phase 3 — delete dead weight</h3><p>Remove §3a3–§3z + OpenSSH-userland glue from <code>build.sh</code>, delete the 4 <code>buildpkgs.txt</code> lines + the toolchain-shim/purge blocks, and move <code>src/</code> out of <code>nextbsd</code> into <code>nextbsd-userland</code>.</p></div>
+<div class="resolved"><strong>Rollback:</strong> until Phase 3 deletes the §3* code, any userland-artifact regression is reverted by clearing the env flag (Phases 1–2) — <code>nextbsd</code> falls back to building in-chroot. The green chain is recoverable at every step before the final delete.</div>
+
+<h2 id="risks">9. Risks</h2>
+<ul>
+  <li><strong>Highest:</strong> the build-time runs of cross binaries (<code>test_corefoundation</code>, <code>kextdeps</code>) — must relocate to boot-test or they fail the instant the host can't exec a cross binary.</li>
+  <li><strong>Hard dependency:</strong> userland's sysroot is compat's <code>continuous</code> base — the dispatch ordering (compat → userland) is load-bearing, not a nicety. (The artifact already exists today, so no new bootstrap.)</li>
+  <li><strong>Medium:</strong> the 2 CMake cross-toolchain files; the ICU giant-TU OOM (already mitigated by the <code>.incbin</code> restructure).</li>
+  <li><strong>Kernel-ABI components</strong> (libIOKit/kext_tools/DiskArbitration) stay green-by-SKIP until the matching kernel ingest, exactly as in the current build.</li>
+</ul>
+
+<h2 id="refs">10. References</h2>
+<ul>
+  <li>Companion: <a href="nextbsd-freebsd-compat-audit.html">FreeBSD-compat 3-way audit</a> (what userland ships today, command-level).</li>
+  <li>Companion: <a href="nextbsd-drop-ci-cache-plan.html">drop CI caching plan</a> (the CI it builds on).</li>
+  <li>Key files: <code>nextbsd-freebsd-compat/.github/workflows/build.yml</code> (CI template + the <code>base-updated</code> dispatch to re-point), <code>nextbsd/build.sh</code> (delete §3a3–§3z; keep ingest+assembly), <code>nextbsd/buildpkgs.txt</code>, <code>nextbsd/src/</code> (the tree that migrates).</li>
+</ul>
+
+<hr style="margin-top: 3rem; border: none; border-top: 1px solid var(--rule);">
+<p style="color: var(--muted); font-size: .88rem; margin-top: 1rem;"><strong>Filed 2026-06-21.</strong> From a 3-agent scope (cross-build harness, migration map, ISO-assembler + CI topology) over <code>nextbsd-work</code> and <code>nextbsd-freebsd-compat</code>. Headline: the 18+ <code>bsd.mk</code> components cross-compile with zero source changes; only 2 CMake holdouts and a handful of chroot-assumption relocations stand between today's in-image build and a clean cross-built userland repo.</p>
+
+</body>
+</html>

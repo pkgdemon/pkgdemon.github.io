@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD freebsd-compat — 3-way audit</title>
+<style>
+  :root {
+    --bg: #fbfbf8; --fg: #1a1a1a; --muted: #555; --accent: #b03000; --accent2: #0a4d68;
+    --ok: #1f7a1f; --warn: #b06800; --bad: #b00020; --code-bg: #f0ece4; --rule: #d6cfc0; --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1200px; padding: 2.5rem 1.5rem 6rem;
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 1.9rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.3rem; margin: 2.4rem 0 .5rem; padding-bottom: .2rem; border-bottom: 2px solid var(--rule); }
+  .subtitle { color: var(--muted); font-size: 1.02rem; margin: 0 0 1.5rem; }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg); padding: 1px 4px; border-radius: 3px; font-size: .88em; }
+  a { color: var(--accent2); } a:hover { color: var(--accent); }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 1.5rem; padding: .7rem 1.5rem;
+         border-bottom: 1px solid var(--rule); font-size: .86rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  table { border-collapse: collapse; width: 100%; margin: .6rem 0 1.5rem; font-size: .82rem; }
+  th, td { text-align: left; padding: .4rem .55rem; border: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; position: sticky; top: 49px; z-index: 5; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  td.item code { background: none; padding: 0; font-weight: 600; white-space: nowrap; }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 1.5rem; }
+  .tldr h3 { margin: 0 0 .5rem; color: var(--accent2); }
+  /* difficulty pills */
+  .d { display: inline-block; font-weight: 700; font-size: .76rem; padding: 1px 7px; border-radius: 10px; white-space: nowrap; }
+  .d-trivial { background: #cdebcd; color: #155c15; }
+  .d-easy    { background: #e2f0cf; color: #3a6b15; }
+  .d-moderate{ background: #f6e7c2; color: #8a5a00; }
+  .d-hard    { background: #f6d8bf; color: #9a4410; }
+  .d-impractical { background: #e6e0da; color: #7a2a2a; }
+  .ov { display: inline-block; font-size: .76rem; padding: 1px 6px; border-radius: 10px; background: #e6e0da; color: #444; white-space: nowrap; }
+  .ov-deferred { background: #f6e7c2; color: #8a5a00; }
+  .legend span { margin-right: 1rem; }
+  .count { font-size: .82rem; color: var(--muted); }
+  .s { display: inline-block; font-weight: 700; font-size: .76rem; padding: 1px 7px; border-radius: 10px; white-space: nowrap; }
+  .s-on  { background: #cdebcd; color: #155c15; }
+  .s-def { background: #f6e7c2; color: #8a5a00; }
+  .s-off { background: #e6e0da; color: #555; }
+</style>
+</head>
+<body>
+<nav class="nav">
+  <a href="index.html">&larr; Home</a>
+  <a href="#summary">Summary</a>
+  <a href="#core">Core libs</a>
+  <a href="#support">Support libs</a>
+  <a href="#system">System tools</a>
+  <a href="#crypto">Crypto / krb5</a>
+  <a href="#provides">| NextBSD today:</a>
+  <a href="#libs">libs</a>
+  <a href="#daemons">daemons</a>
+  <a href="#cmds">commands</a>
+</nav>
+
+<h1>NextBSD &mdash; <code>nextbsd-freebsd-compat</code> 3-way audit</h1>
+<p class="subtitle">Every component the FreeBSD-compat closure installs into the NextBSD base (99 <code>srclist.txt</code> entries), cross-referenced against (1) what NextBSD overwrites with Apple-sourced code, and (2) what could be ported from Apple open source instead &mdash; each with a port-difficulty rating.</p>
+
+<div class="tldr" id="summary">
+<h3>Summary</h3>
+<p><strong>0 of 99 are currently overwritten by Apple code.</strong> NextBSD's Apple userland (libsystem_kernel, libdispatch, libxpc, configd, the <code>*_cmds</code> tools) installs into a <em>parallel</em> <code>/usr/lib/system/</code> namespace or is vendored-but-deferred; the FreeBSD-compat set is the live base.</p>
+<p><strong>Three buckets emerge:</strong></p>
+<ul>
+  <li><strong>Actionable Apple swaps (Moderate)</strong> &mdash; <code>reboot</code>, <code>shutdown</code>, <code>login</code>, <code>su</code>, <code>nologin</code>, <code>nmtree</code>/mtree are <em>already vendored from Apple <code>system_cmds</code>/<code>shell_cmds</code>/<code>file_cmds</code> but deferred</em> behind missing shims (IOPMLib for power, BSM-audit + login.c PAM drift). Finishing those shims flips them over. <code>caroot</code> data could come from Apple's open <code>security_certificates</code> root store (Easy, data-only).</li>
+  <li><strong>Already-Apple / same-upstream (Trivial&ndash;Easy, no work)</strong> &mdash; <code>libbsm</code> <em>is</em> OpenBSM (Apple-commissioned); the C++/builtins trio and the third-party libs (<code>zlib</code>, <code>lzma</code>, <code>zstd</code>, <code>expat</code>, <code>sqlite3</code>, <code>ncurses</code>, <code>libedit</code>, <code>libarchive</code>, <code>xz</code>) share the exact upstream Apple ships &mdash; no Apple-specific port buys anything.</li>
+  <li><strong>Permanently FreeBSD (Impractical)</strong> &mdash; the ELF/loader/libc ABI (<code>libc</code>, <code>rtld-elf</code>, <code>libthr</code> &mdash; Apple's are Mach-O + XNU-coupled), the UFS tooling (<code>newfs</code>/<code>tunefs</code>/<code>fsck_ffs</code> &mdash; <em>Apple has no UFS code; only newfs_hfs/apfs</em>), the kernel-ABI libs (<code>libkvm</code>, <code>libgeom</code>, <code>libjail</code>, <code>libcasper</code>, <code>libprocstat</code>&hellip;), MIT Kerberos, and OpenSSL (Apple = closed corecrypto).</li>
+</ul>
+<p class="legend"><strong>Difficulty:</strong>
+  <span class="d d-trivial">Trivial</span>
+  <span class="d d-easy">Easy</span>
+  <span class="d d-moderate">Moderate</span>
+  <span class="d d-hard">Hard</span>
+  <span class="d d-impractical">Impractical</span>
+</p>
+<p class="legend"><strong>Overwritten:</strong>
+  <span class="ov">No</span>
+  <span class="ov ov-deferred">No &mdash; Apple port vendored, deferred</span>
+</p>
+</div>
+
+<h2 id="core">1. Core runtime libraries <span class="count">(15 &mdash; the ELF/libc ABI)</span></h2>
+<table>
+<tr><th>Item</th><th>Installed as</th><th>Purpose</th><th>Overwritten?</th><th>Apple port source</th><th>Difficulty</th><th>Notes</th></tr>
+<tr><td class="item"><code>lib/csu</code></td><td><code>crt1.o</code>, <code>Scrt1.o</code>, <code>crti/crtn.o</code></td><td>C startup glue (<code>_start</code> → <code>__libc_start1</code>)</td><td><span class="ov">No</span></td><td>Inside Apple <code>Libc</code> (Mach-O <code>crt1.o</code>)</td><td><span class="d d-impractical">Impractical</span></td><td>ELF crt vs Apple's Mach-O LC_MAIN/dyld model; no <code>_start</code> equivalent.</td></tr>
+<tr><td class="item"><code>lib/libc</code></td><td><code>/lib/libc.so.7</code></td><td>C standard library + FreeBSD syscall stubs</td><td><span class="ov">No</span></td><td><code>Libc</code></td><td><span class="d d-impractical">Impractical</span></td><td>Apple Libc is split over Mach-O/XNU syscalls; replacing it = replacing the kernel ABI. The whole NextBSD premise is FreeBSD libc + Apple on top.</td></tr>
+<tr><td class="item"><code>lib/libsys</code></td><td><code>/lib/libsys.so.7</code></td><td>Split-out raw FreeBSD syscall wrappers</td><td><span class="ov">No</span></td><td>~ <code>libsystem_kernel</code></td><td><span class="d d-impractical">Impractical</span></td><td>NextBSD's libmach→libsystem_kernel provides Mach-trap stubs only, parallel namespace; not FreeBSD ELF syscalls.</td></tr>
+<tr><td class="item"><code>libexec/rtld-elf</code></td><td><code>/libexec/ld-elf.so.1</code></td><td>ELF dynamic loader</td><td><span class="ov">No</span></td><td><code>dyld</code></td><td><span class="d d-impractical">Impractical</span></td><td>dyld loads Mach-O via the shared cache + code-signing, XNU-coupled. Cannot load FreeBSD ELF.</td></tr>
+<tr><td class="item"><code>lib/libthr</code></td><td><code>/lib/libthr.so.3</code></td><td>POSIX 1:1 threads</td><td><span class="ov">No</span></td><td><code>libpthread</code> + <code>libplatform</code></td><td><span class="d d-impractical">Impractical</span></td><td>Apple libpthread uses XNU thread/workqueue traps + Mach thread ports; libc-interposed on the FreeBSD side.</td></tr>
+<tr><td class="item"><code>lib/libgcc_s</code></td><td><code>/lib/libgcc_s.so.1</code></td><td>Unwinder + compiler builtins shim</td><td><span class="ov">No</span></td><td>LLVM libunwind (Apple has no <code>libgcc_s</code>)</td><td><span class="d d-hard">Hard</span></td><td>libunwind is portable but the <code>libgcc_s</code> soname is a FreeBSD artifact; no upside.</td></tr>
+<tr><td class="item"><code>lib/libssp_nonshared</code></td><td><code>/usr/lib/libssp_nonshared.a</code></td><td><code>__stack_chk_fail_local</code> shim</td><td><span class="ov">No</span></td><td>Folded into Apple <code>Libc</code></td><td><span class="d d-trivial">Trivial</span></td><td>A few lines of C; no discrete Apple analog. Pointless to source from Apple.</td></tr>
+<tr><td class="item"><code>lib/libssp</code></td><td><code>/usr/lib/libssp.so.0</code></td><td><code>_FORTIFY_SOURCE</code> helpers</td><td><span class="ov">No</span></td><td>Folded into Apple <code>Libc</code></td><td><span class="d d-easy">Easy</span></td><td>Small; FreeBSD's is fine, no standalone Apple libssp.</td></tr>
+<tr><td class="item"><code>lib/msun</code></td><td><code>/lib/libm.so.5</code></td><td>IEEE math library</td><td><span class="ov">No</span></td><td>Apple <code>Libm</code></td><td><span class="d d-moderate">Moderate</span></td><td>Apple Libm is portable-ish but arch-tuned for Apple ABI/long-double; FreeBSD msun is the proven fit.</td></tr>
+<tr><td class="item"><code>lib/librt</code></td><td><code>/usr/lib/librt.so.1</code></td><td>POSIX realtime (mqueue, clock_*, aio)</td><td><span class="ov">No</span></td><td>None standalone (in Apple libsystem)</td><td><span class="d d-hard">Hard</span></td><td>Apple folds RT into libsystem with XNU semantics; FreeBSD-syscall bound.</td></tr>
+<tr><td class="item"><code>lib/libdl</code></td><td><code>/usr/lib/libdl.so.1</code></td><td><code>dlopen</code>/<code>dlsym</code> shim to rtld</td><td><span class="ov">No</span></td><td>In Apple <code>dyld</code>/libdyld</td><td><span class="d d-impractical">Impractical</span></td><td>Coupled to the loader; same Mach-O blocker as rtld-elf.</td></tr>
+<tr><td class="item"><code>lib/libcompiler_rt</code></td><td><code>/usr/lib/libcompiler_rt.a</code> (+<code>libgcc.a</code>)</td><td>LLVM compiler builtins</td><td><span class="ov">No</span></td><td>llvm-project/compiler-rt (same upstream)</td><td><span class="d d-easy">Easy</span></td><td>Identical LLVM upstream; FreeBSD already builds from llvm19. Redundant to port.</td></tr>
+<tr><td class="item"><code>lib/libc_nonshared</code></td><td><code>/usr/lib/libc_nonshared.a</code></td><td>clang link-spec companion archive</td><td><span class="ov">No</span></td><td>Folded into Apple <code>Libc</code></td><td><span class="d d-trivial">Trivial</span></td><td>FreeBSD link-spec artifact; no Apple equivalent.</td></tr>
+<tr><td class="item"><code>lib/libcxxrt</code></td><td><code>/usr/lib/libcxxrt.so.1</code></td><td>C++ ABI runtime (exceptions/RTTI)</td><td><span class="ov">No</span></td><td>Apple uses <code>libc++abi</code> (different project)</td><td><span class="d d-moderate">Moderate</span></td><td>FreeBSD uses libcxxrt; swapping to libc++abi is a FreeBSD-base decision, not an Apple win.</td></tr>
+<tr><td class="item"><code>lib/libc++</code></td><td><code>/usr/lib/libc++.so.1</code></td><td>LLVM C++ standard library</td><td><span class="ov">No</span></td><td>llvm-project/libcxx (same upstream)</td><td><span class="d d-easy">Easy</span></td><td>Same LLVM upstream Apple uses; FreeBSD builds the matching v19. No value.</td></tr>
+</table>
+
+<h2 id="support">2. Support / data libraries <span class="count">(36)</span></h2>
+<table>
+<tr><th>Item</th><th>Installed as</th><th>Purpose</th><th>Overwritten?</th><th>Apple port source</th><th>Difficulty</th><th>Notes</th></tr>
+<tr><td class="item"><code>lib/libxo</code></td><td><code>libxo.so.0</code></td><td>Structured (JSON/XML/HTML) CLI output</td><td><span class="ov">No</span></td><td>Same upstream (Juniper); not in stock macOS</td><td><span class="d d-easy">Easy</span></td><td>Portable leaf lib. Missing it left <code>/</code> read-only (the libxo symptom).</td></tr>
+<tr><td class="item"><code>lib/libmd</code></td><td><code>libmd.so.6</code></td><td>Message digests (MD5/SHA/RIPEMD)</td><td><span class="ov">No</span></td><td>Same upstream (BSD libmd)</td><td><span class="d d-trivial">Trivial</span></td><td>macOS uses CommonCrypto, but BSD libmd builds cleanly.</td></tr>
+<tr><td class="item"><code>lib/libnv</code></td><td><code>libnv.so.0</code></td><td>nvlist name/value marshalling</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD nvlist ABI</td><td><span class="d d-easy">Easy</span></td><td>FreeBSD invention; portable C but no Apple analog.</td></tr>
+<tr><td class="item"><code>lib/libelf</code></td><td><code>libelf.so.2</code></td><td>Arch-independent ELF read/write</td><td><span class="ov">No</span></td><td>Same upstream (ELF Tool Chain)</td><td><span class="d d-easy">Easy</span></td><td>macOS is Mach-O so ships no libelf; the BSD lib is portable.</td></tr>
+<tr><td class="item"><code>lib/libkvm</code></td><td><code>libkvm.so.7</code></td><td>Kernel memory / proc-table access</td><td><span class="ov">No</span></td><td>None &mdash; reads FreeBSD kernel VM</td><td><span class="d d-impractical">Impractical</span></td><td>Bound to FreeBSD kernel proc/VM internals.</td></tr>
+<tr><td class="item"><code>lib/libexpat</code></td><td><code>libbsdxml</code></td><td>XML parser</td><td><span class="ov">No</span></td><td>Same upstream (Expat); Apple ships it</td><td><span class="d d-trivial">Trivial</span></td><td>Identical upstream.</td></tr>
+<tr><td class="item"><code>lib/liblzma</code></td><td><code>liblzma.so.5</code></td><td>XZ/LZMA compression</td><td><span class="ov">No</span></td><td>Same upstream (xz); Apple ships it</td><td><span class="d d-trivial">Trivial</span></td><td>Same upstream.</td></tr>
+<tr><td class="item"><code>lib/libzstd</code></td><td><code>libprivatezstd.so.5</code></td><td>Zstandard compression</td><td><span class="ov">No</span></td><td>Same upstream (zstd)</td><td><span class="d d-trivial">Trivial</span></td><td>Built private; libarchive links it.</td></tr>
+<tr><td class="item"><code>lib/libz</code></td><td><code>libz.so.6</code></td><td>DEFLATE/zlib</td><td><span class="ov">No</span></td><td>Same upstream; apple-oss/zlib is cosmetic</td><td><span class="d d-trivial">Trivial</span></td><td>No Apple port needed.</td></tr>
+<tr><td class="item"><code>lib/libbz2</code></td><td><code>libbz2.so.4</code></td><td>bzip2 compression</td><td><span class="ov">No</span></td><td>Same upstream (bzip2)</td><td><span class="d d-trivial">Trivial</span></td><td>Same upstream.</td></tr>
+<tr><td class="item"><code>lib/libsbuf</code></td><td><code>libsbuf.so.6</code></td><td>Safe auto-growing string buffers</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD sbuf API</td><td><span class="d d-trivial">Trivial</span></td><td>Portable C, FreeBSD-only API.</td></tr>
+<tr><td class="item"><code>lib/libcrypt</code></td><td><code>libcrypt.so.5</code></td><td><code>crypt(3)</code> password hashing</td><td><span class="ov">No</span></td><td>None (macOS = Open Directory/CommonCrypto)</td><td><span class="d d-easy">Easy</span></td><td>No Apple drop-in; keep FreeBSD's.</td></tr>
+<tr><td class="item"><code>lib/libutil</code></td><td><code>libutil.so.10</code></td><td>login/pty/pidfile/property utils</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD util grab-bag</td><td><span class="d d-moderate">Moderate</span></td><td>Touches kld/login_cap; no clean Apple port.</td></tr>
+<tr><td class="item"><code>lib/libbsm</code></td><td><code>libbsm.so.3</code></td><td>BSM audit-record API</td><td><span class="ov">No</span></td><td><strong>OpenBSM</strong> &mdash; Apple-commissioned; Apple ships it too</td><td><span class="d d-trivial">Trivial</span></td><td>FreeBSD copy already <em>is</em> the Apple lineage (VENDORED.md: "identical"). No work.</td></tr>
+<tr><td class="item"><code>lib/libexecinfo</code></td><td><code>libexecinfo.so.1</code></td><td><code>backtrace()</code></td><td><span class="ov">No</span></td><td>macOS has backtrace in libSystem</td><td><span class="d d-trivial">Trivial</span></td><td>Standalone BSD lib builds trivially.</td></tr>
+<tr><td class="item"><code>lib/libufs</code></td><td><code>libufs.so.7</code></td><td>UFS/FFS filesystem manipulation</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD UFS on-disk format</td><td><span class="d d-impractical">Impractical</span></td><td>Apple (HFS+/APFS) has no analog.</td></tr>
+<tr><td class="item"><code>lib/libnetbsd</code></td><td><code>libnetbsd.so</code></td><td>NetBSD-compat build shims</td><td><span class="ov">No</span></td><td>None &mdash; build glue</td><td><span class="d d-trivial">Trivial</span></td><td>No Apple relevance.</td></tr>
+<tr><td class="item"><code>lib/libdevctl</code></td><td><code>libdevctl.so.0</code></td><td><code>devctl(8)</code> device-control wrappers</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD newbus</td><td><span class="d d-impractical">Impractical</span></td><td>Apple IOKit is entirely different.</td></tr>
+<tr><td class="item"><code>lib/libjail</code></td><td><code>libjail.so.1</code></td><td><code>jail(2)</code> management</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD jails</td><td><span class="d d-impractical">Impractical</span></td><td>macOS sandboxing is unrelated.</td></tr>
+<tr><td class="item"><code>lib/lib80211</code></td><td><code>lib80211.so.1</code></td><td>net80211 wireless ioctls</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD net80211</td><td><span class="d d-impractical">Impractical</span></td><td>Apple's 80211 stack is private/different.</td></tr>
+<tr><td class="item"><code>lib/libipsec</code></td><td><code>libipsec.so.4</code></td><td>PF_KEY/IPsec policy</td><td><span class="ov">No</span></td><td>None &mdash; KAME PF_KEY ABI</td><td><span class="d d-impractical">Impractical</span></td><td>No Apple OSS port.</td></tr>
+<tr><td class="item"><code>lib/ncurses</code></td><td><code>libncursesw.so</code></td><td>Terminal UI library</td><td><span class="ov">No</span></td><td>Same upstream; apple-oss/ncurses</td><td><span class="d d-trivial">Trivial</span></td><td>Apple fork is minor; no port needed.</td></tr>
+<tr><td class="item"><code>lib/libedit</code></td><td><code>libedit.so.8</code></td><td>readline-style line editing</td><td><span class="ov">No</span></td><td>Same upstream; apple-oss/libedit</td><td><span class="d d-trivial">Trivial</span></td><td>Same NetBSD-origin libedit.</td></tr>
+<tr><td class="item"><code>lib/libcasper</code></td><td><code>libcasper.so.1</code></td><td>Capsicum privilege-separation helper</td><td><span class="ov">No</span></td><td>None &mdash; needs Capsicum</td><td><span class="d d-impractical">Impractical</span></td><td>Depends on the Capsicum kernel framework.</td></tr>
+<tr><td class="item"><code>lib/libgeom</code></td><td><code>libgeom.so.5</code></td><td>GEOM storage introspection</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD GEOM</td><td><span class="d d-impractical">Impractical</span></td><td>Apple IOStorage is different.</td></tr>
+<tr><td class="item"><code>lib/libefivar</code></td><td><code>libefivar.so.1</code></td><td>EFI variable access</td><td><span class="ov">No</span></td><td>None on macOS (no <code>libefivar.so.1</code>)</td><td><span class="d d-easy">Easy</span></td><td>Talks to efirt via FreeBSD; portable concept, no Apple port.</td></tr>
+<tr><td class="item"><code>lib/libarchive</code></td><td><code>libarchive.so.7</code></td><td>Multi-format archive read/write</td><td><span class="ov">No</span></td><td>Same upstream; apple-oss/libarchive</td><td><span class="d d-easy">Easy</span></td><td>Apple fork adds Mach-O/codesign quirks not needed here.</td></tr>
+<tr><td class="item"><code>lib/libsqlite3</code></td><td><code>libsqlite3.so.0</code></td><td>Embedded SQL DB (pkg needs it)</td><td><span class="ov">No</span></td><td>Same upstream (SQLite)</td><td><span class="d d-trivial">Trivial</span></td><td>No Apple port needed.</td></tr>
+<tr><td class="item"><code>lib/libucl</code></td><td><code>libucl.so.1</code></td><td>UCL config parser (pkg needs it)</td><td><span class="ov">No</span></td><td>Same upstream (vstakhov/libucl)</td><td><span class="d d-trivial">Trivial</span></td><td>No Apple relevance.</td></tr>
+<tr><td class="item"><code>lib/libfetch</code></td><td><code>libfetch.so.6</code></td><td>HTTP/HTTPS/FTP retrieval (pkg, fetch)</td><td><span class="ov">No</span></td><td>None (macOS = CFNetwork/curl)</td><td><span class="d d-easy">Easy</span></td><td>FreeBSD-only API; portable C over OpenSSL.</td></tr>
+<tr><td class="item"><code>lib/libdevinfo</code></td><td><code>libdevinfo.so.7</code></td><td>Device-tree introspection</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD newbus</td><td><span class="d d-impractical">Impractical</span></td><td>Apple IORegistry is different.</td></tr>
+<tr><td class="item"><code>lib/libprocstat</code></td><td><code>libprocstat.so.1</code></td><td>Per-process file/socket/vm info</td><td><span class="ov">No</span></td><td>None &mdash; reads FreeBSD kernel state</td><td><span class="d d-impractical">Impractical</span></td><td>Bound to FreeBSD kernel struct layout.</td></tr>
+<tr><td class="item"><code>lib/libulog</code></td><td><code>libulog.so.0</code></td><td>utmpx login-record helper</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD utmpx</td><td><span class="d d-easy">Easy</span></td><td>macOS deprecated utmpx; FreeBSD's is the needed one.</td></tr>
+<tr><td class="item"><code>lib/librpcsvc</code></td><td><code>librpcsvc.so.5</code></td><td>Sun ONC RPC service stubs</td><td><span class="ov">No</span></td><td>Same upstream; macOS ships rpcsvc</td><td><span class="d d-trivial">Trivial</span></td><td>Standard ONC RPC lineage.</td></tr>
+<tr><td class="item"><code>lib/libmagic</code></td><td><code>libmagic.so.4</code></td><td><code>file(1)</code> type detection</td><td><span class="ov">No</span></td><td>Same upstream (Ian Darwin's file)</td><td><span class="d d-trivial">Trivial</span></td><td>Same upstream.</td></tr>
+</table>
+
+<h2 id="system">3. System / filesystem / base tools <span class="count">(37)</span></h2>
+<table>
+<tr><th>Item</th><th>Installed as</th><th>Purpose</th><th>Overwritten?</th><th>Apple port source</th><th>Difficulty</th><th>Notes</th></tr>
+<tr><td class="item"><code>share/zoneinfo</code></td><td><code>/usr/share/zoneinfo</code></td><td>IANA tz database (+zic)</td><td><span class="ov">No</span></td><td>system_cmds (zic); data = upstream IANA</td><td><span class="d d-trivial">Trivial</span></td><td>Data identical either way; keep in-tree zic build-tool.</td></tr>
+<tr><td class="item"><code>share/vt</code></td><td><code>/usr/share/vt</code></td><td>vt(4) console fonts/keymaps</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD newcons</td><td><span class="d d-impractical">Impractical</span></td><td>No Apple console equivalent.</td></tr>
+<tr><td class="item"><code>share/mk</code></td><td><code>/usr/share/mk</code></td><td>BSD make ruleset (sys.mk, bsd.*.mk)</td><td><span class="ov">No</span></td><td>Apple bsdmake .mk (incompatible)</td><td><span class="d d-hard">Hard</span></td><td>Tightly coupled to FreeBSD bmake + src.opts.mk; Apple's NetBSD-make set differs.</td></tr>
+<tr><td class="item"><code>usr.bin/bmake</code></td><td><code>/usr/bin/make</code></td><td>The make(1) binary</td><td><span class="ov">No</span></td><td>Apple <code>bsdmake</code> (NetBSD make)</td><td><span class="d d-hard">Hard</span></td><td>Not API-compatible with FreeBSD's share/mk; must stay paired.</td></tr>
+<tr><td class="item"><code>stand</code></td><td><code>/boot/loader*</code>, gptboot, boot1.efi</td><td>EFI/i386 boot blocks + Lua loader</td><td><span class="ov">No</span></td><td>None (Apple boot.efi/iBoot load XNU, closed)</td><td><span class="d d-impractical">Impractical</span></td><td>Loads the FreeBSD kernel.</td></tr>
+<tr><td class="item"><code>share/keys</code></td><td><code>/usr/share/keys/pkg/&hellip;</code></td><td>pkg(8) signing fingerprints</td><td><span class="ov">No</span></td><td>None (FreeBSD pkg-specific)</td><td><span class="d d-impractical">Impractical</span></td><td>Bound to FreeBSD pkg.</td></tr>
+<tr><td class="item"><code>usr.sbin/pkg</code></td><td><code>/usr/sbin/pkg</code></td><td>pkg(8) bootstrapper</td><td><span class="ov">No</span></td><td>None (Apple uses installer/.pkg)</td><td><span class="d d-impractical">Impractical</span></td><td>NextBSD relies on FreeBSD pkg.</td></tr>
+<tr><td class="item"><code>bin/sh</code></td><td><code>/bin/sh</code></td><td>POSIX shell (FreeBSD ash)</td><td><span class="ov">No</span></td><td>shell_cmds (sh) &mdash; vendored, never installs /bin/sh</td><td><span class="d d-moderate">Moderate</span></td><td>macOS /bin/sh is this same BSD ash. Swap possible, low value.</td></tr>
+<tr><td class="item"><code>bin/kenv</code></td><td><code>/bin/kenv</code></td><td>kernel-environment access</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD <code>kenv(2)</code></td><td><span class="d d-impractical">Impractical</span></td><td>XNU has no kenv(2).</td></tr>
+<tr><td class="item"><code>sbin/devfs</code></td><td><code>/sbin/devfs</code></td><td>devfs ruleset management</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD devfs</td><td><span class="d d-impractical">Impractical</span></td><td>macOS devfs has no ruleset CLI.</td></tr>
+<tr><td class="item"><code>sbin/fsck</code></td><td><code>/sbin/fsck</code></td><td>Generic fsck front-end</td><td><span class="ov">No</span></td><td>diskdev_cmds (dispatches HFS/APFS)</td><td><span class="d d-hard">Hard</span></td><td>Apple's fsck only knows HFS/APFS backends; still needs UFS fsck_ffs under it.</td></tr>
+<tr><td class="item"><code>sbin/fsck_ffs</code></td><td><code>/sbin/fsck_ffs</code></td><td>UFS/FFS checker</td><td><span class="ov">No</span></td><td><strong>None &mdash; Apple has no UFS code</strong></td><td><span class="d d-impractical">Impractical</span></td><td>diskdev_cmds ships fsck_hfs/apfs only; "porting Apple's" = a different filesystem.</td></tr>
+<tr><td class="item"><code>sbin/ldconfig</code></td><td><code>/sbin/ldconfig</code></td><td>Build rtld hints</td><td><span class="ov">No</span></td><td>None (macOS = dyld shared cache)</td><td><span class="d d-impractical">Impractical</span></td><td>No ldconfig/hints model on macOS.</td></tr>
+<tr><td class="item"><code>sbin/mount</code></td><td><code>/sbin/mount</code></td><td>Mount front-end</td><td><span class="ov">No</span></td><td>Apple mount targets XNU VFS</td><td><span class="d d-hard">Hard</span></td><td>FreeBSD <code>nmount(2)</code> ABI; not drop-in.</td></tr>
+<tr><td class="item"><code>sbin/newfs</code></td><td><code>/sbin/newfs</code></td><td>Create a UFS/FFS filesystem</td><td><span class="ov">No</span></td><td><strong>None &mdash; Apple has newfs_hfs/apfs, not UFS</strong></td><td><span class="d d-impractical">Impractical</span></td><td>The "hard to port" case: there is no Apple UFS code; a port would create a different FS. Stays FreeBSD permanently.</td></tr>
+<tr><td class="item"><code>sbin/tunefs</code></td><td><code>/sbin/tunefs</code></td><td>Tune UFS/FFS parameters</td><td><span class="ov">No</span></td><td><strong>None &mdash; UFS-specific</strong></td><td><span class="d d-impractical">Impractical</span></td><td>UFS superblock tuning; no Apple equivalent.</td></tr>
+<tr><td class="item"><code>sbin/umount</code></td><td><code>/sbin/umount</code></td><td>Unmount filesystems</td><td><span class="ov">No</span></td><td>Apple unmount(2) differs</td><td><span class="d d-hard">Hard</span></td><td>Counterpart to mount; same ABI mismatch.</td></tr>
+<tr><td class="item"><code>sbin/reboot</code></td><td><code>/sbin/reboot</code> (+halt)</td><td><code>reboot(2)</code> reset</td><td><span class="ov ov-deferred">No &mdash; deferred</span></td><td>system_cmds (reboot) &mdash; needs IOPMLib shim</td><td><span class="d d-moderate">Moderate</span></td><td>Apple reboot vendored but deferred on PowerManagement IOPMLib.</td></tr>
+<tr><td class="item"><code>sbin/shutdown</code></td><td><code>/sbin/shutdown</code></td><td>Orderly shutdown scheduler</td><td><span class="ov ov-deferred">No &mdash; deferred</span></td><td>system_cmds (shutdown) &mdash; IOPMLib</td><td><span class="d d-moderate">Moderate</span></td><td>Vendored, deferred; FreeBSD's is live (setuid restored, 2dc7f7a).</td></tr>
+<tr><td class="item"><code>sbin/geom</code></td><td><code>/sbin/geom</code></td><td>GEOM framework control</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD GEOM</td><td><span class="d d-impractical">Impractical</span></td><td>XNU has no GEOM.</td></tr>
+<tr><td class="item"><code>usr.bin/ldd</code></td><td><code>/usr/bin/ldd</code></td><td>List dynamic deps (via rtld)</td><td><span class="ov">No</span></td><td>None (macOS = otool -L)</td><td><span class="d d-hard">Hard</span></td><td>Drives FreeBSD rtld LD_TRACE.</td></tr>
+<tr><td class="item"><code>usr.bin/su</code></td><td><code>/usr/bin/su</code> (setuid)</td><td>Substitute user identity</td><td><span class="ov ov-deferred">No &mdash; deferred</span></td><td>shell_cmds (su) &mdash; needs BSM stub</td><td><span class="d d-moderate">Moderate</span></td><td>Vendored, deferred; FreeBSD's setuid su is live (PAM via pam.d/su).</td></tr>
+<tr><td class="item"><code>usr.bin/login</code></td><td><code>/usr/bin/login</code> (setuid)</td><td>Authenticate + start session</td><td><span class="ov ov-deferred">No &mdash; deferred</span></td><td>system_cmds (login) &mdash; login.c PAM drift + BSM</td><td><span class="d d-moderate">Moderate</span></td><td>Apple login.c diverged; deferred. FreeBSD's is load-bearing for getty.</td></tr>
+<tr><td class="item"><code>usr.bin/fetch</code></td><td><code>/usr/bin/fetch</code></td><td>HTTP/FTP file download (over libfetch)</td><td><span class="ov">No</span></td><td>None (macOS uses curl)</td><td><span class="d d-easy">Easy</span></td><td>Portable C over libfetch; no Apple "fetch" tool. Keep.</td></tr>
+<tr><td class="item"><code>usr.bin/xz</code></td><td><code>/usr/bin/xz</code></td><td>XZ/LZMA (de)compression</td><td><span class="ov">No</span></td><td>Same upstream (tukaani xz)</td><td><span class="d d-easy">Easy</span></td><td>No Apple-specific fork.</td></tr>
+<tr><td class="item"><code>usr.sbin/crashinfo</code></td><td><code>/usr/sbin/crashinfo</code></td><td>Summarize kernel crash dumps</td><td><span class="ov">No</span></td><td>None (macOS = spindump)</td><td><span class="d d-impractical">Impractical</span></td><td>Parses FreeBSD vmcore/kgdb.</td></tr>
+<tr><td class="item"><code>usr.sbin/certctl</code></td><td><code>/usr/sbin/certctl</code></td><td>Build hashed CA trust store</td><td><span class="ov">No</span></td><td>None (macOS = Keychain/Security)</td><td><span class="d d-easy">Easy</span></td><td>Pairs with secure/caroot; no certctl analog on macOS.</td></tr>
+<tr><td class="item"><code>usr.sbin/devctl</code></td><td><code>/usr/sbin/devctl</code></td><td>Device control (attach/detach)</td><td><span class="ov">No</span></td><td>None &mdash; FreeBSD newbus</td><td><span class="d d-impractical">Impractical</span></td><td>XNU uses IOKit.</td></tr>
+<tr><td class="item"><code>usr.sbin/diskinfo</code></td><td><code>/usr/sbin/diskinfo</code></td><td>Disk geometry/speed (GEOM)</td><td><span class="ov">No</span></td><td>None (macOS = diskutil/IOKit)</td><td><span class="d d-impractical">Impractical</span></td><td>FreeBSD DIOCG ioctls.</td></tr>
+<tr><td class="item"><code>usr.sbin/fstyp</code></td><td><code>/usr/sbin/fstyp</code></td><td>Detect filesystem type</td><td><span class="ov">No</span></td><td>None (Apple uses different probing)</td><td><span class="d d-hard">Hard</span></td><td>Recognizes FreeBSD-relevant fs set.</td></tr>
+<tr><td class="item"><code>usr.sbin/gstat</code></td><td><code>/usr/sbin/gstat</code></td><td>GEOM I/O statistics</td><td><span class="ov">No</span></td><td>None (macOS = iostat/fs_usage)</td><td><span class="d d-impractical">Impractical</span></td><td>XNU has no GEOM.</td></tr>
+<tr><td class="item"><code>usr.sbin/kldxref</code></td><td><code>/usr/sbin/kldxref</code></td><td>Build linker.hints for kld</td><td><span class="ov">No</span></td><td>None (macOS = kextcache)</td><td><span class="d d-impractical">Impractical</span></td><td>NextBSD loads ELF kexts via OSKext, but module metadata is FreeBSD kld.</td></tr>
+<tr><td class="item"><code>usr.sbin/nologin</code></td><td><code>/usr/sbin/nologin</code></td><td>Refuse-login shell stub</td><td><span class="ov ov-deferred">No &mdash; deferred</span></td><td>system_cmds (vendored, not installed)</td><td><span class="d d-trivial">Trivial</span></td><td>Tiny POSIX program; trivial future swap.</td></tr>
+<tr><td class="item"><code>usr.sbin/nmtree</code></td><td><code>/usr/sbin/nmtree</code> (mtree)</td><td>Verify/create filesystem spec</td><td><span class="ov ov-deferred">No &mdash; deferred</span></td><td>file_cmds (mtree) &mdash; needs libacl/xattr shims</td><td><span class="d d-moderate">Moderate</span></td><td>Apple mtree deferred; FreeBSD's NetBSD-derived nmtree is live.</td></tr>
+<tr><td class="item"><code>usr.sbin/pciconf</code></td><td><code>/usr/sbin/pciconf</code></td><td>PCI enumeration/config</td><td><span class="ov">No</span></td><td>None (macOS = IOKit)</td><td><span class="d d-impractical">Impractical</span></td><td>FreeBSD pci(4) ioctls.</td></tr>
+<tr><td class="item"><code>usr.sbin/pw</code></td><td><code>/usr/sbin/pw</code></td><td>Unified user/group management</td><td><span class="ov">No</span></td><td><strong>None &mdash; macOS uses dscl/Open Directory</strong></td><td><span class="d d-impractical">Impractical</span></td><td>No single Apple user/group CLI; NextBSD uses flat-file master.passwd, so pw fits.</td></tr>
+<tr><td class="item"><code>libexec/save-entropy</code></td><td><code>/usr/libexec/save-entropy</code></td><td>Persist entropy across boot</td><td><span class="ov">No</span></td><td>None (macOS = kernel/SecureBoot)</td><td><span class="d d-easy">Easy</span></td><td>Shell script; could become a launchd job later.</td></tr>
+</table>
+
+<h2 id="crypto">4. Crypto / TLS / Kerberos <span class="count">(12)</span></h2>
+<table>
+<tr><th>Item</th><th>Installed as</th><th>Purpose</th><th>Overwritten?</th><th>Apple port source</th><th>Difficulty</th><th>Notes</th></tr>
+<tr><td class="item"><code>secure/lib/libcrypto</code></td><td><code>/usr/lib/libcrypto.so.*</code></td><td>OpenSSL crypto primitives</td><td><span class="ov">No</span></td><td>None practical (Apple = closed corecrypto)</td><td><span class="d d-impractical">Impractical</span></td><td>corecrypto can't be redistributed; Apple's old OpenSSL fork is EOL. Keep FreeBSD OpenSSL.</td></tr>
+<tr><td class="item"><code>secure/lib/libssl</code></td><td><code>/usr/lib/libssl.so.*</code></td><td>OpenSSL TLS layer</td><td><span class="ov">No</span></td><td>None (Apple = Secure Transport/Network.framework)</td><td><span class="d d-impractical">Impractical</span></td><td>Not an <code>libssl.so</code> drop-in; ports expect the ABI.</td></tr>
+<tr><td class="item"><code>secure/usr.bin/openssl</code></td><td><code>/usr/bin/openssl</code></td><td><code>openssl(1)</code> CLI</td><td><span class="ov">No</span></td><td>None (Apple ships same deprecated fork)</td><td><span class="d d-impractical">Impractical</span></td><td>Tracks the libcrypto/libssl decision.</td></tr>
+<tr><td class="item"><code>secure/caroot</code></td><td><code>/etc/ssl/cert.pem</code>, <code>/usr/share/certs/</code></td><td>Trusted CA root bundle</td><td><span class="ov">No</span></td><td><strong>apple-oss/security_certificates</strong> (open root store)</td><td><span class="d d-easy">Easy</span></td><td>The one genuinely feasible Apple swap &mdash; but data only; consumers need the PEM/CApath form FreeBSD's certctl produces. (SecTrust mechanism is closed/Moderate.)</td></tr>
+<tr><td class="item"><code>krb5/util/support</code></td><td>libkrb5support</td><td>MIT krb5 portability runtime</td><td><span class="ov">No</span></td><td>Apple = Heimdal (different impl/ABI)</td><td><span class="d d-hard">Hard</span></td><td>This tree is <strong>MIT krb5 1.22.1</strong> (FreeBSD 15.0 default), not Heimdal &mdash; Apple's Heimdal isn't a drop-in.</td></tr>
+<tr><td class="item"><code>krb5/util/et</code></td><td>libcom_err</td><td>error-table (com_err) infra</td><td><span class="ov">No</span></td><td>Heimdal com_err (ABI-incompatible)</td><td><span class="d d-hard">Hard</span></td><td>MIT-vs-Heimdal mismatch.</td></tr>
+<tr><td class="item"><code>krb5/util/compile_et</code></td><td><code>compile_et</code> (build tool)</td><td>Compile <code>.et</code> tables</td><td><span class="ov">No</span></td><td>Heimdal ships its own</td><td><span class="d d-hard">Hard</span></td><td>Build-time only; flavor-locked to MIT.</td></tr>
+<tr><td class="item"><code>krb5/util/profile</code></td><td>libprofile</td><td>krb5.conf parser</td><td><span class="ov">No</span></td><td>Heimdal uses a different config lib</td><td><span class="d d-hard">Hard</span></td><td>MIT-specific.</td></tr>
+<tr><td class="item"><code>krb5/include</code></td><td><code>/usr/include</code> krb5 headers</td><td>Build-time krb5 API</td><td><span class="ov">No</span></td><td>Apple/Heimdal headers differ</td><td><span class="d d-hard">Hard</span></td><td>curl/git compiled against the MIT API.</td></tr>
+<tr><td class="item"><code>krb5/lib/crypto</code></td><td>libk5crypto</td><td>MIT krb5 crypto backend</td><td><span class="ov">No</span></td><td>Heimdal hcrypto is separate</td><td><span class="d d-hard">Hard</span></td><td>Tied to MIT libkrb5.</td></tr>
+<tr><td class="item"><code>krb5/lib/krb5</code></td><td><code>libkrb5.so.122</code></td><td>Core MIT Kerberos 5 client lib</td><td><span class="ov">No</span></td><td>Heimdal libkrb5 (different SONAME/ABI)</td><td><span class="d d-hard">Hard</span></td><td>Load-bearing: curl/git need this exact MIT SONAME; Heimdal can't supply it.</td></tr>
+<tr><td class="item"><code>krb5/lib/gssapi</code></td><td><code>libgssapi_krb5.so.122</code></td><td>GSS-API over MIT krb5</td><td><span class="ov">No</span></td><td>Apple GSS.framework (closed, over Heimdal)</td><td><span class="d d-hard">Hard</span></td><td>curl links the MIT name; GSS.framework is neither that SONAME nor open.</td></tr>
+</table>
+
+<h2 id="provides">5. What the NextBSD repo provides today (Apple-sourced)</h2>
+<p>The inverse of the tables above: the Apple userland the <code>nextbsd</code> repo builds + installs <em>on top of</em> the FreeBSD-compat base. Command-level, with real install status verified on the live box. <strong>Key caveat:</strong> many Apple commands are <em>vendored in-tree but deferred</em> (their Makefile doesn't install them, pending a shim) &mdash; for those, the binary you see on the box at that path is still the <strong>FreeBSD-compat</strong> tool, not Apple's.</p>
+<p class="legend"><strong>Status:</strong>
+  <span class="s s-on">Installed</span> built + installed from Apple source (active)
+  <span class="s s-def">Deferred</span> vendored, not installed (FreeBSD-compat tool is live)
+  <span class="s s-off">Not built</span> tests-only / build-tool / absent
+</p>
+
+<h3 id="libs">5a. System libraries &amp; PAM</h3>
+<p>All Apple <em>system</em> libraries install to the parallel <code>/usr/lib/system/</code> namespace (found via baked <code>-rpath</code>), layering on top of FreeBSD libc &mdash; never replacing it. The lone in-place replacements are <strong>PAM</strong> and <strong>syslogd</strong>.</p>
+<table>
+<tr><th>Artifact</th><th>Installed as</th><th>Status</th><th>Purpose</th><th>Replaces / layers</th></tr>
+<tr><td class="item"><code>libsystem_kernel</code> (libmach)</td><td><code>/usr/lib/system/libsystem_kernel.so.0</code></td><td><span class="s s-on">Installed</span></td><td>Userland Mach trap stubs (mach_msg, port mgmt)</td><td>Layers (new path)</td></tr>
+<tr><td class="item"><code>libdispatch</code></td><td><code>/usr/lib/system/libdispatch.so</code> (+<code>libBlocksRuntime</code>)</td><td><span class="s s-on">Installed</span></td><td>GCD queues/sources (swift-corelibs portable build)</td><td>Layers</td></tr>
+<tr><td class="item"><code>libxpc</code></td><td><code>/usr/lib/system/libxpc.so.4</code></td><td><span class="s s-on">Installed</span></td><td>XPC IPC (bootstrap_check_in/look_up)</td><td>Layers</td></tr>
+<tr><td class="item"><code>liblaunch</code></td><td><code>/usr/lib/system/liblaunch.so.1</code></td><td><span class="s s-on">Installed</span></td><td>launchd client library</td><td>Layers</td></tr>
+<tr><td class="item"><code>libCoreFoundation</code></td><td><code>/usr/lib/system/libCoreFoundation.so.6</code> (+<code>libicucore</code>)</td><td><span class="s s-on">Installed</span></td><td>CoreFoundation (CFString/plist), pure-C build</td><td>Layers</td></tr>
+<tr><td class="item"><code>libSystemConfiguration</code></td><td><code>/usr/lib/system/libSystemConfiguration.so.1</code></td><td><span class="s s-on">Installed</span></td><td>SCDynamicStore client (configd MIG)</td><td>Layers</td></tr>
+<tr><td class="item"><code>libIOKit</code></td><td><code>/usr/lib/system/libIOKit.so.1</code></td><td><span class="s s-on">Installed</span></td><td>IOKit userland facade (registry walk)</td><td>Layers</td></tr>
+<tr><td class="item"><code>libnotify</code></td><td><code>/usr/lib/system/libnotify.so.1</code></td><td><span class="s s-on">Installed</span></td><td>Apple libnotify client (notify_ipc MIG)</td><td>Layers</td></tr>
+<tr><td class="item"><code>libsystem_asl</code></td><td><code>/usr/lib/system/libsystem_asl.so.1</code></td><td><span class="s s-on">Installed</span></td><td>Apple ASL client (asl_ipc MIG)</td><td>Layers</td></tr>
+<tr><td class="item"><code>libpam</code> (OpenPAM-35)</td><td><code>/usr/lib/libpam.so.6</code></td><td><span class="s s-on">Installed</span></td><td>PAM framework</td><td><strong>Replaces</strong> FreeBSD-pam in place</td></tr>
+<tr><td class="item"><code>pam_*.so.6</code> (8 modules)</td><td><code>/usr/lib/pam_{unix,deny,permit,self,rootok,uwtmp,nologin,env}.so.6</code></td><td><span class="s s-on">Installed</span></td><td>OpenPAM (3) + pam_modules (5)</td><td><strong>Replaces</strong> FreeBSD-pam modules</td></tr>
+<tr><td class="item"><code>syslogd</code></td><td><code>/usr/sbin/syslogd</code></td><td><span class="s s-on">Installed</span></td><td>Apple syslogd (Mach-ingest)</td><td><strong>Replaces</strong> FreeBSD syslogd</td></tr>
+<tr><td class="item"><code>notifyd</code></td><td><code>/usr/sbin/notifyd</code></td><td><span class="s s-on">Installed</span></td><td>notify server daemon</td><td>New</td></tr>
+<tr><td class="item"><code>aslmanager</code></td><td><code>/usr/sbin/aslmanager</code></td><td><span class="s s-on">Installed</span></td><td>ASL log rotator</td><td>New</td></tr>
+<tr><td class="item"><code>syslog(1)</code></td><td><code>/usr/bin/syslog</code></td><td><span class="s s-on">Installed</span></td><td>ASL user CLI (post/search/control)</td><td>New (no FreeBSD <code>/usr/bin/syslog</code>)</td></tr>
+<tr><td class="item"><code>notifyutil</code></td><td>&mdash;</td><td><span class="s s-off">Not built</span></td><td>notify CLI</td><td>Absent on box</td></tr>
+</table>
+
+<h3 id="daemons">5b. Daemons &amp; system services</h3>
+<p>9 Apple-sourced daemons run at boot (launchd-managed except sshd-mdns-register). Several control CLIs (<code>scutil</code>, <code>diskutil</code>, <code>dns-sd</code>, <code>kextutil</code>) are not yet built.</p>
+<table>
+<tr><th>Binary / daemon</th><th>Installed as</th><th>Status</th><th>LaunchDaemon</th><th>Purpose / supersedes</th></tr>
+<tr><td class="item"><code>launchd</code></td><td><code>/sbin/launchd</code></td><td><span class="s s-on">Installed</span> (PID 1)</td><td>&mdash; (is init)</td><td>Replaces <code>init(8)</code> + rc/rc.d; owns the bootstrap port</td></tr>
+<tr><td class="item"><code>launchctl</code></td><td><code>/bin/launchctl</code></td><td><span class="s s-on">Installed</span></td><td>n/a</td><td>Service control; replaces <code>service(8)</code></td></tr>
+<tr><td class="item"><code>configd</code></td><td><code>/usr/sbin/configd</code></td><td><span class="s s-on">Installed</span> (active)</td><td><code>com.apple.configd</code></td><td>SCDynamicStore registry (no FreeBSD analog)</td></tr>
+<tr><td class="item"><code>scutil</code></td><td>&mdash;</td><td><span class="s s-off">Not built</span></td><td>n/a</td><td>configd CLI &mdash; deferred</td></tr>
+<tr><td class="item"><code>hostnamed</code></td><td><code>/usr/sbin/hostnamed</code></td><td><span class="s s-on">Installed</span> (active)</td><td><code>com.apple.hostnamed</code></td><td>Hostname daemon; supersedes <code>rc.conf</code> hostname write</td></tr>
+<tr><td class="item"><code>ipconfigd</code></td><td><code>/usr/sbin/ipconfigd</code></td><td><span class="s s-on">Installed</span> (active)</td><td><code>com.apple.IPConfiguration</code></td><td>DHCP/IP config; replaces <code>dhclient</code> + rc.d/netif</td></tr>
+<tr><td class="item"><code>ipconfig</code></td><td><code>/usr/sbin/ipconfig</code></td><td><span class="s s-on">Installed</span></td><td>n/a</td><td>Apple ipconfig CLI (MIG)</td></tr>
+<tr><td class="item"><code>diskarbitrationd</code></td><td><code>/usr/sbin/diskarbitrationd</code></td><td><span class="s s-on">Installed</span> (active)</td><td><code>com.apple.DiskArbitration</code></td><td>Disk/volume arbitration + mount events; supersedes devd/autofs glue</td></tr>
+<tr><td class="item"><code>diskutil</code></td><td>&mdash;</td><td><span class="s s-off">Not built</span></td><td>n/a</td><td>DA CLI &mdash; deferred</td></tr>
+<tr><td class="item"><code>mDNSResponder</code></td><td><code>/usr/sbin/mDNSResponder</code></td><td><span class="s s-on">Installed</span> (active, <code>-debug</code>)</td><td><code>com.apple.mDNSResponder</code></td><td>Bonjour/mDNS (new; FreeBSD base ships none)</td></tr>
+<tr><td class="item"><code>dns-sd</code></td><td>&mdash;</td><td><span class="s s-off">Not built</span></td><td>n/a</td><td>mDNS query CLI &mdash; deferred</td></tr>
+<tr><td class="item"><code>sshd-mdns-register</code></td><td><code>/usr/libexec/sshd-mdns-register</code></td><td><span class="s s-on">Installed</span> (sshd-forked)</td><td>&mdash; (sshd spawns)</td><td>Advertises <code>_ssh._tcp</code> via mDNSResponder</td></tr>
+<tr><td class="item"><code>kextd</code></td><td><code>/usr/libexec/kextd</code></td><td><span class="s s-on">Installed</span> (active)</td><td><code>com.apple.kextd</code></td><td>Kext autoload daemon (OSKext); supersedes kld boot autoload</td></tr>
+<tr><td class="item"><code>kextload</code> / <code>kextunload</code> / <code>kextstat</code></td><td><code>/usr/sbin/kext*</code></td><td><span class="s s-on">Installed</span></td><td>n/a</td><td>Replace <code>kldload</code>/<code>kldunload</code>/<code>kldstat</code></td></tr>
+<tr><td class="item"><code>kextutil</code> / <code>kextcache</code></td><td>&mdash;</td><td><span class="s s-off">Not built</span></td><td>n/a</td><td>Diagnostic/cache tools &mdash; deferred</td></tr>
+<tr><td class="item"><code>migcom</code> / <code>mig</code></td><td><code>/usr/libexec/migcom</code>, <code>/usr/bin/mig</code></td><td><span class="s s-on">Installed</span></td><td>n/a</td><td>MIG generator (build tool <em>and</em> shipped)</td></tr>
+<tr><td class="item"><code>nextbsd-version</code></td><td><code>/bin/nextbsd-version</code></td><td><span class="s s-on">Installed</span></td><td>n/a</td><td>OS version/identity tool</td></tr>
+<tr><td class="item"><code>bootstrap_server</code></td><td><code>/usr/sbin/bootstrap_server</code></td><td><span class="s s-off">Inert</span></td><td>none</td><td>Vendored validation daemon; launchd subsumes it</td></tr>
+<tr><td class="item"><code>mach</code> (COMPAT_MACH)</td><td>in-kernel</td><td><span class="s s-on">In kernel</span></td><td>n/a</td><td>Mach IPC/syscalls compiled into the kernel (#181) &mdash; no <code>mach.ko</code></td></tr>
+</table>
+
+<h3 id="cmds">5c. Apple command suites (per command)</h3>
+<p>Five POSIX command suites are ported from Apple open source. The Makefile <code>install:</code> target is the authority for origin (live-box presence alone doesn't prove it &mdash; a deferred command's path holds the FreeBSD-compat tool).</p>
+
+<h4><code>adv_cmds</code> &mdash; 8 installed, 6 deferred</h4>
+<table>
+<tr><th>Command</th><th>Installed as</th><th>Status</th><th>Note</th></tr>
+<tr><td class="item"><code>tabs</code> · <code>tty</code> · <code>whois</code> · <code>cap_mkdb</code> · <code>finger</code> · <code>locale</code></td><td><code>/usr/bin/*</code></td><td><span class="s s-on">Installed</span></td><td></td></tr>
+<tr><td class="item"><code>stty</code></td><td><code>/bin/stty</code></td><td><span class="s s-on">Installed</span></td><td></td></tr>
+<tr><td class="item"><code>lsvfs</code></td><td><code>/usr/sbin/lsvfs</code></td><td><span class="s s-on">Installed</span></td><td></td></tr>
+<tr><td class="item"><code>ps</code> · <code>pkill</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>Needs Apple kinfo_proc shim; FreeBSD-compat live</td></tr>
+<tr><td class="item"><code>last</code> · <code>ac</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>Needs <code>getutxent_wtmp()</code>; FreeBSD-compat live</td></tr>
+<tr><td class="item"><code>gencat</code> · <code>localedef</code> · <code>genwrap</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>Apple msgcat / yacc-lex machinery</td></tr>
+</table>
+
+<h4><code>shell_cmds</code> &mdash; 39 installed, ~7 deferred</h4>
+<table>
+<tr><th>Command(s)</th><th>Installed as</th><th>Status</th><th>Note</th></tr>
+<tr><td class="item"><code>true false echo sleep basename apply dirname env getopt hostname jot kill logname mktemp nice nohup printenv printf pwd realpath renice tee uname what yes chroot date hexdump od lockf script shlock stdbuf test [ whereis which xargs find who locate</code> (+locate.* helpers)</td><td><code>/bin/*</code>, <code>/usr/bin/*</code>, <code>/usr/sbin/chroot</code>, <code>/usr/libexec/locate.*</code></td><td><span class="s s-on">Installed</span></td><td><code>od</code>→hexdump, <code>[</code>→test (hardlinks)</td></tr>
+<tr><td class="item"><code>sh</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>fbsdglue owns <code>/bin/sh</code> for now (planned Apple swap)</td></tr>
+<tr><td class="item"><code>su</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>Needs BSM-audit stub; FreeBSD-compat <code>su</code> live</td></tr>
+<tr><td class="item"><code>id</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>Needs libopendirectory shim</td></tr>
+<tr><td class="item"><code>killall</code> · <code>w</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>Needs <code>KERN_PROCARGS2</code> (+kvm for <code>w</code>)</td></tr>
+<tr><td class="item"><code>lastcomm</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>Legacy <code>struct acct</code> vs acctv3</td></tr>
+</table>
+
+<h4><code>system_cmds</code> &mdash; 12 installed, ~25 deferred</h4>
+<table>
+<tr><th>Command(s)</th><th>Installed as</th><th>Status</th><th>Note</th></tr>
+<tr><td class="item"><code>mkfile</code> · <code>vifs</code> · <code>vipw</code> · <code>accton</code> · <code>pwd_mkdb</code></td><td><code>/usr/sbin/*</code></td><td><span class="s s-on">Installed</span></td><td></td></tr>
+<tr><td class="item"><code>sync</code> · <code>wait4path</code></td><td><code>/bin/*</code></td><td><span class="s s-on">Installed</span></td><td><code>wait4path</code> is Apple-specific</td></tr>
+<tr><td class="item"><code>pagesize</code> · <code>newgrp</code> · <code>getconf</code></td><td><code>/usr/bin/*</code></td><td><span class="s s-on">Installed</span></td><td></td></tr>
+<tr><td class="item"><code>passwd</code></td><td><code>/usr/bin/passwd</code> (setuid 4555)</td><td><span class="s s-on">Installed</span></td><td>PAM; OD/NIS backends stubbed</td></tr>
+<tr><td class="item"><code>getty</code></td><td><code>/usr/libexec/getty</code></td><td><span class="s s-on">Installed</span></td><td><code>com.apple.getty</code></td></tr>
+<tr><td class="item"><code>reboot</code> · <code>shutdown</code> · <code>halt</code> · <code>dynamic_pager</code> · <code>nvram</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>Need IOPMLib / IOKit-NVRAM bridge; FreeBSD-compat live</td></tr>
+<tr><td class="item"><code>login</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>Vendored login.c drifted (auth_pam signature); FreeBSD-compat live</td></tr>
+<tr><td class="item"><code>sa</code> · <code>dmesg</code> · <code>sysctl</code> · <code>chpass</code> · <code>nologin</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>BSM / libproc / Open Directory / no-gain; FreeBSD-compat live</td></tr>
+<tr><td class="item"><code>lsmp hostinfo vm_stat fs_usage gcore zprint latency stackshot taskpolicy</code> (Mach/VM introspection family)</td><td>&mdash;</td><td><span class="s s-off">Not built</span></td><td>Need Mach-IPC introspection / kdebug traps absent on FreeBSD</td></tr>
+<tr><td class="item"><code>arch</code></td><td>&mdash;</td><td><span class="s s-off">Not built</span></td><td>Mach-O multi-arch, N/A on ELF</td></tr>
+</table>
+
+<h4><code>file_cmds</code> &mdash; 18 installed, 11 deferred</h4>
+<table>
+<tr><th>Command(s)</th><th>Installed as</th><th>Status</th><th>Note</th></tr>
+<tr><td class="item"><code>chflags mkdir mkfifo rmdir dd ln rm</code></td><td><code>/bin/*</code></td><td><span class="s s-on">Installed</span></td><td></td></tr>
+<tr><td class="item"><code>df</code></td><td><code>/bin/df</code></td><td><span class="s s-on">Installed</span></td><td></td></tr>
+<tr><td class="item"><code>pathchk cksum compress touch truncate shar stat du</code></td><td><code>/usr/bin/*</code></td><td><span class="s s-on">Installed</span></td><td></td></tr>
+<tr><td class="item"><code>mknod</code></td><td><code>/sbin/mknod</code></td><td><span class="s s-on">Installed</span></td><td></td></tr>
+<tr><td class="item"><code>chown</code></td><td><code>/usr/sbin/chown</code></td><td><span class="s s-on">Installed</span></td><td></td></tr>
+<tr><td class="item"><code>cp</code> · <code>mv</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>Need clonefile/copyfile; FreeBSD-compat <code>cp</code>/<code>mv</code> live</td></tr>
+<tr><td class="item"><code>ls</code> · <code>chmod</code> · <code>install</code> · <code>gzip</code> · <code>pax</code> · <code>mtree</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>Need libacl/xattr shims; FreeBSD-compat live</td></tr>
+<tr><td class="item"><code>ipcrm</code> · <code>ipcs</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>XNU SysV-IPC struct layout; FreeBSD-compat live</td></tr>
+<tr><td class="item"><code>xattr</code></td><td>&mdash;</td><td><span class="s s-off">Not built</span></td><td>Needs xattr shim; absent on box</td></tr>
+</table>
+
+<h4><code>text_cmds</code> &mdash; 34 installed, 2 deferred</h4>
+<table>
+<tr><th>Command(s)</th><th>Installed as</th><th>Status</th><th>Note</th></tr>
+<tr><td class="item"><code>cat ed red</code></td><td><code>/bin/*</code></td><td><span class="s s-on">Installed</span></td><td><code>red</code>→ed (hardlink)</td></tr>
+<tr><td class="item"><code>head tail wc tr col colrm comm csplit cut expand fmt fold nl paste rev ul unexpand uniq lam look pr rs split vis unvis join column sed</code></td><td><code>/usr/bin/*</code></td><td><span class="s s-on">Installed</span></td><td></td></tr>
+<tr><td class="item"><code>banner</code></td><td><code>/usr/games/banner</code></td><td><span class="s s-on">Installed</span></td><td></td></tr>
+<tr><td class="item"><code>md5</code> (+sha1/224/256/384/512/512t256/rmd160/skein, 11 links)</td><td><code>/sbin/md5</code></td><td><span class="s s-on">Installed</span></td><td>Digest family (hardlinks)</td></tr>
+<tr><td class="item"><code>bintrans</code> (+base64/b64encode/b64decode/uuencode/uudecode)</td><td><code>/usr/bin/bintrans</code></td><td><span class="s s-on">Installed</span></td><td>Binary-transform family</td></tr>
+<tr><td class="item"><code>grep</code> (+egrep/fgrep/rgrep/zgrep/zegrep/zfgrep/bz*/xz*/lz*, 16 links)</td><td><code>/usr/bin/grep</code></td><td><span class="s s-on">Installed</span></td><td>grep family (hardlinks)</td></tr>
+<tr><td class="item"><code>sort</code></td><td>&mdash;</td><td><span class="s s-def">Deferred</span></td><td>Apple file.c uses Mach semaphores (the deliberate Mach-IPC wedge); FreeBSD-compat <code>sort</code> live</td></tr>
+<tr><td class="item"><code>jq</code></td><td>&mdash;</td><td><span class="s s-off">Not built</span></td><td>Apple wrapper dir, no buildable source</td></tr>
+</table>
+
+<div class="tldr"><h3>NextBSD-today takeaways</h3>
+<ul>
+<li><strong>The Apple base is real and live:</strong> launchd (PID 1) + configd + IPConfiguration + DiskArbitration + mDNSResponder + hostnamed + kextd, the full <code>/usr/lib/system/</code> Apple library stack, OpenPAM replacing FreeBSD-pam, Apple syslogd, and ~110 ported POSIX commands (most of shell_cmds/text_cmds/file_cmds/adv_cmds).</li>
+<li><strong>The deferred frontier</strong> is consistent: power/identity tools (<code>reboot</code>/<code>shutdown</code>/<code>login</code>/<code>su</code>) wait on IOPMLib + BSM; file tools (<code>cp</code>/<code>mv</code>/<code>ls</code>/<code>chmod</code>/<code>mtree</code>) wait on clonefile/copyfile/libacl/xattr; process tools (<code>ps</code>/<code>w</code>/<code>killall</code>) wait on kinfo_proc/PROCARGS2 shims. Until then those paths run the FreeBSD-compat tool.</li>
+<li><strong>Permanently not-Apple</strong> on ELF: the Mach-O/kdebug-only introspection family (<code>arch</code>, <code>lsmp</code>, <code>vm_stat</code>, <code>fs_usage</code>) and CLIs with no buildable source (<code>jq</code>).</li>
+</ul>
+</div>
+
+<hr style="margin-top: 3rem; border: none; border-top: 1px solid var(--rule);">
+<p style="color: var(--muted); font-size: .85rem; margin-top: 1rem;"><strong>Filed 2026-06-21.</strong> From a 4-agent audit of <code>nextbsd-freebsd-compat</code> <code>srclist.txt</code> (99 entries) cross-referenced against the <code>nextbsd</code> Apple-userland tree and apple-oss-distributions sources. "Overwritten?" reflects current state: 0/99 are replaced today; the deferred set is vendored-from-Apple but blocked on shims (IOPMLib, BSM-audit, libacl/xattr).</p>
+
+</body>
+</html>

@@ -90,6 +90,7 @@
 
 <nav class="nav">
   <a href="#tldr">Verdict</a>
+  <a href="#checkpoint">&#9208; Checkpoint</a>
   <a href="#goal">Goal &amp; non-goals</a>
   <a href="#baseline">Today</a>
   <a href="#pipeline">Proposed pipeline</a>
@@ -121,6 +122,45 @@
     <li><strong>Designed toward pkgbase:</strong> the staging step (4 tarballs + overlay) is shaped to converge on <em>pkg-based</em> composition &mdash; each repo as a <code>NextBSD-*</code> package that <code>conflicts</code> with the FreeBSD base package it replaces, plus a packageable overlay shipped as installable <code>src/</code>. See &sect;7.</li>
   </ul>
   <p class="footnote">Scope is deliberately the <strong>CI test image only</strong>. Nothing here changes the end-user ISO that <code>nextbsd</code> produces.</p>
+</section>
+
+<section id="checkpoint" class="resolved" style="border-left-color: var(--accent); background:#fff8f3;">
+<h2 style="border:0; margin-top:0;">&#9208; Session checkpoint — where we left off <span class="pill info">2026-06-22</span></h2>
+<p>Paused mid-design (tired — resume later). This captures the live state + every decision locked this session so it can be picked up cold. <strong>Read this first on return.</strong></p>
+
+<h3>Phase 1 (native assembly) — what works / what's blocked</h3>
+<div class="resolved"><strong>PROVEN:</strong> native Linux assembly works end-to-end — host-built <code>makefs</code>/<code>mkimg</code> stage the four cross-built artifacts into a real <code>disk.img</code> that <strong>boots the NextBSD kernel + launchd as PID&nbsp;1</strong>, no FreeBSD VM. (nextbsd-userland PR&nbsp;#4, draft; the <code>assemble-image</code> job is green.)</div>
+<div class="risk"><strong>BLOCKED at ~7&nbsp;s:</strong> the booted image halts before getty/login (no markers). Cause: it lacks the <strong>FreeBSD-runtime layer</strong> the current ISO build adds outside the four artifacts — the runtime binaries (login/getty/pwd_mkdb), <strong>PAM</strong> (libpam + modules), and <strong>/etc</strong> (master.passwd/login.conf/gettytab/nsswitch.conf/pam.d), plus offline DB generation. That layer is the work below.</div>
+
+<h3>Decisions locked this session</h3>
+<table>
+<tr><th>Area</th><th>Decision</th><th>Why</th></tr>
+<tr><td><strong>Base</strong></td><td>Build the <strong>full FreeBSD-runtime FROM SOURCE</strong> via pkgbase (<code>buildworld</code> + <code>make packages</code>), with a <code>patches/</code> mechanism (mirror nextbsd-kernel: <code>patches/</code> + <code>series</code>, <code>git apply -p1</code> onto <code>/usr/src</code>) to drop the kld tools now + future base mods. Replaces the granular per-dir srclist.</td><td>Granular srclist = missing-lib whack-a-mole. A from-source package is self-consistent <em>and</em> patchable.</td></tr>
+<tr><td><strong>PAM</strong></td><td><strong>FreeBSD's PAM</strong> (libpam + pam_modules + pam.d + login/su/passwd). Cancel the planned Apple OpenPAM port (#93 direction).</td><td>NextBSD authenticates vs <code>master.passwd</code> (no directory services); the Darwin layer uses no PAM; Apple PAM was never ported to nextbsd-userland (it was a deferred tier). Retires the no-clobber-apple-libs concern.</td></tr>
+<tr><td><strong>getty</strong></td><td><strong>FreeBSD's getty</strong> (from runtime). Drop the Apple system_cmds getty.</td><td>Apple's getty has ZERO Mach/launchd content — pure BSD tty plumbing. Keep <code>com.apple.getty.plist</code> (launchd runs whichever <code>/usr/libexec/getty</code> exists).</td></tr>
+<tr><td><strong>syslog</strong></td><td><strong>Keep Apple's ASL syslogd</strong> (+ the <code>bsd_in</code> module). Do NOT pull FreeBSD-syslogd/newsyslog.</td><td>The Darwin layer logs via the ASL Mach service (FreeBSD syslogd can't serve it); ASL syslogd's <code>bsd_in</code> also serves <code>/var/run/log</code> for FreeBSD clients. One syslogd, both worlds. (The ASL/notify boot hang was fixed + merged — #352.)</td></tr>
+<tr><td><strong>/etc</strong></td><td>compat ships <strong>NO /etc</strong> (strip it). The <em>overlay</em> owns /etc.</td><td>The overlay (LaunchDaemons + /etc incl. master.passwd/login.conf/gettytab/nsswitch.conf/pam.d) migrates from nextbsd into <strong>nextbsd-userland</strong> (<code>src/overlay</code> + a Makefile install target); both the CI image + nextbsd's ISO consume it.</td></tr>
+</table>
+
+<h3>Package keep-list (what the from-source base must include)</h3>
+<p><strong>FreeBSD-runtime</strong> + its auto-deps (<code>FreeBSD-clibs</code>, <code>-zlib</code>, <code>-ncurses-lib</code>, <code>-libarchive</code>, <code>-audit-lib</code>, <code>-libcasper</code>, <code>-openssl-lib</code>) cover the core. Plus these <strong>extras NOT in runtime</strong>:</p>
+<p class="footnote"><code>FreeBSD-utilities</code> (pciconf/diskinfo/fstyp/gstat/devctl/libprocstat) &middot; <code>FreeBSD-openssl</code>(tool)+<code>-caroot</code> &middot; <code>FreeBSD-fetch</code> &middot; <code>FreeBSD-zoneinfo</code> &middot; <code>FreeBSD-vt-data</code> &middot; <code>FreeBSD-bmake</code> (make + /usr/share/mk) &middot; <code>FreeBSD-xz</code> &middot; <code>FreeBSD-certctl</code> &middot; <code>FreeBSD-libsqlite3</code> &middot; <code>FreeBSD-libucl</code> &middot; <code>FreeBSD-libedit</code> &middot; <code>FreeBSD-libmagic</code> &middot; <code>FreeBSD-kerberos</code> (MIT krb5, curl/git) &middot; <code>FreeBSD-bootloader</code> (stand) &middot; <code>FreeBSD-pkg-bootstrap</code> (pkg) &middot; C++ runtime (libcxxrt/libc++).</p>
+<div class="open-q"><strong>Caveat:</strong> <code>libdevinfo</code> (X stack) is owned by <code>FreeBSD-devmatch</code> — pulling it drags in the devmatch package we'd otherwise skip. Extract just the lib, or defer alongside the kld-tool patch.</div>
+
+<h3>Resume here — next steps (in order)</h3>
+<ol>
+<li><strong>Rework nextbsd-freebsd-compat</strong> to the from-source pkgbase build: add <code>patches/</code> infra (mirror nextbsd-kernel) + a kld-removal patch; <code>buildworld</code> + <code>make packages</code>; install FreeBSD-runtime + the keep-set + bootstrap pkg; keep Lever&nbsp;B (rtld <code>STANDARD_LIBRARY_PATH</code> via make.conf) + <code>MK_KERBEROS</code>; strip /etc,/var,/boot/kernel; re-apply setuid from METALOG. <em>Supersedes compat PR&nbsp;#28 (the granular getty/passwd/pwd_mkdb + kldxref edit) — close it.</em> Adds a ~30-45&nbsp;min buildworld to compat CI.</li>
+<li><strong>Migrate the overlay</strong> from nextbsd into nextbsd-userland (PR&nbsp;#4): <code>src/overlay/</code> + a Makefile install target, providing the authoritative /etc (incl. FreeBSD-default master.passwd/login.conf/gettytab/nsswitch.conf/pam.d) + LaunchDaemons.</li>
+<li><strong>Re-run nextbsd-userland Phase&nbsp;1</strong> (PR&nbsp;#4): with the full-runtime base + the overlay /etc + offline DBs, the native image should boot past getty to the markers (SYSLOG-RUN-OK, CONFIGD-STORE-OK, &hellip;).</li>
+<li><strong>Follow-ups:</strong> retire nextbsd <code>build.sh</code> #193/kldxref steps once the base no longer ships kld tools; the mDNS/HOSTNAMED marker is a pre-existing tolerated WARN (matches nextbsd's own runs).</li>
+</ol>
+
+<h3>Open PRs / state</h3>
+<ul>
+<li><strong>nextbsd-userland&nbsp;#4</strong> (draft) — Phase&nbsp;1 native assembler (<code>ci/assemble-image.sh</code> + <code>assemble-image</code>/<code>ci-image-boot</code> jobs). assemble green; boot halts at 7&nbsp;s (above).</li>
+<li><strong>nextbsd-freebsd-compat&nbsp;#28</strong> — granular srclist edit; <strong>superseded</strong> by the from-source-runtime decision (close + replace).</li>
+<li><strong>Merged / filed:</strong> nextbsd-userland&nbsp;#3 (boot smoke-test + notifyd #352 fix); issues nextbsd #352 (resolved), #353 (<code>mach_port_request_notification</code> no-op), #354 (configd audit-token/OOL).</li>
+</ul>
 </section>
 
 <h2 id="goal">1. Goal &amp; non-goals</h2>
@@ -332,6 +372,7 @@
 <p class="footnote">
 <strong>Status.</strong> Scoping / design only &mdash; no implementation. Verdict: native Linux assembly of a CI-only boot-test image is feasible with no FreeBSD-kernel blocker; the work is relocating already-cross-built inputs + host-building two format tools, not solving a hard dependency. Companion context: this CI image is explicitly <em>not</em> the end-user ISO (that remains <code>nextbsd-redux/nextbsd</code>'s role).
 <br><strong>2026-06-22</strong> &mdash; Initial scoping from three investigations (current assembler map, native-Linux tooling feasibility, minimal-rootfs + freebsd-runtime boundary) + the overlay-ownership / two-stage-miniroot refinement + the pkgbase roadmap (overlay as installable <code>src/</code>; <code>NextBSD-*</code> packages that <code>conflict</code> with FreeBSD base; <code>tar</code>&rarr;<code>pkg</code> assembler convergence).
+<br><strong>2026-06-22 (later)</strong> &mdash; Phase&nbsp;1 PROVEN (native image boots launchd; halts pre-getty for lack of the FreeBSD-runtime layer). Decisions locked: base = full FreeBSD-runtime from source via pkgbase + a <code>patches/</code> mechanism (drop kld tools); PAM/getty/login = FreeBSD's (Apple ports dropped); ASL syslogd kept; /etc owned by the overlay (migrating into nextbsd-userland). Paused mid-design &mdash; see the <a href="#checkpoint">Session checkpoint</a> to resume.
 </p>
 
 </body>

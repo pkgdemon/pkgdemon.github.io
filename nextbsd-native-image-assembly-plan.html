@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD — native Linux CI image assembly plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.plist { border-left-color: var(--accent); }
+  pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+          padding: 1rem 1.1rem; }
+  .card h4 { margin-top: 0; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .phase.done { border-left: 4px solid var(--ok); }
+  .phase.todo { border-left: 4px solid var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  blockquote { margin: 1rem 0; padding: .5rem 1rem; border-left: 3px solid var(--accent);
+               background: #fff8f3; color: #333; }
+  .footnote { font-size: .85rem; color: var(--muted); }
+  ol li, ul li { margin: .25rem 0; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .filename { color: var(--accent); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .risk { background: #fff5e6; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .risk strong { color: var(--warn); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .step-num { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; background: var(--accent); color: white; border-radius: 50%; font-weight: 700; font-size: .85em; margin-right: .35em; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">Verdict</a>
+  <a href="#goal">Goal &amp; non-goals</a>
+  <a href="#baseline">Today</a>
+  <a href="#pipeline">Proposed pipeline</a>
+  <a href="#tooling">Tooling</a>
+  <a href="#rootfs">Rootfs &amp; runtime boundary</a>
+  <a href="#overlays">Overlay ownership</a>
+  <a href="#pkg">Packaging</a>
+  <a href="#arch">amd64 / arm64</a>
+  <a href="#risks">Risks</a>
+  <a href="#phases">Phases</a>
+  <a href="#open">Open questions</a>
+  <a href="#sources">Sources</a>
+</nav>
+
+<h1>NextBSD — native Linux CI image assembly
+  <span class="pill info">scoping / design</span>
+  <span class="pill ok">FEASIBLE</span>
+</h1>
+<p class="subtitle">Assemble a small, throwaway, bootable <code>.img</code> <em>natively on the Ubuntu CI runner</em> inside <code>nextbsd-userland</code> &mdash; from the four already-cross-built artifacts (compat base + kernel + modules + Darwin userland) &mdash; purely to qemu-boot-test the userland it just built, for amd64 <strong>and</strong> arm64. No FreeBSD VM. This image is <strong>not</strong> what end users run; the full end-user ISO stays the job of <code>nextbsd-redux/nextbsd</code>.</p>
+
+<section id="tldr" class="tldr">
+  <h3>Verdict: <span class="verdict go">feasible &mdash; build it on Linux, no FreeBSD VM</span></h3>
+  <ul>
+    <li><strong>Why it's possible:</strong> the image-format tools (<code>makefs</code>, <code>mkimg</code>) are <em>no-mount</em> FreeBSD build-tools that run on Linux &mdash; <code>makefs</code> writes a UFS2 filesystem image from a staged directory tree without ever mounting anything, sidestepping the &ldquo;Linux can't write FFS&rdquo; problem. The EFI/BIOS bootloaders are already cross-built. There is <strong>no FreeBSD-kernel-only blocker for image <em>assembly</em></strong>.</li>
+    <li><strong>Why it's fast:</strong> the current build runs entirely inside a <code>vmactions</code> FreeBSD VM and <em>rebuilds the whole Darwin userland from source there</em> (the bulk of a ~17&nbsp;min build). We already cross-build that userland on Linux &mdash; so we just <strong>ingest the tarball</strong> and skip the VM, the in-VM compile, the <code>chroot</code> <code>pkg</code> phase, and the live-ISO machinery.</li>
+    <li><strong>The pipeline:</strong> download 4 tarballs &rarr; stage <code>/rootfs</code> + the <code>nextbsd-userland</code> overlay &rarr; offline <code>pwd_mkdb</code>/<code>cap_mkdb</code>/<code>kldxref</code> &rarr; <code>makefs</code> UFS + ESP &rarr; <code>mkimg</code> GPT &rarr; <code>qemu</code> boot-test.</li>
+    <li><strong>Bonus wins:</strong> decouples <code>nextbsd-userland</code> CI from nextbsd's <em>published</em> <code>.img</code> (today's smoke-test downloads it &mdash; a circular dependency); unlocks <strong>arm64</strong> CI (the end-user builder is amd64-only); and lets the kernel/modules smoke-tests re-<code>makefs</code> a tree instead of <code>md</code>-mounting in a VM.</li>
+    <li><strong>The one real design choice:</strong> where the FreeBSD/Darwin line sits for leaf runtime tools (getty/login/&hellip;). Recommendation below: broaden stock-FreeBSD leaf tools via the compat <em>srclist</em> &mdash; which just formalizes a stopgap already in place (<code>FreeBSD-runtime</code> <code>login</code>, nextbsd#207).</li>
+    <li><strong>Designed toward pkgbase:</strong> the staging step (4 tarballs + overlay) is shaped to converge on <em>pkg-based</em> composition &mdash; each repo as a <code>NextBSD-*</code> package that <code>conflicts</code> with the FreeBSD base package it replaces, plus a packageable overlay shipped as installable <code>src/</code>. See &sect;7.</li>
+  </ul>
+  <p class="footnote">Scope is deliberately the <strong>CI test image only</strong>. Nothing here changes the end-user ISO that <code>nextbsd</code> produces.</p>
+</section>
+
+<h2 id="goal">1. Goal &amp; non-goals</h2>
+<div class="grid">
+  <div class="card">
+    <h4>Goal &mdash; what this image is</h4>
+    <ul>
+      <li>A minimal, <em>disposable</em> GPT/UFS disk image, assembled on the Linux runner in <code>nextbsd-userland</code>'s workflow.</li>
+      <li>Boots far enough to run nextbsd's existing marker suite (<code>tests/boot-test.sh</code>): boot banner &rarr; <code>launchd</code> as PID&nbsp;1 &rarr; Mach/bootstrap/libdispatch/libxpc/CoreFoundation &rarr; <code>launchctl</code> &rarr; <code>syslogd</code>/<code>notifyd</code> &rarr; <code>configd</code> &rarr; mDNS/hostnamed &rarr; getty&rarr;login.</li>
+      <li>Built for <strong>amd64 and arm64</strong> under qemu (<code>-x86_64</code> / <code>-aarch64</code> + OVMF, both apt-installable).</li>
+      <li>Fast: minutes, not the current ~17&nbsp;min, with no VM spin-up.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>Non-goals &mdash; what stays in <code>nextbsd</code></h4>
+    <ul>
+      <li>The <strong>end-user product</strong>: the full ISO/img with the <code>chroot</code> <code>pkg</code>/llvm toolchain phase and ports runtime.</li>
+      <li>The <strong>live ISO</strong>: <code>mkuzip</code> + the mfsroot/<code>/init</code>/<code>vfs.pivot</code> first-stage miniroot.</li>
+      <li>End-user polish, sizing, signing, release packaging.</li>
+      <li>Replacing <code>build.sh</code>. This is a <em>second, lean</em> assembler that lives in <code>nextbsd-userland</code> and reuses shared inputs (notably the overlay &mdash; see &sect;6).</li>
+    </ul>
+  </div>
+</div>
+<p><strong>Design constraint &mdash; converge on pkgbase.</strong> Even though step one stages plain tarballs, design every input so it can later become a <code>NextBSD-*</code> <em>package</em> that <code>conflicts</code> with the FreeBSD base package it replaces, and keep the system overlay as installable <code>src/</code> so it too can be packaged. The assembler's &ldquo;stage the rootfs&rdquo; step should be swappable from <code>tar&nbsp;-x</code> to <code>pkg install</code> without touching the <code>makefs</code>/<code>mkimg</code> packing. This is the roadmap the whole design is shaped around &mdash; see &sect;7.</p>
+
+<h2 id="baseline">2. How the image is built today</h2>
+<p>The final repo <code>nextbsd-redux/nextbsd</code> drives a single <span class="filename">build.sh</span> (~3,245 lines) <strong>entirely inside a <code>vmactions/freebsd-vm@v1</code></strong> (FreeBSD&nbsp;15.0) on an Ubuntu runner. Only artifact download and the qemu/expect boot-tests are already Linux-native.</p>
+<ul>
+  <li><strong>It rebuilds the Darwin userland from source in the VM</strong> (<code>build.sh:749&ndash;2820</code>) &mdash; launchd/configd/CoreFoundation+ICU/libxpc/libdispatch/notifyd/syslogd/&hellip; via <code>make</code>/<code>cmake</code> + in-<code>chroot</code> <code>ldconfig</code>. This is the slow, OOM-sensitive bulk of the build &mdash; and it is <strong>redundant</strong> now that <code>nextbsd-userland</code> cross-builds exactly this on Linux.</li>
+  <li><strong>It <code>chroot</code>s into the rootfs</strong> for <code>pkg bootstrap</code>/<code>pkg install</code> (FreeBSD pkg, FreeBSD:15:amd64), <code>certctl</code>, <code>ldconfig</code>, <code>kldxref</code>, <code>pwd_mkdb</code>, <code>cap_mkdb</code>, and native <code>migcom</code> &mdash; all of which need a FreeBSD kernel to execute target binaries.</li>
+  <li><strong>Format tools</strong>: <code>makefs</code> (UFS root + FAT ESP), <code>mkimg</code> (GPT), and &mdash; for the live ISO only &mdash; <code>mkuzip</code> + <code>mkisoimages.sh</code>.</li>
+  <li><strong>amd64 only.</strong> The matrix is a single amd64 include; arm64 is an explicit future item.</li>
+  <li><strong>Layout</strong>: GPT = <code>freebsd-boot</code>(gptboot, BIOS) + EFI ESP(<code>BOOTX64.EFI</code> = <code>loader.efi</code>) + <code>freebsd-ufs</code> rw root (label <code>ROOTFS</code>). PID&nbsp;1 is <code>launchd</code> &mdash; <code>INIT_PATH=/sbin/launchd</code> and <code>ROOTDEVNAME="ufs:/dev/ufs/ROOTFS"</code> are <em>baked into the NEXTBSD kernel</em> (<span class="filename">nextbsd-kernel/config/NEXTBSD:15-16</span>), so <code>loader.conf</code> stays tiny.</li>
+</ul>
+<blockquote>The VM exists because <code>build.sh</code> assumes a FreeBSD <em>host</em> (chroot target-binary execution + pkg), <strong>not</strong> because <code>makefs</code>/<code>mkimg</code> need FreeBSD. Remove the target-binary steps and the assembly is just file-staging + two format tools.</blockquote>
+
+<h2 id="pipeline">3. Proposed native-Linux pipeline</h2>
+<p>Inside <code>nextbsd-userland</code>'s workflow, after the cross-build job produces the userland tarball:</p>
+<div class="ascii-diagram">  nextbsd-userland CI  (Ubuntu runner, nextbsd-kernel-toolchain clang + host build-tools)
+  ────────────────────────────────────────────────────────────────────────────────────
+   cross-built userland  ──┐
+   compat  base   tarball ─┤
+   kernel         tarball ─┼──▶  stage  /rootfs   (tar -x, overlay-first)
+   modules        tarball ─┘            + nextbsd-userland OVERLAY
+                                          (LaunchDaemons, /etc, loader.conf.d, fstab, ttys)
+                                              │
+                                              ├─ offline DB gen (host build-tools, no chroot):
+                                              │     pwd_mkdb -d … master.passwd
+                                              │     cap_mkdb  login.conf
+                                              │     kext perms: chown root:wheel + go-w  /System/Library/Extensions  (OSKext auth)
+                                              │     re-apply setuid/special bits via mtree   (linker.hints: trivial, see below)
+                                              │
+                                              ├─ makefs -t ffs  -o label=ROOTFS,version=2  → rootfs.ufs
+                                              ├─ makefs -t msdos (loader.efi → EFI/BOOT)   → esp.img
+                                              └─ mkimg -s gpt …                            → disk.img
+                                                    amd64:  -b pmbr  -p freebsd-boot:=gptboot
+                                                            -p efi:=esp.img(BOOTX64)  -p freebsd-ufs:=rootfs.ufs
+                                                    arm64:  -p efi:=esp.img(BOOTAA64) -p freebsd-ufs:=rootfs.ufs  (UEFI-only)
+                                              │
+                                              └─ qemu-system-x86_64 / -aarch64  + OVMF + expect
+                                                    → tests/boot-test.sh  (existing marker suite)</div>
+<p>Every box above is a pure-Linux step. The <em>only</em> things that move are the FreeBSD-host steps we delete outright: the in-VM userland rebuild (&rarr; we ingest the tarball), the <code>chroot</code> <code>pkg</code>/toolchain phase (&rarr; not needed for a boot-test image), and the live-ISO <code>mkuzip</code>/mfsroot path (&rarr; ISO-only, stays in nextbsd).</p>
+
+<h2 id="tooling">4. Tooling feasibility</h2>
+<table>
+  <tr><th>Step</th><th>Tool</th><th>On Linux?</th><th>Notes</th></tr>
+  <tr><td>UFS2 root image</td><td><code>makefs -t ffs</code></td><td><span class="pill ok">yes</span></td><td>No-mount writer; a freebsd-src <code>usr.sbin/makefs</code> build-tool. Host-buildable like we already build <code>migcom</code>. This is the key enabler.</td></tr>
+  <tr><td>FAT ESP</td><td><code>makefs -t msdos</code> <em>or</em> <code>mkfs.vfat</code>+<code>mtools</code></td><td><span class="pill ok">yes</span></td><td>Either FreeBSD <code>makefs</code> msdos, or stock Linux <code>dosfstools</code>+<code>mtools</code> to drop <code>loader.efi</code> at <code>EFI/BOOT/BOOT{X64,AA64}.EFI</code>.</td></tr>
+  <tr><td>GPT assembly + bootcode</td><td><code>mkimg -s gpt</code></td><td><span class="pill ok">yes</span></td><td>freebsd-src <code>usr.bin/mkimg</code> build-tool; glues pmbr/gptboot/ESP/UFS into the raw image.</td></tr>
+  <tr><td>EFI/BIOS loaders</td><td><code>loader.efi</code>, <code>gptboot</code>, <code>pmbr</code></td><td><span class="pill ok">yes</span></td><td>Cross-built from freebsd-src <code>stand/</code> &mdash; produced by the existing cross build; just drop them in.</td></tr>
+  <tr><td>passwd / login.conf DB</td><td><code>pwd_mkdb</code>, <code>cap_mkdb</code></td><td><span class="pill warn">verify</span></td><td>Small db builders; host-buildable build-tools. <em>Verify byte-for-byte db format on Linux (endianness/layout).</em> Fallback: bake the <code>.db</code> files into the overlay.</td></tr>
+  <tr><td>Driver model = <strong>kexts</strong></td><td>mtree / chown</td><td><span class="pill ok">yes</span></td><td>Drivers load as kexts via OSKext/<code>kextd</code> at runtime &mdash; <em>not</em> klds. Requirement: <code>root:wheel</code> + <code>go-w</code> on <code>/System/Library/Extensions</code> for OSKext auth (mtree/chmod). The kld* CLIs (incl. <code>kldxref</code>) are retired from the image (#193).</td></tr>
+  <tr><td>Strip module/firmware tree</td><td>staging</td><td><span class="pill ok">yes</span></td><td>The shipping image carries <strong>no</strong> <code>/boot/kernel/*.ko</code> and <strong>no</strong> <code>/boot/firmware</code> (monolithic kernel, Mach baked in). Strip both from the staged tree if the base/compat artifact ships them. <code>linker.hints</code> is then trivial &mdash; <code>kldxref</code> may run once at build to stamp it (or bake an empty one); nothing loads via the kld path at boot.</td></tr>
+  <tr><td>setuid/special bits</td><td>mtree / <code>makefs -F</code></td><td><span class="pill warn">verify</span></td><td>An unprivileged staged tree loses setuid bits; re-apply via an mtree manifest fed to <code>makefs</code> (same class of issue as the base METALOG handling).</td></tr>
+  <tr><td>live ISO uzip</td><td><code>mkuzip</code>, <code>mkisoimages.sh</code></td><td><span class="pill bad">n/a here</span></td><td>FreeBSD-specific; <strong>not needed</strong> for the CI <code>.img</code>. Stays in nextbsd's end-user builder.</td></tr>
+</table>
+<p>The <span class="pill warn">verify</span> rows are the homework, not blockers: each has a &ldquo;bake the artifact into the overlay&rdquo; fallback if the host tool misbehaves.</p>
+
+<h2 id="rootfs">5. Rootfs composition &amp; the FreeBSD-runtime boundary</h2>
+<p>The staged tree is four artifacts plus the overlay, laid overlay-first (last writer wins):</p>
+<table>
+  <tr><th>Layer</th><th>Source artifact</th><th>Lands as</th></tr>
+  <tr><td>Base / sysroot (libc, base libs, leaf tools)</td><td><code>nextbsd-freebsd-compat</code> &rarr; <code>nextbsd-base-&lt;arch&gt;.tar.gz</code></td><td>the whole rootfs skeleton</td></tr>
+  <tr><td>Kernel</td><td><code>nextbsd-kernel</code></td><td><code>/boot/kernel/kernel</code> (Mach compiled in)</td></tr>
+  <tr><td>Driver kexts</td><td><code>nextbsd-kernel-modules</code></td><td><code>/System/Library/Extensions</code> (chown 0:0, go-w for OSKext auth)</td></tr>
+  <tr><td>Darwin system layer</td><td><code>nextbsd-userland</code> &rarr; <code>nextbsd-userland-&lt;arch&gt;.tar.gz</code></td><td><code>/sbin/launchd</code>, <code>/usr/lib/system</code>, configd, notifyd, syslogd, CF, IOKit, &hellip;</td></tr>
+  <tr><td>System overlay (config)</td><td><code>nextbsd-userland</code> (moved here &mdash; &sect;6)</td><td>authoritative <code>/etc</code>, <code>System/Library/LaunchDaemons</code>, <code>loader.conf.d</code>, <code>fstab</code>, <code>ttys</code></td></tr>
+</table>
+
+<h3>The getty / freebsd-runtime boundary</h3>
+<p>Your instinct &mdash; bring FreeBSD leaf runtime back broadly rather than porting Apple equivalents one-by-one &mdash; matches what the project <em>already does</em>: today's image installs <code>FreeBSD-runtime</code> from pkgbase to get <code>/usr/bin/login</code> as an explicit <strong>stopgap</strong> (nextbsd#207). The proposal just moves that from an ad-hoc pkgbase install into the curated compat <em>srclist</em>, so it's reproducible and cross-built. Recommended line:</p>
+<table>
+  <tr><th>Component</th><th>Source</th><th>Why</th></tr>
+  <tr><td><code>getty</code>, <code>login</code>, <code>passwd</code>, <code>pwd_mkdb</code>/<code>cap_mkdb</code>, the <code>/bin</code>&middot;<code>/sbin</code>&middot;<code>/usr/bin</code> coreutils-ish set</td><td><span class="pill info">stock FreeBSD via compat srclist</span></td><td>No Darwin specialness needed; FreeBSD's are correct and free. Generalizes the existing <code>login</code> stopgap.</td></tr>
+  <tr><td><code>launchd</code> (PID&nbsp;1), <code>configd</code>, Mach userland (libmach/libxpc/libdispatch), CoreFoundation, IOKit, notifyd, <strong>ASL <code>syslogd</code></strong></td><td><span class="pill ok">Darwin &mdash; nextbsd-userland</span></td><td>These <em>are</em> the product; ASL syslogd must stay (the boot test exercises the ASL round-trip; a FreeBSD syslogd would conflict).</td></tr>
+  <tr><td><code>init</code>, <code>rc</code>/rc.d, <code>/etc</code> config</td><td><span class="pill warn">excluded / overlay</span></td><td>PID&nbsp;1 is launchd, not FreeBSD <code>init</code>; <code>/etc</code> is authoritative from the overlay. Do <strong>not</strong> pull FreeBSD <code>init</code>/<code>rc</code>.</td></tr>
+  <tr><td><code>devd</code>, <code>devmatch</code>, kld* tools, autoload machinery, <code>/boot/firmware</code></td><td><span class="pill warn">excluded</span></td><td>Fully superseded by IOKit/OSKext/<code>kextd</code> &mdash; drivers are kexts, not klds. There's <em>no launchd job to start them</em>, so they'd be inert dead weight. Exclude from the srclist (and strip any that ride in on the base artifact).</td></tr>
+</table>
+<p><strong>Don't ship <code>FreeBSD-runtime</code> wholesale.</strong> It drags in the FreeBSD device-management + kld stack (<code>devd</code>, <code>devmatch</code>, kld tools, autoload, <code>/boot/firmware</code>) that NextBSD has fully superseded with IOKit/OSKext/<code>kextd</code>. With no launchd job to start them they're inert &mdash; harmless but dead weight, and a dormant FreeBSD device stack next to the Darwin one is a clarity wart. <strong>Curate the leaf-tool subset via srclist</strong> (the boot-to-login set + anything genuinely useful) instead. This is the concrete driver for finer package granularity (&sect;7, Q7).</p>
+<p class="footnote">Conflicts to watch: overlay order (the overlay shadows any srclist tool of the same path), setuid bits on <code>login</code>/<code>su</code>, and path collisions between a broadened FreeBSD leaf set and Apple <code>*_cmds</code>. Decide srclist breadth against the <em>from-source compat</em> model (the repo is mid-migration off pkgbase).</p>
+
+<h2 id="overlays">6. Overlay ownership &amp; two-stage layering</h2>
+<p>Today the system overlay (LaunchDaemons, <code>/etc</code>, <code>loader.conf.d/nextbsd.conf</code>, <code>fstab</code>) lives in <code>nextbsd-work/overlays/</code> and is applied <em>last</em> by <code>build.sh</code> (authoritative). Since that overlay <strong>configures the Darwin userland</strong>, it should move to <code>nextbsd-userland</code> and travel with the userland artifact &mdash; one source of truth, consumed by both builders.</p>
+<div class="grid">
+  <div class="card">
+    <h4>nextbsd-userland owns &mdash; the <em>system</em> overlay</h4>
+    <ul>
+      <li>LaunchDaemons (<code>com.apple.getty/configd/syslogd/notifyd/&hellip;</code>, <code>com.openssh.sshd</code>)</li>
+      <li><code>/etc</code> (master.passwd, login.conf, fstab, ttys, &hellip;)</li>
+      <li><code>boot/loader.conf.d/nextbsd.conf</code></li>
+      <li>Used <strong>directly</strong> by the CI image, and consumed by the ISO's <strong>2nd-stage</strong> (real) rootfs.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>nextbsd (ISO) owns &mdash; the <em>boot/miniroot</em> overlay</h4>
+    <ul>
+      <li><strong>First-stage miniroot</strong> (initramfs-like): <code>/init</code>, the uzip + unionfs + <code>vfs.pivot</code> dance, live-media loader.conf.</li>
+      <li>ISO-specific only; never needed by the CI <code>.img</code> (which boots the kernel-baked <code>INIT_PATH=/sbin/launchd</code> path directly).</li>
+      <li>After pivot, the <strong>second-stage</strong> rootfs uses the <em>same</em> nextbsd-userland system overlay.</li>
+    </ul>
+  </div>
+</div>
+<p><strong>Payoff:</strong> the CI image boot-tests the <em>exact</em> LaunchDaemons/<code>/etc</code> the ISO ships &mdash; no drift between &ldquo;what CI tests&rdquo; and &ldquo;what users get.&rdquo; The ISO's only unique overlay is the boot scaffolding, which CI legitimately doesn't exercise.</p>
+
+<h2 id="pkg">7. Packaging roadmap &mdash; toward pkgbase</h2>
+<p>The tarball-overlay assembly is step one; the end-state is <strong>pkg-based composition</strong>. Designing for it now keeps the CI image and the end-user ISO on one packaging model and retires the ad-hoc <code>pkg install FreeBSD-runtime</code> stopgap.</p>
+
+<h3>7.1&nbsp; Each repo as a <code>NextBSD-*</code> package that conflicts with FreeBSD base</h3>
+<p>Every repo emits a pkgbase-style package whose <code>conflicts</code> metadata claims the paths it supersedes, so a pkg-composed rootfs has no file collisions and <code>NextBSD-*</code> deterministically wins over stock <code>FreeBSD-*</code>:</p>
+<table>
+  <tr><th>Package</th><th>From repo</th><th>Conflicts / replaces</th><th>Provides</th></tr>
+  <tr><td><code>NextBSD-kernel</code></td><td>nextbsd-kernel</td><td><code>FreeBSD-kernel*</code></td><td>the Mach-enabled <code>/boot/kernel/kernel</code></td></tr>
+  <tr><td><code>NextBSD-kernel-extensions</code></td><td>nextbsd-kernel-modules</td><td>the FreeBSD kernel-modules pkg for drivers it replaces</td><td><code>/System/Library/Extensions</code> kexts</td></tr>
+  <tr><td><code>NextBSD-freebsd-compat</code></td><td>nextbsd-freebsd-compat</td><td>the FreeBSD base runtime/clibs/leaf-tool pkgs it rebuilds from source</td><td>libc, base libs, and the broadened FreeBSD leaf runtime (getty/login/&hellip; via srclist, &sect;5)</td></tr>
+  <tr><td><code>NextBSD-userland</code></td><td>nextbsd-userland</td><td>any FreeBSD base pkg owning a path it overwrites (e.g. <code>/sbin/init</code>&rarr;launchd, <code>/usr/lib/system</code>)</td><td>the Darwin system layer (launchd/configd/CF/Mach/notifyd/ASL&nbsp;syslogd)</td></tr>
+  <tr><td><code>NextBSD-runtime-config</code></td><td>nextbsd-userland (overlay, &sect;6)</td><td>&mdash; authoritative <code>/etc</code> + plists</td><td>LaunchDaemons/LaunchAgents, <code>/etc</code>, <code>loader.conf.d</code>, <code>fstab</code></td></tr>
+</table>
+
+<h3>7.2&nbsp; The overlay as installable <code>src/</code></h3>
+<p>Rather than a raw <code>cp -aR overlays/.</code> tree, keep the system overlay in <code>nextbsd-userland</code> as <strong><code>src/</code> with BSD install rules</strong> &mdash; a <code>Makefile</code>/mtree that installs LaunchDaemons, LaunchAgents, and the <code>/etc</code> bits to their real paths. That makes it both (a) <code>make install DESTDIR=&hellip;</code>-able into the staged rootfs for the CI image today, and (b) trivially packageable as <code>NextBSD-runtime-config</code> tomorrow &mdash; one definition serving the raw-overlay path now and the pkg path later. Anything we need in <code>/etc</code> or under <code>/System/Library/Launch*</code> lives here as source.</p>
+
+<h3>7.3&nbsp; Assembler convergence: <code>tar</code> &rarr; <code>pkg</code></h3>
+<p>The staging step is deliberately the <em>only</em> thing that differs between the two models &mdash; the format packing never changes:</p>
+<div class="ascii-diagram">  today:     tar -x {compat,kernel,modules,userland}.tar.gz   +   make install (overlay src/)  ─┐
+  tomorrow:  pkg -r /rootfs install  NextBSD-{kernel, kernel-extensions, freebsd-compat,         ├─▶ /rootfs
+                                                userland, runtime-config}                        ─┘   → makefs/mkimg (unchanged)</div>
+<div class="resolved" style="border-left-color: var(--accent2); background:#eef4fa;"><strong style="color:var(--accent2);">Why design for this now:</strong> the <code>conflicts</code> metadata is the clean answer to the FreeBSD-vs-Darwin path-ownership question (&sect;5) &mdash; instead of leaning on overlay copy-order to shadow stock files, packages declare ownership explicitly. Both the CI image and the end-user ISO then compose from the same <code>NextBSD-*</code> set, and end users can <code>pkg install</code>/upgrade the layers independently.</div>
+
+<h2 id="arch">8. amd64 and arm64</h2>
+<ul>
+  <li><strong>amd64</strong>: GPT with <code>pmbr</code>+<code>gptboot</code> (BIOS) <em>and</em> ESP <code>BOOTX64.EFI</code> (UEFI). qemu-system-x86_64 + OVMF (as today).</li>
+  <li><strong>arm64</strong>: UEFI-only &mdash; GPT with ESP <code>BOOTAA64.EFI</code>, no pmbr/gptboot. qemu-system-aarch64 + edk2/OVMF-aarch64 (apt-installable). The bootloader is cross-built from <code>stand/</code> for aarch64; the userland/base/kernel/modules already cross-build for arm64.</li>
+  <li>Arch-conditionalize the <code>mkimg</code> scheme and the ESP filename; everything else is shared.</li>
+</ul>
+
+<h2 id="risks">9. Risks &amp; mitigations</h2>
+<div class="risk"><strong>Host build-tools must actually build &amp; behave.</strong> <code>makefs</code>/<code>mkimg</code>/<code>pwd_mkdb</code>/<code>cap_mkdb</code>/<code>kldxref</code> are freebsd-src tools; confirm they build clean as host tools in the toolchain image and produce byte-correct output on Linux (endianness for the DBs, UFS2 little-endian for makefs). <em>Mitigation:</em> each has a &ldquo;bake the artifact into the overlay&rdquo; fallback.</div>
+<div class="risk"><strong>setuid loss.</strong> An unprivileged staged tree drops setuid bits; <code>login</code>/<code>su</code> need them. <em>Mitigation:</em> feed <code>makefs</code> an mtree manifest that restores modes (same approach as the base METALOG handling).</div>
+<div class="risk"><strong>Does a <em>minimal</em> (no-pkg) image still pass every marker?</strong> Some boot-test assertions might assume toolchain/pkg presence. <em>Mitigation:</em> first run compares the native-assembled image's markers against the current VM-built image and reconciles any gap (likely just a few overlay/db files).</div>
+<div class="risk"><strong>Cross-repo coordination.</strong> Moving the overlay into nextbsd-userland means nextbsd's <code>build.sh</code> must consume it from there. <em>Mitigation:</em> stage it as a published path/artifact; nextbsd pulls it like the other tarballs. Sequence the overlay move after the CI assembler proves out.</div>
+
+<h2 id="phases">10. Phased delivery</h2>
+<div class="phase todo">
+  <h3>Phase 1 &mdash; prove the assembly (amd64)</h3>
+  Host-build <code>makefs</code>+<code>mkimg</code> in the toolchain image. In a throwaway script, stage the 4 artifacts + a <em>copy</em> of today's <code>overlays/</code>, do offline db gen, <code>makefs</code>+<code>mkimg</code> a <code>disk.img</code>, qemu-boot it, and diff the marker output against the current smoke-test. Goal: <code>SYSLOG-RUN-OK</code> &hellip; parity with no VM.
+</div>
+<div class="phase todo">
+  <h3>Phase 2 &mdash; replace the smoke-test</h3>
+  Swap <code>nextbsd-userland</code>'s smoke-test from &ldquo;download nextbsd <code>.img</code> + overlay-in-VM&rdquo; to &ldquo;assemble locally + boot.&rdquo; Removes the FreeBSD VM and the dependency on nextbsd's published image.
+</div>
+<div class="phase todo">
+  <h3>Phase 3 &mdash; own the overlay</h3>
+  Move the system overlay into <code>nextbsd-userland</code> (&sect;6); CI applies it directly. Broaden FreeBSD leaf runtime (getty/login/passwd/&hellip;) via the compat srclist; retire the <code>FreeBSD-runtime</code> pkgbase <code>login</code> stopgap (nextbsd#207).
+</div>
+<div class="phase todo">
+  <h3>Phase 4 &mdash; arm64</h3>
+  Add the aarch64 ESP/<code>mkimg</code> path + qemu-system-aarch64 leg. First-ever arm64 boot-test.
+</div>
+<div class="phase todo">
+  <h3>Phase 5 (later, in nextbsd) &mdash; converge the builders</h3>
+  nextbsd's ISO consumes the nextbsd-userland overlay for the 2nd-stage rootfs and keeps only its first-stage miniroot overlay. Optionally, kernel/modules smoke-tests re-<code>makefs</code> a staged tree instead of <code>md</code>-mounting in a VM &mdash; removing that VM use too.
+</div>
+<div class="phase todo">
+  <h3>Phase 6 (roadmap) &mdash; pkgbase composition</h3>
+  Emit each repo as a <code>NextBSD-*</code> package with <code>conflicts</code> against the FreeBSD base it replaces (&sect;7), package the overlay as <code>NextBSD-runtime-config</code>, and swap the assembler's staging from <code>tar -x</code> to <code>pkg install -r</code>. End users (and the ISO) then compose the same package set, and the FreeBSD-runtime stopgap retires for good.
+</div>
+
+<h2 id="open">11. Open questions for review</h2>
+<div class="open-q"><strong>Q1.</strong> Do we keep <code>build.sh</code> as-is for the end-user ISO and add a <em>separate</em> lean assembler in nextbsd-userland (recommended), or factor a shared assembly library both call?</div>
+<div class="open-q"><strong>Q2.</strong> How broad should the FreeBSD leaf-runtime srclist be for the CI image &mdash; just the boot-to-login set (getty/login/passwd/sh), or a fuller coreutils set so the image is also hand-usable for debugging?</div>
+<div class="open-q"><strong>Q3.</strong> Offline DB generation: trust host <code>pwd_mkdb</code>/<code>cap_mkdb</code>/<code>kldxref</code>, or bake the <code>.db</code>/<code>linker.hints</code> into the overlay to avoid host-tool risk entirely?</div>
+<div class="open-q"><strong>Q4.</strong> Overlay home: a top-level <code>overlay/</code> in nextbsd-userland shipped <em>inside</em> the userland tarball, or a separate published overlay artifact? (Affects how nextbsd consumes it.)</div>
+<div class="open-q"><strong>Q5.</strong> Image size/headroom for a boot-test image &mdash; the current build adds +1.5&nbsp;G rw headroom; the CI image can be much smaller (read-mostly). How small do we want it?</div>
+<div class="open-q"><strong>Q6.</strong> pkgbase convergence (&sect;7.3): run <code>pkg</code> against a rootdir on the <em>Linux</em> runner (build/run pkg on Linux) or use an offline composition tool that consumes the <code>NextBSD-*</code> packages? And does the CI image itself adopt pkg composition, or stay tar-based while only the end-user ISO goes full pkg?</div>
+<div class="open-q"><strong>Q7.</strong> Package granularity &amp; conflicts: is <code>NextBSD-freebsd-compat</code> one package or a set mirroring FreeBSD's base pkg split? We want the FreeBSD <em>leaf</em> runtime (getty/login/passwd/&hellip;) but <strong>not</strong> the device-management/kld stack (<code>devd</code>/<code>devmatch</code>/kldtools/<code>/boot/firmware</code> &mdash; superseded by IOKit/kexts), which argues for a curated subset over a wholesale <code>FreeBSD-runtime</code>. Finer granularity makes the <code>conflicts</code> precise but multiplies packages &mdash; where's the line?</div>
+
+<h2 id="sources">12. Source citations</h2>
+<table>
+  <tr><th>Claim</th><th>Source</th></tr>
+  <tr><td>Whole assembly runs in <code>vmactions/freebsd-vm</code>; userland rebuilt from source in-VM; chroot pkg phase; amd64-only</td><td><span class="filename">nextbsd-work/build.sh</span> (749&ndash;2820 userland build; 241&ndash;345 chroot pkg), <span class="filename">.github/workflows/build.yml</span> (matrix + vmactions)</td></tr>
+  <tr><td>Image assembly steps: makefs UFS + FAT ESP, mkimg GPT, mkuzip/mkisoimages for live ISO</td><td><span class="filename">build.sh:2945&ndash;3019</span> (.img), <span class="filename">3037&ndash;3239</span> (ISO)</td></tr>
+  <tr><td>PID&nbsp;1 = launchd; rootdev baked into kernel</td><td><span class="filename">nextbsd-kernel/config/NEXTBSD:15-16</span>; <span class="filename">overlays/boot/loader.conf.d/nextbsd.conf</span></td></tr>
+  <tr><td><code>makefs</code>/<code>mkimg</code> are no-mount, Linux-runnable build-tools; no FreeBSD-kernel blocker for assembly</td><td>feasibility agent (freebsd-src <code>usr.sbin/makefs</code>, <code>usr.bin/mkimg</code>); same host-tool pattern as <code>migcom</code></td></tr>
+  <tr><td><code>login</code> currently from <code>FreeBSD-runtime</code> pkgbase as a stopgap</td><td><span class="filename">build.sh:286</span>; nextbsd#207</td></tr>
+  <tr><td>Overlay applied last (authoritative <code>/etc</code> + plists)</td><td><span class="filename">build.sh:2839</span> (<code>cp -aR overlays/. rootfs/</code>)</td></tr>
+</table>
+
+<hr>
+<p class="footnote">
+<strong>Status.</strong> Scoping / design only &mdash; no implementation. Verdict: native Linux assembly of a CI-only boot-test image is feasible with no FreeBSD-kernel blocker; the work is relocating already-cross-built inputs + host-building two format tools, not solving a hard dependency. Companion context: this CI image is explicitly <em>not</em> the end-user ISO (that remains <code>nextbsd-redux/nextbsd</code>'s role).
+<br><strong>2026-06-22</strong> &mdash; Initial scoping from three investigations (current assembler map, native-Linux tooling feasibility, minimal-rootfs + freebsd-runtime boundary) + the overlay-ownership / two-stage-miniroot refinement + the pkgbase roadmap (overlay as installable <code>src/</code>; <code>NextBSD-*</code> packages that <code>conflict</code> with FreeBSD base; <code>tar</code>&rarr;<code>pkg</code> assembler convergence).
+</p>
+
+</body>
+</html>

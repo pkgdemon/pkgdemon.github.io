@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD system path layout: the Gershwin layout vs a POSIX layout — spike</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:920px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin:14px 0 22px; }
+  .cols > div { background:white; border:1px solid var(--border); border-radius:4px; padding:14px 18px; }
+  .cols h4 { margin:0 0 8px; font-size:1rem; }
+  @media (max-width:720px){ .cols { grid-template-columns:1fr; } }
+  .open { background:#fff8ee; border:1px solid #e6d2a8; border-radius:4px; padding:4px 20px; margin:14px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD research</a> &middot; relates to the <a href="nextbsd-library-resolution-plan.html">library-resolution design</a> (Lever&nbsp;B, <a href="https://github.com/nextbsd-redux/nextbsd/issues/278">#278</a>) and the <a href="freebsd-launchd-mach-plan.html">launchd&nbsp;PID&nbsp;1</a> port</p>
+
+<h1>NextBSD system path layout &mdash; the Gershwin layout vs a POSIX layout</h1>
+
+<p class="lede">NextBSD (the OS: launchd&nbsp;PID&nbsp;1, Apple userland, no rc.d) and <strong>Gershwin</strong> (the GNUstep desktop, which ships its own named <code>tools-make</code> layout) both descend from the NeXT/Apple filesystem model, and today both reach into the same <code>/System</code> tree &mdash; they even collide on one exact directory, <code>/System/Library/Libraries</code>. The ask: relocate NextBSD's system machinery so that <code>/System</code> belongs <em>entirely</em> to Gershwin &mdash; a clean <code>rm&nbsp;-rf&nbsp;/System</code> removes only Gershwin and breaks nothing in NextBSD. This spike lays out <strong>two coherent target layouts</strong> &mdash; keep the Apple/Gershwin-domain shape, or move NextBSD to a POSIX shape &mdash; with the full per-path inventory, the exact change surface, and an honest accounting of <em>what we lose</em> either way. <strong>Decision doc, not a runbook &mdash; no code changed.</strong></p>
+
+<p class="meta">2026-07-02. Synthesized from three parallel source investigations across <code>nextbsd-userland</code>, <code>nextbsd-freebsd-compat</code>, <code>nextbsd-kernel</code>, <code>nextbsd-kernel-modules</code>, and <code>nextbsd-work</code> (launchd LaunchDaemons scan; kext_tools/OSKext Extensions&nbsp;+&nbsp;caches; a full <code>/System</code>&nbsp;+&nbsp;<code>/Library</code> reference sweep). Citations are <code>file:line</code>.</p>
+
+<div class="callout">
+<p><span class="pill pill-neutral">The one-sentence question</span> Should NextBSD's system layer <strong>stay in the Apple/GNUstep domains</strong> (and Gershwin move to a different domain), or <strong>move to POSIX paths</strong> (and Gershwin keep the domains)? The research says either is <em>mechanically</em> cheap &mdash; the interesting part is the philosophy and the small blast radius, both mapped below.</p>
+</div>
+
+<div class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#domains">The Gershwin layout (a named <code>tools-make</code> FilesystemLayout)</a></li>
+    <li><a href="#footprint">What NextBSD actually puts under <code>/System</code> &amp; <code>/Library</code> today</a></li>
+    <li><a href="#options">The two layouts, side by side</a></li>
+    <li><a href="#pertable">Per-path proposals</a></li>
+    <li><a href="#lose">What we lose (and gain) by going POSIX</a></li>
+    <li><a href="#blast">Blast radius, atomicity &amp; the <code>/private</code> wrinkle</a></li>
+    <li><a href="#open">Open decisions</a></li>
+    <li><a href="#appendix">Appendix: change surface (<code>file:line</code>)</a></li>
+  </ol>
+</div>
+
+<h2 id="domains">1. The Gershwin layout &mdash; a named <code>tools-make</code> FilesystemLayout, not the generic GNUstep model</h2>
+<p>Gershwin does not merely &ldquo;follow the GNUstep domain convention.&rdquo; It ships an <strong>official, named filesystem layout inside <code>tools-make</code></strong>: <code>FilesystemLayouts/gershwin</code>, selectable at gnustep-make configure time alongside the stock <code>gnustep</code>, <code>gnustep-with-network</code>, <code>fhs</code>, <code>fhs-system</code>, <code>apple</code>, <code>mac</code>, <code>next</code>, and <code>standalone</code> layouts. It pins every <code>GNUSTEP_*</code> root explicitly &mdash; so the paths below are not convention, they are the checked-in configuration NextBSD must design against. Verbatim from <span class="cite">tools-make/FilesystemLayouts/gershwin</span>:</p>
+<table>
+<tr><th>Domain</th><th>Root</th><th>Library</th><th>Apps</th><th>Users</th></tr>
+<tr><td>System</td><td><code>/System</code></td><td><code>/System/Library</code></td><td><code>/System/Applications</code></td><td><code>/System/Users</code></td></tr>
+<tr><td>Network</td><td><code>/Network</code></td><td><code>/Network/Library</code></td><td><code>/Network/Applications</code></td><td><code>/Network/Users</code></td></tr>
+<tr><td>Local</td><td><code>/Local</code></td><td><code>/Local/Library</code></td><td><code>/Local/Applications</code></td><td><code>/Local/Users</code></td></tr>
+<tr><td>User</td><td><code>~</code></td><td><code>~/Library</code></td><td><code>~/Applications</code></td><td>&mdash;</td></tr>
+</table>
+<p>with <code>GNUSTEP_DEFAULT_PREFIX=/</code>, GNUstep makefiles at <code>/System/Library/Makefiles</code>, and per-domain <code>Libraries/</code>, <code>Headers/</code>, <code>Tools/</code>, <code>WebApplications/</code> and <code>Documentation/</code> subtrees. Three properties of <em>this specific layout</em> drive the rest of the doc:</p>
+<ul>
+<li><strong>Gershwin's <code>Libraries</code> path <em>is</em> NextBSD's rtld path.</strong> The layout sets <code>GNUSTEP_SYSTEM_LIBRARIES=/System/Library/Libraries</code> &mdash; the <em>exact</em> directory NextBSD compiled into rtld as Lever&nbsp;B (<code>STANDARD_LIBRARY_PATH=&hellip;:/System/Library/Libraries:&hellip;</code>, <span class="cite">compat build.yml:84</span>). This is not a stylistic overlap; it is <strong>one directory claimed by two projects for two different purposes</strong> &mdash; Gershwin's ObjC framework/`.so` install target vs NextBSD's <code>ld-elf.so</code> search path.</li>
+<li><strong><code>/System/Users</code>, <code>/Network/Users</code>, <code>/Local/Users</code> are Gershwin-specific.</strong> The layout's own header states it exists to &ldquo;support the Network computing model Gershwin provides.&rdquo; The generic GNUstep layout has no <code>*/Users</code> roots &mdash; this is precisely why the spike must reason about <em>the gershwin layout</em>, not GNUstep-in-general.</li>
+<li><strong>Plain <code>/Library</code> is still not a Gershwin path.</strong> The Local domain is <code>/Local/Library</code>, not <code>/Library</code>. So NextBSD's <code>/Library/LaunchDaemons</code> and <code>/Library/Preferences</code> don't collide with Gershwin &mdash; that stays a POSIX-vs-Apple <em>style</em> question. And the launchd port already resolves <code>/Local/Library</code> and <code>/System/Library</code> in its <code>NSSystemDirectories</code> shim (<span class="cite">NSSystemDirectories.h:83,86</span>), so the &ldquo;keep the domains&rdquo; option is not foreign to the code.</li>
+</ul>
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">The collision is already real &mdash; and already coded around</span> Gershwin's own installer is the proof. <code>gershwin-developer</code>'s <code>make install</code> refuses when <code>/System/Applications</code> already exists, and &mdash; the tell &mdash; its <code>make uninstall</code> would run <code>rm -rf /System</code> <strong>but explicitly bails out on NextBSD</strong>: &ldquo;<em>NextBSD system detected (<code>/usr/lib/system</code> exists)&hellip; Cannot uninstall <code>/System</code> as it may contain system libraries.</em>&rdquo; (<span class="cite">gershwin-developer/Makefile</span>). That guard <em>is</em> the failure this spike exists to remove: right now <code>rm -rf /System</code> is unsafe because NextBSD-the-OS and Gershwin-the-desktop share the <code>/System</code> tree.</p>
+</div>
+<p><span class="pill pill-neutral">What Gershwin actually claims under <code>/System</code></span> The <code>gershwin-system</code> repo is cloned <em>directly onto <code>/System</code></em> and records a receipt at <code>/System/Library/Receipts/System.stamp</code> (<span class="cite">gershwin-system/GNUmakefile:9</span>) &mdash; Gershwin treats the whole tree as its own. Its <code>/System/Library</code> subtree spans <code>Makefiles</code>, <code>Headers</code>, <code>Frameworks</code>, <code>Bundles</code>, <code>Tools</code>, <code>CoreServices</code>, <code>Scripts</code>, <code>Menu</code>, <code>Sounds</code>, <code>WebApplications</code>, <code>Documentation</code>, <code>Preferences</code> (its <code>GNUstep.conf</code> lives at <code>/System/Library/Preferences/GNUstep.conf</code>), <code>Libraries</code> &mdash; and <strong><code>LaunchDaemons</code></strong>. So there are <strong>two</strong> concrete NextBSD&harr;Gershwin collisions inside <code>/System/Library</code>, not one:</p>
+<table>
+<tr><th>Directory</th><th>NextBSD puts here</th><th>Gershwin puts here</th></tr>
+<tr><td><code>/System/Library/Libraries</code></td><td>rtld <code>STANDARD_LIBRARY_PATH</code> search entry (Lever&nbsp;B)</td><td><code>GNUSTEP_SYSTEM_LIBRARIES</code> install target (libdispatch et al., <code>-DCMAKE_INSTALL_PREFIX=/System/Library</code>)</td></tr>
+<tr><td><code>/System/Library/LaunchDaemons</code></td><td>11 boot daemon plists (getty, configd, syslogd&hellip;)</td><td>session-service plists (e.g. <code>loginwindow</code>)</td></tr>
+</table>
+<p>Even with distinct filenames, the <code>LaunchDaemons</code> directory can't be cleanly owned or wiped by either side once they interleave. Gershwin additionally claims <code>/Developer</code> as its from-source build root (a fifth root beyond the four domains), and at runtime <code>LoginWindow</code> overrides the user domain to <code>~/GNUstep</code> rather than the layout's <code>~/Library</code>.</p>
+
+<h2 id="footprint">2. What NextBSD puts under <code>/System</code> &amp; <code>/Library</code> today</h2>
+<p>The good news from the sweep: the footprint is <strong>small, NextBSD-authored, and editable</strong> &mdash; and there is <strong>no <code>/System/Library/Frameworks</code></strong>. NextBSD's Apple libraries all live in <code>/usr/lib/system</code> (rtld <code>-rpath</code>), so there is <em>no dyld shared cache, no framework <code>install_name</code>, no ABI path</em> to untangle &mdash; the part that is usually the hard part simply does not exist here.</p>
+<table>
+<tr><th>Path</th><th>What</th><th>Generated by</th><th>Consumer</th></tr>
+<tr><td><code>/System/Library/LaunchDaemons/</code><br><code>/Library/LaunchDaemons/</code></td><td>11 daemon plists (getty, configd, syslogd, notifyd, mDNSResponder, IPConfiguration, DiskArbitration, hostnamed, kextd, aslmanager, sshd). <strong>Contested:</strong> Gershwin also drops session plists (e.g. <code>loginwindow</code>) into <code>/System/Library/LaunchDaemons</code></td><td><strong>overlay</strong> (authored files)</td><td>launchd PID&nbsp;1 scans both at boot <span class="cite">launchd_plist_scan.c:264-265</span></td></tr>
+<tr><td><code>/System/Library/Extensions/</code></td><td>the kext bundles (if_em, i915, IntelWiFi, &hellip;)</td><td><strong>build</strong> (assemble-image extracts the modules tarball here)</td><td>kextd default repo <span class="cite">kextd.c:349, OSKextPrivate.h:55</span>. <em>Kernel never reads it</em> (see below)</td></tr>
+<tr><td><code>/System/Library/Libraries/</code></td><td>&mdash; nothing installed &mdash; it's only a <em>search-path entry</em> in rtld's compiled default</td><td><strong>build</strong> (baked into <code>STANDARD_LIBRARY_PATH</code>, Lever&nbsp;B)</td><td>rtld <span class="cite">compat build.yml:84</span>; already flagged &ldquo;move away from gershwin-developer's&rdquo; <span class="cite">PORTING.md:86</span></td></tr>
+<tr><td><code>/System/Library/Caches/com.apple.kext.caches/</code></td><td>kext directory-scan speedup (id&rarr;URL, personalities)</td><td><strong>runtime</strong> (kextd, when the repo is a &ldquo;system folder&rdquo;)</td><td>kextd only; <em>never the kernel, never at boot</em></td></tr>
+<tr><td><code>/Library/Preferences/SystemConfiguration/preferences.plist</code></td><td>SCPreferences store (incl. <code>ComputerName</code> &mdash; the hostname persistence, <a href="https://github.com/nextbsd-redux/nextbsd/issues/358">#358</a>)</td><td><strong>runtime</strong> (configd / hostnamed / IPConfiguration write it)</td><td>configd &amp; friends <span class="cite">SCPreferences.c:35</span></td></tr>
+</table>
+<div class="callout callout-good">
+<p><span class="pill pill-good">Two findings that shrink the job</span></p>
+<ul>
+<li><strong>The kernel is filesystem-blind for kexts.</strong> Autoload is a present-device scan that sends Mach load requests to kextd over <code>HOST_KEXTD_PORT</code> &mdash; the kernel opens no kext directory, reads no cache, hardcodes no path (<span class="cite">iokit_catalogue.c:308</span>). There is no prelinked kernel / mkext (<span class="cite">prelink.h:3, OSKext.c:12828</span>). <strong>So moving Extensions needs zero kernel changes.</strong></li>
+<li><strong>The kext cache self-disables on the move.</strong> OSKext only writes/reads the cache for its hardcoded <em>system</em> folders; point the repo elsewhere and caching silently no-ops, falling back to a direct scan of a handful of kexts (negligible). So <code>Caches/</code> doesn't need a new home &mdash; it just <em>disappears</em>.</li>
+</ul>
+</div>
+
+<h2 id="options">3. The two layouts, side by side</h2>
+<div class="cols">
+  <div>
+    <h4>Option&nbsp;A &mdash; Keep the domains; move <em>Gershwin</em> off <code>/System</code></h4>
+    <p>NextBSD's system layer stays under <code>/System/Library</code>; to separate the two, <strong>Gershwin</strong> would move to another domain (e.g. <code>/Local</code>), leaving <code>/System</code> to the OS.</p>
+    <ul>
+      <li>NextBSD stays maximally &ldquo;Mac-shaped&rdquo; &mdash; the property that motivates the whole Apple-userland effort; launchd/kext code changes little.</li>
+      <li><strong>But the burden lands on Gershwin, and it's heavy.</strong> Gershwin's <code>/System</code> rooting isn't a convention we can flip &mdash; it's a checked-in <code>--with-layout=gershwin</code> tools-make layout, hard-coded runtime <code>setenv GNUSTEP_SYSTEM_ROOT=/System</code> (<span class="cite">UIBridge/Server/main.m:1101</span>), and a ports <code>Uses/gershwin.mk</code> default. Relocating it means <em>forking Gershwin's layout</em> &mdash; not NextBSD's call to make, and against the grain of the whole project.</li>
+      <li>&ldquo;Remove Gershwin&rdquo; would become <code>rm -rf /Local/&hellip;</code> &mdash; but only after that fork lands.</li>
+      <li>Still muddier philosophically: both the OS and the desktop are &ldquo;system,&rdquo; and <code>/System/Library/{Libraries,LaunchDaemons}</code> stay contested until Gershwin actually moves.</li>
+    </ul>
+  </div>
+  <div>
+    <h4>Option&nbsp;B &mdash; Move NextBSD to POSIX</h4>
+    <p>NextBSD's system machinery moves to FreeBSD-idiomatic paths, vacating <code>/System</code> entirely. Gershwin then owns the GNUstep domains outright and <code>rm -rf /System</code> removes only Gershwin.</p>
+    <ul>
+      <li>LaunchDaemons &rarr; <code>/etc/launchd.d</code> + <code>/usr/local/etc/launchd.d</code></li>
+      <li>Extensions &rarr; <code>/boot/kernel/extensions</code></li>
+      <li>Libraries &rarr; dropped from the rtld path</li>
+      <li>SCPreferences &rarr; <code>/var/db/systemconfiguration</code> (or <code>/etc</code>)</li>
+      <li>Caches &rarr; gone (self-disables)</li>
+      <li>Clean OS/desktop separation; pairs with <code>service(8)</code>'s <code>/usr/local/etc/rc.d</code>. Cost: the system layer stops looking like macOS.</li>
+    </ul>
+  </div>
+</div>
+<p>Both are internally coherent. Option&nbsp;A optimises for <em>Apple fidelity</em>; Option&nbsp;B optimises for <em>clean separation + POSIX idiom</em>. A viable <strong>hybrid</strong> also exists (below): move only the things that genuinely <em>collide</em> or are <em>already flagged</em> (Libraries, and whichever of LaunchDaemons/Extensions you consider &ldquo;OS, not desktop&rdquo;), and leave the rest.</p>
+
+<h2 id="pertable">4. Per-path proposals</h2>
+<table>
+<tr><th>Item</th><th>Option&nbsp;A (domains)</th><th>Option&nbsp;B (POSIX)</th><th>Move cost</th></tr>
+<tr>
+  <td><strong>LaunchDaemons</strong><br><span class="cite">system + third-party</span></td>
+  <td>stay <code>/System/Library/LaunchDaemons</code> + <code>/Local/Library/LaunchDaemons</code></td>
+  <td><code>/etc/launchd.d</code> <span class="cite">(phys <code>/private/etc/launchd.d</code>)</span> + <code>/usr/local/etc/launchd.d</code></td>
+  <td>2 scan literals + move 11 plists + rework the <code>NSSystemDirectories</code> &ldquo;append <code>/LaunchDaemons</code>&rdquo; shim. <strong>Atomic</strong> (getty = login).</td>
+</tr>
+<tr>
+  <td><strong>Extensions</strong> (kexts)</td>
+  <td>stay <code>/System/Library/Extensions</code></td>
+  <td><code>/boot/kernel/extensions</code> <span class="cite">(real dir)</span></td>
+  <td>1 constant + 3 tool defaults + build/CI/test placement (keep <code>root:wheel</code> + <code>go-w</code>). <strong>Kernel unchanged.</strong> Caches self-disable.</td>
+</tr>
+<tr>
+  <td><strong>Libraries</strong> (rtld path)</td>
+  <td>keep <code>/System/Library/Libraries</code> in <code>STANDARD_LIBRARY_PATH</code></td>
+  <td><strong>remove it</strong> from the define (libs already in <code>/usr/lib/system</code>)</td>
+  <td>One string in <code>compat build.yml:84</code> + base rebuild. Already an intended move (<span class="cite">PORTING.md:86</span>).</td>
+</tr>
+<tr>
+  <td><strong>Caches</strong> (kext)</td>
+  <td><code>/System/Library/Caches</code></td>
+  <td><strong>gone</strong> (auto-disable) &mdash; or <code>/var/db/kext.caches</code> if ever wanted</td>
+  <td>Zero (falls out of the Extensions move).</td>
+</tr>
+<tr>
+  <td><strong>SCPreferences</strong> store</td>
+  <td><code>/Local/Library/Preferences/&hellip;</code></td>
+  <td><code>/var/db/systemconfiguration/</code> <span class="cite">(phys <code>/private/var/db</code>)</span> or <code>/etc/systemconfiguration/</code></td>
+  <td>One <code>#define PREFS_DEFAULT_DIR</code> <span class="cite">SCPreferences.c:35</span> (+ <code>com.apple.Boot.plist</code>). Dovetails with #358 hostname persistence.</td>
+</tr>
+<tr>
+  <td><strong>Frameworks</strong></td>
+  <td colspan="2" style="text-align:center">n/a &mdash; NextBSD has none; system libs live in <code>/usr/lib/system</code></td>
+  <td>&mdash;</td>
+</tr>
+</table>
+
+<h2 id="lose">5. What we lose (and gain) by going POSIX</h2>
+<div class="cols">
+  <div>
+    <h4><span class="pill pill-warn">Costs of Option&nbsp;B</span></h4>
+    <ul>
+      <li><strong>Apple-shape fidelity.</strong> The whole point of the Apple-userland port is that a Mac dev feels at home; LaunchDaemons/Extensions leaving <code>/System/Library</code> erodes that. Docs, muscle memory, and any Apple tooling that assumes the domains drift.</li>
+      <li><strong>Two conventions in one system.</strong> launchd is Apple-native but its jobs now live in a FreeBSD <code>/etc</code> dir; kexts are Apple bundles under a FreeBSD <code>/boot</code>. Coherence cost.</li>
+      <li><strong>The <code>NSSystemDirectories</code> shim gets a special case.</strong> Its <code>&lt;domain-prefix&gt; + "/LaunchDaemons"</code> shape doesn't fit a flat <code>/etc/launchd.d</code>; the abstraction that made domains uniform gets a carve-out.</li>
+      <li><strong>Divergence from Gershwin-developer's assumptions</strong> wherever they expect the shared domain layout.</li>
+    </ul>
+  </div>
+  <div>
+    <h4><span class="pill pill-good">Gains of Option&nbsp;B</span></h4>
+    <ul>
+      <li><strong>Clean separability</strong> &mdash; <code>rm -rf /System</code> (and the other domains) removes only Gershwin; NextBSD stands alone. That's the stated goal.</li>
+      <li><strong>POSIX idiom</strong> &mdash; <code>/etc</code>, <code>/usr/local/etc</code>, <code>/boot/kernel</code>, <code>/var/db</code> are where a BSD admin looks; pairs with the just-landed <code>service(8)</code> + <code>/usr/local/etc/rc.d</code>.</li>
+      <li><strong>Mutable state lands in <code>/var</code></strong> (SCPrefs, caches) instead of a nominally-immutable domain.</li>
+      <li><strong>No shared ownership</strong> of a directory tree between two independent projects &mdash; fewer &ldquo;who owns this plist&rdquo; questions.</li>
+    </ul>
+  </div>
+</div>
+<p><strong>The honest summary:</strong> the two options are not symmetric in <em>who</em> pays. Option&nbsp;A keeps NextBSD Mac-shaped but exports the work to <strong>Gershwin</strong> &mdash; forking its checked-in <code>gershwin</code> tools-make layout, runtime env, and ports <code>Mk</code> off <code>/System</code> &mdash; which NextBSD can't do unilaterally. Option&nbsp;B is nearly free <em>mechanically</em> (no kernel work, no frameworks, small edit surface), stays entirely <em>inside NextBSD's own repos</em>, and delivers exactly the requested property. What Option&nbsp;B costs is <em>identity</em> &mdash; NextBSD's system layer stops being a Mac clone and becomes &ldquo;a BSD that runs launchd.&rdquo; Whether that's a loss or the actual goal is the decision for wider review.</p>
+
+<h2 id="blast">6. Blast radius, atomicity &amp; the <code>/private</code> wrinkle</h2>
+<ul>
+<li><strong>Highest-coupling item:</strong> the LaunchDaemons scan is compiled into <strong>PID&nbsp;1</strong>. The scanner literals and the plist files <em>must</em> move in one atomic commit &mdash; if launchd scans the new dir but <code>getty.plist</code> is still in the old one (or vice-versa), there's no login prompt and boot looks hung with no error.</li>
+<li><strong>Kext auth constraint travels with the dir:</strong> wherever kexts land, they must stay <code>root:wheel</code> and not group/other-writable (OSKext refuses otherwise). The existing <code>chown 0:0</code> / <code>chmod go-w</code> steps must follow the path.</li>
+<li><strong>The <code>/private</code> wrinkle:</strong> <code>assemble-image.sh</code> symlinks <code>/etc</code>, <code>/var</code>, <code>/tmp</code> &rarr; <code>/private/*</code>. So POSIX targets in those trees are authored at <code>overlay/private/etc/launchd.d</code> and written at runtime to <code>/private/var/db/&hellip;</code>. <code>/usr/local</code> and <code>/boot</code> are <em>real</em> top-level dirs (no <code>/private</code>).</li>
+<li><strong>Not a problem:</strong> no <code>/System/Library/Frameworks</code>, no dyld cache, no hardcoded ABI path. The single generator of the <code>/System</code> tree is <code>assemble-image.sh</code>.</li>
+</ul>
+
+<h2 id="open">7. Open decisions</h2>
+<div class="open">
+<ol>
+<li><strong>A vs B vs hybrid</strong> &mdash; the philosophical call. Hybrid = move only the flagged/colliding items (Libraries for sure; then choose whether LaunchDaemons/Extensions are &ldquo;OS&rdquo; that should be POSIX or &ldquo;Apple-shape&rdquo; that should stay).</li>
+<li><strong>SCPreferences target</strong> (if moving): <code>/var/db/systemconfiguration</code> (mutable-state semantics, recommended) vs <code>/etc/systemconfiguration</code> (config semantics).</li>
+<li><strong>Names</strong>: <code>/etc/launchd.d</code> (proposed) vs <code>/etc/launchd/daemons</code>; <code>/boot/kernel/extensions</code> (proposed) vs <code>/boot/kexts</code>.</li>
+<li><strong>Sequencing</strong> (if we implement): phased per-move PRs (safest &mdash; contains the getty-atomicity risk) vs one coordinated set. <em>Deferred &mdash; planning only for now.</em></li>
+</ol>
+</div>
+
+<h2 id="appendix">8. Appendix &mdash; change surface (<code>file:line</code>)</h2>
+<p>The load-bearing edits for Option&nbsp;B, from the three source sweeps. Everything else is comments or unbuilt mirror trees.</p>
+<h3>LaunchDaemons</h3>
+<ul>
+<li><code>nextbsd-userland/src/launchd/src/launchd_plist_scan.c:264,265</code> &mdash; the two <code>launchd_scan_one_dir()</code> literals (the load-bearing scan). This is the tree <code>build-userland.sh</code> actually builds.</li>
+<li><code>src/launchd/support/launchctl.c:88</code> (<code>AUDITD_PLIST_FILE</code>, used <code>:2448</code>), <code>:2726/2728</code> (<code>strcat "/LaunchDaemons"</code>), and <code>freebsd-shims/NSSystemDirectories.h:83,86</code> (<code>/Local/Library</code>, <code>/System/Library</code>) &mdash; the bulk-load shim needs a small restructure, not a string swap.</li>
+<li>Move 11 plists: <code>overlay/System/Library/LaunchDaemons/*</code> &rarr; <code>overlay/private/etc/launchd.d/*</code>, in <strong>both</strong> <code>nextbsd-userland/overlay/</code> and <code>nextbsd-work/overlays/</code>.</li>
+<li>Diagnostic: <code>overlay/usr/tests/freebsd-launchd-mach/run.sh:920</code>; installer script <code>src/syslog/syslogd.tproj/after_install.sh:33</code> (if live).</li>
+</ul>
+<h3>Extensions + Caches</h3>
+<ul>
+<li><code>src/kext_tools/kext.subproj/OSKextPrivate.h:55</code> (the authoritative <code>_kOSKextSystemLibraryExtensionsFolder</code>), + defaults <code>kextd.c:349</code>, <code>kextload.c:52</code>, <code>kextdeps.c:49</code>, macro <code>bootfiles.h:67</code>.</li>
+<li>Alternatively/additionally pass <code>-r /boot/kernel/extensions</code> in <code>overlay/System/Library/LaunchDaemons/com.apple.kextd.plist</code> (currently <code>-w -v</code> only).</li>
+<li>Build/CI/test placement: <code>ci/assemble-image.sh:89,96,151-152</code>; <code>nextbsd-work/build.sh</code> (kext dir + chmod block); <code>nextbsd-kernel-modules/.github/workflows/build.yml:542-551</code>; <code>nextbsd-kernel-modules/tests/kext-boot-test.sh:57,58</code>.</li>
+<li>Caches: <em>no edit needed</em> (self-disables); optional <code>OSKextPrivate.h:82</code> repoint if kept.</li>
+</ul>
+<h3>Libraries + SCPreferences</h3>
+<ul>
+<li><code>nextbsd-freebsd-compat/.github/workflows/build.yml:84</code> &mdash; drop <code>:/System/Library/Libraries</code> from <code>-DSTANDARD_LIBRARY_PATH</code>.</li>
+<li><code>src/libSystemConfiguration/SCPreferences.c:35</code> &mdash; <code>PREFS_DEFAULT_DIR</code>; <code>bootfiles.h:73</code> (<code>com.apple.Boot.plist</code>); referenced by <code>hostnameprefset.c:112</code>, <code>SCDynamicStoreKeys.c:62</code>.</li>
+</ul>
+<p class="footnote">Kernel: <strong>no changes</strong> (kext autoload is a Mach-port present-scan, filesystem-blind). Frameworks/dyld: <strong>n/a</strong> (system libs in <code>/usr/lib/system</code>). Unbuilt mirror trees (<code>launchd/nextbsd-pr</code>, <code>launchd/freebsd-launchd-mach</code>, <code>nextbsd-work/src/launchd</code>, worktrees) carry identical literals and should be re-synced to avoid regressions but are not load-bearing.</p>
+
+</div>
+</body>
+</html>

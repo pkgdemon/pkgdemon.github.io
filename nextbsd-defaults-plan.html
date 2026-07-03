@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD overlay split — a nextbsd-defaults repo for seed-once config vs the package-owned system layer — plan</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:920px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.88rem; }
+  th,td { text-align:left; padding:8px 11px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f6e3e3; }
+  .pill { display:inline-block; font-size:0.72rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:6px; white-space:nowrap; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; } .pill-move { background:#dfe6f2; color:#33518a; } .pill-keep { background:#d6ead0; color:var(--good); }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .decision { background:#fff8ee; border:1px solid #e6d2a8; border-radius:4px; padding:6px 20px; margin:16px 0; }
+  .mono { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.85em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD research</a> &middot; related: <a href="nextbsd-path-domain-conformance-plan.html">four-domain layout</a>, <a href="nextbsd-native-image-assembly-plan.html">native image assembly</a></p>
+
+<h1>The <code>nextbsd-defaults</code> split</h1>
+
+<p class="lede">A new <code>nextbsd-defaults</code> repo holding the <strong>seed-once</strong>, admin-owned <code>/etc</code> config &mdash; laid into the img/ISO but <em>never owned by an upgradeable package</em> &mdash; separated from the <strong>NextBSD-maintained</strong> system layer (LaunchDaemon plists, rc glue, reference DBs) that <em>should</em> update on <code>pkg&nbsp;upgrade</code>. This is the fix for the config-clobber problem confirmed below.</p>
+
+<p class="meta">Status: <strong>planning — for review</strong>. Inventory of all 46 overlay files + packaging trace complete (two agents). Nothing built yet; this page is the decision record.</p>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">Confirmed problem</span> <strong>Today, <code>pkg upgrade</code> clobbers user config.</strong> <code>master.passwd</code>, <code>sshd_config</code>, and every <code>pam.d/*</code> ship as <strong>plain regular files owned by <code>NextBSD-userland</code></strong>. <code>nextbsd-pkg</code>'s <code>mkpkg</code> generates the plist with a bare <code>find</code> (<code>scripts/build.sh:41</code>) &mdash; <strong>no <code>@config</code>, no <code>@sample</code>, no scripts</strong>. So an upgrade overwrites them and leaves <em>no</em> <code>.pkgnew</code>; local edits (added users, tightened SSH, real PAM stacks) are silently lost.</p>
+</div>
+
+<div class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#why">Why this matters &amp; the two-bucket principle</a></li>
+    <li><a href="#pipeline">How the overlay flows today</a></li>
+    <li><a href="#matrix">The categorization matrix (all 46 files)</a></li>
+    <li><a href="#repo">The <code>nextbsd-defaults</code> repo</a></li>
+    <li><a href="#mechanism">Mechanism: the two hook points + seed-once logic</a></li>
+    <li><a href="#decisions">Decisions D1&ndash;D5 (all resolved)</a></li>
+    <li><a href="#rollout">Migration / rollout sequence</a></li>
+    <li><a href="#risks">Risks &amp; open questions</a></li>
+  </ol>
+</div>
+
+<h2 id="why">1. Why this matters &amp; the two-bucket principle</h2>
+
+<p>Every file the OS ships falls into one of two ownership models, and pkg only does the right thing if we put each file in the right one:</p>
+
+<div class="cols" style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:14px 0 22px;">
+  <div style="background:white;border:1px solid var(--border);border-radius:4px;padding:14px 18px;">
+    <h4 style="margin:0 0 8px;"><span class="pill pill-keep">Keep</span> Package-owned</h4>
+    <p style="margin:0;font-size:0.9rem;">Files <strong>NextBSD maintains</strong>. We <em>want</em> <code>pkg upgrade</code> to update them: LaunchDaemon plists, rc glue (<code>rc.subr</code>, <code>rc.d/ldconfig</code>), <code>sshd-keygen-wrapper</code>, IANA reference DBs, test assets. The user does not edit these (service enable/disable is a launchctl / override-domain concern, not a file edit). Regular files, as now.</p>
+  </div>
+  <div style="background:white;border:1px solid var(--border);border-radius:4px;padding:14px 18px;">
+    <h4 style="margin:0 0 8px;"><span class="pill pill-move">Move</span> Seed-once (admin-owned)</h4>
+    <p style="margin:0;font-size:0.9rem;">Files that become the <strong>admin's the moment they touch them</strong>: accounts, host identity, service config, PAM. Laid into the image <em>once</em>, then never touched by pkg. Live in <code>nextbsd-defaults</code>, seeded by <code>build.sh</code> — <em>unknown to pkg</em>, so upgrade-safe (exactly how <code>os-release</code> and the pkg-repo configs already work).</p>
+  </div>
+</div>
+
+<p>The <code>@config</code> keyword is pkg's built-in alternative (preserve local edits, drop the new version as <code>.pkgnew</code>). We reject it as the primary mechanism for the account/security files because it still <em>ships</em> the wide-open diagnostic <code>sshd_config</code>/<code>pam.d/sshd</code> in the package and relies on the admin noticing <code>.pkgnew</code>. Seed-once removes those files from the package entirely — cleaner and safer. <code>@config</code> remains a fallback for the ambiguous middle (see &sect;6).</p>
+
+<h2 id="pipeline">2. How the overlay flows today</h2>
+
+<table>
+<tr><th>Stage</th><th>What happens</th><th>Where</th></tr>
+<tr><td><strong>Pack</strong></td><td><code>cp -aR overlay/. /stage/</code> folds the whole vendored <code>overlay/</code> tree into the staged root as plain files, then tars it.</td><td class="mono">nextbsd-userland/.github/workflows/build-arch.yml:111,117</td></tr>
+<tr><td><strong>Package</strong></td><td><code>mkpkg</code> builds <code>NextBSD-userland</code> from that tarball; plist is a bare <code>find</code> &mdash; every file regular, none <code>@config</code>.</td><td class="mono">nextbsd-pkg/scripts/build.sh:26-44, 89-92</td></tr>
+<tr><td><strong>Img/ISO</strong></td><td>Rootfs is entirely <code>pkg install NextBSD-everything</code>. <code>build.sh</code> does <em>not</em> re-lay the overlay; it <em>consumes</em> <code>master.passwd</code> (<code>pwd_mkdb</code>) and authors its own un-owned files (<code>os-release</code>, pkg-repo confs).</td><td class="mono">nextbsd/build.sh:97, 137, 154-206</td></tr>
+</table>
+
+<p>The important seam: <strong><code>build.sh</code> already authors upgrade-safe files that pkg doesn't know about</strong> (<code>os-release</code>, <code>FreeBSD.conf</code>, <code>NextBSD.conf</code>). Seed-once config is the same pattern — we just source it from a repo instead of heredocs.</p>
+
+<h2 id="matrix">3. The categorization matrix</h2>
+
+<p>After decisions D1&ndash;D5: <strong>22 move</strong> to <code>nextbsd-defaults</code> (seed-once), <strong>20 stay</strong> package-owned (incl. 3 test assets), <code>motd.template</code> is removed, and the rest are generated fresh (never in either place). Package-ownership now narrows to the genuinely NextBSD-maintained system layer &mdash; daemon plists, rc glue, reference DBs, tests &mdash; i.e. exactly the files NextBSD <em>does</em> intend to update on upgrade.</p>
+
+<h3><span class="pill pill-move">Move &rarr; nextbsd-defaults</span> seed-once, never clobbered (22)</h3>
+<table>
+<tr><th>Path (under <code>overlay/</code>)</th><th>What</th><th>Why seed-once</th></tr>
+<tr><td class="mono">private/etc/master.passwd</td><td>account table (root passwordless, base pseudo-users)</td><td>admin adds users/passwords; clobber destroys accounts</td></tr>
+<tr><td class="mono">private/etc/group</td><td>group table</td><td>admin adds groups/members</td></tr>
+<tr><td class="mono">private/etc/ssh/sshd_config</td><td><span class="pill pill-bad">wide-open</span> zero-cred diagnosis config</td><td>admin tightens; upgrade re-opening root = security regression</td></tr>
+<tr><td class="mono">private/etc/pam.d/sshd</td><td><span class="pill pill-bad">wide-open</span> all-<code>pam_permit</code> stack</td><td>same — must not re-open on upgrade</td></tr>
+<tr><td class="mono">private/etc/fstab</td><td>root mount table</td><td>per-machine; admin adds disks</td></tr>
+<tr><td class="mono">private/etc/login.conf</td><td>login-class / limits DB</td><td>admin-editable; regenerates <code>.db</code></td></tr>
+<tr><td class="mono">private/etc/nsswitch.conf</td><td>name-service order</td><td>admin edits resolver order</td></tr>
+<tr><td class="mono">private/etc/ttys</td><td>getty / secure-login table</td><td>admin edits console security</td></tr>
+<tr><td class="mono">private/etc/hosts</td><td>static host DB</td><td>per-machine entries</td></tr>
+<tr><td class="mono">private/etc/ld-elf.so.conf</td><td>extra ldconfig dirs</td><td>ports/admin-appended paths</td></tr>
+<tr><td class="mono">private/etc/profile</td><td>system sh login setup</td><td>admin-editable</td></tr>
+<tr><td class="mono">private/etc/shells</td><td>valid login shells</td><td>admin appends shells</td></tr>
+<tr style="opacity:0.55;"><td class="mono"><s>private/etc/motd.template</s></td><td>login banner &mdash; <strong>removed</strong> (inert + stale, <a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/28">userland#28</a>)</td><td>not wanted; dropped, not seeded</td></tr>
+<tr><td class="mono">private/etc/gettytab</td><td>getty capability DB</td><td>admin-mutable /etc DB (D3)</td></tr>
+<tr><td class="mono">private/etc/pam.d/{system,login,su,passwd,cron,sudo,other}</td><td>7 real PAM stacks</td><td>final; not pkg-updated (D1)</td></tr>
+<tr><td class="mono">private/etc/asl.conf</td><td>syslogd ASL config (crash-avoidance tuning)</td><td>final; not pkg-updated (D2)</td></tr>
+<tr><td class="mono">boot/loader.conf.d/nextbsd.conf</td><td>NextBSD loader fragment</td><td>final; admins hand-tune boot (D4)</td></tr>
+</table>
+
+<h3><span class="pill pill-keep">Keep</span> package-owned, update on upgrade (20)</h3>
+<table>
+<tr><th>Path</th><th>What</th><th>Why package-owned</th></tr>
+<tr><td class="mono">System/Library/LaunchDaemons/*.plist &times;11</td><td>aslmanager, configd, DiskArbitration, getty, hostnamed, IPConfiguration, kextd, mDNSResponder, notifyd, syslogd, com.openssh.sshd</td><td>NextBSD's OS service definitions; ship fixes on upgrade. Enable/disable via launchctl / override domain, not by editing these.</td></tr>
+<tr><td class="mono">usr/libexec/sshd-keygen-wrapper</td><td>first-boot host-key gen + Bonjour, then <code>exec sshd</code></td><td>NextBSD-authored executable</td></tr>
+<tr><td class="mono">private/etc/rc.subr</td><td>rc.subr vendored from releng/15.0</td><td>must track <code>service</code>/<code>rcorder</code> in lockstep</td></tr>
+<tr><td class="mono">private/etc/rc.d/ldconfig</td><td>on-demand ldconfig shim (#280, removed by #281)</td><td>glue we must be able to update/remove</td></tr>
+<tr><td class="mono">private/etc/services, protocols, man.conf</td><td>IANA / mandoc reference DBs</td><td>reference data NextBSD refreshes</td></tr>
+<tr><td class="mono">usr/tests/**/run.sh &times;2, pam.d/test_iter1</td><td>CI test harnesses + PAM ABI fixture</td><td>test assets, not admin config</td></tr>
+</table>
+
+<h3><span class="pill pill-neutral">Generated</span> never in either place</h3>
+<p><code>passwd</code>, <code>pwd.db</code>, <code>spwd.db</code>, <code>login.conf.db</code>, <code>ld-elf.so.hints</code> (regenerated by <code>pwd_mkdb</code>/<code>cap_mkdb</code>/<code>ldconfig</code>); SSH host keys <code>ssh_host_*</code> (generated first boot by <code>sshd-keygen-wrapper</code>, then admin-owned state); <code>var/</code>, <code>tmp/</code>, <code>run/</code> skeletons. These stay out of the package <em>and</em> the overlays repo.</p>
+
+<h2 id="repo">4. The <code>nextbsd-defaults</code> repo</h2>
+
+<p>The repo holds <strong>only the user-owned, seed-once rootfs content</strong>, under a <code>rootfs/</code> subdir so consumers do a clean <code>cp -R rootfs/. $RF/</code> that copies the overlay and nothing else &mdash; no README / LICENSE / seed.sh splat:</p>
+<pre><code>nextbsd-defaults/
+  rootfs/                      # -&gt; cp -R rootfs/. $RF/   (image root, seed-once)
+    private/etc/
+      master.passwd  group  login.conf  nsswitch.conf  fstab
+      hosts  ttys  profile  shells  ld-elf.so.conf  gettytab  asl.conf
+      ssh/sshd_config
+      pam.d/{system,login,su,passwd,cron,sudo,other,sshd}
+    boot/loader.conf.d/nextbsd.conf
+  seed.sh                      # only-if-absent variant, for a future first-boot path
+  README.md  LICENSE  VERSION  # meta — NEVER copied (they sit OUTSIDE rootfs/)</code></pre>
+<p>The <code>rootfs/</code> subdir keeps the payload clean: <code>cp -R rootfs/. $RF/</code> splats exactly the 22 user-owned files and nothing else. Everything else stays where it is &mdash; the NextBSD-maintained <em>package</em> layer (daemon plists, rc glue, reference DBs) in <code>nextbsd-userland/overlay/</code>, and the live-ISO boot layer inline in <code>nextbsd/build.sh</code> (it's NextBSD machinery, not user config).</p>
+
+<h2 id="mechanism">5. Mechanism: two hook points + seed-once logic</h2>
+
+<p><strong>The logic lives in the repo, not the consumers.</strong> Two different image assemblers need the identical seed (see callout below), so <code>nextbsd-defaults</code> ships its own <code>seed.sh &lt;destroot&gt;</code> &mdash; one implementation, next to the data. Each consumer just clones and calls it.</p>
+<pre><code># nextbsd-defaults/seed.sh  — copy the tree onto a target root, only-if-absent
+#!/bin/sh
+DEST=${1:?usage: seed.sh &lt;destroot&gt;}
+cd "$(dirname "$0")"
+find private boot -type f 2>/dev/null | while IFS= read -r rel; do
+    [ -e "$DEST/$rel" ] || { mkdir -p "$DEST/$(dirname "$rel")"; cp -p "$rel" "$DEST/$rel"; }
+done
+chmod 0600 "$DEST/private/etc/master.passwd" 2>/dev/null || true</code></pre>
+
+<h3>(a) nextbsd-userland &mdash; stop packaging the subset, seed the test image</h3>
+<p>Two changes: <strong>(1)</strong> delete the seed files from <code>overlay/</code> so <code>cp -aR overlay/. /stage/</code> (<code>build-arch.yml:111</code>) no longer folds them into the tarball &rarr; the package stops owning them. <strong>(2)</strong> in the native minimal-image assembly (<code>ci/assemble-image.sh</code>, driven by <code>OVERLAY=…/overlay</code> at <code>build-arch.yml:141</code>), clone <code>nextbsd-defaults</code> and run <code>sh seed.sh $STAGE</code> so that qemu boot-test image still gets <code>master.passwd</code>/etc. and boots.</p>
+
+<h3>(b) <code>nextbsd/build.sh</code> &mdash; seed the img/ISO after install, before <code>pwd_mkdb</code></h3>
+<p>Between <code>pkg install</code> (<code>:97</code>) and the pwd/cap DB regen (<code>:137</code>), clone <code>nextbsd-defaults</code> and run its <code>seed.sh $RF</code>, so the existing <code>pwd_mkdb</code> picks up the seeded <code>master.passwd</code> unchanged:</p>
+<pre><code># after: $PKG install -y NextBSD-everything   (build.sh:97)
+OVL="$WORK/nextbsd-defaults"
+git clone --depth 1 https://github.com/nextbsd-redux/nextbsd-defaults "$OVL"
+sh "$OVL/seed.sh" "$RF"          # un-owned by pkg, upgrade-safe
+# ... existing pwd_mkdb / cap_mkdb block runs unchanged (:137)</code></pre>
+<p><strong>Only-if-absent</strong> is the whole trick: on a fresh image nothing pre-exists, so all seeds land; the package no longer ships them, so there's no conflict; and because <code>build.sh</code> (not pkg) placed them, <code>pkg upgrade</code> has no record of them and leaves them alone forever. Same guarantee <code>os-release</code> already enjoys.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Answers the duplication concern</span> Both image assemblers &mdash; nextbsd-userland's minimal CI test image <em>and</em> nextbsd's real img/ISO &mdash; need the same seed. Because the img/ISO is built from base packages, <code>nextbsd/build.sh</code> needs the same seed step nextbsd-userland's assembly does. Putting <code>seed.sh</code> <em>in</em> <code>nextbsd-defaults</code> means that logic is written <strong>once</strong>; each consumer is a two-line clone+call. A future package-only install (onto a running system) reuses the same <code>seed.sh</code> from a one-shot first-boot job &mdash; still one implementation.</p>
+</div>
+
+<h2 id="decisions">6. Decisions D1&ndash;D5 (resolved)</h2>
+<p>Five files are genuinely a judgment call. My recommendation is listed; your call when you review.</p>
+
+<div class="decision">
+<p><strong>D1 &mdash; the 7 real <code>pam.d/*</code> stacks</strong> (system, login, su, passwd, cron, sudo, other). <span class="pill pill-good">Resolved &mdash; seed-once</span> The PAM stacks are considered final; NextBSD does not intend to push further changes via <code>pkg upgrade</code>, so package-ownership buys nothing and only risks clobbering admin edits. <strong>Move all <code>pam.d/*</code> to <code>nextbsd-defaults</code></strong> (the two wide-open <code>pam.d/sshd</code> + <code>sshd_config</code> were already seed-once). New images still get the current stacks (build.sh pulls latest overlays each build).</p>
+</div>
+<div class="decision">
+<p><strong>D2 &mdash; <code>asl.conf</code>.</strong> <span class="pill pill-good">Resolved &mdash; seed-once</span> Same reasoning: not expected to change again, so no need for pkg to own it. <strong>Move to <code>nextbsd-defaults</code>.</strong></p>
+</div>
+<div class="decision">
+<p><strong>D3 &mdash; <code>gettytab</code> / <code>shells</code>.</strong> Standard base DBs, technically mutable, almost never edited. <span class="pill pill-good">Recommend</span> <strong>seed-once</strong> (with the rest of <code>/etc</code>) for safety; low churn either way.</p>
+</div>
+<div class="decision">
+<p><strong>D4 &mdash; <code>loader.conf.d/nextbsd.conf</code>.</strong> <span class="pill pill-good">Resolved &mdash; seed-once</span> Same reasoning again: not expected to change, so pkg shouldn't own it. <strong>Move to <code>nextbsd-defaults</code>.</strong> Admins can hand-tune boot behavior without upgrade churn; new images still carry the current fragment.</p>
+</div>
+<div class="decision">
+<p><strong>D5 &mdash; <code>motd.template</code>.</strong> <span class="pill pill-good">Resolved &mdash; removed</span> It was inert (no <code>rc.d/motd</code> processes it, so the <code>login.conf</code> welcome never had a <code>/var/run/motd</code> to show) and its text was stale. No motd banner wanted for now &mdash; dropped in <a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/28">nextbsd-userland#28</a>. Not carried into <code>nextbsd-defaults</code>.</p>
+</div>
+
+<h2 id="rollout">7. Migration / rollout sequence</h2>
+<ol>
+  <li><strong>Create <code>nextbsd-redux/nextbsd-defaults</code></strong> with the 22 seed files, <code>seed.sh</code>, README, VERSION. (<code>motd.template</code> is dropped, not carried &mdash; D5.)</li>
+  <li><strong>nextbsd-userland PR:</strong> (1) delete the 22 files from <code>overlay/</code> so the pack step stops packaging them (keep the maintained layer); (2) wire <code>seed.sh</code> into the minimal-image assembly (<code>ci/assemble-image.sh</code>) so the CI boot-test image still seeds them. Green &rArr; test image boots &rArr; seed works.</li>
+  <li><strong>nextbsd PR:</strong> add the clone + <code>sh seed.sh $RF</code> step to <code>build.sh</code> (hook b). Rebuild &rarr; confirm <code>img-test</code>/<code>iso-test</code> still boot (login works &rArr; <code>master.passwd</code> seeded &amp; <code>pwd_mkdb</code> ran).</li>
+  <li><strong>Order:</strong> add the seed step to <em>both</em> assemblers <strong>before</strong> removing the files from the package, so there's never a window where the seed files are in neither the package nor a seed source. Then remove them from the package.</li>
+  <li><strong>Follow-up (optional):</strong> a one-shot first-boot seed job (reusing the same <code>seed.sh</code>) for any future package-only, non-image install path.</li>
+</ol>
+
+<h2 id="risks">8. Risks &amp; open questions</h2>
+<ul>
+  <li><strong>Ordering gap.</strong> If the userland package stops shipping <code>master.passwd</code> before <code>build.sh</code> seeds it, an image would boot with no accounts. Mitigation: seed step lands first (step 3 before step 2's removal), or a single coordinated release.</li>
+  <li><strong>Permissions.</strong> <code>master.passwd</code> must be <code>0600</code>; git can't store that, so build.sh re-chmods after copy (as <code>build-arch.yml:114</code> already does today). Included above.</li>
+  <li><strong>Two consumers, one truth.</strong> The overlay is currently vendored in <code>nextbsd-userland</code> and also referenced by its PR image-assembly (<code>OVERLAY=…/overlay</code>, <code>build-arch.yml:141</code>). That native minimal-image path must also learn to pull <code>nextbsd-defaults</code>, or it'll boot without the seed files.</li>
+  <li><strong>Package-only installs.</strong> Seed-once via build.sh covers the img/ISO. A future "pkg install onto bare FreeBSD" path needs the first-boot-seed equivalent (open).</li>
+  <li><strong>D1 timing.</strong> Keeping <code>pam.d/*</code> package-owned means an upgrade could overwrite an admin's PAM edits during the window before the flip. Acceptable while the two wide-open files are already carved out; revisit when the PAM port settles.</li>
+</ul>
+
+<p class="footnote">Generated from a two-agent sweep: full inventory of all 46 <code>nextbsd-userland/overlay/</code> files + a packaging/clobber trace across <code>nextbsd-userland</code>, <code>nextbsd-pkg</code>, and <code>nextbsd</code>. Clobber verdict and hook points cite <code>build-arch.yml:111/117</code>, <code>nextbsd-pkg/scripts/build.sh:26-44</code>, <code>nextbsd/build.sh:97/137/154-206</code>. Status: planning — awaiting decisions D1&ndash;D5.</p>
+
+</div>
+</body>
+</html>

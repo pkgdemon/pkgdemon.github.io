@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD quiet console — suppress kernel/IOKit spew on ttyv0 (verbose-only) — plan</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:920px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.86rem; }
+  th,td { text-align:left; padding:8px 11px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f6e3e3; }
+  .pill { display:inline-block; font-size:0.72rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:6px; white-space:nowrap; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .mono { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.85em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD research</a> &middot; ticket: nextbsd#363 <span class="mono">(link on commit)</span></p>
+
+<h1>Quiet console &mdash; kernel spew off ttyv0</h1>
+
+<p class="lede">Make the login console behave like macOS: no kernel / IOKit / driver text flying across <strong>ttyv0</strong> on a normal boot or when you yank a USB stick &mdash; but full output under <code>boot -v</code>, everything still in <code>dmesg</code>+syslog, and panics always visible. <strong>The surprise: FreeBSD already does all the hard parts. This is a one-line loader change.</strong></p>
+
+<p class="meta">Status: <strong>draft for discussion</strong> (local, uncommitted). Mechanism verified in the releng base kernel source. No kernel patch, no kextd change, no service ordering.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Bottom line</span> Add <strong><code>boot_mute="YES"</code></strong> to the nextbsd-overlays loader fragment. It silences boot <em>and</em> runtime console text, auto-exempts <code>boot -v</code>, keeps <code>dmesg</code>+syslog intact, and <strong>stays panic-visible</strong> (the kernel force-unmutes on panic). The only real work is making <strong>CI boot verbose</strong> so the boot-test still sees its markers.</p>
+</div>
+
+<div class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#split">Why "quiet but not blind" is already solved</a></li>
+    <li><a href="#lever">The one lever &amp; the verbose escape</a></li>
+    <li><a href="#kextd">Why kextd/IOKit aren't the fix</a></li>
+    <li><a href="#change">The change set</a></li>
+    <li><a href="#ci">The one real risk: CI</a></li>
+    <li><a href="#decide">What to decide (shop talk)</a></li>
+    <li><a href="#splash">Optional: a boot splash (mockups)</a></li>
+  </ol>
+</div>
+
+<h2 id="split">1. Why "quiet but not blind" is already solved</h2>
+<p>Every kernel <code>printf</code> funnels through <code>subr_prf.c</code> and splits into <strong>two independent sinks</strong>:</p>
+<ul>
+  <li><span class="pill pill-neutral">TOLOG</span> &rarr; the message buffer (<code>dmesg</code>) and <code>/dev/klog</code> &rarr; <code>syslogd</code>. <strong>Never gated by the console mute.</strong></li>
+  <li><span class="pill pill-neutral">TOCONS</span> &rarr; <code>cnputc</code>/<code>cnputs</code> in <code>kern_cons.c</code> &mdash; emitted <strong>only <code>if (!cn_mute)</code></strong>.</li>
+</ul>
+<p>So muting the console (<code>cn_mute</code>) suppresses <em>only the on-screen display</em>. Capture is untouched &mdash; <code>dmesg</code> and syslog still record everything, for free. Three properties fall out that dissolve the tradeoff I worried about:</p>
+<table>
+<tr><th>Concern</th><th>Reality (verified in source)</th></tr>
+<tr><td><strong>Panics must stay visible</strong></td><td class="mono">panic() runs cn_mute = 0 (kern_shutdown.c:941, "Unmute when panic"). A muted console is <strong>force-unmuted on panic</strong>. You can never blind the box to a panic.</td></tr>
+<tr><td><strong>getty/login must keep working</strong></td><td class="mono">getty runs on /dev/console via the vt(4) <em>tty</em> path; cn_mute only gates the low-level kernel cnputc/cngetc. The login: prompt, echo, and typing are <strong>unaffected</strong> while muted.</td></tr>
+<tr><td><strong>Nothing lost</strong></td><td class="mono">TOLOG path is never muted &rarr; dmesg + syslog capture the full stream regardless.</td></tr>
+</table>
+<p>This is exactly macOS's split: kernel logging is always captured (unified log there, <code>dmesg</code>+syslog here); the screen shows raw text only in verbose mode.</p>
+
+<h2 id="lever">2. The one lever &amp; the verbose escape</h2>
+<p>The console mute can be armed from the loader, and the verbose escape is <strong>kernel-enforced &mdash; no logic to write</strong>:</p>
+<table>
+<tr><th>Loader key</th><th>Effect</th><th>Note</th></tr>
+<tr><td><code>boot_mute="YES"</code> &rarr; <code>RB_MUTE</code></td><td>Fully silent from <code>cninit</code> &mdash; no banner, no attach spew; the mute <strong>persists into runtime</strong> (covers USB-eject etc.)</td><td>Most macOS-like</td></tr>
+<tr><td><code>boot_mutemsgs="YES"</code> &rarr; <code>RB_MUTEMSGS</code></td><td>Shows the copyright banner, then mutes; also persists into runtime</td><td>Prints one <code>-- Muting boot messages --</code> line</td></tr>
+</table>
+<p>Both <code>RB_MUTE</code> and <code>RB_MUTEMSGS</code> <strong>explicitly cancel themselves when <code>RB_VERBOSE</code> is set</strong> (kern_cons.c). So <code>boot -v</code> &rarr; full output, a normal boot &rarr; silent, from a single key. No launchd job, no ordering, no sysctl toggling needed for the base case.</p>
+<p>Because <code>cn_mute</code> set at boot <strong>persists</strong>, requirement #4 (runtime device-event spew on ttyv0) is covered by the same key &mdash; no separate runtime mechanism required.</p>
+
+<h2 id="kextd">3. Why kextd/IOKit aren't the fix</h2>
+<ul>
+  <li><strong>kextd userland</strong> already routes stdout/stderr to <code>/var/log/kextd.log</code> and gates its chatter behind <code>if (verbose)</code> &mdash; it never touches ttyv0. <span class="pill pill-good">No change.</span></li>
+  <li>The NextBSD kernel <strong>present-scan / IOCatalogue</strong> printfs are <em>already</em> wrapped in <code>if (bootverbose)</code> (<code>iokit_catalogue.c</code>). Silent on normal boot already. <span class="pill pill-good">No change.</span></li>
+  <li>The actual clobber is the <strong>stock FreeBSD driver probe/attach text</strong> that the kextd-triggered <code>kldload</code> produces (<code>daN: &lt;...&gt;</code>, <code>umass0</code>, linker lines) plus runtime attach/detach (<code>ugenX.Y ... detached</code> on eject). These are unconditional <code>printf</code>s across every driver &mdash; impractical to gate per-driver, and per-driver gating wouldn't cover runtime anyway. <strong>The console mute is the correct, universal lever.</strong></li>
+</ul>
+
+<h2 id="change">4. The change set</h2>
+<div class="callout">
+<p><strong>A. Primary &mdash; one loader key</strong> in <code>nextbsd-overlays/rootfs/boot/loader.conf.d/nextbsd.conf</code>:</p>
+<pre><code># Quiet console like macOS: no kernel/driver text on ttyv0 during a normal
+# boot or at runtime (USB eject, attach/detach). boot -v shows everything;
+# dmesg + syslog capture everything regardless; panic() force-unmutes.
+boot_mute="YES"</code></pre>
+<p style="margin:8px 0 0;">That's the whole feature. No kernel patch, no kextd change, no service ordering.</p>
+</div>
+<p><strong>B. Optional (only for a different product choice)</strong> &mdash; if you ever want "banner/boot visible but runtime silent," that's a launchd job (<code>com.apple.consmute.plist</code>, <code>RunAtLoad</code>) running <code>[ "$(sysctl -n debug.bootverbose)" = 0 ] &amp;&amp; sysctl kern.consmute=1</code>. Redundant if <code>boot_mute</code> is set; not recommended for the base case.</p>
+<p><strong>C. Kernel &mdash; none.</strong> <code>boot_mute</code>, the verbose exclusion, and the panic-unmute are all stock releng features. Consistent with the no-kernel-fork doctrine.</p>
+
+<h2 id="ci">5. The one real risk: CI</h2>
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Must handle</span> <code>nextbsd/tests/boot-test.sh</code> greps the serial console for expected kernel lines. With <code>boot_mute</code> those lines vanish and the boot-test breaks. <strong>Fix:</strong> the CI boot path already drops to the loader <code>OK</code> prompt and sets serial vars &mdash; also set <code>boot_verbose="YES"</code> there, so <em>CI</em> boots verbose (sees everything) while <em>shipped</em> images stay muted. Same verbose escape, used deliberately. This touches <code>boot-test.sh</code> (disk) and <code>iso-boot-test.sh</code> (live) + possibly nextbsd-userland's ci-image-boot handshake.</p>
+</div>
+
+<h2 id="decide">6. What to decide (shop talk)</h2>
+<ol>
+  <li><strong><code>boot_mute</code> (fully silent, no banner) vs <code>boot_mutemsgs</code> (banner then silent)?</strong> Fully silent is the most Mac-like; the banner variant leaves a one-line breadcrumb.</li>
+  <li><strong>Accept the kdb caveat?</strong> A manual break-to-debugger on a non-verbose boot has no console I/O until a panic clears the mute. Developers boot <code>-v</code> anyway; we just document it. (No effect on normal users.)</li>
+  <li><strong>Belt-and-suspenders launchd job (B) &mdash; ship it or not?</strong> Not needed if <code>boot_mute</code> is set; only if we later want the boot-visible/runtime-quiet split.</li>
+  <li><strong>Scope of the CI verbose flip</strong> &mdash; confirm we wire <code>boot_verbose</code> into all three boot harnesses (disk <code>test</code>, live <code>iso-test</code>, userland <code>ci-image-boot</code>).</li>
+</ol>
+
+<h2 id="splash">7. Optional: a boot splash to fill the quiet gap (mockups)</h2>
+<p>With <code>boot_mutemsgs</code> the kernel-boot phase is a blank/quiet screen until <code>login:</code>. A <em>boot splash</em> could fill that gap. All four combinations you asked to see are mocked to scale below &mdash; grey vs black background &times; static vs spinner &mdash; using the real nextbsd.org cube (the spinners animate in the browser).</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Foundation &mdash; nextbsd#272</span> This is the "Apple framebuffer / flicker-free" research you remembered: <strong><a href="https://github.com/nextbsd-redux/nextbsd/issues/272">#272 &mdash; seamless <code>vt(4)</code> &rarr; drm-fbdev handoff (deferred takeover)</a></strong>. Today the console <strong>clears to black</strong> when a DRM driver attaches: aperture removal rips out efifb, the <code>vt_efifb</code>&rarr;<code>vt_fb</code> repaint clears the screen, and i915 may re-modeset &mdash; FreeBSD's <code>vt(4)</code> has no deferred-takeover like Linux fbcon. #272's scope is to <strong>preserve the framebuffer across the handoff</strong> (copy-forward the boot image, engage i915 fastset) so there's no flash, and it explicitly names <em>"a boot splash/logo that survives the handoff &mdash; foundation for an Apple-style graphical boot"</em> as the follow-on. So the splash below is a <strong>layer on top of #272</strong> &mdash; a splash shipped <em>before</em> #272 would flash to black mid-boot when the GPU driver loads.</p>
+</div>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Feasibility</span> A splash is not just "draw a logo":</p>
+<ul>
+  <li><strong>Static (no spinner)</strong> &mdash; an efifb/<code>vt(4)</code> framebuffer splash (replace the boot logo / load a splash image). Framebuffer-only (efifb UEFI, vt-vga/vbe BIOS; not raw serial). Drawable, but to look Apple-like it needs #272's flicker-free handoff.</li>
+  <li><strong>Spinner</strong> &mdash; FreeBSD has <em>no native animated boot spinner</em>; needs a framebuffer draw loop redrawing on a timer <em>and</em> #272's persistent framebuffer. The sizable option; macOS's spinner is bespoke boot-stack graphics.</li>
+</ul>
+</div>
+
+<style>
+  .splash-defs { position:absolute; width:0; height:0; overflow:hidden; }
+  .mock-row { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin:18px 0 10px; }
+  @media (max-width:720px){ .mock-row { grid-template-columns:1fr; } }
+  .mock h4 { margin:0 0 8px; font-size:1rem; }
+  .screen { position:relative; aspect-ratio:16/10; border-radius:8px; border:1px solid #000; box-shadow:0 2px 10px rgba(0,0,0,.25) inset, 0 1px 0 #fff; display:flex; flex-direction:column; align-items:center; justify-content:center; overflow:hidden; }
+  .screen.grey { background:#8d8d92; }          /* macOS-ish light grey */
+  .screen.black { background:#000; }
+  .screen .cube { width:26%; height:auto; display:block; filter:drop-shadow(0 6px 10px rgba(0,0,0,.35)); }
+  .screen.black .cube { width:24%; }
+  .cap { font-size:0.8rem; color:var(--fg-muted); margin:6px 2px 0; }
+  /* macOS-style 12-spoke throbber */
+  .spinner { width:40px; height:40px; position:relative; margin-top:26px; }
+  .spinner i { position:absolute; left:50%; top:2px; width:3px; height:10px; margin-left:-1.5px; background:#fff; border-radius:2px; transform-origin:50% 18px; opacity:.12; animation:spk 1s linear infinite; }
+  .spinner.dark i { background:#2b2b30; }
+  .spinner i:nth-child(1){transform:rotate(0deg);animation-delay:-.917s}
+  .spinner i:nth-child(2){transform:rotate(30deg);animation-delay:-.833s}
+  .spinner i:nth-child(3){transform:rotate(60deg);animation-delay:-.75s}
+  .spinner i:nth-child(4){transform:rotate(90deg);animation-delay:-.667s}
+  .spinner i:nth-child(5){transform:rotate(120deg);animation-delay:-.583s}
+  .spinner i:nth-child(6){transform:rotate(150deg);animation-delay:-.5s}
+  .spinner i:nth-child(7){transform:rotate(180deg);animation-delay:-.417s}
+  .spinner i:nth-child(8){transform:rotate(210deg);animation-delay:-.333s}
+  .spinner i:nth-child(9){transform:rotate(240deg);animation-delay:-.25s}
+  .spinner i:nth-child(10){transform:rotate(270deg);animation-delay:-.167s}
+  .spinner i:nth-child(11){transform:rotate(300deg);animation-delay:-.083s}
+  .spinner i:nth-child(12){transform:rotate(330deg);animation-delay:0s}
+  @keyframes spk { 0%{opacity:1} 100%{opacity:.12} }
+</style>
+
+<!-- cube gradients defined once, referenced by both mockups -->
+<svg class="splash-defs" viewBox="0 0 400 460" xmlns="http://www.w3.org/2000/svg"><defs>
+  <linearGradient id="ft" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#5a5a64"/><stop offset="100%" stop-color="#33333a"/></linearGradient>
+  <linearGradient id="fl" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2a2a32"/><stop offset="100%" stop-color="#16161b"/></linearGradient>
+  <linearGradient id="fr" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#42424c"/><stop offset="100%" stop-color="#26262d"/></linearGradient>
+  <linearGradient id="eh" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#fff" stop-opacity="0"/><stop offset="50%" stop-color="#fff" stop-opacity=".55"/><stop offset="100%" stop-color="#fff" stop-opacity="0"/></linearGradient>
+</defs></svg>
+
+<div class="mock-row">
+  <div class="mock">
+    <h4>1 &mdash; grey &middot; static</h4>
+    <div class="screen grey">
+      <svg class="cube" viewBox="40 40 320 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NextBSD cube">
+        <polygon points="200,60 340,140 200,220 60,140" fill="url(#ft)" stroke="#6a6a76" stroke-width="1"/>
+        <polygon points="60,140 200,220 200,380 60,300" fill="url(#fl)" stroke="#44444e" stroke-width="1"/>
+        <polygon points="340,140 200,220 200,380 340,300" fill="url(#fr)" stroke="#55555f" stroke-width="1"/>
+        <line x1="200" y1="60" x2="340" y2="140" stroke="url(#eh)" stroke-width="1.5"/>
+        <line x1="200" y1="60" x2="60" y2="140" stroke="url(#eh)" stroke-width="1.5"/>
+        <line x1="200" y1="60" x2="200" y2="220" stroke="url(#eh)" stroke-width="1.5"/>
+      </svg>
+    </div>
+    <p class="cap">Grey, still cube. Calm, minimal.</p>
+  </div>
+  <div class="mock">
+    <h4>2 &mdash; grey &middot; spinner</h4>
+    <div class="screen grey">
+      <svg class="cube" viewBox="40 40 320 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NextBSD cube">
+        <polygon points="200,60 340,140 200,220 60,140" fill="url(#ft)" stroke="#6a6a76" stroke-width="1"/>
+        <polygon points="60,140 200,220 200,380 60,300" fill="url(#fl)" stroke="#44444e" stroke-width="1"/>
+        <polygon points="340,140 200,220 200,380 340,300" fill="url(#fr)" stroke="#55555f" stroke-width="1"/>
+        <line x1="200" y1="60" x2="340" y2="140" stroke="url(#eh)" stroke-width="1.5"/>
+        <line x1="200" y1="60" x2="60" y2="140" stroke="url(#eh)" stroke-width="1.5"/>
+        <line x1="200" y1="60" x2="200" y2="220" stroke="url(#eh)" stroke-width="1.5"/>
+      </svg>
+      <div class="spinner dark"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    </div>
+    <p class="cap">Grey with a dark spinner (contrast on light grey).</p>
+  </div>
+  <div class="mock">
+    <h4>3 &mdash; black &middot; static</h4>
+    <div class="screen black">
+      <svg class="cube" viewBox="40 40 320 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NextBSD cube">
+        <polygon points="200,60 340,140 200,220 60,140" fill="url(#ft)" stroke="#6a6a76" stroke-width="1"/>
+        <polygon points="60,140 200,220 200,380 60,300" fill="url(#fl)" stroke="#44444e" stroke-width="1"/>
+        <polygon points="340,140 200,220 200,380 340,300" fill="url(#fr)" stroke="#55555f" stroke-width="1"/>
+        <line x1="200" y1="60" x2="340" y2="140" stroke="url(#eh)" stroke-width="1.5"/>
+        <line x1="200" y1="60" x2="60" y2="140" stroke="url(#eh)" stroke-width="1.5"/>
+        <line x1="200" y1="60" x2="200" y2="220" stroke="url(#eh)" stroke-width="1.5"/>
+      </svg>
+    </div>
+    <p class="cap">Black, still cube. Sleek, high-contrast.</p>
+  </div>
+  <div class="mock">
+    <h4>4 &mdash; black &middot; white spinner</h4>
+    <div class="screen black">
+      <svg class="cube" viewBox="40 40 320 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NextBSD cube">
+        <polygon points="200,60 340,140 200,220 60,140" fill="url(#ft)" stroke="#6a6a76" stroke-width="1"/>
+        <polygon points="60,140 200,220 200,380 60,300" fill="url(#fl)" stroke="#44444e" stroke-width="1"/>
+        <polygon points="340,140 200,220 200,380 340,300" fill="url(#fr)" stroke="#55555f" stroke-width="1"/>
+        <line x1="200" y1="60" x2="340" y2="140" stroke="url(#eh)" stroke-width="1.5"/>
+        <line x1="200" y1="60" x2="60" y2="140" stroke="url(#eh)" stroke-width="1.5"/>
+        <line x1="200" y1="60" x2="200" y2="220" stroke="url(#eh)" stroke-width="1.5"/>
+      </svg>
+      <div class="spinner"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    </div>
+    <p class="cap">The full macOS look &mdash; black + white spinner.</p>
+  </div>
+</div>
+<p style="font-size:0.85rem;color:var(--fg-muted);">All four use the real nextbsd.org cube SVG; the spinners are a CSS mock of the 12-spoke macOS throbber (they animate here in the browser). On hardware, options 2 &amp; 4 (spinner) need the framebuffer draw loop that doesn't exist in FreeBSD today, and all four need <a href="https://github.com/nextbsd-redux/nextbsd/issues/272">#272</a> to survive the GPU-driver handoff without flashing.</p>
+
+<p class="footnote">Verified in the releng base: <code>sys/kern/subr_prf.c</code> (TOCONS/TOLOG split), <code>sys/kern/kern_cons.c</code> (<code>cn_mute</code>, <code>RB_MUTE</code>/<code>RB_MUTEMSGS</code> verbose-exclusion, <code>kern.consmute</code>), <code>sys/kern/kern_shutdown.c:941</code> (panic unmute), <code>sys/kern/subr_boot.c:72-77</code> (<code>boot_*</code> flags), <code>sys/kern/init_main.c:139</code> (<code>debug.bootverbose</code>). NextBSD: <code>nextbsd-kernel/.../iokit_catalogue.c</code> (already bootverbose-gated), <code>nextbsd-userland/.../kextd.c</code> + <code>com.apple.kextd.plist</code> (log-file, verbose-gated), <code>com.apple.getty.plist</code> (getty on /dev/console). Loader fragment: <code>nextbsd-overlays/rootfs/boot/loader.conf.d/nextbsd.conf</code>.</p>
+
+</div>
+</body>
+</html>

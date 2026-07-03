@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The nextbsd-overlays split — sort the overlay by pkg-ownership — plan</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:940px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.83em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.86rem; }
+  th,td { text-align:left; padding:8px 10px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f6e3e3; }
+  .pill { display:inline-block; font-size:0.72rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:6px; white-space:nowrap; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; } .pill-move { background:#dfe6f2; color:#33518a; } .pill-keep { background:#d6ead0; color:var(--good); } .pill-drop { background:#efd6d0; color:#8a3a2a; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .mono { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.85em; }
+  .cols3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin:14px 0 22px; }
+  .cols3 > div { background:white; border:1px solid var(--border); border-radius:4px; padding:13px 16px; }
+  .cols3 h4 { margin:0 0 8px; font-size:0.98rem; }
+  @media (max-width:760px){ .cols3 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD research</a> &middot; related: <a href="nextbsd-path-domain-conformance-plan.html">four-domain layout</a>, <a href="nextbsd-native-image-assembly-plan.html">native image assembly</a></p>
+
+<h1>The <code>nextbsd-overlays</code> split</h1>
+
+<p class="lede">Today's <code>nextbsd-userland/overlay/</code> is a mixed bag &mdash; user-editable <code>/etc</code> config <em>and</em> NextBSD-maintained daemon plists, all raw-copied into the package as plain files. That makes <code>pkg&nbsp;upgrade</code> clobber the user's config. Sort every overlay file by a single question &mdash; <strong>does pkg own it?</strong> &mdash; into three homes: a new <strong><code>nextbsd-overlays</code></strong> repo (assembler-laid, pkg-free), a <strong>proper install rule under <code>src/</code></strong> (built + packaged), or <strong>dropped</strong>.</p>
+
+<p class="meta">Status: <strong>planning — for review</strong>. Two-agent sweep complete: full overlay inventory + packaging-clobber trace + <code>src/</code> install mapping. Decisions D1&ndash;D5 resolved; two doctrine flags below. Nothing built yet.</p>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">Why</span> <code>master.passwd</code>, <code>sshd_config</code>, and every <code>pam.d/*</code> ship as <strong>plain regular files owned by <code>NextBSD-userland</code></strong> (<code>nextbsd-pkg</code>'s <code>mkpkg</code> plist is a bare <code>find</code>, <code>scripts/build.sh:41</code> &mdash; no <code>@config</code>). So <code>pkg upgrade</code> overwrites them with <em>no</em> <code>.pkgnew</code>: added users, tightened SSH, real PAM stacks &mdash; silently lost.</p>
+</div>
+
+<div class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#axis">The axis: does pkg own it? &rarr; three homes</a></li>
+    <li><a href="#overlays">Home A &mdash; the <code>nextbsd-overlays</code> repo (<code>rootfs/</code> + <code>iso/</code>)</a></li>
+    <li><a href="#src">Home B &mdash; proper install under <code>src/</code> (mapping)</a></li>
+    <li><a href="#drop">Home C &mdash; dropped (doctrine)</a></li>
+    <li><a href="#mechanism">Mechanism: strip &middot; install &middot; seed</a></li>
+    <li><a href="#pkg">The <code>nextbsd-pkg</code> delta</a></li>
+    <li><a href="#rollout">Rollout sequence</a></li>
+    <li><a href="#risks">Risks &amp; open flags</a></li>
+  </ol>
+</div>
+
+<h2 id="axis">1. The axis: does pkg own it?</h2>
+<p>One question sorts every file and dissolves the confusing catch-all:</p>
+<div class="cols3">
+  <div>
+    <h4><span class="pill pill-move">A</span> pkg-free</h4>
+    <p style="margin:0;font-size:0.9rem;">User-editable config + the live-ISO layer. The <strong>image assembler lays these down</strong>; pkg must never touch them. &rarr; <code>nextbsd-overlays</code>.</p>
+  </div>
+  <div>
+    <h4><span class="pill pill-keep">B</span> pkg-owned</h4>
+    <p style="margin:0;font-size:0.9rem;">Files NextBSD <strong>maintains and updates on upgrade</strong> (daemon plists, the ssh wrapper). Get a <strong>real install rule</strong> and ship in the package. &rarr; <code>src/</code>.</p>
+  </div>
+  <div>
+    <h4><span class="pill pill-drop">C</span> neither</h4>
+    <p style="margin:0;font-size:0.9rem;">Files that shouldn't exist under NextBSD doctrine (rc.d glue) or duplicate the base. &rarr; <strong>dropped</strong>.</p>
+  </div>
+</div>
+<p>The <code>overlay/</code> dir itself is then <strong>dissolved</strong>. (The nextbsd repo's own <code>overlays/</code> and <code>src/</code> are already gone from the #359 pkg refactor &mdash; only three stale <code>build.sh</code> comments remain, fixed in the seed step.)</p>
+
+<h2 id="overlays">2. Home A &mdash; the <code>nextbsd-overlays</code> repo</h2>
+<p>Organized by <strong>target</strong>, so each is a clean <code>cp -R &lt;subdir&gt;/. &lt;dest&gt;/</code> that copies only content &mdash; no README/LICENSE/seed.sh splat:</p>
+<pre><code>nextbsd-overlays/
+  rootfs/                       # -&gt; cp -R rootfs/. $RF/       (image root; pkg-free)
+    private/etc/
+      master.passwd  group  login.conf  nsswitch.conf  fstab
+      hosts  ttys  profile  shells  ld-elf.so.conf  gettytab  asl.conf
+      ssh/sshd_config
+      pam.d/{system,login,su,passwd,cron,sudo,other,sshd}
+    boot/loader.conf.d/nextbsd.conf
+  iso/                          # -&gt; cp -R iso/. $ISOROOT/     (live-ISO layer)
+    the /init pivot script + live loader.conf now inlined in nextbsd/build.sh
+  seed.sh                       # only-if-absent variant, for a future first-boot path
+  README.md  LICENSE  VERSION   # meta — sit OUTSIDE the subdirs, never copied</code></pre>
+<p><strong>History is preserved:</strong> create the repo with <code>git filter-repo</code> keeping only these paths from <code>nextbsd-userland</code> and renaming <code>overlay/ &rarr; rootfs/</code>, so every file keeps its authorship and commits. The <code>iso/</code> content lifts out of <code>build.sh</code> heredocs.</p>
+
+<h2 id="src">3. Home B &mdash; proper install under <code>src/</code></h2>
+<p><code>nextbsd-userland/src/</code> is FreeBSD <code>bsd.*.mk</code>. Extra files install via <code>bsd.files.mk</code> (<code>FILESGROUPS</code>/<code>FILESDIR</code>), already pulled in by <code>bsd.prog.mk</code> &mdash; precedent at <code>src/libmach/Makefile:80</code>. The daemon plists move next to their daemon; a component's existing <code>install</code> step then drops the plist too (<strong>no build-driver change</strong>). Base-owned bits get one new files-only Makefile.</p>
+<table>
+<tr><th>File(s)</th><th>Target</th><th>Owning <code>src/</code> dir</th><th>Install rule</th></tr>
+<tr><td>com.apple.aslmanager.plist</td><td>/System/Library/LaunchDaemons/</td><td class="mono">src/syslog/aslmanager.tproj <span class="pill pill-good">plist already here</span></td><td>add <code>FILESGROUP</code></td></tr>
+<tr><td>com.apple.notifyd.plist</td><td>″</td><td class="mono">src/Libnotify/notifyd <span class="pill pill-good">already here</span></td><td>add <code>FILESGROUP</code></td></tr>
+<tr><td>com.apple.syslogd.plist</td><td>″</td><td class="mono">src/syslog/syslogd.tproj <span class="pill pill-good">already here</span></td><td>add <code>FILESGROUP</code></td></tr>
+<tr><td>com.apple.configd.plist</td><td>″</td><td class="mono">src/configd</td><td>move plist in + <code>FILESGROUP</code></td></tr>
+<tr><td>com.apple.DiskArbitration.plist</td><td>″</td><td class="mono">src/DiskArbitration</td><td>move in + <code>FILESGROUP</code></td></tr>
+<tr><td>com.apple.hostnamed.plist</td><td>″</td><td class="mono">src/hostnamed</td><td>move in + <code>FILESGROUP</code></td></tr>
+<tr><td>com.apple.IPConfiguration.plist</td><td>″</td><td class="mono">src/IPConfiguration</td><td>move in + <code>FILESGROUP</code></td></tr>
+<tr><td>com.apple.kextd.plist</td><td>″</td><td class="mono">src/kext_tools/kextd</td><td>move in + <code>FILESGROUP</code></td></tr>
+<tr><td>com.apple.mDNSResponder.plist</td><td>″</td><td class="mono">src/mDNSResponder</td><td>move in + <code>FILESGROUP</code></td></tr>
+<tr><td>com.apple.getty.plist · com.openssh.sshd.plist · sshd-keygen-wrapper</td><td>/System/Library/LaunchDaemons/ · /usr/libexec/</td><td class="mono">from base — new <code>src/system-launchd/</code></td><td>new files-only Makefile (2 <code>FILESGROUPS</code>) + 1 driver line</td></tr>
+<tr><td>freebsd-launchd-mach/run.sh · nextbsd-iokit/run.sh · pam.d/test_iter1</td><td>/usr/tests/… · /etc/pam.d/</td><td class="mono">new <code>src/tests/*/</code></td><td>files-only Makefile(s) + driver line(s)</td></tr>
+</table>
+<p>Form to add before <code>.include &lt;bsd.prog.mk&gt;</code>:</p>
+<pre><code>FILESGROUPS+=  LAUNCHD
+LAUNCHD=       com.apple.&lt;name&gt;.plist
+LAUNCHDDIR=    /System/Library/LaunchDaemons
+LAUNCHDMODE=   0644</code></pre>
+
+<h2 id="drop">4. Home C &mdash; dropped (doctrine)</h2>
+<div class="callout callout-good">
+<p><span class="pill pill-good">Resolved during build</span> The agent flagged <code>rc.d/ldconfig</code> + <code>rc.subr</code> as doctrine violations to drop &mdash; but they turned out to be <strong>load-bearing and kept</strong>:</p>
+<ul>
+  <li><strong><code>rc.d/ldconfig</code></strong> is an <em>on-demand</em> <code>service(8)</code> shim, NOT a boot job &mdash; FreeBSD-ports pkg post-installs hardcode <code>service ldconfig restart</code>, and the boot test's <strong>SERVICE-LDCONFIG gate</strong> (<code>run.sh:977</code>, <code>exit 1</code>) requires it. It does not violate the "no ldconfig <em>boot</em> job" rule. <strong>Kept, package-owned.</strong></li>
+  <li><strong><code>rc.subr</code></strong> is needed by <code>service(8)</code> / the shim above. <strong>Kept, package-owned.</strong></li>
+  <li><strong><code>services</code> · <code>protocols</code> · <code>man.conf</code></strong> &mdash; left package-owned as-is (no new base conflict introduced by the strip; revisit only if de-duping base later).</li>
+</ul>
+<p>Net: the strip removes <strong>only</strong> the 22 user-config files; the maintained layer (incl. these) stays in the package.</p>
+</div>
+
+<h2 id="mechanism">5. Mechanism: strip &middot; install &middot; seed</h2>
+<h3>Strip &mdash; get user <code>/etc</code> out of the package</h3>
+<p>Stop <code>cp -aR overlay/. /stage/</code> (<code>build-arch.yml:111</code>) from folding the config in &mdash; simplest is to <em>delete</em> those files from <code>overlay/</code> (they've moved to <code>nextbsd-overlays</code>). The <code>find</code>-plist then no longer lists them, so pkg can't own or clobber them.</p>
+<h3>Install &mdash; maintained files via <code>make</code></h3>
+<p>The <code>FILESGROUP</code> rules put the plists/wrapper into <code>$DESTDIR</code> during each component's <code>make install</code>; the same <code>find</code>-plist now tracks them. pkg owns and updates them on upgrade &mdash; correct, because they're NextBSD's.</p>
+<h3>Seed &mdash; lay the pkg-free content at assembly time</h3>
+<pre><code># nextbsd/build.sh, after: $PKG install -y NextBSD-everything   (build.sh:97)
+OVL="$WORK/nextbsd-overlays"
+git clone --depth 1 https://github.com/nextbsd-redux/nextbsd-overlays "$OVL"
+cp -R "$OVL/rootfs/." "$RF/"           # user /etc + loader fragment — un-owned by pkg
+chmod 0600 "$RF/private/etc/master.passwd"
+# ... existing pwd_mkdb / cap_mkdb (:137) then picks up the seeded master.passwd
+# and the live-ISO assembler consumes "$OVL/iso/." into $ISOROOT
+</code></pre>
+<p>At build time a plain <code>cp -R</code> is enough (nothing pre-exists). Because <code>build.sh</code> (not pkg) placed them, <code>pkg upgrade</code> has no record of them &mdash; upgrade-safe, exactly like <code>os-release</code>. The <code>seed.sh</code> <em>only-if-absent</em> variant is reserved for a future package-only install onto an already-populated system. <strong>Both</strong> the nextbsd img/ISO assembler and nextbsd-userland's minimal CI test image call the same source, so there's one definition.</p>
+
+<h2 id="pkg">6. The <code>nextbsd-pkg</code> delta</h2>
+<p><strong>Almost nothing</strong>, by design. The <code>find</code>-based plist (<code>scripts/build.sh:41</code>) just works once the stage stops carrying the stripped <code>/etc</code> and starts carrying the <code>make</code>-installed maintained files. <strong>No <code>@config</code></strong> &mdash; maintained files are meant to overwrite on upgrade, and the user-editable ones that would have wanted <code>@config</code> are gone to the seed repo entirely. The one real edit: extend the existing base-overlap drop (the <code>rm -f stage/compat/usr/include/Block.h …</code> block) to <code>rm -f</code> any <code>/etc</code> data files kept as maintained (<code>services</code>/<code>protocols</code>/<code>man.conf</code>) so base and userland don't both own the path.</p>
+
+<h2 id="rollout">7. Rollout sequence</h2>
+<ol>
+  <li><strong>Create <code>nextbsd-redux/nextbsd-overlays</code></strong> via <code>git filter-repo</code> from nextbsd-userland (history preserved, <code>overlay/ &rarr; rootfs/</code>); add <code>iso/</code> (lifted from build.sh), <code>seed.sh</code>, README/LICENSE/VERSION.</li>
+  <li><strong>nextbsd-userland PR:</strong> (1) add <code>FILESGROUP</code> install rules + move the 6 overlay-only plists into their <code>src/</code> dirs + new <code>src/system-launchd/</code> &amp; <code>src/tests/*</code> Makefiles (+ driver lines); (2) delete the seed <code>/etc</code> + dropped files from <code>overlay/</code>; (3) wire <code>nextbsd-overlays</code> into the minimal-image assembly. CI green &rArr; test image still boots.</li>
+  <li><strong>nextbsd-pkg PR:</strong> add the <code>/etc</code> conflict-drops (only if keeping <code>services</code>/… as maintained). Rebuild packages.</li>
+  <li><strong>nextbsd PR:</strong> add the <code>cp -R rootfs/</code> seed + <code>iso/</code> consumption to <code>build.sh</code>; fix the three stale <code>overlays/</code> comments. Rebuild &rarr; <code>img-test</code>/<code>iso-test</code> boot (login works &rArr; seed + <code>pwd_mkdb</code> OK).</li>
+  <li><strong>Order:</strong> land the install-rules + seed step <strong>before</strong> stripping the files from the package, so there's never a window where a seed file is in neither the package nor a seed source.</li>
+</ol>
+
+<h2 id="risks">8. Risks &amp; open flags</h2>
+<ul>
+  <li><strong>Doctrine drops (§4)</strong> &mdash; confirm <code>rc.d/ldconfig</code>, <code>rc.subr</code>, and the <code>services</code>/<code>protocols</code>/<code>man.conf</code> base-duplication calls before building rules for them.</li>
+  <li><strong>Ordering gap</strong> &mdash; strip only after both assemblers seed, or an image boots with no accounts.</li>
+  <li><strong>Two consumers</strong> &mdash; nextbsd-userland's minimal CI image (<code>ci/assemble-image.sh</code>, <code>OVERLAY=…</code> at <code>build-arch.yml:141</code>) must pull <code>nextbsd-overlays</code> too, or it boots without the seed.</li>
+  <li><strong>master.passwd mode</strong> &mdash; git can't store <code>0600</code>; the seed step re-chmods (as <code>build-arch.yml:114</code> does today).</li>
+  <li><strong>Package-only install</strong> &mdash; the img/ISO path is covered; a bare-metal <code>pkg install</code> onto a running system would use <code>seed.sh</code> from a first-boot job (future).</li>
+</ul>
+
+<p class="footnote">Decisions D1&ndash;D5 (from the prior revision) resolved: all <code>pam.d/*</code>, <code>asl.conf</code>, <code>gettytab</code>/<code>shells</code>, <code>loader.conf.d/nextbsd.conf</code> &rarr; seed-once (pkg-free); <code>motd.template</code> removed (<a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/28">userland#28</a>). Mapping + <code>nextbsd-pkg</code> delta from a <code>src/</code>-install agent sweep; cites <code>build-arch.yml:111/141</code>, <code>nextbsd-pkg/scripts/build.sh:41</code>, <code>src/libmach/Makefile:80</code>, <code>nextbsd/build.sh:97/137</code>.</p>
+
+</div>
+</body>
+</html>

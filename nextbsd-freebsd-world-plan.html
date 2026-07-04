@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nextbsd-freebsd-world — subtractive buildworld base, replacing nextbsd-freebsd-compat — plan</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:940px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.83em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.86rem; }
+  th,td { text-align:left; padding:8px 10px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f6e3e3; }
+  .pill { display:inline-block; font-size:0.72rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:6px; white-space:nowrap; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; } .pill-move { background:#dfe6f2; color:#33518a; } .pill-keep { background:#d6ead0; color:var(--good); } .pill-drop { background:#efd6d0; color:#8a3a2a; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .mono { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.85em; }
+  .cols3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin:14px 0 22px; }
+  .cols3 > div { background:white; border:1px solid var(--border); border-radius:4px; padding:13px 16px; }
+  .cols3 h4 { margin:0 0 8px; font-size:0.98rem; }
+  @media (max-width:760px){ .cols3 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD research</a> &middot; related: <a href="nextbsd-overlays-plan.html">overlays split</a>, <a href="nextbsd-freebsd-compat-audit.html">compat audit</a>, <a href="nextbsd-userland-repo-plan.html">userland repo</a></p>
+
+<h1><code>nextbsd-freebsd-world</code> &mdash; a subtractive buildworld base</h1>
+
+<p class="lede">Replace <code>nextbsd-freebsd-compat</code>'s <strong>additive</strong> curation (a 600-line <code>srclist.txt</code> that names every <code>/usr/src</code> dir to build, and springs a leak every time the build hits a tool nobody remembered to list) with a <strong>subtractive</strong> one: run a full <code>buildworld</code>, then <em>remove</em> the tiny, known set of paths the Apple/Darwin userland already owns. Ship the result as one package, <code>NextBSD-world</code>, and swap it in for <code>NextBSD-freebsd-compat</code> in <code>NextBSD-everything</code> once it's proven.</p>
+
+<p class="meta">Status: <strong>planning &mdash; for review</strong>. Collision surface measured empirically against the live <code>NextBSD-userland</code> package (565 files) on <code>thinkpad-t460s</code>. Nothing built yet. New repo: <code>nextbsd-redux/nextbsd-freebsd-world</code>.</p>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">Why now</span> In one evening the curated base needed <strong>three</strong> emergency PRs &mdash; <code>#43</code> (locale data), <code>#44</code> (<code>diff/diff3/m4/patch/install/top/ncurses</code>), <code>#45</code> (<code>gzip</code>) &mdash; each discovered by a <code>gershwin make install</code> dying on a missing base tool. <code>srclist.txt</code> already carries <strong>20+ comments</strong> of the form <em>"replaces <code>FreeBSD-openssl</code>"</em>, <em>"was shipped by <code>FreeBSD-clibs-dev</code>"</em>, <em>"these are pkgbase <code>FreeBSD-utilities</code>"</em>. We are hand-reimplementing pkgbase, from memory, incompletely. That is the whack-a-mole, and it does not converge.</p>
+</div>
+
+<div class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#thesis">The thesis: subtract, don't add</a></li>
+    <li><a href="#collision">The collision surface is ~3 files (measured)</a></li>
+    <li><a href="#repo">The <code>nextbsd-freebsd-world</code> repo</a></li>
+    <li><a href="#build">Build: buildworld &rarr; strip &rarr; one package</a></li>
+    <li><a href="#guard">The self-policing collision guard</a></li>
+    <li><a href="#pkg">The <code>nextbsd-pkg</code> delta</a></li>
+    <li><a href="#swap">Swap sequence &amp; rollback</a></li>
+    <li><a href="#risks">Risks &amp; open flags</a></li>
+  </ol>
+</div>
+
+<h2 id="thesis">1. The thesis: subtract, don't add</h2>
+
+<p>The curated model's entire justification was <em>"don't pull FreeBSD wholesale, because it collides with the Apple/Darwin userland."</em> We measured that collision. It is <strong>three files</strong> (&sect;2). The premise is false, and everything the model costs &mdash; the leak-prone <code>srclist.txt</code>, the per-dir dependency archaeology, the 3-PRs-a-night &mdash; is paid for a benefit that isn't there.</p>
+
+<p>Flip the polarity:</p>
+
+<table>
+<tr><th>&nbsp;</th><th>Additive (today: <code>nextbsd-freebsd-compat</code>)</th><th>Subtractive (proposed: <code>nextbsd-freebsd-world</code>)</th></tr>
+<tr><td>Default</td><td>Nothing. Every dir must be named in <code>srclist.txt</code>.</td><td>Everything. Full <code>buildworld</code>.</td></tr>
+<tr><td>Failure mode</td><td>Missing a tool &rarr; runtime error, discovered by whoever hits it.</td><td>Over-including a colliding file &rarr; caught at package time by the guard (&sect;5).</td></tr>
+<tr><td>Maintenance</td><td>Chase every gap forever. Never converges.</td><td>Maintain a short, explicit strip-list. Converges.</td></tr>
+<tr><td>Dep correctness</td><td>Each dir's libs must already be curated in, by hand.</td><td><code>buildworld</code> builds every dep in order. Free.</td></tr>
+<tr><td>Cost</td><td>~20 min CI, but incomplete.</td><td>~30&ndash;60 min CI, complete.</td></tr>
+</table>
+
+<p>Subtractive curation <em>converges</em> because the thing being maintained &mdash; the strip-list &mdash; is bounded by what Apple ships, and Apple ships almost nothing in the userland path space.</p>
+
+<h2 id="collision">2. The collision surface is ~3 files (measured)</h2>
+
+<p><code>pkg info -l NextBSD-userland</code> on <code>thinkpad-t460s</code>: <strong>565 files</strong>, distributed as:</p>
+
+<table>
+<tr><th>Count</th><th>Path</th><th>What it is</th></tr>
+<tr><td>389</td><td><code>/usr/include</code></td><td>Apple framework headers (IOKit, CoreFoundation, mach/&hellip;)</td></tr>
+<tr><td>65</td><td><code>/usr/lib</code></td><td><code>/usr/lib/system/lib{CoreFoundation,IOKit,SystemConfiguration,dns_sd,launch,notify,xpc,system_kernel,system_asl}.so</code> + debug &mdash; <strong>its own namespace</strong></td></tr>
+<tr><td>16</td><td><code>/usr/sbin</code></td><td>Apple daemons: <code>configd</code>, <code>mDNSResponder</code>, <code>notifyd</code>, <code>syslogd</code>, <code>diskarbitrationd</code>, <code>hostnamed</code>, <code>ipconfigd</code>, <code>kext{load,stat,unload,deps}</code>, <code>ioreg</code>, <code>bootstrap_server</code>&hellip;</td></tr>
+<tr><td>3</td><td><code>/usr/bin</code></td><td><code>mig</code>, <code>cpdup</code>, <code>syslog</code></td></tr>
+<tr><td>2</td><td><code>/sbin</code>, <code>/bin</code></td><td><code>launchd</code>, <code>launchctl</code></td></tr>
+<tr><td>&mdash;</td><td>rest</td><td><code>/usr/tests</code> (51), <code>/usr/share</code> (16), <code>/usr/libexec</code> (5), <code>/private/etc</code> (6)</td></tr>
+</table>
+
+<p><strong>Zero general userland utilities.</strong> Verified by <code>pkg which</code>: <code>sh</code>, <code>ls</code>, <code>cp</code>, <code>cat</code>, <code>ps</code>, <code>id</code>, <code>su</code>, <code>sshd</code>, <code>sed</code>, <code>diff</code>, <code>make</code> are <em>all</em> <code>NextBSD-freebsd-compat</code> today. The Apple layer is <strong>frameworks + Mach daemons</strong>, living in namespaces (<code>/usr/lib/system</code>, the Mach-daemon names, Apple's <code>/usr/include</code> frameworks) that a FreeBSD <code>buildworld</code> never writes to.</p>
+
+<p>Intersecting a stock <code>installworld</code> file list with those 565 paths yields the actual collision set:</p>
+
+<div class="cols3">
+  <div><h4><span class="pill pill-drop">strip</span> <code>/usr/sbin/syslogd</code></h4><p>Both build it. Apple's ASL <code>syslogd</code> wins; drop FreeBSD's.</p></div>
+  <div><h4><span class="pill pill-drop">strip</span> BlocksRuntime</h4><p><code>libBlocksRuntime.*</code>, <code>Block.h</code>, <code>Block_private.h</code>. Apple's <code>/usr/lib/system</code> is canonical (the existing <em>no-clobber-apple-libs</em> rule).</p></div>
+  <div><h4><span class="pill pill-neutral">policy</span> init / <code>/etc</code></h4><p>Not file clashes. <code>launchd</code> is PID&nbsp;1 (different path from <code>/sbin/init</code>); <code>/etc</code> is owned by <a href="nextbsd-overlays-plan.html">nextbsd-overlays</a>, and we never run <code>make&nbsp;distribution</code>, so world never writes <code>/etc</code>.</p></div>
+</div>
+
+<p>That's the whole surface. Not a design problem &mdash; a three-line strip-list plus two policies we already enforce.</p>
+
+<h2 id="repo">3. The <code>nextbsd-freebsd-world</code> repo</h2>
+
+<h3>3.1 Naming</h3>
+
+<p>The new repo builds the <strong>FreeBSD-derived</strong> half of the OS; <code>nextbsd-userland</code> is the <strong>Apple/Darwin-derived</strong> half. The trap in the obvious name <code>nextbsd-world</code>: a FreeBSD <em>world</em> is itself mostly userland, so <code>nextbsd-world</code> vs <code>nextbsd-userland</code> reads as two names for the same layer. Distinguish by <em>origin</em>, not layer:</p>
+
+<table>
+<tr><th>Candidate</th><th>Reads as</th><th>Notes</th></tr>
+<tr><td><span class="pill pill-good">rec</span> <code>nextbsd-freebsd-world</code></td><td>The FreeBSD <code>buildworld</code>, successor to <code>nextbsd-freebsd-compat</code></td><td>Keeps the <code>nextbsd-freebsd-*</code> prefix, so the compat&rarr;world swap is self-evident. Explicit about both origin and method. Slightly long.</td></tr>
+<tr><td><code>nextbsd-base</code></td><td>The base system (FreeBSD's own term for <code>buildworld</code>)</td><td>Shortest, and <strong>matches the existing artifact name</strong> <code>nextbsd-base-*.tar.gz</code>. Risk: &ldquo;base&rdquo; can read as the whole-OS base (kernel + userland), not specifically the FreeBSD world.</td></tr>
+<tr><td><code>nextbsd-freebsd</code></td><td>The FreeBSD half, mirroring <code>nextbsd-userland</code></td><td>Cleanest origin-symmetry (FreeBSD half &harr; Darwin half). Con: says nothing about it being a full buildworld artifact.</td></tr>
+<tr><td><span class="pill pill-drop">no</span> <code>nextbsd-world</code></td><td>The buildworld</td><td>Technically precise but semantically collides with <code>nextbsd-userland</code> (world &sub; userland). Rejected.</td></tr>
+</table>
+
+<p><strong>Recommendation:</strong> repo <code>nextbsd-freebsd-world</code> (continuity + explicitness). <strong>Package name</strong> is a separate choice &mdash; existing convention is repo==pkg (<code>nextbsd-freebsd-compat</code> &rarr; <code>NextBSD-freebsd-compat</code>), which argues for <code>NextBSD-freebsd-world</code>; but since users type it in <code>pkg install</code>, the shorter <code>NextBSD-world</code> is defensible. This doc uses <code>NextBSD-world</code> as the package; flip if you prefer strict repo/pkg parity.</p>
+
+<h3>3.2 Layout</h3>
+
+<p>A sibling of <code>nextbsd-kernel</code> / <code>nextbsd-kernel-modules</code>, publishing one <code>continuous</code> artifact per arch that <code>nextbsd-pkg</code> repackages as the single <code>NextBSD-world</code> package.</p>
+
+<pre><code>nextbsd-freebsd-world/
+  .github/workflows/build.yml   # buildworld -> installworld DESTDIR -> strip -> tar
+  strip.list                    # explicit paths world must NOT own (Apple/overlay-owned)
+  world.conf                    # WORLD_FLAGS knobs (WITHOUT_TOOLCHAIN, ...)
+  scripts/
+    strip-collisions.sh         # apply strip.list + assert against NextBSD-userland plist
+  README.md</code></pre>
+
+<p>Source of truth for <code>/usr/src</code> is the same NextBSD fork of <code>freebsd-src</code> (releng/15.0-p9 + NextBSD patches) that <code>nextbsd-freebsd-compat</code> cross-builds today &mdash; so <code>world</code>'s libc is bit-identical to what's shipping now, just <em>complete</em>.</p>
+
+<h2 id="build">4. Build: buildworld &rarr; strip &rarr; one package</h2>
+
+<ol>
+<li><strong>Build the world, keep ports as the compiler.</strong> <code>WITHOUT_TOOLCHAIN=yes</code> (we compile with ports <code>llvm19</code>, per the compat toolchain decision), plus the current lean knobs:
+<pre><code>make -j${CPUS} buildworld \
+  WITHOUT_TOOLCHAIN=yes WITHOUT_TESTS=yes WITHOUT_LIB32=yes</code></pre>
+Candidate size knobs for v2 (defer): <code>WITHOUT_KERBEROS</code>, <code>WITHOUT_ZFS</code>, <code>WITHOUT_BLUETOOTH</code>, <code>WITHOUT_HAST</code>, <code>WITHOUT_INETD</code>, <code>WITHOUT_NIS</code>, <code>WITHOUT_BSNMP</code>, <code>WITHOUT_FTP</code>, <code>WITHOUT_TELNET</code>, <code>WITHOUT_SENDMAIL</code>, <code>WITHOUT_PPP</code>, <code>WITHOUT_BHYVE</code>, <code>WITHOUT_GAMES</code>.</li>
+
+<li><strong>Install the world, not the distribution.</strong>
+<pre><code>make installworld DESTDIR=/stage WITHOUT_TOOLCHAIN=yes ...
+# NB: NO `make distribution` — that is what would populate /etc + /var.
+# Skipping it is how world stays out of the overlay's territory.</code></pre></li>
+
+<li><strong>Strip two lists</strong> (&sect;4.1) plus the belt-and-suspenders dirs the base must never own:
+<pre><code>rm -rf /stage/etc /stage/var /stage/root         # nextbsd/overlays own these
+scripts/strip-collisions.sh  /stage collisions   # auto-derived + guard-enforced (&sect;5)
+scripts/strip-superseded.sh  /stage superseded    # explicit; each entry existence-asserted</code></pre></li>
+
+<li><strong>Tar the stage</strong> into <code>nextbsd-freebsd-world-${ARCH}.tar.gz</code>, publish to the repo's rolling <code>continuous</code> release &mdash; exactly the mechanism <code>nextbsd-freebsd-compat</code> uses today, so <code>nextbsd-pkg</code> needs only a source swap.</li>
+</ol>
+
+<h3 id="strips">4.1 Two strip buckets: collisions vs superseded</h3>
+
+<p>Keep these distinct &mdash; they rot differently, so they're policed differently.</p>
+
+<p><strong>Bucket A &mdash; collisions</strong> <span class="pill pill-bad">must</span> A path <code>NextBSD-userland</code> <em>also</em> owns; shipping both makes <code>pkg</code> refuse the install. <strong>Auto-derived</strong> by intersecting plists and <strong>guard-enforced</strong> (&sect;5) &mdash; nobody maintains this by hand.</p>
+<table>
+<tr><th>Path</th><th>Winner (why)</th></tr>
+<tr><td><code>/usr/sbin/syslogd</code></td><td>Apple ASL <code>syslogd</code> (userland)</td></tr>
+<tr><td><code>libBlocksRuntime.*</code>, <code>Block.h</code>, <code>Block_private.h</code></td><td>Apple <code>/usr/lib/system</code> (the <em>no-clobber-apple-libs</em> rule)</td></tr>
+</table>
+
+<p><strong>Bucket B &mdash; superseded</strong> <span class="pill pill-move">policy</span> Not a collision &mdash; a distinct FreeBSD filename NextBSD keeps out because it has replaced the <em>function</em> with its own mechanism. Short, stable, and each line carries its replacement. Applied with an <strong>existence assertion</strong>: if a listed path isn't in the world (FreeBSD renamed/moved it), the build fails rather than silently no-op &mdash; so this list can't rot silently either.</p>
+<table>
+<tr><th>Strip</th><th>Superseded by</th><th>Flag</th></tr>
+<tr><td><code>/sbin/init</code></td><td><code>launchd</code> as PID&nbsp;1 (userland)</td><td>&nbsp;</td></tr>
+<tr><td><code>kldload</code>, <code>kldstat</code>, <code>kldunload</code>, <code>kldconfig</code>, <code>kldxref</code></td><td><code>kext{load,stat,unload}</code> + <code>kextd</code> (userland / <code>nextbsd-kernel-modules</code>)</td><td><span class="pill pill-warn">R7</span> confirm the <em>boot</em> module-load path is <code>kextd</code>, not loader <code>kld_list</code>/<code>loader.conf</code></td></tr>
+<tr><td><code>devd</code>, <code>devmatch</code></td><td>IOKit + <code>configd</code>/hwregd (userland)</td><td><span class="pill pill-warn">R7</span> confirm nothing in boot expects <code>devd</code> for auto-attach</td></tr>
+<tr><td><code>bsdconfig</code>, <code>bsdinstall</code></td><td><code>nextbsd-installer</code> (<code>/usr/sbin</code>, userland)</td><td>&nbsp;</td></tr>
+<tr><td><code>freebsd-update</code></td><td><code>pkg</code> &mdash; base updates roll via <code>NextBSD-*</code> packages</td><td>&nbsp;</td></tr>
+</table>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">R7 — verify before stripping the kld/devd tools</span> These are <em>superseded</em> only if the kernel's boot-time module loading and device attach truly go through the Apple/IOKit stack (<code>kextd</code>) and never fall back to base <code>kldload</code>/<code>devd</code>. On a partially-converted kernel that could brick module loading at boot. Cheap check on <code>thinkpad-t460s</code>: <code>grep -r kld /boot/loader.conf /etc/rc.conf* 2>/dev/null</code> and confirm <code>kextd</code> owns attach. Until confirmed, keep these in a <code>superseded.candidate</code> holding list, not the active one.</p>
+</div>
+
+<h2 id="guard">5. The self-policing collision guard</h2>
+
+<p>The one thing that must never rot is the strip-list. So don't trust it &mdash; <strong>verify it every build</strong>. <code>strip-collisions.sh</code> downloads the current <code>NextBSD-userland</code> plist, intersects it with the staged world's file list, and:</p>
+
+<ul>
+<li>strips every path in that intersection (userland always wins);</li>
+<li><strong>fails the build</strong> if the intersection contains anything not enumerated in <code>strip.list</code>.</li>
+</ul>
+
+<pre><code># pseudo
+world_files=$(cd /stage &amp;&amp; find . | sed 's/^\.//' | sort)
+apple_files=$(fetch_userland_plist | sort)
+overlap=$(comm -12 &lt;(echo "$world_files") &lt;(echo "$apple_files"))
+unexpected=$(comm -23 &lt;(echo "$overlap") &lt;(sort strip.list))
+[ -n "$unexpected" ] &amp;&amp; { echo "NEW collision(s) — refuse to ship:"; echo "$unexpected"; exit 1; }
+echo "$overlap" | while read f; do rm -f "/stage$f"; done</code></pre>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Payoff</span> A future FreeBSD import or a new Apple daemon that starts owning a shared path can no longer silently clobber &mdash; it <strong>stops the build</strong> until someone decides who wins and records it. The maintenance burden becomes a git-blame-able one-line strip-list, not an open-ended hunt. This is the exact inverse of the current failure mode.</p>
+</div>
+
+<h2 id="pkg">6. The <code>nextbsd-pkg</code> delta</h2>
+
+<p><code>nextbsd-pkg</code> already assembles per-arch packages from component <code>continuous</code> artifacts. Changes:</p>
+
+<ul>
+<li>Add a <code>NextBSD-world</code> package built from <code>nextbsd-freebsd-world</code>'s artifact (same <code>pkg create</code> path as <code>NextBSD-freebsd-compat</code>).</li>
+<li>During transition, build <strong>both</strong> <code>NextBSD-freebsd-compat</code> and <code>NextBSD-world</code>; only the <code>NextBSD-everything</code> meta decides which is live.</li>
+<li><code>NextBSD-world</code> is a strict superset of <code>NextBSD-freebsd-compat</code>'s file set (minus the 3 stripped collisions, which userland provides anyway), so it can <code>replaces:</code>/<code>conflicts:</code> the compat package for a clean <code>pkg upgrade</code>.</li>
+</ul>
+
+<h2 id="swap">7. Swap sequence &amp; rollback</h2>
+
+<ol>
+<li><span class="pill pill-neutral">P1</span> Stand up <code>nextbsd-freebsd-world</code>; get a green <code>buildworld</code> + guard pass on both arches. Publish <code>continuous</code>. <em>(compat untouched)</em></li>
+<li><span class="pill pill-neutral">P2</span> <code>nextbsd-pkg</code> builds <code>NextBSD-world</code> alongside compat. Nothing consumes it yet.</li>
+<li><span class="pill pill-neutral">P3</span> Prove it: on a scratch box, <code>pkg install NextBSD-world NextBSD-userland NextBSD-kernel</code>, then run <code>gershwin make install</code> end-to-end. Assert <code>NextBSD-world</code> ⊇ compat (diff the two plists; every compat path present bar the intended strips).</li>
+<li><span class="pill pill-good">Cutover</span> Flip <strong>one line</strong> in the <code>NextBSD-everything</code> meta: dep <code>NextBSD-freebsd-compat</code> &rarr; <code>NextBSD-world</code>. Ship. Bake.</li>
+<li><span class="pill pill-drop">Retire</span> After a bake window: drop compat from the meta, <strong>archive <code>nextbsd-freebsd-compat</code></strong>, retire <code>srclist.txt</code> and its 3-PRs-a-night.</li>
+</ol>
+
+<div class="callout">
+<p><span class="pill pill-neutral">Rollback</span> The cutover is a single meta dependency. If <code>world</code> regresses, revert that line and <code>pkg upgrade</code> falls back to compat &mdash; which stays built and published until the archive step. Zero-drama reversal at every stage before P5.</p>
+</div>
+
+<h2 id="risks">8. Risks &amp; open flags</h2>
+
+<table>
+<tr><th>#</th><th>Risk</th><th>Handling</th></tr>
+<tr><td>R1</td><td><strong>libc / <code>/usr/lib/system</code> overlap.</strong> World ships <code>/lib/libc.so.7</code> etc.; userland ships <code>/usr/lib/system/*</code>. Must confirm no shared path (esp. any <code>libdispatch</code>/<code>BlocksRuntime</code> route).</td><td>The guard (&sect;5) is exactly this check, run every build. Pre-flight: run the intersection once by hand before P1 to seed <code>strip.list</code>.</td></tr>
+<tr><td>R2</td><td><strong><code>/etc</code> &amp; overlays interplay.</strong> World must own no <code>/etc</code>; <code>nextbsd-overlays</code> owns it.</td><td>Skip <code>make distribution</code> + <code>rm -rf /stage/etc</code>. Coordinate with the in-flight <a href="nextbsd-overlays-plan.html">overlays split</a>.</td></tr>
+<tr><td>R3</td><td><strong>rc / service framework.</strong> compat added <code>service(8)</code>+<code>rcorder</code> for ports-pkg compat; a full world includes the rc framework. Confirm launchd-as-PID1 coexists (it does today) and decide whether ports' <code>rc.d</code> scripts stay inert-but-present.</td><td>Default: keep the rc framework tools (ports expect them), never run FreeBSD <code>init</code>. Flag for boot-team confirm.</td></tr>
+<tr><td>R4</td><td><strong>Build cost.</strong> Full world &gt; curated subset.</td><td><code>WITHOUT_TOOLCHAIN</code> already skips the LLVM build (the expensive part). ~30&ndash;60 min/arch is acceptable for a base that changes rarely. v2 size knobs optional.</td></tr>
+<tr><td>R5</td><td><strong>Package bloat.</strong> One big package pulls in subsystems we don't want (zfs, kerberos, &hellip;).</td><td>Harmless at v1 (unused daemons don't run). Trim with <code>WITHOUT_*</code> in v2 if size matters. Not a correctness issue.</td></tr>
+<tr><td>R6</td><td><strong>One package vs pkgbase split.</strong> We lose granular <code>-dev</code>/<code>-lib</code> packaging.</td><td>Intentional: NextBSD is a <em>substrate</em>, not a granular distro. If granularity is ever wanted, <code>make packages PKG_NAME_PREFIX=NextBSD</code> is a drop-in v2 on the same buildworld.</td></tr>
+</table>
+
+<p class="footnote">Seeded from the 2026-07-03 gershwin <code>make install</code> bring-up on <code>thinkpad-t460s</code> (PRs #43&ndash;#45 to <code>nextbsd-freebsd-compat</code>) and the <code>NextBSD-userland</code> footprint measured the same night. Decision pending: approve <code>nextbsd-freebsd-world</code> repo creation and P1.</p>
+
+</div>
+</body>
+</html>

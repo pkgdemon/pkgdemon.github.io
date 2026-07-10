@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nextbsd-pkg: install-test CI — never publish a repo that can't install itself — plan</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:940px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.83em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.86rem; }
+  th,td { text-align:left; padding:8px 10px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f6e3e3; }
+  .pill { display:inline-block; font-size:0.72rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:6px; white-space:nowrap; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; } .pill-move { background:#dfe6f2; color:#33518a; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .mono { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.85em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD research</a> &middot; related: <a href="nextbsd-native-image-assembly-plan.html">native image assembly</a>, <a href="nextbsd-freebsd-compat-buildworld-plan.html">compat buildworld</a></p>
+
+<h1><code>nextbsd-pkg</code>: install-test&nbsp;CI</h1>
+
+<p class="lede">Never publish a package repo that can't install itself. Add a pre-publish gate to <code>nextbsd-pkg</code> that assembles the flat repo, then <strong>actually installs <code>NextBSD-everything</code> into a scratch root the same way the ISO builders do</strong> — failing on any file conflict or silently-dropped dependency <em>before</em> the repo is published. Plus a fast, deterministic cross-package file-ownership check at assembly time so the common case (two components owning one path) fails in seconds with an exact culprit. Directly closes <a href="https://github.com/nextbsd-redux/nextbsd/issues/370">nextbsd#370</a>; the concrete invariant is that <code>NextBSD-userland</code> and <code>NextBSD-freebsd-compat</code> can never co-own a path.</p>
+
+<p class="meta">Status: <strong>planning &mdash; scoping for review</strong>. Synthesised from a pipeline audit (2026-07-10) of <code>nextbsd-pkg/scripts/{build,verify}.sh</code>, <code>nextbsd-freebsd-compat/scripts/strip-collisions.sh</code>, and the two ISO builders (<code>nextbsd/build.sh</code>, <code>gershwin-on-nextbsd/build.sh</code>). Every path and line reference below is from a current checkout.</p>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">Motivating incident</span> A shipped snapshot had <code>NextBSD-freebsd-compat</code> <strong>and</strong> <code>NextBSD-userland</code> both owning <code>/usr/share/man/man3/syslog.3.gz</code>. pkg(8)'s SAT solver resolved the hard file conflict by <strong>silently dropping <code>NextBSD-userland</code></strong> — the package that carries <code>/sbin/launchd</code>. <code>pkg install NextBSD-everything</code> reported <em>success</em>; the rootfs came out with no init. It was caught only downstream, by <code>gershwin-on-nextbsd</code>'s ISO-build guard <code>[ -x $ROOTFS/sbin/launchd ]</code>. <code>nextbsd-pkg</code> published it green because <code>nextbsd-pkg</code> never installs what it builds.</p>
+</div>
+
+<div class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#gap">The gap: publish without installing</a></li>
+    <li><a href="#why">Three reasons conflicts slip through</a></li>
+    <li><a href="#invariant">The invariant &amp; ownership contract</a></li>
+    <li><a href="#design">Two-layer defense</a></li>
+    <li><a href="#layerA">Layer A — cross-package ownership check (assembly time)</a></li>
+    <li><a href="#layerB">Layer B — real install-test (pre-publish)</a></li>
+    <li><a href="#impl">Implementation: the <code>build.yml</code> changes</a></li>
+    <li><a href="#edge">Edge cases &amp; what this does <em>not</em> catch</a></li>
+    <li><a href="#cost">Cost, rollout, checklist</a></li>
+  </ol>
+</div>
+
+<h2 id="gap">1. The gap: publish without installing</h2>
+
+<p><code>nextbsd-pkg/scripts/build.sh</code> repackages each component's <code>continuous</code> artifact into one pkg(8) package and publishes a flat repo. It runs in a FreeBSD VM (<code>vmactions/freebsd-vm@v1</code>, 14.2), triggered by <code>repository_dispatch: userland-updated</code>, <code>workflow_dispatch</code>, or PR.</p>
+
+<table>
+<tr><th>Package</th><th>Source (component <code>continuous</code>)</th><th>Owns</th></tr>
+<tr><td><code>NextBSD-freebsd-compat</code></td><td><code>nextbsd-base-$ARCH.tar.gz</code></td><td>whole base rootfs</td></tr>
+<tr><td><code>NextBSD-kernel</code></td><td><code>nextbsd-kernel-$ARCH.tar.gz</code></td><td><code>boot/kernel/kernel</code></td></tr>
+<tr><td><code>NextBSD-kernel-extensions</code></td><td><code>*kext*.tar.gz</code> (amd64)</td><td>kexts</td></tr>
+<tr><td><code>NextBSD-userland</code></td><td><code>nextbsd-userland-$ARCH.tar.gz</code></td><td>Darwin system layer</td></tr>
+<tr><td><code>NextBSD-everything</code></td><td>— (meta)</td><td>nothing; depends on all four</td></tr>
+</table>
+
+<p>The package plist is generated per component by <code>find . \( -type f -o -type l \)</code> over the extracted tarball (<code>build.sh:41</code>), then <code>pkg create</code>. <strong>Each package owns exactly whatever files are in its tarball. There is no cross-package arbitration at this layer</strong> — two components claiming the same path is created silently and only resolved (by dropping a package) at consumer install.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">The existing gate is metadata-only</span> There <em>is</em> a <code>verify</code> job — <code>scripts/verify.sh</code> — but it runs <code>pkg install <strong>-n</strong> -y NextBSD-everything</code> (<code>verify.sh:36</code>). The <code>-n</code> is a dry-run: it exercises the SAT solver on <em>catalog metadata</em> but never extracts a single file into a root. A two-owners-of-one-path collision manifests at <strong>extraction/registration</strong>, not in metadata — so the dry-run passes green while the real install would drop a package. That is precisely the hole.</p>
+</div>
+
+<h2 id="why">2. Three reasons conflicts slip through</h2>
+
+<ol>
+<li><strong>Temporal skew from independent rolls (the primary cause).</strong> The only cross-repo collision check today is <code>nextbsd-freebsd-compat/scripts/strip-collisions.sh</code>, and it runs <em>during the base build</em>. It fetches the userland <code>continuous</code> tarball <em>as of that moment</em> (<code>strip-collisions.sh:18</code>, <code>curl .../nextbsd-userland/releases/download/continuous/...</code>), intersects the staged base against it (<code>comm -12</code>, line 30-33), and strips approved overlaps. But compat and userland publish on <strong>independent triggers</strong> — compat on <code>toolchain-updated</code>/PR, userland on its own commits. A base that passed its gate is later combined by <code>nextbsd-pkg</code> with a <em>newer</em> userland it never saw. That is exactly the <code>syslog.3.gz</code> path: userland <a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/30">#30</a> (<code>083c720</code>, "man: install man pages") started shipping it <em>after</em> the base last built its collision list.</li>
+<li><strong>The assembler does no file-ownership check.</strong> <code>build.sh</code> generates each plist independently and never intersects the four staged trees before <code>pkg create</code>. Nothing at pkg-assembly time — the one place the <em>actual combined snapshot</em> exists — validates that the four packages partition the filesystem.</li>
+<li><strong>The only pre-publish gate never extracts.</strong> <code>verify.sh</code>'s <code>pkg install -n</code> means the collision-induced drop of <code>NextBSD-userland</code>/<code>/sbin/launchd</code> passes CI green (see §1).</li>
+</ol>
+
+<h2 id="invariant">3. The invariant &amp; ownership contract</h2>
+
+<p><strong>Invariant:</strong> across <code>NextBSD-{freebsd-compat, kernel, kernel-extensions, userland}</code>, no two packages own the same path, and <code>pkg install NextBSD-everything</code> installs every dependency (drops none). "userland and compat never conflict," stated as a testable property.</p>
+
+<p><strong>Ownership contract</strong> (today it lives implicitly in <code>compat/scripts/collisions</code>; this plan makes it explicit and enforced): where the Darwin userland ships a functional equivalent of a FreeBSD-base file, <strong>userland owns the canonical copy and the base strips it</strong>. The recurring overlap classes:</p>
+
+<table>
+<tr><th>Class</th><th>Example</th><th>Owner</th></tr>
+<tr><td>Man pages that follow an overlay-owned daemon/lib</td><td><code>man3/syslog.3.gz</code>, <code>man8/syslogd.8</code></td><td>userland (follows <code>syslogd</code>/<code>asl</code>)</td></tr>
+<tr><td>Overlaid tools at a shared path</td><td><code>/usr/sbin/syslogd</code> (Apple ASL vs FreeBSD)</td><td>userland</td></tr>
+<tr><td>Shared libs / runtime</td><td><code>libBlocksRuntime.so</code></td><td>userland (<code>/usr/lib/system</code>)</td></tr>
+<tr><td>Headers</td><td><code>/usr/include/Block*.h</code></td><td>userland</td></tr>
+</table>
+
+<div class="callout">
+<p><span class="pill pill-move">Root fix for skew</span> The install-test (Layer B) validates the <em>combined</em> snapshot, which is where skew becomes observable — but it is reactive. To make the ownership contract <em>proactive</em>, the deterministic Layer A check runs at pkg-assembly time against the actual base+userland being combined, not a point-in-time base-build intersection. That moves the collision gate to the one place that sees the real pair.</p>
+</div>
+
+<h2 id="design">4. Two-layer defense</h2>
+
+<p>One gate is enough to close #370, but two are cheap and complementary:</p>
+
+<table>
+<tr><th></th><th>Layer A — ownership check</th><th>Layer B — install-test</th></tr>
+<tr><td>When</td><td>at assembly, before <code>pkg create</code></td><td>after repo build, before publish</td></tr>
+<tr><td>How</td><td>intersect the four staged plists</td><td><code>pkg -r &lt;root&gt; install NextBSD-everything</code></td></tr>
+<tr><td>Speed</td><td>instant (a <code>sort</code>/<code>comm</code>)</td><td>one real extraction (~seconds)</td></tr>
+<tr><td>Error quality</td><td>names the exact path + both owners</td><td>"package dropped" / "no launchd"</td></tr>
+<tr><td>Catches</td><td>any two components owning one path</td><td>extraction/registration + SAT-solver drops, shadowing that isn't an exact-path tie</td></tr>
+<tr><td>Blind to</td><td>non-path shadowing, ABI/solver behavior</td><td>nothing relevant — it is the real thing</td></tr>
+</table>
+
+<p>Layer A gives a fast, precise "you added <code>X</code>, and <code>Y</code> already owns it" the moment someone introduces an overlap. Layer B is the authoritative backstop that proves the published repo actually installs. Ship both; Layer B is the one that satisfies #370's acceptance, Layer A is the one that makes the failure legible.</p>
+
+<h2 id="layerA">5. Layer A — cross-package ownership check</h2>
+
+<p><code>build.sh</code> already stages each component into its own root and derives a plist. Before publishing, intersect them pairwise. Because compat is the big base and userland is the overlay, the load-bearing pair is compat&times;userland, but the check is general:</p>
+
+<pre><code># after each component's stage dir + plist exist, before `pkg repo`
+# collect "package: path" for every owned path, detect any path with >1 owner
+: &gt; /tmp/owners
+for comp in freebsd-compat kernel kernel-extensions userland; do
+    [ -d "stage/$comp" ] || continue
+    ( cd "stage/$comp" && find . \( -type f -o -type l \) ) \
+        | sed "s#^#$comp #" &gt;&gt; /tmp/owners
+done
+# any path owned by >1 package (2nd field), minus the approved contract list
+awk '{ p=$1; $1=""; c[$0]++; owner[$0]=owner[$0]" "p } END {
+        for (f in c) if (c[f] &gt; 1) print f " <=" owner[f] }' /tmp/owners \
+    | grep -vf scripts/allowed-shared.txt &gt; /tmp/conflicts || true
+if [ -s /tmp/conflicts ]; then
+    echo "FATAL: components co-own paths (nextbsd#370):" &gt;&amp;2
+    cat /tmp/conflicts &gt;&amp;2
+    exit 1
+fi</code></pre>
+
+<p>Notes: (1) this is the ownership contract expressed as code — <code>scripts/allowed-shared.txt</code> is the deliberate-shared allowlist (normally empty; the four packages should partition cleanly). (2) It supersedes the temporal-skew problem for the assembler because it runs on the <em>actual</em> base+userland pair being combined, unlike compat's point-in-time <code>strip-collisions.sh</code>. (3) It is arch-neutral and needs no VM — it can even run in the Linux prep step before the FreeBSD VM.</p>
+
+<h2 id="layerB">6. Layer B — real install-test (the #370 gate)</h2>
+
+<p>Mirror exactly what the ISO builders already do — a host-side <code>pkg -r &lt;root&gt;</code> install (no boot, no chroot), pointed at a private <code>REPOS_DIR</code> holding only the just-built flat repo, with the NextBSD ABI pin. Then assert the post-conditions that a bare exit code would miss.</p>
+
+<pre><code># in the FreeBSD VM, after `pkg repo out/repo`
+ROOT=$(mktemp -d)
+repos=$(mktemp -d)
+cat &gt; "$repos/nextbsd.conf" &lt;&lt;EOF
+nextbsd: { url: "file://$PWD/out/repo", enabled: yes, signature_type: none }
+EOF
+export ABI="FreeBSD:15:${ABIARCH}" IGNORE_OSVERSION=yes OSVERSION="$(uname -K)" ASSUME_ALWAYS_YES=yes
+
+pkg -r "$ROOT" -o REPOS_DIR="$repos" update -f
+pkg -r "$ROOT" -o REPOS_DIR="$repos" install -y NextBSD-everything   # NO -n: real extraction
+
+# 1. the whole point: install must produce a working init
+[ -x "$ROOT/sbin/launchd" ]  || { echo "FAIL: NextBSD-everything install produced no /sbin/launchd"; exit 1; }
+[ -x "$ROOT/bin/launchctl" ] || { echo "FAIL: no /bin/launchctl"; exit 1; }
+
+# 2. NO dependency silently dropped — the syslog bug was a *successful* install
+#    that just excluded NextBSD-userland. Exit code alone would not catch it.
+for p in NextBSD-freebsd-compat NextBSD-kernel NextBSD-userland; do
+    pkg -r "$ROOT" -o REPOS_DIR="$repos" info -e "$p" \
+        || { echo "FAIL: $p missing from NextBSD-everything install (SAT solver dropped it)"; exit 1; }
+done
+echo "OK: NextBSD-everything installs cleanly, all deps present, launchd present"</code></pre>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Why <code>pkg info -e</code> per dep is non-negotiable</span> The failure mode was not a non-zero exit — it was a green <code>pkg install</code> that <em>dropped</em> <code>NextBSD-userland</code> to resolve the file conflict. Only checking each meta-dependency actually landed (<code>info -e</code>) catches "installed successfully, minus the important package." The <code>launchd</code> guard is the human-obvious proxy; the per-dep loop is the general form.</p>
+</div>
+
+<p><strong>Arch:</strong> run per publishing arch. amd64 always; arm64 packages carry <code>FreeBSD:15:aarch64</code> and install by extraction (no execution), so the same <code>pkg -r</code> works cross-arch on the x86 VM — same pattern <code>verify.sh</code> already relies on, but doing a real extraction instead of <code>-n</code>.</p>
+
+<h2 id="impl">7. Implementation: the <code>build.yml</code> changes</h2>
+
+<ul>
+<li><strong>Layer A</strong> — a step in <code>scripts/build.sh</code> (or a new <code>scripts/check-ownership.sh</code> it calls) right before <code>pkg repo</code>. Fails the packaging step with the exact culprit. No new job.</li>
+<li><strong>Layer B</strong> — replace <code>verify.sh</code>'s <code>install -n</code> with the real <code>pkg -r &lt;root&gt; install</code> + assertions above. It already runs in the FreeBSD VM job, so it is an edit, not a new VM.</li>
+<li><strong>Gating</strong> — both must run on <code>pull_request</code> <em>and</em> before the publish step on the auto (<code>userland-updated</code>) path. A repo that can't install itself must fail <em>before</em> <code>pkg repo</code> is uploaded, whichever trigger fired.</li>
+<li><strong>Keep <code>verify.sh</code>'s metadata dry-run too</strong> if desired — it is a cheap first cut — but it is no longer the last word.</li>
+</ul>
+
+<h2 id="edge">8. Edge cases &amp; what this does <em>not</em> catch</h2>
+
+<ul>
+<li><strong>Non-path shadowing.</strong> Two libs at <em>different</em> paths where rtld search order makes one shadow the other (the <code>libBlocksRuntime.so</code> class the <code>superseded</code> header warns about) is not an exact-path tie — Layer A won't see it, and Layer B only catches it if it breaks the install. Out of scope here; still governed by the <code>superseded</code> list.</li>
+<li><strong>Runtime-only conflicts.</strong> Two packages whose files coexist fine but misbehave together at boot are a boot-test concern (that lives in the ISO/kernel CI), not a pkg-install concern.</li>
+<li><strong>Third-party repo interactions</strong> (<a href="https://github.com/nextbsd-redux/nextbsd/issues/357">#357</a>) are separate — this gate validates the NextBSD set in isolation via a private <code>REPOS_DIR</code>, exactly as the ISO builders do (so the VM's own signed repos don't perturb the solver).</li>
+<li><strong>Deeper structural fix (optional, later):</strong> have <code>nextbsd-pkg</code> apply the ownership contract itself (run compat's strip logic against the <em>actual</em> userland being packaged) so overlaps are <em>resolved</em> at assembly, not just <em>detected</em>. Layer A detecting + failing is the safe first step; auto-stripping at assembly is a follow-up once the contract is trusted.</li>
+</ul>
+
+<h2 id="cost">9. Cost, rollout, checklist</h2>
+
+<p><strong>Cost:</strong> Layer A is a <code>sort</code>/<code>comm</code> (milliseconds). Layer B is one real <code>pkg install</code> extraction into a tmpdir (seconds) in a VM the job already spins up. Negligible.</p>
+
+<p><strong>Rollout:</strong></p>
+<ol>
+<li>Land <code>scripts/check-ownership.sh</code> + <code>scripts/allowed-shared.txt</code> (empty) and wire it into <code>build.sh</code> before <code>pkg repo</code>. <span class="pill pill-neutral">Layer A</span></li>
+<li>Rewrite <code>verify.sh</code>: private <code>REPOS_DIR</code> → real <code>pkg -r install NextBSD-everything</code> → launchd + <code>bin/launchctl</code> + per-dep <code>info -e</code> asserts. <span class="pill pill-neutral">Layer B</span></li>
+<li>Ensure both gate the publish step on every trigger, not just PR.</li>
+<li>Backfill: run the new gate against the current published snapshot once, to confirm today's repo is clean (and to seed <code>allowed-shared.txt</code> only if a legitimately-shared path exists).</li>
+</ol>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Acceptance (#370)</span> <code>nextbsd-pkg</code> CI installs <code>NextBSD-everything</code> into a clean rootfs and fails the build on any file conflict <em>or</em> dropped dependency, before the repo is published — and the common userland&times;compat overlap fails in seconds at assembly with the exact path named.</p>
+</div>
+
+<p class="footnote">Sources: <code>nextbsd-pkg/scripts/{build.sh,verify.sh}</code>, <code>nextbsd-pkg/.github/workflows/build.yml</code>; <code>nextbsd-freebsd-compat/scripts/{strip-collisions.sh,collisions,superseded}</code>; <code>nextbsd/build.sh</code> &sect;install; <code>gershwin-on-nextbsd/build.sh</code>; <code>nextbsd-userland</code> <code>083c720</code> (man-page install that introduced the live collision). Tracking: nextbsd#370 (this gate), #357 (third-party pkg), #377 (dispatch trigger — separate).</p>
+
+</div>
+</body>
+</html>

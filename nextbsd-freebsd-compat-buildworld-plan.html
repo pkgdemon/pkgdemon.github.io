@@ -184,11 +184,8 @@ rm -f "$STAGE/METALOG"</code></pre>
 
 <h2 id="downstream">7. Downstream: one line, the proof, the rollback</h2>
 
-<p><strong>The single downstream code change.</strong> <code>nextbsd-pkg/scripts/build.sh</code> hardcodes the base&harr;userland dedup (today just the two <code>Block*.h</code>). A full world adds exactly one new overlap &mdash; <code>syslogd</code> (&sect;4.1). So:</p>
-<pre><code># nextbsd-pkg/scripts/build.sh  (the dedup rm -f)
-  rm -f stage/compat/usr/include/Block.h stage/compat/usr/include/Block_private.h \
-        stage/compat/usr/sbin/syslogd          # &lt;-- add (buildworld now ships base syslogd)</code></pre>
-<p>The measured collision set is only 3 files, so this is the whole delta &mdash; but don't trust that, <strong>prove it</strong>:</p>
+<p><strong>No downstream code addition needed</strong> &mdash; and this corrects the first-pass assumption. Collisions are stripped <em>upstream</em>, in the base build (<code>strip-collisions.sh</code>), so the <code>nextbsd-base-*.tar.gz</code> that <code>nextbsd-pkg</code> consumes already arrives clean of all 3 (verified against the PR #46 artifact: <code>syslogd</code>, <code>Block.h</code>, <code>Block_private.h</code> all absent). That makes the existing dedup at <code>nextbsd-pkg/scripts/build.sh:52-58</code> (<code>rm -f &hellip;/Block.h &hellip;/Block_private.h</code>) a <strong>redundant no-op</strong> &mdash; the files it deletes aren't there anymore. So the change is a <em>deletion</em>, not an addition, and it's optional: remove those lines so collision policy lives in exactly one self-policing place instead of a stale partial copy that only knows <code>Block.h</code>. Adding <code>syslogd</code> there would be pointless.</p>
+<p>The measured collision set is only 3 files, all handled upstream &mdash; but don't trust that, <strong>prove it</strong>:</p>
 <pre><code># (A) SUPERSET — every path today's base ships must still exist (minus intended strips). Expect EMPTY:
 comm -23 old.list new.list | grep -vf intended-strip.txt      # must be empty
 # (B) NEW userland overlaps — must be fully absorbed by the dedup:

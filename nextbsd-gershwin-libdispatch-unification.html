@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>NextBSD &amp; Gershwin: two libdispatches, distinct sonames &middot; Joe Maloney</title>
+<style>
+  body { font-family:-apple-system,"Helvetica Neue",Helvetica,Arial,sans-serif;
+    max-width:820px; margin:40px auto; padding:0 20px; color:#222; line-height:1.65; }
+  header { border-bottom:1px solid #ccc; padding-bottom:16px; margin-bottom:24px; }
+  h1 { font-size:1.9em; margin:0 0 6px; line-height:1.2; }
+  header p { margin:0; color:#666; }
+  h2 { font-size:1.3em; margin-top:1.9em; border-bottom:1px solid #eee; padding-bottom:4px; }
+  h3 { font-size:1.05em; margin-top:1.4em; margin-bottom:.3em; }
+  a { color:#0366d6; text-decoration:none; } a:hover { text-decoration:underline; }
+  code { background:#f3f3f0; padding:1px 5px; border-radius:4px; font:0.86em ui-monospace,Menlo,monospace; }
+  .tldr { background:#f6f8fa; border:1px solid #e2e6ea; border-radius:10px; padding:18px 22px; }
+  .tldr h2 { margin-top:0; border:none; }
+  .verdict-badge { display:inline-block; background:#e7eefb; color:#1f5a8a; border:1px solid #b9cdec;
+    font-weight:600; font-size:.85em; padding:3px 10px; border-radius:20px; }
+  .stop { background:#f9e9e9; border:1px solid #e6b3b3; border-left:5px solid #c0504d;
+    border-radius:8px; padding:14px 18px; margin:18px 0; }
+  .stop strong { color:#a3322f; }
+  .steps { counter-reset:s; list-style:none; padding-left:0; }
+  .steps li { counter-increment:s; position:relative; padding-left:40px; margin-bottom:14px; }
+  .steps li::before { content:counter(s); position:absolute; left:0; top:0; width:26px; height:26px;
+    background:#0366d6; color:#fff; border-radius:50%; text-align:center; line-height:26px; font-weight:600; font-size:.85em; }
+  .lib { border:1px solid #e6e6e0; border-radius:10px; padding:14px 18px; margin:14px 0; background:#fff; }
+  .lib-h { font-size:1.02em; margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #f0f0ec; }
+  dl.kv { display:grid; grid-template-columns:max-content 1fr; gap:6px 16px; margin:0; }
+  dl.kv dt { font-weight:600; color:#555; font-size:.86em; }
+  dl.kv dd { margin:0; }
+  .mean { margin:10px 0 0; padding-top:9px; border-top:1px dashed #eee; color:#444; }
+  @media (max-width:520px) { dl.kv { grid-template-columns:1fr; gap:1px 0; } dl.kv dt { margin-top:8px; } }
+  .mit { color:#555; }
+  .cols dt { font-weight:600; margin-top:10px; }
+  .cols dd { margin:2px 0 0 0; color:#444; }
+  footer { margin-top:3em; padding-top:16px; border-top:1px solid #eee; color:#888; font-size:.9em; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>NextBSD &amp; Gershwin: two <code>libdispatch</code> builds, distinct sonames</h1>
+  <p><a href="nextbsd-research.html">&larr; NextBSD Research</a> &middot; <a href="index.html">Home</a> &middot; July&nbsp;9,&nbsp;2026</p>
+</header>
+
+<div class="tldr">
+  <h2>In one minute</h2>
+  <p>NextBSD needs <strong>two</strong> builds of <code>libdispatch</code> &mdash; the library that lets programs say &ldquo;wake me when this happens.&rdquo; That is fine and intended. The rule that makes it safe is simple: <strong>they must have different library names (sonames)</strong> so they can never be confused for each other.</p>
+  <p><strong>Design:</strong> the Gershwin desktop runs the <strong>stock</strong> <code>libdispatch.so</code> (Apple&rsquo;s Mach support turned off) &mdash; the only build proven to make the global menu work. The <strong>NextBSD fork</strong> of <code>libdispatch</code> (Mach turned on) is renamed to <strong><code>libsystem_dispatch.so</code></strong> and linked <em>only</em> by the base components that genuinely need Mach (libxpc, launchd, notifyd, SystemConfiguration, IOKit, notify, asl). Distinct names also fix the original <code>launchctl</code>/<code>dbus</code>/<code>sshd</code> crash, because a daemon that needs the Mach build can no longer be handed the stock one by mistake.</p>
+  <p>Verdict: <span class="verdict-badge">Distinct-soname partition &mdash; keep the fork, rename it</span></p>
+</div>
+
+<div class="stop">
+  <strong>Settled by testing &mdash; read this before &ldquo;just unify on one build&rdquo;:</strong> the Mach <code>libdispatch</code> does <em>not</em> fix the Gershwin menu, <em>even with</em> the FreeBSD kqueue patches (<code>event.c</code> / <code>event_kevent.c</code>). This was tried on real hardware: the underlying events were delivered but the menu still failed to track app-switches. So committing those base patches is <strong>not</strong> the path, and unifying everything onto the Mach build is off the table. Only the stock non-Mach build makes the desktop work &mdash; so the Gershwin fork <strong>stays</strong>, it just gets a distinct name.
+</div>
+
+<h2>Why the menu broke (the short version)</h2>
+<p>The Gershwin global menu bar is supposed to switch to whatever app you bring to the front. On NextBSD it did not: it latched onto the first app and stayed there. The menu learns about app switches by watching the X11 display for a &quot;which window is active now&quot; event. It does that watch through a libdispatch file-descriptor read source — a small piece of plumbing that says &quot;wake me when this socket has data.&quot;</p><p>The root cause was one compile-time number. NextBSD&#x27;s libdispatch is a fork of the same code Gershwin uses, byte-for-byte identical except for a single flag, EV_UDATA_SPECIFIC, which the fork set to 0x0100 so that Apple&#x27;s Mach messaging support would compile. The problem: on FreeBSD (which NextBSD is built on) the value 0x0100 already means something else to the kernel — &quot;fire this once, then delete it.&quot; So the menu&#x27;s watch fired exactly one time and then the kernel threw it away and never re-armed it. The menu got its first app-switch notification and then went deaf. That same flag also switched libdispatch into a Darwin-only bookkeeping model that mis-identifies file-descriptor watches on FreeBSD, compounding the failure. Timers and Mach-port plumbing were unaffected, which is why the rest of the system still booted — only file-descriptor watches like the menu&#x27;s broke.</p><p>People tried several fixes. Stripping just the &quot;fire once&quot; bit made a single watch re-arm in tests, but did not fix the deeper wrong-bookkeeping problem. Setting the flag all the way back to zero fixed file-descriptor watches but would have broken Apple&#x27;s Mach messaging (libxpc), which genuinely needs the Darwin model. The clean answer everyone converged on: keep the Darwin model ONLY for the one Mach-messaging case and route everything else through the portable path.</p><p>The famous &quot;log out and back in fixes it&quot; clue was a red herring. The login screen starts one X display at boot and never shuts it down on logout, and the old session&#x27;s &quot;active window&quot; value is left behind on that still-running display. A second login inherits that stale value, so the menu latches once and looks fixed — but app-switching is still dead. A truly fresh display has no leftover value, so the menu shows nothing. It was a mask, the same way manually restarting the menu process temporarily &quot;fixed&quot; it.</p><p>How did we end up with TWO libdispatches? Rather than wait for the surgical base fix, the Gershwin side shipped its own libdispatch built with Mach turned OFF (which sidesteps the poisoned flag) and installed it so Gershwin apps load it ahead of the system copy, while system daemons keep the Mach-on copy. Two builds of the same library, kept apart by load order. That is the split. The base per-path fix — restricting the Darwin model to Mach-only and stripping the bad bits from everything else — was written three days later and is still sitting uncommitted in the working tree. Once it is committed and proven, the reason for the second libdispatch goes away.</p>
+
+<h2>The plan</h2>
+<p>Keep both builds; make them un-confusable and confine the Mach one. Gershwin ends up running plain upstream <code>libdispatch</code>, exactly as it does on FreeBSD/Linux &mdash; no NextBSD special-casing.</p>
+<ol class="steps">
+  <li>Give the NextBSD Mach fork of <code>libdispatch</code> a <strong>distinct soname</strong> &mdash; <code>libsystem_dispatch.so</code> instead of <code>libdispatch.so</code>.</li>
+  <li>Relink <strong>only</strong> the base Mach components against it (libxpc, launchd, notifyd, SystemConfiguration, IOKit, notify, asl, plus the daemons). Leave the canonical <code>libdispatch.so</code> name to the stock non-Mach build.</li>
+  <li>Keep Gershwin on the stock non-Mach <code>libdispatch.so</code> (today&rsquo;s working workaround). Ideally the base <em>ships</em> that stock build as the default, so Gershwin builds nothing and drops its NextBSD dispatch scaffolding entirely.</li>
+  <li>Add a CI guard: assert no Gershwin binary records a <code>DT_NEEDED</code> on a Mach-cluster lib or on <code>libsystem_dispatch.so</code> &mdash; that is the one rule that keeps the two builds out of the same process.</li>
+  <li>Confirm the payoff: exactly one <code>libdispatch.so</code> (stock) plus one <code>libsystem_dispatch.so</code> exist; the <code>launchctl</code>/<code>dbus</code>/<code>sshd</code> &ldquo;Undefined symbol&rdquo; poisoning is gone; Gershwin is un-forked onto stock.</li>
+</ol>
+<p class="mit"><strong>Note:</strong> the <code>event.c</code> / <code>event_kevent.c</code> patches are not a prerequisite for any of this. They live (if anywhere) inside the confined Mach fork and matter only to base daemons&rsquo; own file-descriptor sources; they do not make the desktop menu work, so they are off Gershwin&rsquo;s critical path.</p>
+
+<h2>How to read the per-library disposition</h2>
+<p>A &quot;disposition&quot; is simply the decision we have reached about one specific library: given how that library works and how (or whether) Gershwin uses it, which build of libdispatch should it link against, and what — if anything — do we need to change. Think of it as a one-line verdict per library so a maintainer can scan the whole system at a glance instead of re-deriving the reasoning each time. Each row answers four questions. &quot;Needs Mach?&quot; asks whether the library genuinely requires Apple&#x27;s Mach messaging support inside libdispatch — that is true only for libraries that create a Mach-receive dispatch source (the plumbing behind libxpc and friends); everything else only needs portable timers and file-descriptor watches. &quot;Gershwin uses&quot; asks whether a Gershwin desktop/GUI process actually loads this library — this matters because the two-runtime hazard only bites when two different libdispatches could end up in the SAME process, so a library no Gershwin app ever loads is low-risk no matter what it needs. &quot;Recommended dispatch&quot; is the payoff: which single libdispatch this library should bind to — under Option A the answer is almost always &quot;the one unified base libdispatch,&quot; because that build serves both Mach daemons and portable GUI apps from a single file. &quot;Action&quot; is the concrete to-do: usually &quot;no change&quot; for daemon-only libraries, and &quot;delete the Gershwin-specific workaround&quot; for the handful of pieces that currently exist only to prop up the second libdispatch.</p>
+<dl class="cols">
+  <dt>Needs Mach?</dt><dd>Does this library truly need Apple&rsquo;s Mach messaging inside <code>libdispatch</code>? Only libraries that create a Mach-receive source (the plumbing behind <code>libxpc</code>) do.</dd>
+  <dt>Gershwin uses</dt><dd>Does a Gershwin desktop app load this library? This is what makes the &ldquo;two builds in one process&rdquo; hazard possible.</dd>
+  <dt>Which libdispatch</dt><dd>Which of the two builds it should link: the stock <code>libdispatch.so</code>, or the confined Mach fork <code>libsystem_dispatch.so</code>.</dd>
+  <dt>Action</dt><dd>The concrete to-do &mdash; usually &ldquo;no change&rdquo; or &ldquo;relink against the Mach fork.&rdquo;</dd>
+</dl>
+
+<div class="libs"><div class="lib">
+      <div class="lib-h"><code>libdispatch (the runtime itself)</code> <span class="pill pill-mix">Mixed</span></div>
+      <dl class="kv">
+        <dt>Needs Mach?</dt><dd>n/a — it IS libdispatch; built HAVE_MACH=ON so it provides BOTH Mach sources and portable fd/timer/signal sources</dd>
+        <dt>Gershwin uses</dt><dd>Yes — every Gershwin GUI app links -ldispatch</dd>
+        <dt>Which libdispatch</dt><dd>Two builds, distinct sonames: stock <code>libdispatch.so</code> (default) + <code>libsystem_dispatch.so</code> (Mach fork)</dd>
+        <dt>Action</dt><dd>Ship BOTH from the base with distinct sonames. Keep stock <code>libdispatch.so</code> as the default; give the Mach fork the soname <code>libsystem_dispatch.so</code>.</dd>
+      </dl>
+      <p class="mean"><strong>In plain terms:</strong> This is the one library the whole debate is about; the goal is exactly one copy that works for both daemons and GUI apps.</p>
+    </div><div class="lib">
+      <div class="lib-h"><code>libBlocksRuntime</code> <span class="pill pill-port">Portable</span></div>
+      <dl class="kv">
+        <dt>Needs Mach?</dt><dd>No — but there must be exactly one copy per process (single block-copy table)</dd>
+        <dt>Gershwin uses</dt><dd>Yes — via _Block_copy in libobjc2 and app links</dd>
+        <dt>Which libdispatch</dt><dd>One shared <code>libBlocksRuntime.so</code> for everyone</dd>
+        <dt>Action</dt><dd>Single soname, shared by both dispatch builds &mdash; no fork needed for blocks.</dd>
+      </dl>
+      <p class="mean"><strong>In plain terms:</strong> A small support library that must never be duplicated in one process, so ship one clean canonical copy.</p>
+    </div><div class="lib">
+      <div class="lib-h"><code>libxpc</code> <span class="pill pill-mach">Mach</span></div>
+      <dl class="kv">
+        <dt>Needs Mach?</dt><dd>Yes — creates a Mach-receive dispatch source and uses mach_msg transport</dd>
+        <dt>Gershwin uses</dt><dd>No — no Gershwin component links or dlopens it</dd>
+        <dt>Which libdispatch</dt><dd>NextBSD Mach fork &mdash; <code>libsystem_dispatch.so</code></dd>
+        <dt>Action</dt><dd>Relink against <code>libsystem_dispatch.so</code> (the distinct-soname Mach fork), not <code>libdispatch.so</code>.</dd>
+      </dl>
+      <p class="mean"><strong>In plain terms:</strong> Apple&#x27;s IPC library that genuinely needs Mach, but it only lives in daemons so it never risks a Gershwin GUI process.</p>
+    </div><div class="lib">
+      <div class="lib-h"><code>libCoreFoundation</code> <span class="pill pill-port">Portable</span></div>
+      <dl class="kv">
+        <dt>Needs Mach?</dt><dd>No — only uses portable timer sources</dd>
+        <dt>Gershwin uses</dt><dd>No — Gershwin uses GNUstep base, not Apple CF</dd>
+        <dt>Which libdispatch</dt><dd>Stock <code>libdispatch.so</code></dd>
+        <dt>Action</dt><dd>No change &mdash; uses the stock default; safe for Gershwin processes.</dd>
+      </dl>
+      <p class="mean"><strong>In plain terms:</strong> Harmless portable consumer that Gershwin does not touch anyway.</p>
+    </div><div class="lib">
+      <div class="lib-h"><code>libSystemConfiguration</code> <span class="pill pill-mach">Mach</span></div>
+      <dl class="kv">
+        <dt>Needs Mach?</dt><dd>Yes — Mach-receive dispatch source in SCNotify.c</dd>
+        <dt>Gershwin uses</dt><dd>No</dd>
+        <dt>Which libdispatch</dt><dd>NextBSD Mach fork &mdash; <code>libsystem_dispatch.so</code></dd>
+        <dt>Action</dt><dd>Relink against <code>libsystem_dispatch.so</code> (the distinct-soname Mach fork), not <code>libdispatch.so</code>.</dd>
+      </dl>
+      <p class="mean"><strong>In plain terms:</strong> Daemon-side config library needing Mach; irrelevant to the GUI side.</p>
+    </div><div class="lib">
+      <div class="lib-h"><code>libIOKit</code> <span class="pill pill-mach">Mach</span></div>
+      <dl class="kv">
+        <dt>Needs Mach?</dt><dd>Yes — Mach-receive dispatch source plus links libxpc</dd>
+        <dt>Gershwin uses</dt><dd>No</dd>
+        <dt>Which libdispatch</dt><dd>NextBSD Mach fork &mdash; <code>libsystem_dispatch.so</code></dd>
+        <dt>Action</dt><dd>Relink against <code>libsystem_dispatch.so</code> (the distinct-soname Mach fork), not <code>libdispatch.so</code>.</dd>
+      </dl>
+      <p class="mean"><strong>In plain terms:</strong> Hardware/IO library needing Mach; daemon-only, no Gershwin exposure.</p>
+    </div><div class="lib">
+      <div class="lib-h"><code>libnotify</code> <span class="pill pill-mach">Mach</span></div>
+      <dl class="kv">
+        <dt>Needs Mach?</dt><dd>Yes — Mach-receive dispatch source plus links libxpc</dd>
+        <dt>Gershwin uses</dt><dd>No (only daemon-side notifyd)</dd>
+        <dt>Which libdispatch</dt><dd>NextBSD Mach fork &mdash; <code>libsystem_dispatch.so</code></dd>
+        <dt>Action</dt><dd>Relink against <code>libsystem_dispatch.so</code> (the distinct-soname Mach fork), not <code>libdispatch.so</code>.</dd>
+      </dl>
+      <p class="mean"><strong>In plain terms:</strong> Notification plumbing needing Mach; stays entirely on the daemon side.</p>
+    </div><div class="lib">
+      <div class="lib-h"><code>libsystem_asl</code> <span class="pill pill-mach">Mach</span></div>
+      <dl class="kv">
+        <dt>Needs Mach?</dt><dd>Yes — links libxpc and uses Mach/bootstrap IPC</dd>
+        <dt>Gershwin uses</dt><dd>No</dd>
+        <dt>Which libdispatch</dt><dd>NextBSD Mach fork &mdash; <code>libsystem_dispatch.so</code></dd>
+        <dt>Action</dt><dd>Relink against <code>libsystem_dispatch.so</code> (the distinct-soname Mach fork), not <code>libdispatch.so</code>.</dd>
+      </dl>
+      <p class="mean"><strong>In plain terms:</strong> System-logging client needing Mach; not loaded by Gershwin apps.</p>
+    </div><div class="lib">
+      <div class="lib-h"><code>libdns_sd (mDNS client)</code> <span class="pill pill-port">Portable</span></div>
+      <dl class="kv">
+        <dt>Needs Mach?</dt><dd>No — built dispatch-free (_DNS_SD_LIBDISPATCH=0); plain AF_UNIX socket client, zero Mach or dispatch symbols</dd>
+        <dt>Gershwin uses</dt><dd>Yes — the ONLY base /usr/lib/system lib Gershwin links, for NSNetService/NSNetServiceBrowser</dd>
+        <dt>Which libdispatch</dt><dd>Stock <code>libdispatch.so</code></dd>
+        <dt>Action</dt><dd>No change &mdash; uses the stock default; safe for Gershwin processes.</dd>
+      </dl>
+      <p class="mean"><strong>In plain terms:</strong> The single base library Gershwin GUI apps load, and it is safe precisely because it carries no dispatch at all.</p>
+    </div><div class="lib">
+      <div class="lib-h"><code>launchd / launchctl / notifyd / syslogd / aslmanager / ipconfigd / mDNSResponder daemon / diskarbitrationd / hostnamed</code> <span class="pill pill-mix">Mixed</span></div>
+      <dl class="kv">
+        <dt>Needs Mach?</dt><dd>Mixed — most link libxpc/Mach; a few (ipconfigd, mDNSResponder daemon) use only portable queues</dd>
+        <dt>Gershwin uses</dt><dd>No — all out-of-process daemons/CLIs</dd>
+        <dt>Which libdispatch</dt><dd>Mach components &rarr; <code>libsystem_dispatch.so</code>; portable ones &rarr; stock <code>libdispatch.so</code></dd>
+        <dt>Action</dt><dd>Relink the Mach-requiring binaries against <code>libsystem_dispatch.so</code>; leave the portable ones on stock.</dd>
+      </dl>
+      <p class="mean"><strong>In plain terms:</strong> System daemons that keep the Mach-capable libdispatch; they live in their own processes so they are outside the two-libdispatch hazard.</p>
+    </div></div>
+
+<h2>What about mDNS / the Network browser?</h2>
+<p>There is no real contradiction here; the documents are describing different layers. The audit asked: &quot;does the mDNS (Bonjour-style network discovery) client drag libdispatch into a Gershwin app?&quot; The answer, confirmed against the current source, is No. The client library, libdns_sd, is a plain Unix-domain-socket stub — it talks to the mDNSResponder daemon over a local socket at /var/run/mDNSResponder using ordinary sendmsg calls. It contains zero Mach code and zero dispatch code, because its dispatch paths are compiled out unless the target is Apple (_DNS_SD_LIBDISPATCH is 1 only on __APPLE__, and this build targets FreeBSD). GNUstep drives it the old-fashioned way: it takes the socket file descriptor and polls it with select() on the NSRunLoop. So dispatch never enters a Gershwin GUI process through mDNS. Only the out-of-process daemon links Mach dispatch, and a daemon in its own process cannot cause the two-runtime hazard.</p><p>The mdns-network-browse-mach-plan.html document is not a counter-example. It agrees libdns_sd is today an AF_UNIX, non-Mach, dispatch-free stub — the Mach MIG transport it describes is a PROPOSAL, not something that exists. There is no .defs (MIG interface) file anywhere in the tree, and mach_bridge.c is a bare skeleton that only registers a name and returns; it never serves a Mach message loop. The network-crash doc is a third, separate layer: a libs-base build-config bug where mDNS support was disabled (HAVE_MDNS=0), leaving a nil backend that crashed; its fix (adding -L/usr/lib/system so the link probe passes) is already present in Install-System-Domain.sh.</p><p>Bottom line for Option A: mDNS as-built is fully compatible — no Mach, no dispatch in-process. The one forward-looking flag is that IF the mach-plan&#x27;s client side were ever implemented, it WOULD inject a Mach surface directly into Gershwin GUI processes, which is exactly the hazard Option A exists to prevent. So Option A should explicitly mark the Mach-MIG mDNS client proposal as &quot;re-review before adopting,&quot; not fold it in.</p>
+
+<h2>Risks &amp; how we handle them</h2>
+<ul><li><strong>A Gershwin GUI process could still crash if it ever links a Mach-cluster library (libxpc / SystemConfiguration / IOKit / notify / asl), because that would pull the Mach fork into the same process as stock libdispatch — two runtimes, one address space.</strong><br><span class="mit">Mitigation: Keep Gershwin&#x27;s consumed base set to dispatch-free libraries only (today: just libdns_sd). Add a CI check that no Gershwin binary records a DT_NEEDED on a Mach-cluster lib or on libsystem_dispatch.so.</span></li><li><strong>Missing one Mach component when relinking: if a base Mach daemon still asks for libdispatch.so, it now gets the stock (non-Mach) build and dies with &#x27;Undefined symbol _dispatch_source_type_mach_recv&#x27;.</strong><br><span class="mit">Mitigation: After the rename, verify every -lxpc / Mach-source consumer records a DT_NEEDED on libsystem_dispatch.so (readelf sweep); flip all of them together, not piecemeal.</span></li><li><strong>An upstream libdispatch re-sync could reintroduce libdispatch.so as the Mach build&#x27;s soname, re-creating the collision that poisoned launchctl/dbus/sshd.</strong><br><span class="mit">Mitigation: Pin the Mach fork&#x27;s DT_SONAME to libsystem_dispatch.so in the base build; CI-assert exactly one libdispatch.so (the stock build) exists system-wide.</span></li><li><strong>The Mach-MIG mDNS client proposal, if ever implemented, would inject a Mach surface directly into Gershwin GUI processes — the one thing this partition exists to prevent.</strong><br><span class="mit">Mitigation: Keep libdns_sd a dispatch-free AF_UNIX stub; CI-check it has no dispatch/xpc DT_NEEDED. Treat the Mach-MIG client as a divergence to re-review, not adopt.</span></li></ul>
+
+<h2>Open questions</h2>
+<ul><li>Should the base ship the stock non-Mach libdispatch.so as the DEFAULT (so Gershwin builds nothing and needs zero NextBSD special-casing), or keep Gershwin building its own copy? Recommended: base ships it — that is the real un-fork.</li><li>Confirm the exact Mach-cluster set to relink against libsystem_dispatch.so (libxpc, launchd, notifyd, SystemConfiguration, IOKit, notify, asl, + daemons) and that none of them are transitively pulled into a Gershwin process.</li><li>Soname for the fork: libsystem_dispatch.so (Apple-canonical, already a symlink in the base) vs libmachdispatch.so (more self-documenting) — maintainer&#x27;s call.</li><li>Does anything on the base daemon side rely on fd-source correctness that the Mach fork&#x27;s event.c/event_kevent.c patches address? If so, keep those patches in the fork; they are irrelevant to Gershwin, which runs stock.</li></ul>
+
+<footer>
+  <p>Synthesized from a multi-agent audit of <code>nextbsd-userland</code>, <code>gershwin-developer</code>, and <code>gershwin-components</code>, cross-checked against the prior menu-regression / mach-fork / mDNS diagnoses and the <code>nextbsd-redux</code> issue tracker, and corrected against on-hardware testing (the Mach build, patched, still fails the menu). Review before acting.</p>
+  <p><a href="nextbsd-research.html">&larr; Back to NextBSD Research</a></p>
+</footer>
+
+</body>
+</html>

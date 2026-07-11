@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD graphics: porting the NVIDIA driver as per-branch co-existing kexts</title>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1f2328; --muted: #5a6069; --accent: #8a3324;
+    --rule: #e3e1d9; --code-bg: #f1efe7; --ok: #1f7a3d; --warn: #9a6a00; --bad: #a32020;
+  }
+  html, body { background: var(--bg); color: var(--fg);
+    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+    font-size: 17px; line-height: 1.6; margin: 0; padding: 0; }
+  main { max-width: 820px; margin: 3rem auto; padding: 0 1.5rem 4rem; }
+  h1 { font-size: 1.8rem; color: var(--accent); border-bottom: 2px solid var(--accent); padding-bottom: 0.4rem; margin-bottom: 0.6rem; }
+  .sub { color: var(--muted); font-style: italic; margin-top: 0; }
+  h2 { color: var(--accent); font-size: 1.25rem; margin-top: 2.2rem; margin-bottom: 0.6rem; }
+  h3 { font-size: 1.05rem; margin-top: 1.4rem; margin-bottom: 0.3rem; }
+  p { margin: 0.8rem 0; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px;
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.88em; }
+  pre { background: var(--code-bg); border: 1px solid var(--rule); border-radius: 4px;
+    padding: 1rem; overflow-x: auto; font-size: 13px; line-height: 1.4;
+    font-family: "SF Mono", Menlo, Consolas, monospace; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: var(--accent); color: #fff; font-weight: 600; }
+  tr:nth-child(even) td { background: #f4f2ea; }
+  ul { padding-left: 1.3rem; } li { margin: 0.35rem 0; }
+  ol { padding-left: 1.4rem; }
+  aside { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.8rem 1rem; margin: 1.2rem 0; font-size: 0.95rem; }
+  .verdict { border-left-color: var(--ok); background: #eef6f0; }
+  .gap { border-left-color: var(--bad); background: #f8eeee; }
+  .yes { color: var(--ok); font-weight: 600; }
+  .no { color: var(--bad); font-weight: 600; }
+  .partial { color: var(--warn); font-weight: 600; }
+  .cite { color: var(--muted); font-size: 0.85em; }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>NextBSD graphics: porting the NVIDIA driver as per-branch co-existing kexts</h1>
+<p class="sub">One <code>NVIDIAGraphics&lt;NNN&gt;.kext</code> per FreeBSD nvidia branch &mdash; drm/modeset/core tiers, per-branch firmware, and the hard single-branch-per-kernel wall &middot; built from NVIDIA&rsquo;s driver tarball like FreeBSD&rsquo;s nvidia ports. Draft, July 2026.</p>
+
+<aside class="verdict">
+<strong>Bottom line.</strong> Port the FreeBSD NVIDIA driver as <strong>six co-existing, per-branch</strong> Apple-style kexts &mdash; <code>NVIDIAGraphics595 / 580 / 470 / 390 / 340 / 304.kext</code> &mdash; built from NVIDIA&rsquo;s driver tarball exactly as FreeBSD&rsquo;s nvidia ports do &mdash; compile the kernel glue against the local kernel, link the <code>nv-kernel</code> blob, wrap the <code>.ko</code>s with <code>ko2kext.sh</code> &mdash; and shipped as packages on the same terms FreeBSD ships <code>nvidia-driver</code>. Three method tiers fall straight out of NVIDIA&rsquo;s own module history: <strong>drm-kms</strong> (595, 580 &mdash; ship <code>nvidia</code>&nbsp;+&nbsp;<code>nvidia-modeset</code>&nbsp;+&nbsp;<code>nvidia-drm</code>, bind the shared <code>drmn</code>/IOGraphics core, give <code>/dev/dri/cardN</code>); <strong>modeset-only</strong> (470, 390 &mdash; <code>nvidia</code>&nbsp;+&nbsp;<code>nvidia-modeset</code>, no FreeBSD nvidia-drm bridge, no <code>/dev/dri</code>); <strong>core-only</strong> (340, 304 &mdash; <code>nvidia.ko</code> alone). All six sit inert on disk and the matcher autoloads exactly one by GPU. The permanent, unfixable wall: every branch&rsquo;s core module is literally named <code>nvidia</code>, so the kernel&rsquo;s global module namespace allows <strong>at most one NVIDIA branch resident per running kernel</strong>. Single-GPU is the fully-supported target; multi-GPU works only when a <em>single</em> branch covers every card present.
+</aside>
+
+<aside class="verdict"><strong>Update (validated against the real <code>nextbsd-kernel-modules</code> source + a real <code>supported-gpus.json</code>).</strong> Two of this plan&rsquo;s corrections were themselves refined once the actual repo was read, and both make the first PR <em>easier</em>: <strong>(1) the matcher is confirmed PCI-id personalities</strong>, not marketing-name strings &mdash; the shipping <code>gen-i915/amdgpu/radeon-personalities.sh</code> emit <code>IOPCIPrimaryMatch</code> tables, CI de-overlaps (<code>gen-radeon -x</code>) and asserts the sets pairwise-disjoint. So &sect;6 is resolved and <code>gen-nvidia-personalities</code> is the right tool. <strong>(2) <code>ko2kext.sh</code> wraps exactly one <code>.ko</code></strong>, so NVIDIA follows the existing convention of <em>one kext per module, chained by <code>OSBundleLibraries</code></em> (as <code>IntelGraphics.kext</code>&rarr;<code>IOGraphics</code>&rarr;<code>TTM</code>) &mdash; not one fat 3-module bundle. The multi-<code>.ko</code> &ldquo;packaging blocker&rdquo; below dissolves: it only existed under the one-fat-kext assumption. And a bonus: <code>supported-gpus.json</code>&rsquo;s <code>legacybranch</code> field partitions all six branches with no hand-maintained arch map. <strong>First PR landed:</strong> <code>tools/gen-nvidia-personalities.sh</code> + selftest (branch <code>nvidia-gen-personalities</code>), validated end-to-end against a real 2224-chip table (395 unified/Turing+ ids, disjoint from the legacy branches). See &sect;3/&sect;6 for the corrected specifics.</aside>
+
+<h2>0. What you asked, and the two corrections that shape everything</h2>
+<p>The request: name the newest branch by version too (<code>NVIDIAGraphics595.kext</code>, not a bare <code>NVIDIAGraphics.kext</code>) so the version is always legible; port as many older branches as possible as <em>co-existing</em> kexts; tier them by method &mdash; DRM/KMS, else <code>nvidia-modeset</code>, else <code>nvidia.ko</code> only. That taxonomy is exactly right and is adopted verbatim. A three-agent adversarial review surfaced two things the naive version of this plan got wrong, and both are baked into what follows:</p>
+<ul>
+  <li><strong>A kext is not one <code>.ko</code>.</strong> The drm-kms tiers involve <em>three</em> modules and the modeset tier <em>two</em>, chained by <code>MODULE_DEPEND</code> (<code>nvidia_drm &rarr; nvidia_modeset &rarr; nvidia</code>). Since <code>ko2kext.sh</code> wraps one <code>.ko</code>, each becomes its <em>own</em> kext chained by <code>OSBundleLibraries</code> (the <code>DMABuf</code>/<code>IOGraphics</code>/<code>TTM</code> pattern): <code>NVIDIAGraphics595.kext</code> wraps <code>nvidia-drm</code> and depends on a modeset kext and a core kext, plus <code>IOGraphics</code>. Loading the top (<code>nvidia-drm</code>) pulls the chain; a single fat 3-module bundle would need a <code>ko2kext</code> extension and is <em>not</em> how this repo works (see &sect;3).</li>
+  <li>&ldquo;Co-exist together on one system&rdquo; means <strong>co-exist on disk</strong>, not co-resident. The matcher loads one branch; a second branch&rsquo;s load fails <code>EEXIST</code> in the kernel module namespace (&sect;5). This is inherent to NVIDIA&rsquo;s driver on FreeBSD <em>and</em> Linux, not a kext artifact.</li>
+</ul>
+
+<h2>1. The six branches and the three method tiers</h2>
+<p>As of mid-2026 FreeBSD ships one current branch plus five frozen legacy branches. There is <strong>no 570 legacy port</strong> &mdash; 570 was a transient mainline version superseded by 580; do not create a <code>570</code> kext. Version numbers below are <em>examples</em>; pin the exact branch version at build from each port&rsquo;s <code>distinfo</code>.</p>
+
+<table>
+<tr><th>Kext</th><th>Branch / port</th><th>Method</th><th>Modules bundled<br><span style="font-weight:400">(<strong>bold</strong> = load target = CFBundleExecutable)</span></th><th><code>/dev/dri</code>?</th><th>Firmware</th><th>GPU families</th><th>Binds IOGraphics?</th></tr>
+
+<tr><td><code>NVIDIAGraphics595.kext</code></td><td>main / 595<br><span class="cite">x11/nvidia-kmod (+ graphics/nvidia-drm-kmod)</span></td><td><span class="yes">drm-kms</span></td><td><strong>nvidia-drm</strong> &rarr; nvidia-modeset &rarr; nvidia</td><td class="yes">yes</td><td>GSP blobs (see &sect;4)</td><td>Turing, Ampere, Ada, Hopper, Blackwell</td><td class="yes">yes (<code>drmn</code>)</td></tr>
+
+<tr><td><code>NVIDIAGraphics580.kext</code></td><td>580<br><span class="cite">x11/nvidia-kmod-580</span></td><td><span class="yes">drm-kms</span></td><td><strong>nvidia-drm</strong> &rarr; nvidia-modeset &rarr; nvidia</td><td class="yes">yes</td><td>GSP blobs (see &sect;4)</td><td><strong>Maxwell, Pascal, Volta</strong> + Turing&hellip;Blackwell</td><td class="yes">yes (<code>drmn</code>)</td></tr>
+
+<tr><td><code>NVIDIAGraphics470.kext</code></td><td>470<br><span class="cite">x11/nvidia-kmod-470</span></td><td><span class="partial">modeset-only</span></td><td><strong>nvidia-modeset</strong> &rarr; nvidia</td><td class="no">no</td><td>none</td><td>Kepler (GeForce 600/700)</td><td class="no">no</td></tr>
+
+<tr><td><code>NVIDIAGraphics390.kext</code></td><td>390<br><span class="cite">x11/nvidia-kmod-390</span></td><td><span class="partial">modeset-only</span></td><td><strong>nvidia-modeset</strong> &rarr; nvidia</td><td class="no">no</td><td>none</td><td>Fermi (GeForce 400/500)</td><td class="no">no</td></tr>
+
+<tr><td><code>NVIDIAGraphics340.kext</code></td><td>340<br><span class="cite">x11/nvidia-kmod-340</span></td><td><span class="no">core-only</span></td><td><strong>nvidia</strong></td><td class="no">no</td><td>none</td><td>Tesla (GeForce 8/9/200/300)</td><td class="no">no</td></tr>
+
+<tr><td><code>NVIDIAGraphics304.kext</code></td><td>304<br><span class="cite">x11/nvidia-kmod-304</span></td><td><span class="no">core-only</span></td><td><strong>nvidia</strong></td><td class="no">no</td><td>none</td><td>Curie (GeForce 6/7)</td><td class="no">no</td></tr>
+</table>
+
+<aside class="gap"><strong>Correction to the local roster.</strong> <code>nextbsd-graphics-plan.html</code> &sect;7 (and the naming roster) classify <strong>390 as <code>nvidia.ko</code>-only</strong>. That is wrong: 390 is the kernel-modesetting <em>cutoff</em> &mdash; it ships <code>nvidia-modeset.ko</code>; only 340 and 304 predate modeset and are truly core-only. Wrapping 390 without <code>nvidia-modeset</code> ships a degraded kext. <span class="cite">(FreeBSD handbook / forums thread 92568.)</span></aside>
+
+<p><strong>Why 470/390 are &ldquo;modeset-only&rdquo; despite shipping an <code>nvidia-drm.ko</code> upstream:</strong> the gap is FreeBSD-specific. <code>graphics/nvidia-drm-kmod</code> builds the DRM bridge <em>only</em> for the main and 580 branches; there is no FreeBSD nvidia-drm for 470/390/340/304, so those give X11 UMS + <code>nvidia-modeset</code> console KMS but never <code>/dev/dri</code>. <span class="partial">Verify at build</span> against that Makefile before finalizing the 470/390 tier &mdash; it is the single fact the whole no-<code>/dev/dri</code>, no-IOGraphics classification hangs on.</p>
+
+<h2>2. Naming: every kext carries its branch number</h2>
+<p>Adopted rule, per your request: <strong>the kext basename always carries the branch number; there is no unnumbered &ldquo;latest&rdquo; alias.</strong> So <code>NVIDIAGraphics595.kext</code>, not <code>NVIDIAGraphics.kext</code>. When 600 lands it is a new numbered kext with no rename churn, and a machine&rsquo;s loaded kext tells you the driver series at a glance.</p>
+<ul>
+  <li><strong>Fits the sibling GPU kexts.</strong> The shipping drivers are <code>IntelGraphics</code>/<code>AMDGraphics</code>/<code>RadeonGraphics</code> (<code>org.nextbsd.driver.*Graphics</code>), so <code>NVIDIAGraphics&lt;NNN&gt;</code> is <em>more</em> doctrine-consistent than the plan&rsquo;s own bare <code>NVIDIA</code>/<code>NVIDIALegacy*</code> names. Fold this into naming decision <strong>D1</strong> (naming-plan &sect;3, still open) and rename the roster&rsquo;s <code>NVIDIALegacy*</code> rows to match.</li>
+  <li><strong>Bundle ids:</strong> <code>org.nextbsd.driver.NVIDIAGraphics595</code> &hellip; <code>.NVIDIAGraphics304</code>. A per-branch-unique <code>CFBundleIdentifier</code> is mandatory (it is the only bundle key guaranteed unique across branches within a tier).</li>
+  <li><strong>The flat name drops one signal</strong> the old <code>Legacy</code> prefix carried: which branches are KMS vs X11-only, and &ldquo;Graphics&rdquo; arguably over-promises KMS for core-only 340/304. Mitigation: carry the method tier and the IOGraphics dependency in <code>Info.plist</code> metadata and these docs, not in the basename, so the name stays uniform while capability stays discoverable.</li>
+</ul>
+
+<h2>3. The packaging blocker: many <code>.ko</code>s, one load target</h2>
+<p>NextBSD&rsquo;s <code>ko2kext.sh</code> model gives a kext one <code>Contents/MacOS/&lt;executable&gt;</code> and keys loaded-state off that single <code>CFBundleExecutable</code>. But an NVIDIA drm-kms kext bundles <em>three</em> modules and the dependency runs <code>nvidia_drm &rarr; nvidia_modeset &rarr; nvidia</code> (each depends on the one below). Loading the <em>leaf</em> <code>nvidia</code> pulls in nothing above it &mdash; you get <code>/dev/nvidia</code> and no KMS. You must load the <strong>top</strong> of the chain, which drags its dependencies down. Therefore:</p>
+
+<table>
+<tr><th>Tier</th><th>Bundled <code>.ko</code>s</th><th><code>CFBundleExecutable</code> (load target)</th><th>Result</th></tr>
+<tr><td>drm-kms (595, 580)</td><td>nvidia, nvidia-modeset, nvidia-drm</td><td><code>nvidia-drm</code></td><td>full KMS, <code>/dev/dri/cardN</code></td></tr>
+<tr><td>modeset-only (470, 390)</td><td>nvidia, nvidia-modeset</td><td><code>nvidia-modeset</code></td><td>console KMS + X11 UMS, no <code>/dev/dri</code></td></tr>
+<tr><td>core-only (340, 304)</td><td>nvidia</td><td><code>nvidia</code></td><td><code>/dev/nvidia</code> only</td></tr>
+</table>
+
+<p><code>ko2kext.sh</code> needs a <strong>multi-<code>.ko</code> packaging step</strong> it does not have today: stage all of a branch&rsquo;s modules into the bundle, set <code>CFBundleExecutable</code> to the tier&rsquo;s top module, and ensure the intra-bundle dependency chain resolves <em>within the bundle</em> (via <code>OSBundleLibraries</code> / full-path preload) rather than by bare module name across the whole Extensions tree &mdash; see the <code>linker.hints</code> hazard in &sect;5. This also corrects a premise the first-pass plan leaned on: <code>CFBundleExecutable</code> is <em>not</em> identical across all six (it is <code>nvidia-drm</code> / <code>nvidia-modeset</code> / <code>nvidia</code> by tier). Note <code>CFBundleExecutable</code> is the <code>.ko</code> <em>filename</em>, which you may rename per branch without touching the binary; only the compiled-in <code>DECLARE_MODULE</code> name is immutable &mdash; and that immutable name is what causes the load-time wall.</p>
+
+<h3>OSBundleLibraries, and why NVIDIA omits TTM/DMABuf</h3>
+<p>The 595/580 kexts link only the <code>drmn</code>/IOGraphics core (<code>ko2kext.sh -l org.nextbsd.kext.iographics</code>); <code>nvidia-drm</code>&rsquo;s hard bind is <code>MODULE_DEPEND(nvidia_drm, drmn, 2,2,2)</code>. Unlike the <code>i915</code>/<code>amdgpu</code> kexts they do <em>not</em> list TTM/DMABuf &mdash; NVIDIA uses its own memory manager, not the Linux TTM path. That asymmetry vs the sibling kexts is correct, not an oversight; state it in the Info.plist rationale so nobody &ldquo;fixes&rdquo; it.</p>
+
+<h2>4. Firmware: raw GSP blobs in <code>Resources/firmware/</code>, only on the Turing+ kexts</h2>
+<p>Match the mechanism NextBSD&rsquo;s <em>shipping</em> drm kexts already use (drm612 plan &sect;3): firmware is staged as <strong>raw blobs</strong> &mdash; <code>cp -RL</code> into <code>&lt;kext&gt;/Contents/Resources/firmware/</code> &mdash; and the kernel finds them via the <code>firmware_path</code> kernel patch. <em>No separate firmware kext, and not the firmware(9)-<code>.ko</code> model</em> (which would add yet another module to the load chain and compound &sect;3). Only two branches carry firmware:</p>
+
+<table>
+<tr><th>Branch</th><th>GSP firmware</th><th>Default</th><th>Notes</th></tr>
+<tr><td>595</td><td><code>gsp_tu10x.bin</code> (Turing) + <code>gsp_ga10x.bin</code> (Ampere and all newer: Ada/Hopper/Blackwell)</td><td>GSP off by default; <strong>required</strong> only for Blackwell / RTX-50</td><td>Bundle both blobs. Enable per-GPU via <code>hw.nvidia.registry.EnableGpuFirmware=1</code>.</td></tr>
+<tr><td>580</td><td>same two blobs</td><td>GSP off by default</td><td>The Maxwell/Pascal/Volta GPUs this branch uniquely covers are pre-GSP and never touch it.</td></tr>
+<tr><td>470/390/340/304</td><td><span class="no">none</span></td><td>&mdash;</td><td>Empty <code>Resources/</code>. (470 ships a legacy <code>gsp.bin</code> that only GSP-enables a few datacenter parts; treat as pre-GSP for packaging.)</td></tr>
+</table>
+
+<aside class="gap"><strong>Correction to the first-pass synthesis.</strong> It called 595 &ldquo;open-kernel-modules only&rdquo; with GSP &ldquo;mandatory, no fallback,&rdquo; and drew a mandatory-vs-optional GSP split between 595 and 580. On FreeBSD that is false: <code>x11/nvidia-kmod</code> (main) ships the <strong>proprietary</strong> module (the <code>nv-kernel.o</code> blob) with <strong>GSP default-off</strong>; GSP-off works for Turing/Ampere/Ada and only Blackwell/RTX-50 forces it on. Both 595 and 580 default GSP off. This also keeps the <code>nv-kernel.o</code> link step coherent (proprietary modules have that blob; open ones don&rsquo;t).</aside>
+
+<p>The two GSP blobs total on the order of tens of MB, so the 595 and 580 bundles are materially larger than the four empty-<code>Resources/</code> legacy kexts &mdash; a packaging/size note, not a blocker. There is no third GSP variant to chase (<code>gsp_ga10x.bin</code> already covers Ada/Hopper/Blackwell); just re-check each tarball&rsquo;s <code>firmware/</code> dir at build.</p>
+
+<h2>5. Co-existence: on disk yes, co-resident no</h2>
+
+<h3>On disk &mdash; fine, that is the point</h3>
+<p>All six bundles stage side-by-side in the kext directory. Each carries its branch&rsquo;s <code>.ko</code>s, its own de-overlapped <code>IOPCIPrimaryMatch</code> table, its firmware (595/580 only), and a per-branch-unique <code>CFBundleIdentifier</code>. They do nothing until the matcher autoloads one.</p>
+
+<aside class="gap"><strong>One real on-disk hazard: the <code>linker.hints</code> namespace.</strong> All six bundles&rsquo; inner cores compile to module name <code>nvidia</code> (plus <code>nvidia_modeset</code>/<code>nvidia_drm</code>). <code>kldxref</code> builds <code>linker.hints</code> over the whole Extensions tree, so six files each declare a <code>nvidia</code> provider. Bare-name <code>MODULE_DEPEND</code> resolution could then bind one branch&rsquo;s modeset/bridge against <em>another</em> branch&rsquo;s core &mdash; silent cross-branch KBI contamination. Defense: resolve the modeset/bridge to their core strictly intra-bundle (<code>OSBundleLibraries</code> / full-path preload, per &sect;3), and ensure <code>kldxref</code> does not publish six ambiguous <code>nvidia</code> providers (per-branch <code>.ko</code> filenames help here, but the internal module name still collides at load &mdash; below).</aside>
+
+<h3>Co-resident &mdash; impossible, permanently</h3>
+<p>A kext only wraps the unmodified <code>.ko</code>; the kernel sees the module by its compiled-in <code>DECLARE_MODULE</code> name, not the bundle directory. Every branch&rsquo;s core is literally module <strong><code>nvidia</code></strong> (the modeset/bridge are uniformly <code>nvidia_modeset</code>/<code>nvidia_drm</code>). FreeBSD&rsquo;s <code>module_register()</code> does <code>module_lookupbyname()</code> and returns <code>EEXIST</code> if that <em>name</em> is already resident &mdash; version is irrelevant; name identity alone drives it. So the first branch loads; a second branch&rsquo;s <code>kldload</code> hits <code>EEXIST</code> at <code>module_register</code> <em>before any driver attaches</em>, and <code>kern_linker</code> unwinds and unloads the entire linker file.</p>
+<p>Renaming the internal module to dodge this means patching NVIDIA&rsquo;s binary (we don&rsquo;t &mdash; we build and ship it unmodified, like the FreeBSD port), and severing the <code>MODULE_DEPEND</code> chain and the <code>/dev/nvidia*</code> userland contract. Off the table. <strong>At most one NVIDIA branch is resident per running kernel</strong>, and this is identical on stock FreeBSD and Linux (you cannot install two nvidia-driver branches concurrently there either).</p>
+
+<h3>Single-GPU &mdash; the supported target</h3>
+<p>All six kexts on disk; the matcher maps the card to exactly one branch; that one loads; the other five stay unloaded so the name collision never fires. For 595/580 the bridge binds <code>drmn</code> and creates <code>/dev/dri/cardN</code>; the older branches are <code>/dev/nvidia</code>-only. A single loaded branch already drives multiple <em>same-generation</em> GPUs via <code>/dev/nvidia0..N</code>. Cross-vendor is normal (an Intel/AMD card on <code>card0</code>, NVIDIA on <code>card1</code>, sharing <code>drmn</code>).</p>
+
+<h3>Multi-GPU &mdash; the honest limitation</h3>
+<aside class="gap">
+<p><strong>Two NVIDIA cards work only if a <em>single</em> branch covers <em>all</em> of them.</strong> Because just one branch can be resident, a box with (say) a Kepler card [max branch 470] and a Blackwell card [needs 595] cannot drive both: whichever branch loads first wins, and the other card falls back to <code>efifb</code>/<code>vt</code>.</p>
+<p><strong>Subtlety the first-pass plan got backwards:</strong> the per-card &ldquo;newest-branch-wins&rdquo; de-overlap (&sect;6) can itself <em>manufacture</em> this problem for a config a single upstream driver handles. A Maxwell + Ada box: de-overlap assigns Maxwell&rarr;580 and Ada&rarr;595, so the matcher wants two branches &rarr; <code>EEXIST</code> &rarr; one card dark. Yet a stock single 580 install drives <em>both</em> (Ada is inside 580&rsquo;s raw range). So per-card de-overlap optimizes single-card correctness at the cost of same-vendor multi-card coverage.</p>
+<p><strong>Required handling:</strong> when multiple NVIDIA cards are present, do not pick per-card &mdash; pick the <em>one branch that covers the most (ideally all) present cards</em>, defaulting to the branch covering the primary-display card, with an explicit user override (loader tunable / per-kext property) to pin the branch. Document the un-coverable disjoint case (Kepler + Blackwell) as a permanent limitation, not a bug.</p>
+</aside>
+
+<h2>6. The load-bearing open question: how does the matcher pick a branch?</h2>
+<p>Everything above assumes NextBSD&rsquo;s userspace matcher autoloads <em>one branch by GPU</em>. There are two candidate mechanisms, and which one NextBSD actually uses is <strong>unconfirmed and must be settled before committing</strong>:</p>
+<ol>
+  <li><strong>PCI-id personalities (the graphics-plan model).</strong> <code>gen-nvidia-personalities</code> parses each branch&rsquo;s <code>supportedchips.html</code> into an exact, non-contiguous <code>0x10de</code> id list, then computes a <em>global</em> de-overlap (newest branch that lists a chip wins) so the six match tables are pairwise-disjoint. NVIDIA support ranges are cumulative and overlap heavily (a Turing card is in both 580&rsquo;s and main&rsquo;s raw lists), so verbatim lists would match one card to two or three kexts. A descending <code>IOProbeScore</code> (595&nbsp;&gt;&nbsp;580&nbsp;&gt;&nbsp;470&nbsp;&gt;&hellip;) is belt-and-suspenders for any residual overlap.</li>
+  <li><strong>Marketing-name-string selection (what the closely-related lineage actually shipped).</strong> Per <code>freebsd-gpu-detection-comparison.html</code> &sect;7/&sect;9, the <code>IOPCIMatch</code>+<code>IOProbeScore</code> personality approach for NVIDIA was <em>ripped out</em> in Phase&nbsp;1d because hand-curated PCI-id tables &ldquo;don&rsquo;t scale&rdquo;; the shipping selector matches the GPU&rsquo;s <em>marketing-name string</em> against per-branch patterns, newest-first (the NomadBSD model) &mdash; and it ships <em>one</em> nvidia-drm-kmod with no version selection at all.</li>
+</ol>
+<aside class="verdict"><strong>RESOLVED &mdash; it is option 1 (PCI-id personalities).</strong> Reading the real <code>nextbsd-kernel-modules</code> settled this: <code>gen-i915/amdgpu/radeon-personalities.sh</code> parse each driver&rsquo;s own device table into <code>IOPCIPrimaryMatch</code> words (<code>0xDDDDVVVV</code>), the CI de-overlaps with <code>gen-radeon -x &lt;amdgpu-match&gt;</code> and asserts the match sets pairwise-disjoint, and <code>ko2kext.sh -p</code> injects the block the in-kernel <code>IOService</code> matcher reads. So this repo already does exact-PCI-id NVIDIA-style selection with de-overlap &mdash; the marketing-name-string lineage below was a <em>different</em> project. <code>gen-nvidia-personalities.sh</code> is therefore the right tool and now exists (built on <code>supported-gpus.json</code>, partitioning branches by the <code>legacybranch</code> field, <code>-x</code>-capable like <code>gen-radeon</code>; validated against a real 2224-chip table). Remaining minor confirmations, not blockers: that the matcher honors exact non-contiguous lists (the sibling kexts already rely on this) and whether <code>IOProbeScore</code> tie-breaks or only registration order (the <code>legacybranch</code> partition is disjoint regardless).</aside>
+
+<h2>7. Base &amp; DRM bump: which branches are coupled</h2>
+<p>Separate the two halves of the &ldquo;6.6&rarr;6.12&rdquo; story, because they touch different branches:</p>
+<ul>
+  <li><strong>The DRM-6.12 half</strong> (drm-kmod branch flip) affects <strong>only 595 and 580</strong>, via their <code>nvidia-drm</code> bridge&rsquo;s hard <code>MODULE_DEPEND(nvidia_drm, drmn, 2,2,2)</code>. The bridge must be rebuilt against the <em>exact</em> <code>drmn</code> core commit IOGraphics ships &mdash; a stock pkg <code>.ko</code> will never do, and after IOGraphics moves to drm-6.12 the bridge follows in lockstep.</li>
+  <li><strong>The base-15.1 half</strong> (kernel KBI) affects <strong>all six</strong>. Every branch&rsquo;s core <code>nvidia.ko</code> open-shim is recompiled against the kernel obj, so a <code>releng/15.0 &rarr; 15.1</code> bump re-KBIs all of them. <em>This corrects an executive-summary overstatement from the first pass</em> (&ldquo;only the drm-kms branches are affected by the bump&rdquo;) &mdash; only the drm-<em>6.12</em> half is exclusive to 595/580; the base bump is universal.</li>
+</ul>
+<table>
+<tr><th>Branch</th><th>DRM-6.12 coupled?</th><th>Base-15.1 (kernel KBI) coupled?</th><th>Build risk on 15.x</th></tr>
+<tr><td>595, 580</td><td class="yes">yes (bridge lockstep)</td><td class="yes">yes</td><td>low</td></tr>
+<tr><td>470, 390</td><td class="no">no bridge</td><td class="yes">yes</td><td>moderate</td></tr>
+<tr><td>340, 304</td><td class="no">no bridge</td><td class="yes">yes</td><td class="no">high &mdash; predate open-modules &amp; modern LinuxKPI; may not compile against a 15.x kernel at all. 304 is the likely drop.</td></tr>
+</table>
+<p>Practical rule: the recipe <em>always</em> rebuilds <code>nvidia-drm</code> against whatever drm core IOGraphics is currently built from.</p>
+
+<aside class="verdict"><strong>Confirmed against the real FreeBSD ports tree (July 2026).</strong> The earlier hedge that <code>nvidia-drm-612-kmod</code> was &ldquo;possibly an invented name&rdquo; was wrong &mdash; it is a <em>real</em> port, and there is a whole OSVERSION-selecting family. <code>graphics/nvidia-drm-kmod</code> is a <code>metaport</code> that picks the bridge by kernel version:
+<pre>OSVERSION &ge; 1500509 (15.1+) &rarr; nvidia-drm-612-kmod &rarr; RUN_DEPENDS drm-612-kmod (6.12)
+OSVERSION &ge; 1500031 (15.0)  &rarr; nvidia-drm-66-kmod  &rarr; RUN_DEPENDS drm-66-kmod  (6.6)
+else                          &rarr; nvidia-drm-61-kmod  &rarr; RUN_DEPENDS drm-61-kmod  (6.1)</pre>
+Each builds <code>src/nvidia-drm/</code> from NVIDIA&rsquo;s tarball with <code>USES=kmod</code> against <code>DRMKMODDIR=&lt;drm-kmod source&gt;</code>, fetching <em>two</em> distfiles (the NVIDIA tarball + the matching drm-kmod source). And <strong>595.84 is the genuine current version</strong> (<code>x11/nvidia-driver</code> distinfo: <code>NVIDIA-FreeBSD-x86_64-595.84.tar.xz</code>, 328&nbsp;MB), not a placeholder &mdash; the legacy branch versions (580.119.02, 470.256.02&hellip;) remain examples to pin at build.</aside>
+
+<h3>7a. One shared <code>drm.ko</code> core &mdash; Intel/AMD/Radeon and NVIDIA move together</h3>
+<p><strong>There is exactly one <code>drm.ko</code> (<code>drmn</code>) core on the system, and the entire drm-kmod tree is a single versioned unit.</strong> The shipping CI proves it: the <code>drm-kmod</code> job builds <code>drm</code>&nbsp;+&nbsp;<code>i915kms</code>&nbsp;+&nbsp;<code>amdgpu</code>&nbsp;+&nbsp;<code>radeonkms</code> from <em>one</em> <code>freebsd/drm-kmod</code> checkout, and <code>IntelGraphics</code>/<code>AMDGraphics</code>/<code>RadeonGraphics</code> all <code>-l org.nextbsd.kext.iographics</code> (the single <code>IOGraphics.kext</code> = <code>drm.ko</code>). <code>nvidia-drm</code> binds that same core. So the core version is all-or-nothing:</p>
+<ul>
+  <li><code>nvidia-drm-612-kmod</code> <code>RUN_DEPENDS</code> on <code>drm-612-kmod</code>&rsquo;s <code>drm.ko</code>; <code>drm-612-kmod</code> even <code>CONFLICTS_INSTALL</code> with <code>drm-66-kmod</code>. You cannot run 6.6 <code>i915</code>/<code>amdgpu</code>/<code>radeon</code> against a 6.12 <code>drm.ko</code> &mdash; the KBI won&rsquo;t match.</li>
+  <li>So <strong>choosing <code>nvidia-drm-612</code> means <code>IOGraphics</code> is 6.12, which means <code>IntelGraphics</code>/<code>AMDGraphics</code>/<code>RadeonGraphics</code> are already 6.12</strong> &mdash; rebuilt from the same <code>drm-612</code> source. NVIDIA does not &ldquo;force&rdquo; the others individually; they travel together as one stack, and NVIDIA rides the shared core.</li>
+  <li>The only way to add NVIDIA <em>without</em> touching the others is to stay on the 6.6 core and build <code>nvidia-drm-66-kmod</code>. That is the sole reason to prefer <code>-66</code>. Going 6.12 is fine and forward-looking; it just brings the whole stack.</li>
+</ul>
+
+<aside class="gap"><strong>Sequencing &mdash; the real dependency chain.</strong> <code>drm-612-kmod</code> is hard-gated at <code>OSVERSION &ge; 1500509</code> (15.1) and <code>IGNORE</code>s on 15.0 (the 6.12 LinuxKPI symbols aren&rsquo;t in the 15.0 kernel). The modules repo CI still pins <code>FREEBSD_BRANCH: releng/15.0</code> + <code>drm-kmod --branch 6.6-lts</code>. So <code>nvidia-drm-612</code> cannot build until the base is actually 15.1 <em>and</em> the drm-kmod job is flipped to <code>6.12-lts</code>. The order is fixed:
+<pre>15.1 base bump &rarr; drm-kmod 6.6-lts &rarr; 6.12-lts
+  (IOGraphics + IntelGraphics + AMDGraphics + RadeonGraphics all rebuilt at 6.12)
+    &rarr; then nvidia-drm-612-kmod rides on the 6.12 core</pre>
+That first step is its own effort &mdash; the <a href="nextbsd-drm612-upgrade-plan.html">drm-kmod 6.6&rarr;6.12 upgrade plan</a> (decision) and the <a href="nextbsd-15.1-drm612-execution-plan.html">15.1/drm-612 execution plan</a>. NVIDIA step 2 is <em>downstream</em> of it.</aside>
+
+<h3>7b. What the drm-612 bump actually costs (and why NVIDIA is spared it)</h3>
+<p>The execution plan&rsquo;s one real code surprise is the <strong>Intel device-id generator (#337)</strong> &mdash; the exact &ldquo;Intel IDs don&rsquo;t line up&rdquo; issue. On 6.6, <code>gen-i915-personalities.sh</code> greps <code>INTEL_VGA_DEVICE(0x&hellip;)</code> literals out of <code>i915_pciids.h</code>. <strong>6.12 restructured that header</strong>: the IDs moved into <code>MACRO__(0x&hellip;)</code> entries inside per-platform <code>INTEL_&lt;PLAT&gt;_IDS(&hellip;)</code> macros, so the old regex matches <em>zero</em> lines &rarr; empty <code>IntelGraphics.kext</code> &rarr; the generator&rsquo;s <code>[ -n ]</code> guard <code>exit 1</code>s. The fix is not a regex swap &mdash; a naive header scrape <em>over</em>-claims xe-only platforms (<code>INTEL_LNL_IDS</code> Lunar Lake / <code>INTEL_BMG_IDS</code> Battlemage, no i915 driver in 6.12-lts) and <em>under</em>-claims transitive includes (<code>INTEL_MTL_IDS</code> pulls in <code>INTEL_ARL_IDS</code>). The correct extraction is preprocessor-driven off the driver&rsquo;s own <code>pciidlist[]</code> in <code>i915_pci.c</code> (&rarr; 364 bound IDs; LNL/BMG absent, ARL present). <strong>amdgpu (308 rows) and radeon (699 rows) are unaffected.</strong> Full implementation-ready diff in that plan&rsquo;s &sect;3.7.</p>
+<aside class="verdict"><strong>NVIDIA is immune to this class of breakage.</strong> <code>gen-nvidia-personalities.sh</code> parses <code>supported-gpus.json</code> &mdash; a stable, versioned <em>data</em> file &mdash; not C macros that upstream restructures between releases. So the 6.6&rarr;6.12 header churn that breaks <code>gen-i915</code> has no analogue for NVIDIA; the generator that landed in <a href="https://github.com/nextbsd-redux/nextbsd-kernel-modules/pull/17">#17</a> is drm-version-agnostic.</aside>
+
+<h2>8. The build repo and the build DAG</h2>
+<p>NVIDIA is built the same way FreeBSD&rsquo;s nvidia ports build it: fetch NVIDIA&rsquo;s driver tarball at build, compile the kernel glue against the local kernel, link the <code>nv-kernel</code> blob, and wrap with <code>ko2kext.sh</code>. The compiled result is <strong>redistributable</strong> &mdash; FreeBSD ships <code>nvidia-driver</code>/<code>nvidia-kmod</code> as binary packages under <code>LICENSE_PERMS = dist-mirror no-dist-sell pkg-mirror no-pkg-sell auto-accept</code> &mdash; so NextBSD can ship the resulting kexts in <code>nextbsd-pkg</code> the same way, carrying NVIDIA&rsquo;s license file (<code>doc/license.txt</code>) and not selling them. Whether the build/wrap lives in a sibling repo (<code>nextbsd-nvidia</code>) or a job in <code>nextbsd-kernel-modules</code> is a build-architecture choice. This mirrors FreeBSD&rsquo;s split of <code>x11/nvidia-driver</code> &rarr; <code>x11/nvidia-kmod</code> + <code>graphics/nvidia-drm-kmod</code>.</p>
+<ol>
+  <li>Stand up the NVIDIA build (sibling repo <code>nextbsd-nvidia</code> or a job in <code>nextbsd-kernel-modules</code>); fetch NVIDIA&rsquo;s tarball at build (no NVIDIA source vendored in-repo).</li>
+  <li>Provide the NextBSD kernel obj (<code>/usr/src/sys</code> artifacts + <code>linker.hints</code>) and the exact <code>IOGraphics.kext</code>/<code>drmn</code> commit the 595/580 bridges must KBI-match.</li>
+  <li>Per branch, in parallel: fetch the unmodified tarball; recompile the shim + link <code>nv-kernel.o</code> &rarr; <code>nvidia.ko</code> (all six), <code>nvidia-modeset.ko</code> (595/580/470/390), and &mdash; only 595/580 &mdash; <code>nvidia-drm.ko</code> against the step-2 <code>drmn</code>.</li>
+  <li><code>gen-nvidia-personalities</code>: parse all six <code>supportedchips.html</code> and compute the <em>global</em> de-overlap in one pass (re-run whenever <em>any</em> branch&rsquo;s chip list changes &mdash; a point release can move a boundary GPU). <em>Gated on &sect;6 first.</em></li>
+  <li>Per branch: stage firmware raw into <code>Resources/firmware/</code> (595/580 only).</li>
+  <li>Per branch: <code>ko2kext.sh</code> with the multi-<code>.ko</code> step (&sect;3) &mdash; <code>CFBundleExecutable</code> = tier top module; unique <code>CFBundleIdentifier</code>; <code>-l org.nextbsd.kext.iographics</code> and <code>-f</code> firmware for 595/580 only.</li>
+  <li>Assemble all six; <strong>validate the six match tables are pairwise-disjoint</strong> (no id in zero or two lists) before shipping.</li>
+  <li>Test single-GPU autoload end-to-end per card; confirm a second branch&rsquo;s load reports a clean <code>EEXIST</code> &ldquo;branch already resident.&rdquo;</li>
+  <li><strong>License:</strong> carry NVIDIA&rsquo;s <code>doc/license.txt</code> in the kext/package and don&rsquo;t sell it &mdash; the same terms FreeBSD ships <code>nvidia-driver</code> under (<code>LICENSE_PERMS</code> <code>pkg-mirror no-pkg-sell auto-accept</code>).</li>
+</ol>
+
+<h2>9. Per-branch recipe checklist</h2>
+<ul>
+  <li><strong>Fetch</strong> the branch&rsquo;s unmodified tarball at build; pin the exact version. Never host it in the repo.</li>
+  <li><strong>Confirm the module set</strong> &mdash; do not over/under-wrap: 595/580 = 3 modules; 470/390 = 2 (verify no FreeBSD bridge exists first); 340/304 = 1.</li>
+  <li><strong>Compile</strong> the shim against the kernel obj + link <code>nv-kernel.o</code>. For 340/304 treat a build failure against 15.x as &ldquo;drop this branch,&rdquo; not a blocker for the others.</li>
+  <li><strong>Bridge pin (595/580):</strong> rebuild <code>nvidia-drm</code> against the exact <code>drmn</code> commit IOGraphics ships.</li>
+  <li><strong>Personalities:</strong> take this branch&rsquo;s slice from the <em>global</em> de-overlap; emit exact non-contiguous <code>0x10de</code> ids; stamp descending <code>IOProbeScore</code>.</li>
+  <li><strong>Firmware:</strong> raw blobs in <code>Resources/firmware/</code> for 595/580; nothing for the rest.</li>
+  <li><strong>Wrap:</strong> unique <code>CFBundleIdentifier</code>; <code>CFBundleExecutable</code> = tier top module; <code>-l</code>/<code>-f</code> only for 595/580.</li>
+  <li><strong>Properties:</strong> set <code>hw.nvidiadrm.modeset=1</code> (read-only, pre-load) for the KMS branches; document <code>hw.nvidia.registry.EnableGpuFirmware</code>.</li>
+  <li><strong>Validate:</strong> 595/580 &rarr; <code>/dev/dri/cardN</code>; 470/390 &rarr; <code>/dev/nvidia</code> + modeset, no <code>/dev/dri</code>; 340/304 &rarr; <code>/dev/nvidia</code> only.</li>
+</ul>
+
+<h2>10. Risks &amp; open questions</h2>
+<ul>
+  <li><span class="yes">Matcher premise (&sect;6) &mdash; RESOLVED</span>: the real repo does PCI-id personalities with de-overlap; <code>gen-nvidia-personalities.sh</code> built + validated. No longer a blocker.</li>
+  <li><span class="no">Multi-<code>.ko</code> packaging (&sect;3)</span> &mdash; <code>ko2kext.sh</code> as written wraps one <code>.ko</code> with <code>CFBundleExecutable=nvidia</code> and would never load KMS on four of six branches. The multi-module step is net-new.</li>
+  <li><span class="yes">Licensing &mdash; not a blocker</span>: FreeBSD ships <code>nvidia-driver</code>/<code>nvidia-kmod</code> as binary packages (<code>LICENSE_PERMS pkg-mirror no-pkg-sell auto-accept</code>); NextBSD ships the kexts on the same terms &mdash; carry the license file, don&rsquo;t sell.</li>
+  <li><span class="partial">Legacy build ceiling</span> &mdash; 340/304 may not compile on 15.x; the &ldquo;6 branches&rdquo; goal realistically delivers 4&ndash;5. 304 is likely dropped.</li>
+  <li><span class="partial">De-overlap correctness</span> &mdash; must run globally and regenerate on any <code>supportedchips.html</code> change, or a boundary GPU lands in zero or two tables (nondeterministic autoload).</li>
+  <li><span class="partial"><code>linker.hints</code> cross-branch binding (&sect;5)</span> &mdash; six <code>nvidia</code> providers on disk; enforce intra-bundle resolution.</li>
+  <li><span class="partial">Exact <code>__FreeBSD_version</code> floors</span> unconfirmed for the legacy branches; resolve from each port&rsquo;s Makefile at build. 595.84 is the confirmed current version; the legacy versions (580.119.02, 470.256.02&hellip;) remain examples to pin at build.</li>
+  <li><span class="partial">Multi-GPU semantics (&sect;5)</span> &mdash; ship the &ldquo;pin one branch covering the most cards&rdquo; policy + user override, and document the disjoint-case fallback honestly.</li>
+</ul>
+
+<footer>
+NextBSD NVIDIA multi-branch kext porting plan &middot; July 2026. Synthesized and adversarially reviewed by a 9-agent workflow (5 research finders: branch landscape, module composition, firmware, coexistence, pipeline grounding &rarr; synthesis &rarr; 3 review lenses: coexistence-correctness, branch/module accuracy, pipeline/base-bump). Corrections folded in from review: 390 is modeset-only not core-only; <code>CFBundleExecutable</code> is per-tier not uniform (multi-<code>.ko</code> load step required); 595 uses the proprietary module with GSP default-off (not open-modules/GSP-mandatory); firmware is raw blobs in <code>Resources/firmware/</code> (not firmware(9) <code>.ko</code>s); the base-15.1 bump touches all six branches, only drm-6.12 is 595/580-exclusive; per-card de-overlap can break same-vendor multi-card. Post-review, reading the real <code>nextbsd-kernel-modules</code> + FreeBSD ports settled the open items (see the Update banner and &sect;6/&sect;7): matcher confirmed PCI-id personalities; one kext per <code>.ko</code> chained; <code>nvidia-drm-612-kmod</code> and 595.84 confirmed real; the whole drm-kmod stack (Intel/AMD/Radeon + NVIDIA) shares one 6.12 <code>drm.ko</code> core. Grounded in the local NextBSD docs (<code>nextbsd-graphics-plan</code> &sect;7, <code>freebsd-gpu-detection-comparison</code>, <code>freebsd-ko-to-kext-conversion-plan</code>, <code>nextbsd-kld-to-kext-naming-plan</code>, <code>nextbsd-drm612-upgrade-plan</code>) and NVIDIA/FreeBSD ports facts (flagged where unverified). A plan, not a promise.
+</footer>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD graphics: the NVIDIA userland / display layer — options, ABI, co-existence, Wayland</title>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1f2328; --muted: #5a6069; --accent: #8a3324;
+    --rule: #e3e1d9; --code-bg: #f1efe7; --ok: #1f7a3d; --warn: #9a6a00; --bad: #a32020;
+  }
+  html, body { background: var(--bg); color: var(--fg);
+    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+    font-size: 17px; line-height: 1.6; margin: 0; padding: 0; }
+  main { max-width: 820px; margin: 3rem auto; padding: 0 1.5rem 4rem; }
+  h1 { font-size: 1.8rem; color: var(--accent); border-bottom: 2px solid var(--accent); padding-bottom: 0.4rem; margin-bottom: 0.6rem; }
+  .sub { color: var(--muted); font-style: italic; margin-top: 0; }
+  h2 { color: var(--accent); font-size: 1.25rem; margin-top: 2.2rem; margin-bottom: 0.6rem; }
+  h3 { font-size: 1.05rem; margin-top: 1.4rem; margin-bottom: 0.3rem; }
+  p { margin: 0.8rem 0; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px;
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.88em; }
+  pre { background: var(--code-bg); border: 1px solid var(--rule); border-radius: 4px;
+    padding: 1rem; overflow-x: auto; font-size: 13px; line-height: 1.4;
+    font-family: "SF Mono", Menlo, Consolas, monospace; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: var(--accent); color: #fff; font-weight: 600; }
+  tr:nth-child(even) td { background: #f4f2ea; }
+  ul { padding-left: 1.3rem; } li { margin: 0.35rem 0; }
+  ol { padding-left: 1.4rem; }
+  aside { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.8rem 1rem; margin: 1.2rem 0; font-size: 0.95rem; }
+  .verdict { border-left-color: var(--ok); background: #eef6f0; }
+  .gap { border-left-color: var(--bad); background: #f8eeee; }
+  .warnbox { border-left-color: var(--warn); background: #f9f4e8; }
+  .yes { color: var(--ok); font-weight: 600; }
+  .no { color: var(--bad); font-weight: 600; }
+  .partial { color: var(--warn); font-weight: 600; }
+  .cite { color: var(--muted); font-size: 0.85em; }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.9rem; }
+  .qidx td { font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>NextBSD graphics: the NVIDIA userland / display layer</h1>
+<p class="sub">Companion to the <a href="nextbsd-nvidia-kext-porting-plan.html">per-branch kext porting plan</a>. The kexts autoload on real hardware and the KMS device is up &mdash; but the screen is black, because a GPU driver is <em>two</em> layers and we shipped only the kernel one. This plan settles every option for the second layer: display paths, the X-server ABI question, the userland file set, multi-version co-existence, whether the libs can live in the kext, and whether Wayland changes the game. Draft, July 2026 &middot; grounded in five parallel research passes + on-hardware testing (RTX&nbsp;3060&nbsp;Ti, 0x2489).</p>
+
+<aside class="verdict">
+<strong>Bottom line.</strong> The kexts (kernel side) are done and correct: <code>nvidia</code>&nbsp;+&nbsp;<code>nvidia-modeset</code>&nbsp;+&nbsp;<code>nvidia-drm</code> autoload, <code>/dev/nvidia0</code> and <code>/dev/dri/card0</code> exist, <code>hw.nvidiadrm.modeset=1</code>. The black screen is the <strong>missing userland layer</strong>. The supported, low-risk fix is to package NVIDIA&rsquo;s <strong>X11 userland</strong> from the <em>same</em> 595.84 tarball we already fetch and drive it with <code>Driver&nbsp;"nvidia"</code> (which talks to <code>/dev/nvidia0</code> directly and never touches the DRM/modesetting path that just crashed us). Two surprises from the research reshape the strategy: <strong>(1) XLibre is <em>not</em> the ABI dead-end we feared</strong> &mdash; it deliberately keeps the closed NVIDIA driver (&ge;570) loading, auto-detected, since 25.0.0.16; and <strong>(2) Wayland genuinely dissolves both the X-ABI and GLX problems</strong> &mdash; but only moves the blocker to a FreeBSD userland GBM backend that is, at best, newly and partially present. Recommendation: ship the <code>Driver&nbsp;"nvidia"</code> X11 userland first (it works on both XLibre-25 and classic <code>xorg-server-21.1</code>), store it as a per-branch <strong>sibling userland bundle</strong> next to each kext, and keep Wayland as a documented Phase&nbsp;2.
+</aside>
+
+<h2>0. Your questions, answered — jump table</h2>
+<table class="qidx">
+<tr><th>You asked</th><th>Short answer</th><th>§</th></tr>
+<tr><td>What are the options for <code>nvidia.ko</code> / <code>nvidia-modeset.ko</code> / <code>nvidia-drm.ko</code>?</td><td>They only expose device nodes; the <em>display</em> is a separate userland-DDX choice on top. Three paths — <code>Driver "nvidia"</code>, <code>modesetting</code> (dead), Wayland.</td><td><a href="#s1">1</a>,&nbsp;<a href="#s2">2</a></td></tr>
+<tr><td>Can we just <code>pkg install</code> these, or make separate packages?</td><td>Separate, our own — built from the tarball like the kexts. FreeBSD&rsquo;s <code>nvidia-driver</code> bundles a kmod we&rsquo;ve replaced and targets the wrong paths.</td><td><a href="#s4">4</a></td></tr>
+<tr><td>Xorg vs XLibre for testing — does it matter? How important is the XLibre ABI? Do we bump every year (25&rarr;26)?</td><td>Both host the same NVIDIA userland. XLibre&rsquo;s ABI-28 is real but it <em>shims NVIDIA on purpose</em>; classic <code>xorg-server-21.1</code> (ABI 25.2) is the rock-solid fallback. ABI held at 28 across all of 25.x.</td><td><a href="#s3">3</a></td></tr>
+<tr><td>Will the userland files be uniquely versioned so they co-exist per kext?</td><td>Split: the heavy libs are version-unique and co-exist; the <em>entry points</em> (DDX, GLX server module, <code>.so.0</code> symlinks, vendor JSON) are fixed-name and collide. Per-branch dirs/bundles + a thin activator solve it.</td><td><a href="#s5">5</a></td></tr>
+<tr><td>Can we bake the libs into the kexts? Is that an Apple thing / just another resource like firmware?</td><td>Storage: yes (unique path, like firmware). But userland libs are consumed by <code>ld.so</code>/GLVND/X, not the kernel — so firmware&rsquo;s &ldquo;kernel reads it from the bundle&rdquo; trick only fully works for the DDX. Apple&rsquo;s idiom is a <em>sibling</em> userland bundle, not libs-inside-a-kext.</td><td><a href="#s5">5</a></td></tr>
+<tr><td>Is it completely impossible to run NVIDIA without <code>libGLX_nvidia.so.0</code>? On Linux too?</td><td>No — it&rsquo;s GLX-only (OpenGL-over-X11). 2D X, EGL, Vulkan*, CUDA, KMS all run without the GLX <em>code</em>. (*Vulkan needs the <em>file</em>: NVIDIA co-located its ICD there.)</td><td><a href="#s6">6</a></td></tr>
+<tr><td>Does Wayland change things?</td><td>Yes — it never loads the X DDX and never uses GLX, so both our X-side blockers vanish. But it needs a FreeBSD GBM userland backend that is Linux-centric and barely present.</td><td><a href="#s7">7</a></td></tr>
+<tr><td>Could Xorg consume the EGL/GBM (Wayland) set? &ldquo;nvidia-drm works with X, so it should work?&rdquo;</td><td>Yes — via <code>modesetting</code>+<strong>glamor</strong> (EGL/GBM), not the dumb-buffer path that failed. The EGL/GBM set is dual-use (revives X path B2 <em>and</em> Wayland). Untested; same FreeBSD-GBM risk.</td><td><a href="#s2">2</a>,&nbsp;<a href="#s7">7</a></td></tr>
+</table>
+
+<h2 id="s1">1. The layering model — why the kexts alone give a black screen</h2>
+<p>A GPU driver is <strong>two layers</strong>. We built the first and skipped the second:</p>
+<table>
+<tr><th>Layer</th><th>Component</th><th>Job</th><th>Status</th></tr>
+<tr><td rowspan="3"><strong>Kernel</strong> (kexts)</td><td><code>nvidia.ko</code></td><td>init GPU, expose <code>/dev/nvidia0</code></td><td class="yes">shipped</td></tr>
+<tr><td><code>nvidia-modeset.ko</code></td><td>NVKMS, <code>/dev/nvidia-modeset</code></td><td class="yes">shipped</td></tr>
+<tr><td><code>nvidia-drm.ko</code></td><td>DRM/KMS, <code>/dev/dri/card0</code>, KMS console</td><td class="yes">shipped</td></tr>
+<tr><td rowspan="2"><strong>Userland</strong></td><td><code>nvidia_drv.so</code> + <code>libglxserver_nvidia.so</code></td><td>the X driver that actually paints the screen</td><td class="no">MISSING</td></tr>
+<tr><td><code>libGLX_nvidia</code>, <code>libnvidia-glcore</code>, <code>libEGL_nvidia</code> &hellip;</td><td>hardware OpenGL / EGL / Vulkan for apps</td><td class="no">MISSING</td></tr>
+</table>
+<p>The kernel modules expose <em>device nodes</em>. Nothing in the kernel can draw an X screen &mdash; X always needs a <strong>userland display driver (DDX)</strong> to consume those nodes. With no NVIDIA DDX present, XLibre auto-picks the generic <code>vesa</code> driver, which claims the PCI GPU before the DRM path is even considered, and the monitor drops signal. That is the exact black screen observed on hardware.</p>
+
+<h2 id="s2">2. The three display-path options</h2>
+
+<aside class="verdict"><strong>&#10003; VALIDATED ON HARDWARE (2026-07-12).</strong> Installing FreeBSD&rsquo;s <code>xlibre-nvidia-driver-595.84</code> userland (paired with our 595.84 kexts) <strong>fixed the black screen &mdash; login and desktop work on the RTX 3060 Ti under XLibre-25.1.8, no <code>xorg.conf</code></strong>. XLibre auto-detected <code>nvidia_drv.so</code> and loaded <strong>Option A (<code>Driver "nvidia"</code>)</strong>; <code>nvidia-smi</code> reports driver 595.84 with the display active. Xorg holds <code>/dev/nvidia0</code>+<code>/dev/nvidiactl</code>+<code>/dev/nvidia-modeset</code> (NVKMS scanout) and <code>/dev/drm/128</code> (nvidia-drm <em>render</em> node, DRI3/GLX) &mdash; so all three kernel modules are used, but the display path is NVKMS, not nvidia-drm KMS. <strong>Nothing to add to the <code>.kext</code></strong> (kernel side complete); the deliverable is a companion per-branch <strong>userland package</strong> = the file set this driver installs, repackaged the NextBSD way from the same 595.84 tarball.</aside>
+
+<h3>Option A &mdash; <code>Driver "nvidia"</code> (the NVIDIA X11 userland) &nbsp;<span class="yes">RECOMMENDED &mdash; VALIDATED ON HW</span></h3>
+<p>Load NVIDIA&rsquo;s own X driver <code>nvidia_drv.so</code>. It talks to <code>/dev/nvidia0</code> (+ NVKMS via <code>/dev/nvidia-modeset</code>) <strong>directly</strong> and <em>never touches the DRM/modesetting/GBM path</em>. This is FreeBSD&rsquo;s supported way and the low-risk target. Needs the userland package (§4). <code>Driver "nvidia"</code> is not an alternative <em>to</em> the userland &mdash; <code>nvidia_drv.so</code> <strong>is</strong> the userland; it&rsquo;s the reason we need it.</p>
+
+<h3>Option B &mdash; <code>modesetting</code> on <code>nvidia-drm</code></h3>
+<p><strong>B1 &mdash; generic / dumb-buffer form: <span class="no">DEAD (proven on HW)</span>.</strong> The stock X.Org <code>modesetting</code> DDX on <code>/dev/dri/card0</code> with <em>no</em> NVIDIA userland present. Tested on hardware with an explicit <code>Driver "modesetting"</code> + <code>BusID</code> config:</p>
+<pre>(EE) open /dev/dri/card0: Operation not supported by device   &larr; nvidia-drm rejects generic KMS
+(EE) Device(s) detected, but none match those in the config file.
+Fatal server error: no screens found</pre>
+<p>And repeated <code>startx</code> <strong>panicked the kernel</strong> in the nvidia-drm KMS path. Unaccelerated <code>modesetting</code> allocates scanout via <code>DRM_IOCTL_MODE_CREATE_DUMB</code> (linear, CPU-mappable); NVIDIA scanout memory is tiled/compressed VRAM the driver manages itself, so the ioctl returns <code>EOPNOTSUPP</code>. With <em>no</em> NVIDIA GBM userland installed there is no other allocation path &mdash; hence the wall.</p>
+<aside class="warnbox"><strong>B2 &mdash; <code>modesetting</code> + <code>glamor</code> + EGL/GBM: <span class="partial">plausibly revivable, untested</span>.</strong> The dead end above was the <em>dumb-buffer</em> path with <em>zero</em> NVIDIA userland. <code>modesetting</code> has a second mode &mdash; <strong>glamor</strong> (GL-accelerated 2D) &mdash; that allocates buffers through <strong>EGL + GBM</strong> instead of dumb buffers, using the <em>same</em> <code>libEGL_nvidia</code> + NVIDIA GBM backend Wayland needs (Option C). If that userland is present and XLibre&rsquo;s <code>modesetting</code> is glamor-capable, the dumb-buffer wall is bypassed. This is exactly what <strong>XLibre 25.2&rsquo;s <code>glamor_egl</code> refactor</strong> targets (&ldquo;proprietary Nvidia 470+ for EGL init, GL context creation, GLX, and DRI3&rdquo;). So <em>&ldquo;nvidia-drm works with X&rdquo; can become true</em> &mdash; via glamor, not the dumb-buffer path &mdash; and the EGL/GBM set is <strong>dual-use</strong> (revives this X path <em>and</em> enables Wayland). Unproven, and it stacks the same FreeBSD-GBM-maturity risk as Wayland; but &ldquo;modesetting is dead&rdquo; holds only for the userland-less form we tested.</aside>
+
+<h3>Option C &mdash; Wayland (EGL + GBM + KMS) &nbsp;<span class="partial">Phase 2 — dodges both X problems, but a FreeBSD userland gap</span></h3>
+<p>A Wayland compositor drives the GPU through <code>nvidia-drm</code> KMS (which we have) + <code>libEGL_nvidia</code> + a GBM backend &mdash; loading neither the ABI-versioned X DDX nor GLX. Architecturally it erases both of our X-side blockers, but the required userland GBM stack is Linux-centric (§7). Shares its entire userland set with Option B2.</p>
+
+<h3>Which kernel modules + which libraries each path uses</h3>
+<p>The kexts already carry all three kernel modules; the question is which <em>userland</em> each path pulls from the per-version bundle. There are really <strong>two userland sets</strong> plus a shared core &mdash; and all of it is bundlable per-branch (§5, §7):</p>
+<table>
+<tr><th>Path</th><th>Kernel modules used</th><th>Device node</th><th>Userland set (all version-locked &rarr; bundlable)</th></tr>
+<tr><td><strong>A. <code>Driver&nbsp;"nvidia"</code></strong><br>(classic X)</td><td><code>nvidia</code> + <code>nvidia-modeset</code><br><span class="cite">NOT nvidia-drm</span></td><td><code>/dev/nvidia0</code>,<br><code>/dev/nvidia-modeset</code></td><td><strong>DDX set:</strong> <code>nvidia_drv.so</code>, <code>libglxserver_nvidia.so</code>, <code>libnvidia-cfg/tls</code>; +GLX: <code>libGLX_nvidia</code>, <code>libnvidia-glcore/glsi</code>, <code>10_nvidia.json</code></td></tr>
+<tr><td><strong>B2. <code>modesetting</code>+glamor</strong><br>(X via DRM)</td><td><code>nvidia</code> + <code>nvidia-modeset</code> + <code>nvidia-drm</code></td><td><code>/dev/dri/card0</code></td><td><strong>EGL/GBM set:</strong> <code>libEGL_nvidia</code>, <code>libnvidia-egl-gbm</code>, <code>libnvidia-allocator</code> (<code>nvidia-drm_gbm.so</code>), <code>libnvidia-glcore</code>, <code>10_nvidia.json</code>+<code>15_nvidia_gbm.json</code>. <em>No <code>nvidia_drv.so</code></em> &mdash; uses stock <code>modesetting_drv.so</code>.</td></tr>
+<tr><td><strong>C. Wayland</strong></td><td><code>nvidia</code> + <code>nvidia-modeset</code> + <code>nvidia-drm</code></td><td><code>/dev/dri/card0</code></td><td><strong>EGL/GBM set</strong> (identical to B2) + optionally <code>libnvidia-egl-wayland</code>; <em>no DDX</em>. Plus a compositor.</td></tr>
+</table>
+<p><strong>Key insight:</strong> B2 and C share the <em>same</em> EGL/GBM userland &mdash; packaging that one set is dual-purpose. Path A is the outlier (DDX + server-side GLX) and the only path that ignores <code>nvidia-drm</code> entirely. <code>libnvidia-glcore</code> is common to all. No userland lib lives <em>in the kext</em>; they live in the sibling per-branch bundle (§5) &mdash; the kext stays purely kernel.</p>
+
+<h2 id="s3">3. The X-server question: XLibre vs classic Xorg</h2>
+
+<aside class="warnbox"><strong>Correction to an earlier claim.</strong> I initially read the box&rsquo;s <code>X.Org Video Driver ABI 28.1</code> vs NVIDIA&rsquo;s ABI 25 as a hard wall and called XLibre a dead end. Deeper research shows that is <strong>wrong</strong>: XLibre deliberately keeps the closed NVIDIA driver loading. Recorded here so the plan is honest about it.</aside>
+
+<p><strong>The ABI numbers (verified on the box + upstream):</strong> mainline <em>released</em> <code>xorg-server-21.1.x</code> = video ABI <strong>25.2</strong> (stable across the whole 21.1 series); mainline <em>dev master</em> is already 27.0; XLibre forked from master and added +1 &rarr; <strong>28.0</strong> (the <code>28.1</code> we see is XLibre&rsquo;s <code>CONFIG_LEGACY_NVIDIA_PADDING</code> ScreenRec-padding variant, added <em>specifically to keep the NVIDIA binary working</em>). NVIDIA 595&rsquo;s <code>nvidia_drv.so</code> targets ABI 25.</p>
+
+<table>
+<tr><th>Host X server</th><th>Video ABI</th><th>Loads NVIDIA 595 <code>nvidia_drv.so</code>?</th><th>Notes</th></tr>
+<tr><td><strong>XLibre-server 25.1.8</strong> (on the box)</td><td>28.1</td><td class="partial">Yes, auto-detected</td><td>Since XLibre <strong>25.0.0.16</strong> the proprietary NVIDIA driver (&ge;570) is autodetected + loaded with no config; XLibre re-exports the symbols NVIDIA needs (PR&nbsp;#89) and pads ScreenRec. Best-effort &mdash; NVIDIA still prints an ABI warning, and crash/flicker reports exist.</td></tr>
+<tr><td><strong>xorg-server-21.1.24</strong> (in your pkg repo)</td><td>25.2</td><td class="yes">Yes, officially</td><td>NVIDIA&rsquo;s own supported target. Rock-solid. The safe fallback / clean test control.</td></tr>
+</table>
+
+<p><strong>Does it matter which we test on?</strong> Yes for isolating variables, no for the packaging. Both host the <em>same</em> 595 userland with the same files &mdash; only the host differs. Use classic <code>xorg-server-21.1.24</code> as the clean control (removes the &ldquo;is it XLibre&rsquo;s shim misbehaving?&rdquo; variable); confirm on XLibre-25 for the real target.</p>
+
+<p><strong>How important is the XLibre ABI / do we bump every release?</strong> Within the entire 25.x era the video ABI is <strong>pinned at 28</strong> &mdash; 25.0, 25.1, 25.2 all hold it; it did not track XLibre&rsquo;s ~weekly release cadence. The dynamic is inverted from what we feared: <em>XLibre absorbs the compatibility burden for the closed binary and re-shims after each ABI break</em>, rather than expecting NVIDIA to rebuild. The residual risks are (a) the <em>next major</em> XLibre bump, at which point XLibre &mdash; not us &mdash; must re-shim, and (b) the documented flakiness. Neither forces a per-year action on our side. Net: <strong>we are not chasing a moving target</strong>; classic Xorg remains the guaranteed host if XLibre&rsquo;s best-effort support regresses.</p>
+
+<h2 id="s4">4. The userland package — manifest, minimal set, per-branch ABI cutoffs</h2>
+<p><strong>Can we <code>pkg install</code> FreeBSD&rsquo;s <code>nvidia-driver</code> as-is? No.</strong> It bundles the kmod we&rsquo;ve replaced with kexts, targets FreeBSD paths, and version-locks differently. We build <strong>our own</strong> package from the same <code>NVIDIA-FreeBSD-x86_64-595.84.tar.xz</code> we already fetch for the kmod build &mdash; extract just the userland <code>.so</code> set and stage it, exactly as we did for the kexts. (FreeBSD models the X server choice with port <strong>FLAVORS</strong> <code>xorg</code> / <code>xlibre</code>; the <code>nvidia_drv.so</code> binary is the same NVIDIA-precompiled ABI-25 blob either way.)</p>
+
+<h3>Minimum file set for just a display (then additive)</h3>
+<table>
+<tr><th>Tier</th><th>Files</th><th>Buys</th></tr>
+<tr><td><strong>Bare X display</strong></td><td><code>lib/xorg/modules/drivers/nvidia_drv.so</code> + <code>libnvidia-cfg.so.1</code>, <code>libnvidia-tls.so.1</code></td><td>login screen + 2D desktop (no hardware GL yet)</td></tr>
+<tr><td><strong>+ hardware GLX</strong></td><td><code>libglxserver_nvidia.so(.1)</code> (+ <code>libglx.so</code> compat), <code>libGLX_nvidia.so.0</code>, <code>libnvidia-glcore.so.1</code>, <code>libnvidia-glsi.so.1</code>, libglvnd loader + <code>share/glvnd/egl_vendor.d/10_nvidia.json</code></td><td>OpenGL for X11/GNUstep apps, GLX compositing</td></tr>
+<tr><td><strong>+ EGL / Vulkan / VDPAU / CUDA</strong></td><td><code>libEGL_nvidia</code>, <code>libnvidia-eglcore</code>, <code>libnvidia-egl-gbm</code>, <code>nvidia_icd.json</code> + <code>libnvidia-glvkspirv</code>, <code>libvdpau_nvidia</code>, <code>libnvidia-ml</code>, <code>lib32/*</code></td><td>Vulkan, EGL apps, video decode, compute (additive; defer)</td></tr>
+</table>
+<p class="cite">Validate the exact runtime closure with <code>ldd nvidia_drv.so</code> and <code>ldd libglxserver_nvidia.so</code> against the real 595.84 binaries before trimming; confirm the tarball&rsquo;s <code>.manifest</code> (file&rarr;dest map) by unpacking it. Sources: NVIDIA 595.84 FreeBSD README &ldquo;Installed Components&rdquo;; FreeBSD <code>x11/nvidia-driver</code> master <code>Makefile</code> + <code>pkg-plist</code>.</p>
+
+<h3>Per-branch X-server ABI cutoffs (which branches are even hostable)</h3>
+<table>
+<tr><th>Branch</th><th>Max video ABI in its <code>nvidia_drv.so</code></th><th>On xorg-server 21.1 (ABI 25.2)?</th><th>On XLibre-25?</th></tr>
+<tr><td><strong>595 / 580</strong></td><td>25 (+ XLibre-aware)</td><td class="yes">Yes</td><td class="yes">Yes (auto, &ge;570 class)</td></tr>
+<tr><td><strong>470</strong></td><td>25</td><td class="yes">Yes</td><td class="partial">needs <code>IgnoreABI</code></td></tr>
+<tr><td><strong>390</strong> (390.157+)</td><td>25</td><td class="yes">Yes</td><td class="partial">needs <code>IgnoreABI</code></td></tr>
+<tr><td><strong>340</strong></td><td>24 (xserver 1.20)</td><td class="no">No</td><td class="no">No</td></tr>
+<tr><td><strong>304</strong></td><td>23 (xserver 1.19)</td><td class="no">No</td><td class="no">No</td></tr>
+</table>
+<aside class="warnbox"><strong>Consequence for the six-kext dream.</strong> Even with a perfect activator, <strong>340 and 304 cannot render X on any modern server</strong> (their DDX predates ABI 25) &mdash; and they also predate NVKMS/DRM, so they only ever had the classic DDX. On a modern XLibre/Xorg system those two branches are limited to <em>KMS console via the kext</em>; accelerated X for Kepler-and-older would require running an ancient X server, which is out of scope. So the userland story realistically covers <strong>595/580/470/390</strong>.</aside>
+
+<h2 id="s5">5. Co-existence — versioned files, the activator, and the &ldquo;bake it into the kext&rdquo; idea</h2>
+
+<h3>Which files are unique vs which collide</h3>
+<p>You were right that the <em>kext</em> paths are unique so the kernel side has no collision. The userland is a split picture:</p>
+<table>
+<tr><th>Category</th><th>Examples</th><th>Collide across branches?</th></tr>
+<tr><td><strong>Version-unique libs</strong></td><td><code>libnvidia-glcore.so.595.84</code>, <code>libGLX_nvidia.so.595.84</code>, <code>libnvidia-*.so.&lt;ver&gt;</code></td><td class="yes">No — version in filename</td></tr>
+<tr><td><strong>Fixed-name entry points</strong></td><td><code>nvidia_drv.so</code>, <code>libglxserver_nvidia.so</code>, soname symlinks <code>libGLX_nvidia.so.0</code> / <code>libEGL_nvidia.so.0</code> / <code>libnvidia-ml.so.1</code>, vendor JSON <code>10_nvidia.json</code> / <code>nvidia_icd.json</code> / <code>15_nvidia_gbm.json</code></td><td class="no">Yes — same name every branch</td></tr>
+</table>
+<p>So dumping two branches into shared dirs collides on the entry points. The fix is the same &ldquo;unique directory&rdquo; trick as the kexts: give each branch its own tree, then <strong>activate</strong> one.</p>
+
+<h3>Why GLVND doesn&rsquo;t make versions co-exist</h3>
+<p>GLVND is <strong>vendor-neutral, not version-neutral.</strong> It multiplexes <em>Mesa &harr; NVIDIA</em> beautifully (per-X-screen vendor selection), so an Intel/AMD-Mesa GPU and NVIDIA co-exist with zero conflict. But every NVIDIA branch names its vendor <code>"nvidia"</code> and ships the single fixed soname <code>libGLX_nvidia.so.0</code> (and <code>libEGL_nvidia.so.0</code>) &mdash; there is no <code>nvidia-580</code> vs <code>nvidia-470</code> namespace. So <strong>one NVIDIA version is active at a time</strong>, which is fine because <strong>one GPU branch is resident per boot anyway</strong> (the kernel-namespace wall from the kext plan). This holds identically on the EGL/Wayland path.</p>
+
+<h3>The activator (Debian&rsquo;s model, adapted)</h3>
+<p>Debian runs exactly this: <code>glx-diversions</code> + <code>update-glx</code> divert the canonical files and flip the whole set atomically. Our adaptation, keyed to the autoloaded branch / PCI-ID (not <code>/dev/nvidia</code>, which can&rsquo;t tell you the branch):</p>
+<ul>
+<li><strong>X DDX</strong> &mdash; no symlink needed: point the branch&rsquo;s <code>OutputClass</code>/<code>Device</code> <code>ModulePath</code> at its own dir. X loads it directly.</li>
+<li><strong>GL client libs + GLVND JSON</strong> &mdash; resolved globally by <code>ld.so</code>/GLVND, so symlink the active branch&rsquo;s entry points into the canonical location (respect the <a href="#s5">no-ldconfig-boot-job</a> doctrine: reach the libs through an already-cached canonical dir / the sanctioned <code>STANDARD_LIBRARY_PATH</code> lever, not a per-branch <code>ld.so.conf.d</code> rewrite).</li>
+<li><strong>Atomicity</strong> &mdash; a half-flipped set is an instant black screen; stage into a shadow dir and flip via one <code>rename()</code> of an <code>active &rarr; &lt;branch&gt;</code> directory symlink.</li>
+<li><strong>Where it runs</strong> &mdash; as an ISO/first-boot installer step (detect GPU &rarr; lay down the one active branch), <em>not</em> a runtime hot-switch. A reboot-to-reactivate is enough; there is no user demand for live NVIDIA-version switching.</li>
+</ul>
+
+<h3>&ldquo;Can we bake the libs into the kexts? Is it just another resource like firmware?&rdquo;</h3>
+<p>Storage-wise, yes &mdash; a <code>.kext</code> is a bundle and can carry arbitrary <code>Resources/</code>, so libs inside <code>NVIDIAGraphics595.kext</code> would get a unique, versioned path for free. But <strong>firmware and userland libs are consumed by different layers</strong>, and that&rsquo;s the catch:</p>
+<table>
+<tr><th></th><th>Firmware</th><th>Userland <code>.so</code></th></tr>
+<tr><td>Consumed by</td><td>the kernel driver</td><td>the X server, <code>ld.so</code>, GLVND (all userland)</td></tr>
+<tr><td>Finds it in the bundle?</td><td class="yes">Yes — kernel knows to look there</td><td class="no">No — none of them search kext bundles</td></tr>
+</table>
+<p>So the firmware analogy holds for <em>storage</em> but not for <em>resolution</em>. In practice: the <strong>DDX loads cleanly from the bundle</strong> (X&rsquo;s <code>ModulePath</code> can point into <code>&hellip;/NVIDIAGraphics595.kext/Contents/Resources/xorg</code>), but the <strong>GL client libs still need the thin activation</strong> above to appear on the linker/GLVND search paths.</p>
+<p><strong>Does Apple do this?</strong> Not libs-<em>inside</em>-a-kext. Apple co-locates <em>userland</em> GPU driver bundles as <strong>siblings</strong> to kexts in <code>/System/Library/Extensions/</code> &mdash; the Metal drivers (<code>AMDMTLBronzeDriver.bundle</code>, <code>AppleIntelGraphicsMTLDriver.bundle</code>), and DriverKit <code>.dext</code> drivers are userland bundles too. So the Apple-idiomatic shape is:</p>
+<pre>/System/Library/Extensions/
+    NVIDIAGraphics595.kext      &larr; kernel (nvidia-drm chain)   [shipped]
+    NVIDIA595.bundle/           &larr; userland X/GL (nvidia_drv.so + libs)  [new]
+        Contents/Resources/xorg/nvidia_drv.so
+        Contents/Resources/lib/libGLX_nvidia.so.595.84  &hellip;</pre>
+<p>&mdash; a per-branch sibling bundle, versioned in lockstep with its kext, giving the exact unique-path co-existence you want while keeping kernel and userland as one installable unit. Both variants (libs-in-kext vs sibling-bundle) are viable; the sibling bundle is closer to Apple and keeps the kext purely kernel.</p>
+
+<h2 id="s6">6. Is <code>libGLX_nvidia.so.0</code> strictly required? (Linux included)</h2>
+<p><strong>No.</strong> It is the GLVND client vendor library for <strong>GLX</strong> (OpenGL over X11) &mdash; nothing more. What runs without its GLX code:</p>
+<table>
+<tr><th>Function</th><th>Needs libGLX_nvidia?</th><th>Actually uses</th></tr>
+<tr><td>2D X display (DDX)</td><td class="yes">No</td><td><code>nvidia_drv.so</code> (GLX is a <em>separate</em> server extension)</td></tr>
+<tr><td>EGL GL/GLES apps</td><td class="yes">No</td><td><code>libEGL_nvidia.so.0</code> (different vendor lib)</td></tr>
+<tr><td>Vulkan</td><td class="partial">File yes, GLX code no</td><td><code>nvidia_icd.json</code> &rarr; <code>library_path: libGLX_nvidia.so.0</code> (NVIDIA co-located the ICD in that binary)</td></tr>
+<tr><td>CUDA / compute</td><td class="yes">No</td><td><code>libcuda.so.1</code>, fully headless</td></tr>
+<tr><td>KMS console</td><td class="yes">No</td><td>kernel <code>nvidia-drm</code>/<code>nvidia-modeset</code></td></tr>
+</table>
+<p>So an X desktop comes up with <code>nvidia_drv.so</code> and <strong>no</strong> <code>libGLX_nvidia</code> &mdash; you just have no hardware GLX (GLX apps fail, or fall to Mesa software GLX if present). The one gotcha: because NVIDIA points its <em>Vulkan</em> ICD at the same file, the <em>file</em> must exist for Vulkan even though no GLX runs. And there are hardware-GL-on-X11 bypasses that route around NVIDIA GLX entirely &mdash; <strong>Zink</strong> (OpenGL&rarr;Vulkan on NVIDIA&rsquo;s Vulkan ICD) and native <strong>EGL</strong> &mdash; useful to know, but not needed for our first goal.</p>
+
+<h2 id="s7">7. Does Wayland change things?</h2>
+<aside class="verdict"><strong>Yes, architecturally it dissolves both X-side blockers.</strong> A native Wayland compositor loads <em>no</em> X server, so <code>nvidia_drv.so</code> and its ABI-28-vs-25 problem never enter the picture; and it uses EGL, not GLX, so <code>libGLX_nvidia</code> is bypassed on the compositor path. NVIDIA even documents removing the Xorg server entirely on a Wayland-only desktop. Our <code>EOPNOTSUPP</code> was a <em>generic dumb-buffer</em> artifact; Wayland uses NVIDIA&rsquo;s own GBM allocator, which sidesteps it.</aside>
+
+<h3>How Wayland dodges the dumb-buffer wall</h3>
+<p>Mesa&rsquo;s <code>libgbm</code>, on <code>gbm_create_device(fd)</code>, reads the DRM driver name and <code>dlopen</code>s <code>lib&lt;driver&gt;_gbm.so</code> &mdash; here <code>nvidia-drm_gbm.so</code>, a <strong>symlink to <code>libnvidia-allocator.so</code></strong> &mdash; which produces properly tiled scanout buffers and a valid KMS framebuffer, succeeding exactly where the generic linear allocator returned <code>EOPNOTSUPP</code>. GBM has been NVIDIA&rsquo;s default since driver 495 (EGLStreams is legacy); GNOME/KDE/wlroots all support NVIDIA via GBM; explicit-sync (the last big blocker) landed in 555.</p>
+
+<h3>What a Wayland session needs (and doesn&rsquo;t)</h3>
+<ul>
+<li><strong>Needs:</strong> <code>libEGL_nvidia.so.0</code> + GLVND EGL loader + <code>10_nvidia.json</code>; <code>libnvidia-egl-gbm.so.1</code> + <code>15_nvidia_gbm.json</code>; <code>libnvidia-allocator.so</code> (&rarr; <code>nvidia-drm_gbm.so</code>); <code>libnvidia-glcore</code>; a GBM-backend-aware Mesa <code>libgbm</code>; and a compositor that uses GBM. Kernel side already satisfied (<code>modeset=1</code>, <code>card0</code>).</li>
+<li><strong>Doesn&rsquo;t need:</strong> the ABI-versioned <code>nvidia_drv.so</code> DDX or any Xorg server-ABI module.</li>
+<li><strong>XWayland</strong> (for X11/GNUstep apps) loads <em>no</em> <code>xf86-video-*</code> module either &mdash; again no DDX ABI problem &mdash; and accelerates via glamor-on-EGL/GBM; client apps still use client-side <code>libGLX_nvidia.so.0</code>, which is ABI-independent of the server.</li>
+<li><strong>Multi-version:</strong> unchanged &mdash; <code>libEGL_nvidia.so.0</code> is a single fixed soname too, so still one NVIDIA version per boot.</li>
+</ul>
+
+<h3>Packaging the EGL/GBM userland per-branch &mdash; and why it&rsquo;s <em>cleaner</em> than X</h3>
+<p>Every file the EGL/GBM path needs (shared by Wayland <strong>and</strong> the revived <code>modesetting</code>+glamor path B2) is either version-unique (bundle it) or a fixed-name entry point with a clean <strong>environment-variable selector</strong> &mdash; so one per-branch <code>NVIDIA&lt;ver&gt;.bundle</code> carries the whole set and, for a compositor, <em>nothing</em> touches the canonical filesystem:</p>
+<table>
+<tr><th>File</th><th>In <code>NVIDIA595.bundle</code>?</th><th>Collides by default?</th><th>How the active branch is selected</th></tr>
+<tr><td><code>libEGL_nvidia.so.0</code></td><td class="yes">yes &mdash; real file <code>libEGL_nvidia.so.595.84</code></td><td>the <code>.so.0</code> symlink</td><td><code>ld</code> path (<code>STANDARD_LIBRARY_PATH</code> / <code>LD_LIBRARY_PATH</code> at launch)</td></tr>
+<tr><td><code>libnvidia-allocator.so.1</code></td><td class="yes">yes &mdash; <code>&hellip;so.595.84</code></td><td><code>.so.1</code> symlink</td><td>same</td></tr>
+<tr><td><code>libnvidia-glcore.so.1</code></td><td class="yes">yes &mdash; <code>&hellip;so.595.84</code></td><td><code>.so.1</code> symlink</td><td>same</td></tr>
+<tr><td><code>libnvidia-egl-gbm.so.1</code></td><td class="yes">yes (own version)</td><td><code>.so.1</code> soname</td><td>same</td></tr>
+<tr><td><code>/usr/local/lib/gbm/nvidia-drm_gbm.so</code></td><td class="yes">yes (symlink&rarr;allocator)</td><td class="no">yes &mdash; fixed name + fixed dir</td><td><code>GBM_BACKENDS_PATH=&lt;bundle&gt;/lib/gbm</code> (env &mdash; no symlink)</td></tr>
+<tr><td><code>egl_vendor.d/10_nvidia.json</code></td><td class="yes">yes (copy in bundle)</td><td class="no">yes &mdash; fixed name + search dir</td><td><code>__EGL_VENDOR_LIBRARY_DIRS=&lt;bundle&gt;/&hellip;</code>; its <code>library_path</code> can point absolute into the bundle</td></tr>
+<tr><td><code>egl_external_platform.d/15_nvidia_gbm.json</code></td><td class="yes">yes</td><td class="no">yes</td><td><code>__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS=&lt;bundle&gt;/&hellip;</code> (env)</td></tr>
+</table>
+<p><strong>Why cleaner than the X path.</strong> On classic X, the GL client libs are loaded by <em>arbitrary apps</em> all over the system, forcing you to wire the active branch into global paths (the activator/symlinks of §5). But a Wayland compositor is <em>one process that we launch</em> &mdash; so a launch wrapper points every selector at the active bundle and touches nothing canonical:</p>
+<pre>exec env \
+  GBM_BACKENDS_PATH=/System/Library/Extensions/NVIDIA595.bundle/Contents/Resources/lib/gbm \
+  __EGL_VENDOR_LIBRARY_DIRS=&hellip;/Resources/share/glvnd/egl_vendor.d \
+  __EGL_EXTERNAL_PLATFORM_CONFIG_DIRS=&hellip;/Resources/share/egl/egl_external_platform.d \
+  LD_LIBRARY_PATH=&hellip;/Resources/lib \
+  wayfire</pre>
+<p>The same env-selector wrapper works for path B2 (launch X with those vars set); path A&rsquo;s DDX selects via <code>ModulePath</code>, and only path A&rsquo;s GL <em>client</em> libs still need a global path because random X apps load them. Net: <strong>the JSONs and <code>/usr/local/lib/gbm</code> are not blockers</strong> &mdash; they&rsquo;re fixed <em>default</em> locations overridden per-launch, so every branch&rsquo;s Wayland userland co-exists on disk and the compositor points at whichever branch autoloaded.</p>
+
+<aside class="gap"><strong>The blocker moves, it doesn&rsquo;t disappear.</strong> The kernel piece (nvidia-drm KMS) exists on FreeBSD, but the <strong>userland GBM backend</strong> (<code>libnvidia-allocator</code> / <code>nvidia-drm_gbm.so</code> / <code>libnvidia-egl-gbm</code>) has historically been <em>Linux-only</em>; NVIDIA does not ship a FreeBSD GBM backend the way it does for Linux. As of 2026 it is, at best, newly and partially present in the FreeBSD port (forum-level, quality hedged, not independently verified), and FreeBSD Wayland-on-NVIDIA is officially &ldquo;experimental / a little unstable.&rdquo; So Wayland is a real Phase 2, but the work you&rsquo;d sign up for is <em>porting/shipping the GBM userland closure + a compositor</em>, not the ABI/GLX questions.</aside>
+
+<h2 id="s8">8. Recommendation &amp; phased roadmap</h2>
+<ol>
+<li><strong>Phase 1 &mdash; ship the <code>Driver "nvidia"</code> X11 userland (595).</strong> Package the minimal DDX set (§4) from the 595.84 tarball as a per-branch <strong>sibling bundle</strong> <code>NVIDIA595.bundle</code> (§5); add the real <code>Driver "nvidia"</code> <code>OutputClass</code> (FreeBSD&rsquo;s, with <code>ModulePath</code> into the bundle). Validate on <strong>classic <code>xorg-server-21.1.24</code></strong> first (clean ABI-25 control), then on <strong>XLibre-25</strong> (the shipping target, auto-detect). Expand to full GL/EGL/Vulkan once a display is confirmed.</li>
+<li><strong>Phase 1b &mdash; the activator + per-branch bundles for 580/470/390.</strong> Detect GPU &rarr; activate one branch atomically at install/first boot. (340/304 = KMS-console only; document the limit.)</li>
+<li><strong>Phase 2 &mdash; the EGL/GBM userland (unlocks B2 <em>and</em> Wayland at once).</strong> Package the GBM closure (<code>libEGL_nvidia</code>, <code>libnvidia-egl-gbm</code>, <code>libnvidia-allocator</code>&rarr;<code>nvidia-drm_gbm.so</code>, <code>libnvidia-glcore</code>, the two JSONs) + a GBM-aware <code>libgbm</code>. Because this <em>one</em> set is shared by <code>modesetting</code>+glamor (B2) and every Wayland compositor (C), a single experiment settles both. Cheap first probe (no reboot): confirm the FreeBSD <code>nvidia-driver-595.84</code> package actually ships a working <code>nvidia-drm_gbm.so</code> &mdash; the exact Linux-centric piece Agent-research flagged as unverified on FreeBSD. If present: try <code>modesetting</code>+glamor under X first (smaller change than standing up a compositor), then <code>wayfire</code>+<code>seatd</code> for native Wayland. Gated on FreeBSD GBM maturity, but the packages are already in the repo.</li>
+</ol>
+
+<h2 id="s9">9. Open questions to verify on hardware</h2>
+<ul>
+<li><code>ldd</code> the real 595.84 <code>nvidia_drv.so</code> + <code>libglxserver_nvidia.so</code> to pin the exact minimal runtime closure; confirm the tarball <code>.manifest</code> format.</li>
+<li><span class="yes">RESOLVED &#10003;</span> Does XLibre-25.1.8&rsquo;s auto-detect actually bring up <code>Driver "nvidia"</code> on this box? <strong>Yes</strong> &mdash; validated on hardware with the <code>xlibre-nvidia-driver-595.84</code> userland, no <code>xorg.conf</code> needed. Classic <code>xorg-server-21.1.24</code> remains the untested fallback if XLibre ever regresses.</li>
+<li>Confirm <code>ModulePath</code>-into-a-bundle is honored by XLibre&rsquo;s loader (vs. requiring the DDX under the standard modules dir).</li>
+<li>Whether NextBSD/Gershwin wants classic Xorg as the default host on NVIDIA machines, or accepts XLibre&rsquo;s best-effort NVIDIA support.</li>
+<li>Phase 2 only: does the FreeBSD 2026 <code>nvidia-driver</code> actually install a working <code>nvidia-drm_gbm.so</code> / <code>libnvidia-egl-gbm</code>, or must we port it?</li>
+</ul>
+
+<h2 id="s10">10. The packaging recipe &mdash; building <code>NVIDIA&lt;NNN&gt;.bundle</code> in CI (repeatable per branch)</h2>
+<p>The userland ships in the <em>same</em> <code>NVIDIA-FreeBSD-x86_64-&lt;ver&gt;.tar.xz</code> the <code>nvidia-build</code> job already downloads for the kmods &mdash; as <strong>precompiled blobs, no compile step</strong>. Verified tarball layout (595.84):</p>
+<table>
+<tr><th>Tarball path</th><th>&rarr; bundle destination</th></tr>
+<tr><td><code>obj/nvidia_drv.so</code></td><td><code>Resources/xorg/drivers/nvidia_drv.so</code></td></tr>
+<tr><td><code>obj/libglxserver_nvidia.so.1</code></td><td><code>Resources/xorg/extensions/</code></td></tr>
+<tr><td><code>obj/linux/*.so.&lt;ver&gt;</code> (real libs) + <code>obj/*.so.0/.1</code> (sonames)</td><td><code>Resources/lib/</code> (libGLX_nvidia, libEGL_nvidia, libnvidia-glcore/glsi/cfg/tls/eglcore, libnvidia-egl-gbm, libnvidia-allocator&rarr;<code>gbm/nvidia-drm_gbm.so</code>)</td></tr>
+<tr><td><code>obj/10_nvidia.json</code></td><td><code>Resources/share/glvnd/egl_vendor.d/</code></td></tr>
+<tr><td><code>obj/15_nvidia_gbm.json</code>, <code>obj/10_nvidia_wayland.json</code></td><td><code>Resources/share/egl/egl_external_platform.d/</code></td></tr>
+<tr><td><code>nvidia_icd.json</code> (root)</td><td><code>Resources/share/vulkan/icd.d/</code></td></tr>
+<tr><td><em>generated</em></td><td><code>Resources/etc/libmap.d/nvidia.conf</code> (<code>libGLX_indirect.so.0 libGLX_nvidia.so.0</code>) + <code>Contents/Info.plist</code></td></tr>
+</table>
+
+<h3>Where it plugs in (two small changes, one auto-flow)</h3>
+<ol>
+<li><strong><code>nextbsd-kernel-modules</code> &mdash; a new <code>tools/nvidia-mkbundle.sh &lt;WRKSRC&gt; &lt;version&gt; &lt;outdir&gt;</code></strong> (mirrors <code>nvidia-portpatch.sh</code>): stages the table above from <code>$WRKSRC/obj</code> into <code>NVIDIA&lt;NNN&gt;.bundle</code> and drops it <em>into the same <code>nvidia-kexts/</code> dir</em> the wrap step already fills. One extra step in the <code>nvidia-build</code> job, right after &ldquo;Wrap the chained NVIDIAGraphics595 kexts.&rdquo;</li>
+<li><strong>Auto-flow through publish</strong> &mdash; <em>no change needed</em>: the publish job already does <code>tar -C "$NDIR" -czf out/nvidia-kexts.tar.gz .</code> over the whole dir, so the bundle rides into <code>nvidia-kexts.tar.gz</code> beside the kexts for free.</li>
+<li><strong><code>nextbsd-pkg</code> &mdash; confirm/extend <code>scripts/build.sh</code></strong> to extract the whole <code>nvidia-kexts.tar.gz</code> into <code>stage/kexts/System/Library/Extensions/</code> (it already globs the kext tarballs; the bundle lands beside the kexts &rarr; ships inside <code>NextBSD-kernel-extensions</code>).</li>
+</ol>
+
+<h3>Why it&rsquo;s repeatable for every future branch</h3>
+<p><code>nvidia-mkbundle.sh</code> is <strong>version-parameterized</strong>, exactly like the kext wrap. Adding 580/470/390 is the <em>same</em> recipe against that branch&rsquo;s tarball &rarr; <code>NVIDIA580.bundle</code> / <code>NVIDIA470.bundle</code> / <code>NVIDIA390.bundle</code>, each version-locked to its <code>NVIDIAGraphics&lt;NNN&gt;.kext</code> and co-existing on disk (§5). The per-branch install-time <strong>activator</strong> then points X&rsquo;s <code>ModulePath</code> + the ld/EGL selectors at whichever branch autoloaded. So the &ldquo;kernel kext + sibling userland bundle, both built from one tarball in one job, shipped in one package&rdquo; pattern established here for 595 is the template every later branch reuses unchanged.</p>
+
+<footer>
+NextBSD graphics &mdash; NVIDIA userland / display layer. Companion to <a href="nextbsd-nvidia-kext-porting-plan.html">nextbsd-nvidia-kext-porting-plan.html</a>. Draft, July 2026. Grounded in five parallel research passes (FreeBSD nvidia-driver port + ABI matrix; XLibre ABI trajectory; GLVND/glx-alternatives co-existence; libGLX necessity; Wayland/GBM) and on-hardware testing (RTX 3060 Ti, 0x2489). Distribution terms per FreeBSD&rsquo;s binary <code>nvidia-driver</code> packaging &mdash; no licensing gate.
+</footer>
+
+</main>
+</body>
+</html>

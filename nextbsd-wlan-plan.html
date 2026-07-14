@@ -87,7 +87,7 @@
   <a href="#openq">Open questions</a>
 </nav>
 
-<h1>NextBSD WLAN plan <span class="pill warn">PLAN</span></h1>
+<h1>NextBSD WLAN plan <span class="pill ok">PHASES 0–4 MERGED</span> <span class="pill warn">AWAITING HARDWARE</span></h1>
 <p class="subtitle">Grounded in a source-level review of <code>nextbsd-redux/{nextbsd-userland, nextbsd-kernel, nextbsd-kernel-modules, nextbsd-freebsd-compat, nextbsd, nextbsd-overlays}</code> and <code>gershwin-components</code> at 2026-07-13. Background: <a href="nextbsd-wlan-research.html">WLAN on NextBSD — the Apple stack</a>, whose integration half this replaces. That half was written against the pre-Mach <code>freebsd-*</code> / <code>pkgdemon</code> era and assumed dhcpcd and Distributed Objects — neither of which NextBSD uses.</p>
 
 <section id="tldr" class="tldr">
@@ -104,6 +104,25 @@
     <li><strong>Nine foundation tickets are filed</strong> &mdash; <a href="#tickets">&sect;10</a>. Every one is a real bug <em>independent</em> of WLAN, masked until now because NextBSD has only ever run on a single wired NIC. They land before <code>wland</code>.</li>
   </ul>
 </section>
+
+<div class="resolved">
+<strong>Status &mdash; 2026-07-14: Phases 0&ndash;4 are written, CI-green, and merged.</strong> Everything below describes what was built. What is <em>not</em> yet true is on the last line, and it is the important one.
+
+<table class="compact" style="margin-top:.6rem">
+<thead><tr><th>Phase</th><th>What landed</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td><strong>0</strong> &mdash; kernel</td><td><code>device wlan_xauth</code>. WPA/WPA2/WPA3 can now associate at all; before this every association failed <code>EINVAL</code> at the first ioctl.</td><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/pull/54">kernel#54</a> (closes #51)</td></tr>
+<tr><td><strong>2a</strong> &mdash; ipconfigd</td><td>Multi-interface: per-interface lease table + a dedicated DHCP worker thread per NIC; teardown (<code>SIOCDIFADDR</code> + <code>RTM_DELETE</code>) on lease loss and link-down; primary elected by rank (wired &gt; wireless) instead of last-binder-wins. Two further latent bugs fixed in passing &mdash; a publish failure used to silently skip the lease loop, and <code>/etc/resolv.conf</code> was written per-interface (so <code>wlan0</code> stomped a wired <code>em0</code>'s DNS) and non-atomically.</td><td><a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/43">userland#43</a> (closes #37 #38 #39 #41)</td></tr>
+<tr><td><strong>2b</strong> &mdash; configd</td><td><code>RTM_IFANNOUNCE</code> in the link monitor, so a VAP cloned at runtime is visible and a destroyed one stops leaving a stale <code>Link</code> key. <code>wland</code> therefore needs <em>no</em> <code>PF_ROUTE</code> listener of its own.</td><td><a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/44">userland#44</a> (closes #42)</td></tr>
+<tr><td><strong>2c</strong> &mdash; the gate</td><td>DHCP now requires <code>Link{Active}</code> <em>and</em> <code>AirPort{Authenticated}</code>. Key-absent-means-ready, so every wired NIC is bit-for-bit unchanged.</td><td><a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/45">userland#45</a></td></tr>
+<tr><td><strong>3 + 4</strong> &mdash; wland</td><td><code>/usr/sbin/wland</code> (job <code>org.nextbsd.wland</code>, service <code>org.nextbsd.wlan</code>) + the <code>wlan</code> CLI. VAP lifecycle, stock <code>wpa_supplicant</code> driven over <code>wpa_ctrl</code> with an empty config, known networks in SCPreferences, autojoin, and the <code>AirPort</code> publish.</td><td><a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/46">userland#46</a></td></tr>
+</tbody>
+</table>
+
+<p style="margin:.6rem 0 0"><strong>What CI proves:</strong> it all builds clean on amd64 <em>and</em> arm64, and the qemu boot-test passes with <code>wland</code> running under launchd (<code>launchctl list</code> shows <code>31 - org.nextbsd.wland</code>, alive). Critically, the wired <code>em0</code> DHCP path is <em>untouched</em> &mdash; which is the regression that mattered.</p>
+
+<p style="margin:.6rem 0 0"><strong>What CI cannot prove, and nobody should pretend otherwise: <em>there is no 802.11 in qemu.</em></strong> Association, the 4-way handshake, the <code>AirPort</code> publish firing, and the DHCP gate actually releasing are reasoned, reviewed, and grounded in the kernel source &mdash; but they have never been executed. The first run on a real Intel radio is the real test, and it is the next thing that should happen.</p>
+</div>
 
 <h2 id="blockers">1. Three blockers between "Intel card" and "IP address"</h2>
 

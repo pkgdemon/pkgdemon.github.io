@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD configd — porting plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.plist { border-left-color: var(--accent); }
+  pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+          padding: 1rem 1.1rem; }
+  .card h4 { margin-top: 0; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .phase.done { border-left: 4px solid var(--ok); }
+  .phase.todo { border-left: 4px solid var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  blockquote { margin: 1rem 0; padding: .5rem 1rem; border-left: 3px solid var(--accent);
+               background: #fff8f3; color: #333; }
+  .footnote { font-size: .85rem; color: var(--muted); }
+  ol li, ul li { margin: .25rem 0; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .filename { color: var(--accent); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .risk { background: #fff5e6; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .risk strong { color: var(--warn); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .step-num { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; background: var(--accent); color: white; border-radius: 50%; font-weight: 700; font-size: .85em; margin-right: .35em; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">Status</a>
+  <a href="#goal">Goal</a>
+  <a href="#arch">Architecture</a>
+  <a href="#layer1">Layer 1: IPConfiguration</a>
+  <a href="#layer2">Layer 2: configd</a>
+  <a href="#decisions">Decisions</a>
+  <a href="#files">File-by-file</a>
+  <a href="#integration">launchd integration</a>
+  <a href="#schema">preferences.plist schema</a>
+  <a href="#phases">Phases</a>
+  <a href="#open">Open questions</a>
+</nav>
+
+<h1>NextBSD configd — porting plan
+  <span class="pill info">Filed under: freebsd-launchd-mach (v2) effort</span>
+  <span class="pill ok">PARTIALLY SHIPPED</span>
+</h1>
+<p class="subtitle">A two-layer network and system-configuration stack for FreeBSD. The lower layer is the in-tree <code>IPConfiguration</code> daemon (DHCPv4/v6 + RA, RFC 5227 ARP, lease publish via Mach RPC). The upper layer is a port of Apple's <code>configd</code> &mdash; daemon name retained <em>verbatim</em> as <code>configd</code>, Mach-served as <code>com.apple.SystemConfiguration</code>, providing the SystemConfiguration dynamic store via MIG (<code>configd.defs</code>) for <code>scutil</code>, IPConfiguration, and GUI tooling. Companion to the <a href="freebsd-launchd-plan.html">freebsd-launchd-mach port</a>.</p>
+
+<div class="resolved" style="border-left-color: var(--accent2); background: #eef4fa;">
+<strong style="color: var(--accent2);">Revision 2026-05-23 &mdash; architecture pivot.</strong>
+This plan originally targeted the sibling <code>freebsd-launchd</code> (AF_UNIX / GNUstep Distributed Objects) repo, where the daemon was renamed <code>netconfigd</code>. <strong>Refactored 2026-05-23 to target <code>freebsd-launchd-mach</code> (v2):</strong> retains Apple's daemon name <code>configd</code>, Mach IPC, and the original <code>configd.defs</code> MIG IDL. Mach service: <code>com.apple.SystemConfiguration</code> (acquired via <code>bootstrap_check_in</code>). <strong>PARTIALLY SHIPPED</strong> &mdash; the core SCDynamicStore surface is live in <code>src/configd/</code>, the client framework lives at <code>src/libSystemConfiguration/</code> with mig-generated client stubs, and the daemon is being consumed today by IPConfiguration (<code>sc_publish_ipv4</code> + <code>sc_publish_ipv6</code> in <code>src/IPConfiguration/sc_publish.c</code>). The plugin loader and SCPreferences surface are deferred; IPConfiguration is a standalone daemon (not loaded as a configd plugin like Apple does it) and talks to configd over Mach RPC for <code>State:/Network/Service/&lt;UUID&gt;/IPv4</code> and <code>/IPv6</code> publishes. The remaining sections describe the full porting plan; everything below should be read with the understanding that the <em>shape</em> is now Mach-MIG, not Distributed Objects.
+</div>
+
+<section id="tldr" class="tldr">
+  <h3>Status: core SCDynamicStore live, IPConfiguration consuming it <span class="pill ok">PARTIALLY SHIPPED</span></h3>
+  <ul>
+    <li><strong>Repo:</strong> <a href="https://github.com/pkgdemon/freebsd-launchd-mach">github.com/pkgdemon/freebsd-launchd-mach</a> &mdash; the Mach-IPC track (v2). configd source lives under <code>src/configd/</code>; the client framework lives under <code>src/libSystemConfiguration/</code>.</li>
+    <li><strong>Architectural pivot:</strong> the original plan had a long-running daemon spawning dhclient/rtsold/wpa_supplicant as managed children, parsing PF_ROUTE itself, exposing IPC. Implementation showed the autoconfig portion is well-served by in-tree <code>IPConfiguration</code> (DHCPv4/v6 + RA in one daemon, with RFC 5227 ARP probe/announce, lagg/vlan/bridge layering recognition, and userspace RDNSS/DNSSL parsing the kernel can't do). Letting IPConfiguration own the protocol layer keeps configd's responsibility tight: <em>be the dynamic store</em>.</li>
+    <li><strong>What's shipped:</strong>
+      <ul>
+        <li><code>src/configd/</code> &mdash; the daemon, MIG-served on Mach service <code>com.apple.SystemConfiguration</code> via <code>bootstrap_check_in</code>. Retains Apple's <code>configd.defs</code> IDL. Backs an in-memory key/value store (<code>State:</code> and <code>Setup:</code> domains), notification keys, pattern subscriptions, and the <code>SCDynamicStoreCreate / SetValue / SetNotificationKeys / CopyValue</code> RPC surface.</li>
+        <li><code>src/libSystemConfiguration/</code> &mdash; the <code>libSystemConfiguration.so</code> client framework. mig-generated client stubs for <code>configd.defs</code>; wraps them in the canonical <code>SCDynamicStore*</code> CF API.</li>
+        <li><code>src/IPConfiguration/sc_publish.c</code> &mdash; downstream consumer. <code>sc_publish_ipv4()</code> and <code>sc_publish_ipv6()</code> publish bound-lease state to <code>State:/Network/Service/&lt;UUID&gt;/IPv{4,6}</code> via the libSystemConfiguration client.</li>
+      </ul>
+    </li>
+    <li><strong>What's deferred:</strong>
+      <ul>
+        <li>Plugin loader (Apple's Mach-host-port + dlopen path). No plugins as separate dylibs yet; the things Apple shipped as plugins are either rolled into the daemon, run as standalone daemons (IPConfiguration), or unbuilt.</li>
+        <li>SCPreferences (the <code>preferences.plist</code> persistence + commit/apply surface). Headers present in <code>src/libSystemConfiguration/</code>; backing store and configd-side RPCs not wired.</li>
+        <li>Multi-domain stores beyond <code>State:</code> / <code>Setup:</code> as needed.</li>
+        <li>SCNetworkReachability, full network-service config, network-set evaluation &mdash; planned as later iterations.</li>
+      </ul>
+    </li>
+    <li><strong>IPC:</strong> Mach IPC, retained. <code>configd.defs</code> retained as the MIG IDL. mig-generated server stubs link into the daemon; mig-generated client stubs link into <code>libSystemConfiguration.so</code>. Service is published as <code>com.apple.SystemConfiguration</code> via <code>bootstrap_check_in</code>. Notifications fan out as <code>mach_msg</code> sends back to subscribed clients on key updates &mdash; not as DO callbacks, and not over AF_UNIX.</li>
+    <li><strong>Event loop:</strong> libdispatch + MIG. The configd daemon runs a <code>dispatch_source(MACH_RECV)</code> on its service port; routines dispatched by mig demux into store mutation + notification fan-out. <code>DISPATCH_SOURCE_TYPE_VNODE</code> on declarative-config plists (when SCPreferences arrives); <code>DISPATCH_SOURCE_TYPE_READ</code> on <code>PF_ROUTE</code> for kernel-event observation (planned).</li>
+    <li><strong>Live ISO behavior:</strong> IPConfiguration auto-DHCPs every plugged ethernet, handles IPv6 RA/SLAAC, runs ARP collision detection, publishes lease state to configd. No <code>preferences.plist</code> required for the auto path.</li>
+    <li><strong>Licensing:</strong> BSD-2-Clause top-level (matches the launchd-mach repo). Apple <code>configd</code> source files retain their Apache 2.0 headers per-file. NOTICE enumerates Apple, libdispatch, libCoreFoundation, and us.</li>
+  </ul>
+</section>
+
+<h2 id="goal">1. Goal &amp; non-goals</h2>
+
+<h3>1.1 Goal</h3>
+<p>A FreeBSD live ISO that boots with launchd as PID 1, gets a working network in seconds without user intervention, and runs a SystemConfiguration-equivalent layer on top &mdash; the Apple-shape <code>SCDynamicStore</code> over Mach RPC for <code>scutil</code>, libIOKit consumers, and GUI tooling &mdash; while delegating the protocol-level work (DHCP, RA, ARP collision) to <code>IPConfiguration</code>, the standalone in-tree daemon that already does it. configd is the <em>store</em>; IPConfiguration is the <em>protocol layer</em>; they meet over Mach RPC.</p>
+
+<h3>1.2 Non-goals (this iteration)</h3>
+<ul>
+  <li><strong>No DHCP client inside configd.</strong> IPConfiguration handles DHCPv4 + DHCPv6 in one daemon, including RDNSS, DNSSL, lease renewal, RFC 5227 ARP probe/announce, link-state recovery. configd is not the protocol layer.</li>
+  <li><strong>No RA processing inside configd.</strong> IPConfiguration parses RAs in userspace &mdash; supports prefix info, RDNSS (RFC 8106), DNSSL, route preferences.</li>
+  <li><strong>No AirPort / CoreWLAN <em>logic</em>.</strong> WLAN association is <code>wland</code>'s job, not configd's — <code>wland</code> drives stock <code>wpa_supplicant</code> and publishes <code>State:/Network/Interface/&lt;iface&gt;/AirPort</code> into the store itself, over the ordinary <code>SCDynamicStoreSetValue</code> path. configd is the <em>store</em>, not the author. <strong>No configd change is required for WLAN.</strong> Apple's <code>eapolclient</code> is not ported. See the <a href="nextbsd-wlan-plan.html">WLAN plan</a>.</li>
+  <li><strong>No <code>InterfaceNamer</code> plugin.</strong> Apple's InterfaceNamer uses IOKit to assign persistent names; FreeBSD names interfaces in-kernel. Interface metadata (USB/PCI introspection) is available via <code>libIOKit</code> over <code>hwregd</code> for downstream consumers.</li>
+  <li><strong>No GNUstep / Distributed Objects.</strong> This is the Mach-IPC track. MIG over <code>mach_msg</code> is the IPC.</li>
+  <li><strong>No SimulatorSupport / QoSMarking.</strong> Apple-only frameworks; not portable.</li>
+  <li><strong>No captive-portal detection.</strong> Apple's URL-probe heuristic is out of scope; users handle this in the browser.</li>
+  <li><strong>No <code>/etc/rc.conf</code> compatibility layer.</strong> When SCPreferences arrives, <code>preferences.plist</code> will be the declarative config configd reads &mdash; matching Apple's surface.</li>
+</ul>
+
+<h2 id="arch">2. Architecture: layered model</h2>
+
+<p>Two layers, separable in time and ownership:</p>
+
+<div class="ascii-diagram">             +-----------------------------------+
+             |  GUI tooling, scutil, app code    |
+             +-----------------+-----------------+
+                               |
+                               | libSystemConfiguration.so
+                               | (mig-generated client stubs)
+                               v
+        +----------------------+----------------------+
+        |    configd  (PARTIALLY SHIPPED)             |
+        |    --------------------------------         |
+        |    - Mach service com.apple.SystemConfig-   |
+        |      uration via bootstrap_check_in         |
+        |    - MIG server (configd.defs, retained)    |
+        |    - In-memory dynamic store: State: and    |
+        |      Setup: domains, pattern subscriptions  |
+        |    - SCDynamicStoreCreate / SetValue /      |
+        |      CopyValue / SetNotificationKeys RPCs   |
+        |    - Notification fan-out: sends mach_msg   |
+        |      back to subscribed client ports on     |
+        |      key updates                            |
+        |    - (planned) PF_ROUTE source: kernel-     |
+        |      event observation into State:/Network/ |
+        |    - (deferred) SCPreferences, plugin       |
+        |      loader, network-set evaluation         |
+        +----------------------+----------------------+
+                               ^
+                               | MIG RPC over Mach
+                               | (State:/Network/Service/
+                               |  &lt;UUID&gt;/IPv{4,6} publishes)
+                               |
+        +----------------------+----------------------+
+        |    IPConfiguration  (in-tree, standalone)   |
+        |    --------------------------------         |
+        |    - DHCPv4 + DHCPv6 + RA/SLAAC             |
+        |    - RFC 5227 ARP probe / announce          |
+        |    - Per-iface lease state machine          |
+        |    - Calls sc_publish_ipv4 / sc_publish_    |
+        |      ipv6 -> libSystemConfiguration ->      |
+        |      configd via Mach RPC                   |
+        |                                             |
+        |    wpa_supplicant  (base, driven by wland)  |
+        +----------------------+----------------------+
+                               |
+                               v
+                     kernel network stack</div>
+
+<h3>2.1 Why two layers instead of one</h3>
+<p>Apple's configd has both layers fused &mdash; the <code>IPConfiguration</code> agent (DHCP/RA) is loaded as a plugin inside the configd process. We split it: configd is its own process, IPConfiguration is its own process. The interface between them is the same one Apple's IPConfiguration plugin would use internally &mdash; <code>SCDynamicStoreSetValue</code> on <code>State:/Network/Service/&lt;UUID&gt;/IPv{4,6}</code> &mdash; just now reached over Mach RPC rather than in-process. From the consumer's point of view (a GUI tool reading the dynamic store) the surface is identical.</p>
+
+<p>The boundary between layers is clean: IPConfiguration owns <em>protocol actions</em> (acquire lease, run RFC 5227 ARP, configure address); configd owns <em>store + IPC</em> (key/value space, subscription, notification fan-out). They communicate via the canonical SCDynamicStore RPC surface; no custom protocol.</p>
+
+<h2 id="layer1">3. Layer 1 (shipped): IPConfiguration (in-tree) + wpa_supplicant (port)</h2>
+
+<h3>3.1 IPConfiguration as the protocol layer</h3>
+<p>Apple ships <code>IPConfiguration</code> as a configd plugin loaded into the configd address space. In <code>freebsd-launchd-mach</code> it runs as its own daemon (<code>src/IPConfiguration/</code>) supervised by launchd. The split is a deliberate choice &mdash; the plugin loader is deferred, and the standalone shape made it easier to iterate on the DHCP state machine and RFC 5227 ARP without dragging the rest of configd along.</p>
+
+<ul>
+  <li>Per-iface DHCPv4 state machine (DISCOVER / OFFER / REQUEST / ACK / RENEW / REBIND); IPv6 RA + DHCPv6.</li>
+  <li>RFC 5227 ARP probe before declaring a lease bound (iter 6, shipped); ARP announce after.</li>
+  <li>Lease loop with link-state hooks (re-DHCP on cable reconnect).</li>
+  <li>On bound transition, calls <code>sc_publish_ipv4()</code> / <code>sc_publish_ipv6()</code> (in <code>src/IPConfiguration/sc_publish.c</code>) which talks to configd over Mach RPC via <code>libSystemConfiguration</code>. configd writes the published dictionary to <code>State:/Network/Service/&lt;UUID&gt;/IPv4</code> (and v6) and fans the change out to any subscribed client ports.</li>
+</ul>
+
+<h3>3.2 wpa_supplicant from base (not ports)</h3>
+<p><strong>Corrected.</strong> An earlier draft of this section had the <code>security/wpa_supplicant</code> port superseding base, arguing faster WPA3-SAE/OWE uptake and more aggressive CVE backports. The <a href="nextbsd-wlan-plan.html#ruledout">WLAN plan &sect;3.3</a> rules that out: the port is <em>the same 2.11</em> as base, but installs to <code>/usr/local/sbin</code> and shadows base for no benefit. We keep <strong>stock <code>wpa_supplicant</code> from FreeBSD base, untouched</strong> &mdash; not vendored into <code>nextbsd-userland/src</code>, not taught Mach, not added as a port. It speaks net80211 ioctls downward and a UNIX control socket upward; it never needs to know configd exists. All Mach knowledge lives in <code>wland</code>, which gets it for free by linking <code>libSystemConfiguration</code>. <code>eapolclient</code> (Apple's 802.1X supplicant) is not ported; WPA-Enterprise comes from wpa_supplicant's own EAP stack or not at all.</p>
+
+<h3>3.3 What configd IS doing today</h3>
+<p>configd is up and serving. Daemon binary at <code>/usr/libexec/configd</code> (TBD path; matches Apple), launchd plist publishes the <code>com.apple.SystemConfiguration</code> Mach service via <code>MachServices</code>; configd grabs the receive right via <code>bootstrap_check_in</code>, runs a MIG dispatch loop, and answers <code>SCDynamicStoreCreate / SetValue / CopyValue / SetNotificationKeys / CopyKeyList</code> over <code>configd.defs</code>. Notification keys cause the daemon to remember the client's notify port and send a wakeup <code>mach_msg</code> on key change; the client's <code>SCDynamicStore</code> rlsource fires.</p>
+
+<p>The IPConfiguration &rarr; configd path is end-to-end: bind a lease, watch <code>State:/Network/Service/&lt;UUID&gt;/IPv4</code> change in <code>scutil</code>-equivalent test tools. That's the level of "live" we're at.</p>
+
+<h2 id="layer2">4. Layer 2 (PARTIALLY SHIPPED): configd</h2>
+
+<p>End state: a launchd-supervised long-running daemon that publishes <code>com.apple.SystemConfiguration</code>, owns the SCDynamicStore, exposes the canonical <code>configd.defs</code> MIG surface, and (when SCPreferences arrives) reads declarative network preferences. Distinct from Apple's shape in that it does <em>not</em> host plugins in-process &mdash; the plugin loader is deferred. Things Apple shipped as plugins are either rolled in (IPMonitor's resolv.conf merge, future), run standalone (IPConfiguration), or unbuilt.</p>
+
+<h3>4.1 Dynamic store</h3>
+<p>configd publishes state to the SystemConfiguration "dynamic store" &mdash; a key-value space (keys like <code>State:/Network/Interface/en0/IPv4</code>) that processes subscribe to. Apple's key shape is retained verbatim. The backing store is an in-memory CF dictionary protected by a serial dispatch queue; subscribers register interest via <code>SCDynamicStoreSetNotificationKeys</code> (exact keys or regex patterns); the daemon sends <code>mach_msg</code> wake-ups to the subscriber's notify port when matching keys change.</p>
+
+<p>Sources of state:</p>
+<ul>
+  <li><strong>IPConfiguration:</strong> on bind/release, calls <code>sc_publish_ipv4()</code> / <code>sc_publish_ipv6()</code>; that path lands as <code>State:/Network/Service/&lt;UUID&gt;/IPv{4,6}</code> writes via Mach RPC. <strong>Shipped.</strong></li>
+  <li><strong><code>PF_ROUTE</code> socket (planned):</strong> address adds/removes, link-state, route changes &rarr; populate <code>State:/Network/Interface/&lt;iface&gt;/IPv{4,6}</code>. Apple does this in the KernelEventMonitor plugin.</li>
+  <li><strong><code>wland</code> (planned):</strong> publishes <code>State:/Network/Interface/&lt;iface&gt;/AirPort</code> &mdash; <code>{Authenticated, SSID, BSSID, RSSI, Channel, Security}</code>. <strong>configd does not read the <code>wpa_supplicant</code> control socket; <code>wland</code> owns it</strong> and writes the key like any other SCDynamicStore client. (An earlier draft of this plan had configd populating a <code>&hellip;/WiFi</code> key directly &mdash; that key name and that ownership are both wrong; see the <a href="nextbsd-wlan-plan.html">WLAN plan</a>.) Scan results deliberately do <em>not</em> go in the store: <code>CONFIG_DATA_MAX</code> rejects any value over 8&nbsp;KiB.</li>
+  <li><strong>SCPreferences (deferred):</strong> populate <code>Setup:</code>-prefixed keys from <code>preferences.plist</code> &mdash; the user's declared service set / interface config.</li>
+</ul>
+
+<h3>4.2 MIG surface (configd.defs)</h3>
+<p>Apple's <code>configd.defs</code> is the IDL, retained. mig-generated server stubs link into configd; mig-generated client stubs link into <code>libSystemConfiguration.so</code>. Representative routines presently wired:</p>
+
+<ul>
+  <li><code>configopen</code> &mdash; allocate a session (a CFDictionary store handle); returns a server port the client uses as a session handle.</li>
+  <li><code>configadd</code> / <code>configset</code> &mdash; set value at key (<code>SCDynamicStoreSetValue</code> / <code>SetMultiple</code>).</li>
+  <li><code>configget</code> &mdash; copy value at key (<code>SCDynamicStoreCopyValue</code>).</li>
+  <li><code>configlist</code> &mdash; copy key list, optionally pattern-filtered (<code>SCDynamicStoreCopyKeyList</code>).</li>
+  <li><code>configadd_notification</code> / <code>configremove_notification</code> &mdash; subscribe / unsubscribe to keys or patterns.</li>
+  <li><code>notifyset</code> &mdash; deliver-port handoff: the client passes a Mach port the daemon should <code>mach_msg</code> on change.</li>
+  <li><code>configclose</code> &mdash; tear down session, drop subscriptions.</li>
+</ul>
+
+<h3>4.3 SCPreferences (deferred)</h3>
+<p>Apple's <code>SCPreferences</code> is the persistence + commit/apply surface over <code>preferences.plist</code>. Header surface present in <code>src/libSystemConfiguration/SCPreferences.c</code>; backing store and configd-side RPCs are not yet wired. When this lands, configd will:</p>
+
+<ol>
+  <li>Read <code>preferences.plist</code> (Apple-canonical path) via CFPropertyList.</li>
+  <li>Populate <code>Setup:</code> keys in the dynamic store from the parsed prefs.</li>
+  <li>Accept <code>SCPreferencesCommit</code>-shaped RPCs from clients; rewrite the plist atomically; reload <code>Setup:</code>; notify subscribers.</li>
+</ol>
+
+<p>The shape is Apple-canonical &mdash; no FreeBSD-only <code>Network.plist</code> alternative; <code>preferences.plist</code> is the file.</p>
+
+<h3>4.4 Event sources</h3>
+
+<table>
+<thead><tr><th>Source type</th><th>Watches</th><th>Reaction</th></tr></thead>
+<tbody>
+<tr><td><code>dispatch_source(MACH_RECV)</code></td><td>configd's service port (from <code>bootstrap_check_in</code>)</td><td>mig demux: dispatch routine; mutate store; fan out notifications</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_READ</code> (planned)</td><td><code>PF_ROUTE</code> socket</td><td>parse routing message; update dynamic store <code>State:/Network/Interface/&lt;iface&gt;/...</code>; fan out to subscribers</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_VNODE</code> (deferred)</td><td><code>preferences.plist</code></td><td>reload via CFPropertyList; diff against last snapshot; rewrite <code>Setup:</code> keys; notify</td></tr>
+<tr><td><code>DISPATCH_SOURCE_TYPE_SIGNAL</code></td><td>SIGTERM / SIGHUP</td><td>SIGTERM: clean shutdown. SIGHUP: force config reload.</td></tr>
+</tbody>
+</table>
+
+<h2 id="repo">5. Repository</h2>
+
+<h3>5.1 Layout under <code>freebsd-launchd-mach/src/</code></h3>
+
+<pre><code>freebsd-launchd-mach/src/
+├── configd/                       The daemon. PARTIALLY SHIPPED.
+│   ├── configd.c                  Service publish + MIG demux + dispatch_main
+│   ├── config.defs                Apple configd.defs IDL (retained verbatim)
+│   ├── config_session.{c,h}       Per-client session state, port tracking
+│   ├── config_store.{c,h}         In-memory key/value store + pattern subs
+│   ├── config_wire.{c,h}          MIG server stub helpers (CFData marshalling)
+│   ├── config_types.h             Shared types between defs and impl
+│   └── *test.c                    in-tree integration tests against the live
+│                                  Mach service (configtest, listtest, patterntest,
+│                                  notifytest, multitest)
+│
+├── libSystemConfiguration/        The client framework. PARTIALLY SHIPPED.
+│   ├── SCDynamicStore.c           Public SCDynamicStoreCreate / SetValue /
+│   │                              CopyValue / SetNotificationKeys; wraps mig
+│   │                              client stubs into the CF API
+│   ├── SCD.c, SCDMultiple.c       Bulk SCDynamicStore variants
+│   ├── SCNotify.c                 Notify rlsource + callback dispatch
+│   ├── SCNetworkInterface.c       Iface enumeration (planned full surface)
+│   ├── SCNetworkService.c, Set.c  Network-service / set enumeration (planned)
+│   ├── SCNetworkProtocol.c
+│   ├── SCNetworkConfigurationInternal.{c,h}
+│   ├── SCBridgeInterface.c, SCBondInterface.c, SCVLANInterface.c
+│   ├── SCPreferences.c            (deferred — backing store + RPCs not wired)
+│   ├── SCInternal.h
+│   ├── SystemConfiguration/       public header umbrella
+│   └── *test.c                    sctest, scnotifytest, scrltest, etc.
+│
+└── IPConfiguration/               Standalone DHCP/RA daemon. SHIPPED through iter 6.
+    ├── ipconfigd.c, ipconfig.c    daemon + CLI
+    ├── ipconfig.defs              IPConfiguration's own MIG IDL (separate from
+    │                              configd's)
+    ├── dhcp_discover.c, ra_listen.c, lease_loop.c
+    ├── arp_probe.c                RFC 5227 probe + announce (iter 6)
+    ├── apply_lease.c, apply_lease_v6.c
+    ├── bound_state.c              fires sc_publish on BOUND
+    ├── sc_publish.{c,h}           sc_publish_ipv4 / sc_publish_ipv6
+    │                              -> libSystemConfiguration -> configd via Mach
+    ├── mach_service.c
+    └── ...
+</code></pre>
+
+<p>Top-level (<code>freebsd-launchd-mach/</code>) hosts the launchd plist for configd (<code>com.apple.SystemConfiguration</code> registered via <code>MachServices</code> in the plist; configd calls <code>bootstrap_check_in</code> on the published name to obtain the receive right).</p>
+
+<h3>5.2 Apple source provenance</h3>
+<p>The configd source is derived from Apple's <code>configd</code> (latest open tag <code>configd-963.270.3</code>). What's retained is the surface that's directly relevant to SCDynamicStore + the <code>configd.defs</code> IDL; the bulky plugin tree (IPMonitor, KernelEventMonitor, LinkConfiguration, PreferencesMonitor, SCNetworkReachability, InterfaceNamer, SimulatorSupport, QoSMarking) is not present. Files that <em>are</em> in-tree retain their Apache 2.0 headers per-file.</p>
+
+<h2 id="decisions">6. Locked architectural decisions</h2>
+
+<table>
+<thead>
+<tr><th>Decision</th><th>Choice</th></tr>
+</thead>
+<tbody>
+<tr><td>Target kernel</td><td>FreeBSD 14.x and 15.x. No Linux, no NetBSD.</td></tr>
+<tr><td>Daemon name</td><td><code>configd</code> &mdash; Apple-canonical, retained verbatim. NOT renamed to <code>netconfigd</code> (that's the sibling repo's choice).</td></tr>
+<tr><td>DHCPv4 / DHCPv6 / RA / SLAAC / ARP</td><td>In-tree <code>IPConfiguration</code> (Apple's port). Standalone daemon, not loaded as a configd plugin. RFC 5227 ARP probe / announce shipped in iter 6.</td></tr>
+<tr><td>WLAN authentication</td><td>Stock <code>wpa_supplicant</code> <strong>from base</strong>, driven by <code>wland</code>. Not the port. Apple's <code>eapolclient</code> is not ported.</td></tr>
+<tr><td>IPC</td><td>Mach IPC. Apple's <code>configd.defs</code> MIG IDL is retained verbatim. mig-generated server stubs in configd, client stubs in libSystemConfiguration. NOT Distributed Objects, NOT AF_UNIX (that's the sibling repo).</td></tr>
+<tr><td>Service publish</td><td>Mach service <code>com.apple.SystemConfiguration</code>, registered in the launchd plist <code>MachServices</code> dict; <code>bootstrap_check_in</code> hands the receive right to configd at startup.</td></tr>
+<tr><td>Notification fan-out</td><td>The daemon sends a wake-up <code>mach_msg</code> back to subscribed clients' notify ports on key change. The client's <code>SCDynamicStore</code> rlsource demuxes and fires the user callback.</td></tr>
+<tr><td>Event loop</td><td>libdispatch dispatch sources. <code>dispatch_source(MACH_RECV)</code> on the service port for inbound RPC; plus PF_ROUTE / vnode sources as features land.</td></tr>
+<tr><td>Plist parsing</td><td>libCoreFoundation <code>CFPropertyListCreateWithData</code> (XML + binary).</td></tr>
+<tr><td>Source of truth for declarative config</td><td><code>preferences.plist</code> (Apple-canonical path), when SCPreferences lands. No rc.conf parser. No FreeBSD-only <code>Network.plist</code> file.</td></tr>
+<tr><td>Plugin loader</td><td>Deferred. IPConfiguration runs standalone; other Apple plugins are not built.</td></tr>
+<tr><td>License (top-level)</td><td>BSD-2-Clause. Apple <code>configd</code> files retain Apache 2.0 per-file.</td></tr>
+<tr><td>Build platform</td><td>FreeBSD only, inside the same VM-action chroot the launchd build uses.</td></tr>
+</tbody>
+</table>
+
+<h2 id="files">7. File-by-file plan (<code>src/configd/</code> + <code>src/libSystemConfiguration/</code>)</h2>
+
+<p>Apple source baseline: <code>configd-963.270.3</code> (~289 files, ~5.5 MB pre-pruning). What's <em>not</em> in-tree: the plugin tree (IPMonitor, KernelEventMonitor, LinkConfiguration, PreferencesMonitor, SCNetworkReachability), InterfaceNamer, SimulatorSupport, QoSMarking, AirPort, Apple-Wireless-Diagnostics, Swift test harnesses, Xcode build infra.</p>
+
+<h3>7.1 Not imported</h3>
+<ul>
+  <li><code>configd.xcodeproj/</code>, <code>xcconfigs/</code>, <code>xcscripts/</code> &mdash; Xcode build infra (replaced by gmake <code>Makefile</code>s)</li>
+  <li><code>Plugins/QoSMarking/</code>, <code>Plugins/SimulatorSupport/</code>, <code>Plugins/InterfaceNamer/</code> &mdash; non-goals on FreeBSD</li>
+  <li><code>Plugins/IPMonitor/IPMonitorAWDReport.{c,h}</code> &mdash; Apple-Wireless-Diagnostics</li>
+  <li><code>SCTest-Swift/</code> &mdash; Swift test harness</li>
+  <li><code>libSystemConfiguration/SCDPlugin*.{c,h}</code> &mdash; plugin loader (deferred)</li>
+</ul>
+
+<h3>7.2 Status by component</h3>
+
+<table>
+<thead>
+<tr><th>Component</th><th>In-tree at</th><th>Status</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td>configd daemon core</td><td><code>src/configd/configd.c</code> + <code>config_session.c</code> + <code>config_store.c</code> + <code>config_wire.c</code></td><td><strong>SHIPPED</strong></td><td>dispatch_main + MIG demux on the <code>com.apple.SystemConfiguration</code> service port. Session-per-client state. Store backs <code>State:</code> + <code>Setup:</code>; pattern subs via regex.</td></tr>
+<tr><td>configd.defs IDL</td><td><code>src/configd/config.defs</code></td><td><strong>SHIPPED</strong></td><td>Apple IDL retained. Drives both server stubs (in configd) and client stubs (in libSystemConfiguration).</td></tr>
+<tr><td>SCDynamicStore (client)</td><td><code>src/libSystemConfiguration/SCDynamicStore.c</code> + <code>SCD.c</code> + <code>SCDMultiple.c</code> + <code>SCNotify.c</code></td><td><strong>SHIPPED</strong></td><td>Wraps mig client stubs into CF API. <code>SCDynamicStoreCreate / SetValue / CopyValue / SetNotificationKeys / CreateRunLoopSource</code> all functional.</td></tr>
+<tr><td>libSystemConfiguration enumeration surface (SCNetworkInterface, Service, Set, Protocol)</td><td><code>src/libSystemConfiguration/SCNetwork*.c</code></td><td><strong>PARTIAL</strong></td><td>Header surface present; runtime gets fuller as configd's <code>Setup:</code> side comes online.</td></tr>
+<tr><td>SCBridgeInterface, SCBondInterface, SCVLANInterface</td><td><code>src/libSystemConfiguration/SCBridge/Bond/VLAN*.c</code></td><td><strong>PARTIAL</strong></td><td>Compose against FreeBSD's ifconfig surface where possible.</td></tr>
+<tr><td>SCPreferences</td><td><code>src/libSystemConfiguration/SCPreferences.c</code></td><td><strong>DEFERRED</strong></td><td>Header present, backing store + configd-side RPCs not wired.</td></tr>
+<tr><td>IPConfiguration (lease publish)</td><td><code>src/IPConfiguration/sc_publish.c</code>, <code>sc_publish.h</code></td><td><strong>SHIPPED</strong></td><td>Calls <code>SCDynamicStoreSetValue</code> on <code>State:/Network/Service/&lt;UUID&gt;/IPv{4,6}</code> via libSystemConfiguration. This is the working proof that the daemon serves real consumers.</td></tr>
+<tr><td>IPMonitor (resolv.conf merge)</td><td>not imported</td><td><strong>FUTURE</strong></td><td>Once multiple services need to compose into one resolv.conf, port the Apple plugin's merge logic into configd directly (no plugin loader).</td></tr>
+<tr><td>KernelEventMonitor (PF_ROUTE)</td><td>not imported</td><td><strong>FUTURE</strong></td><td>Rewrite as a configd-internal source: <code>DISPATCH_SOURCE_TYPE_READ</code> on PF_ROUTE; populate <code>State:/Network/Interface/&lt;iface&gt;/...</code>.</td></tr>
+<tr><td>SCNetworkReachability</td><td>not imported</td><td><strong>FUTURE</strong></td><td>Port the public API; PF_ROUTE for change events; serve over MIG.</td></tr>
+<tr><td>scutil CLI</td><td>not imported</td><td><strong>FUTURE</strong></td><td>Port as a libSystemConfiguration client. <code>--show / --get / --set / --watch</code>.</td></tr>
+<tr><td>nwi (network-information)</td><td>not yet imported</td><td><strong>FUTURE</strong></td><td>Mostly pure data structures; port when a consumer needs it.</td></tr>
+</tbody>
+</table>
+
+<h2 id="bsd-wins">8. FreeBSD-only deltas (vs Apple's Darwin-tied configd)</h2>
+
+<table>
+<thead>
+<tr><th>Feature</th><th>Apple's configd does</th><th>This port (FreeBSD)</th></tr>
+</thead>
+<tbody>
+<tr><td>DHCP / RA / ARP</td><td>Loaded as the <code>IPConfiguration</code> plugin inside the configd process.</td><td>Runs as its own daemon (<code>src/IPConfiguration/</code>). Same Apple code lineage, same SCDynamicStore publish surface; just out-of-process. Talks to configd over Mach RPC instead of in-process function calls.</td></tr>
+<tr><td>Kernel iface events</td><td><code>PF_SYSTEM</code> + <code>KEV_NETWORK_CLASS</code> + <code>kern_event</code></td><td><code>PF_ROUTE</code> socket. Planned configd-internal source; observation-only (IPConfiguration owns its own PF_ROUTE feed for action).</td></tr>
+<tr><td>Service IPC</td><td>Mach ports + XPC + bootstrap server</td><td><strong>Same shape.</strong> Mach IPC retained; <code>configd.defs</code> retained as the MIG IDL; service published as <code>com.apple.SystemConfiguration</code> via <code>bootstrap_check_in</code>. (XPC is also available in this repo; configd just doesn't use it &mdash; it's a raw MIG server.)</td></tr>
+<tr><td>WLAN auth</td><td>AirPort framework + <code>eapolclient</code></td><td>Stock <code>wpa_supplicant</code> <strong>from base</strong>, driven by <code>wland</code>. No <code>eapolclient</code>.</td></tr>
+<tr><td>Iface naming</td><td><code>InterfaceNamer</code> plugin: IOKit USB/PCI introspection</td><td>FreeBSD kernel handles iface naming. Drop the plugin. Iface metadata (USB/PCI introspection) is separately available via <code>libIOKit</code> over <code>hwregd</code>.</td></tr>
+<tr><td>Plugin loading</td><td>Mach host port + bundle dlopen at startup</td><td>Deferred. IPConfiguration is its own daemon; other Apple plugins are unbuilt or rolled in directly.</td></tr>
+<tr><td>Build-system gates</td><td>iOS / macOS / sim / catalyst <code>#if TARGET_OS_*</code></td><td>One target (FreeBSD). Apple gates dropped.</td></tr>
+</tbody>
+</table>
+
+<h2 id="deps">9. Dependencies</h2>
+
+<p><strong>Build-time</strong>: clang, lld (FreeBSD base); <code>mig</code> (in-tree, builds the server + client stubs from <code>config.defs</code>); pkgconf; system-domain headers/libraries at <code>/System/Library/</code>.</p>
+
+<p><strong>Runtime (on the ISO):</strong></p>
+<ul>
+  <li><code>libdispatch.so</code> &mdash; mainloop + MIG receive source.</li>
+  <li><code>libCoreFoundation.so</code> &mdash; CF types (CFString, CFDictionary, CFData) used by SCDynamicStore values.</li>
+  <li><code>libxpc.so</code> &mdash; bootstrap APIs (<code>bootstrap_check_in</code>); not used for XPC framing in configd itself, but present in the libxpc-bootstrap path.</li>
+  <li><code>libSystemConfiguration.so</code> &mdash; this repo's client framework; consumed by IPConfiguration and any other SCDynamicStore client.</li>
+  <li>(when WLAN lands) <code>wpa_supplicant</code> <strong>from FreeBSD base</strong> &mdash; already present, untouched. <em>Not</em> <code>security/wpa_supplicant</code> from ports.</li>
+</ul>
+
+<h2 id="integration">10. launchd integration</h2>
+
+<h3>10.1 IPConfiguration plist (in place)</h3>
+<pre class="plist"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;             &lt;string&gt;com.apple.IPConfiguration&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt;  &lt;array&gt;
+        &lt;string&gt;/usr/libexec/IPConfiguration&lt;/string&gt;
+    &lt;/array&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;         &lt;true/&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;         &lt;true/&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</code></pre>
+
+<p>IPConfiguration runs in foreground supervised by launchd; <code>KeepAlive=true</code> respawns it if it dies. Apple-canonical Label.</p>
+
+<h3>10.2 configd plist (Mach-service shape)</h3>
+<pre class="plist"><code>&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;            &lt;string&gt;com.apple.configd&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt; &lt;array&gt;&lt;string&gt;/usr/libexec/configd&lt;/string&gt;&lt;/array&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;        &lt;true/&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;        &lt;true/&gt;
+    &lt;key&gt;MachServices&lt;/key&gt;     &lt;dict&gt;
+        &lt;key&gt;com.apple.SystemConfiguration&lt;/key&gt;
+        &lt;true/&gt;
+    &lt;/dict&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</code></pre>
+
+<p>launchd registers the <code>com.apple.SystemConfiguration</code> Mach service at boot. configd calls <code>bootstrap_check_in("com.apple.SystemConfiguration", &amp;recv_port)</code> at startup to obtain the receive right. Until configd is up, RPCs from <code>libSystemConfiguration</code> clients block at <code>bootstrap_look_up</code> (or get a queued send right depending on launchd's <code>OnDemand</code> semantics &mdash; tracking this in iter wash). After check-in, configd runs <code>dispatch_source(MACH_RECV)</code> on the port and dispatches incoming MIG messages.</p>
+
+<h2 id="schema">11. <code>preferences.plist</code> schema (DEFERRED &mdash; SCPreferences)</h2>
+
+<p>One canonical declarative configuration file at Apple's path. The GUI tooling reads/writes it via <code>SCPreferences*</code>; configd loads it into <code>Setup:</code> keys and re-evaluates on commit. The shape below is illustrative &mdash; final shape will follow Apple's <code>preferences.plist</code> schema (network-service-keyed, with <code>NetworkServices</code>, <code>Sets</code>, <code>System</code> dicts). Until SCPreferences lands, no plist is consulted; the auto-DHCP path through IPConfiguration runs unaided.</p>
+
+<p>The example below is the original FreeBSD-only sketch from the sibling repo's plan, preserved for the data-model intent only:</p>
+
+<pre class="plist"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;plist version="1.0"&gt;
+&lt;dict&gt;
+    &lt;key&gt;Hostname&lt;/key&gt;
+    &lt;string&gt;my-host&lt;/string&gt;
+
+    &lt;key&gt;Interfaces&lt;/key&gt;
+    &lt;dict&gt;
+        &lt;key&gt;em0&lt;/key&gt;
+        &lt;dict&gt;
+            &lt;key&gt;Method&lt;/key&gt; &lt;string&gt;DHCP&lt;/string&gt;
+        &lt;/dict&gt;
+
+        &lt;key&gt;em1&lt;/key&gt;
+        &lt;dict&gt;
+            &lt;key&gt;Method&lt;/key&gt; &lt;string&gt;Static&lt;/string&gt;
+            &lt;key&gt;IPv4&lt;/key&gt;
+            &lt;dict&gt;
+                &lt;key&gt;Address&lt;/key&gt; &lt;string&gt;192.168.1.10/24&lt;/string&gt;
+                &lt;key&gt;Router&lt;/key&gt;  &lt;string&gt;192.168.1.1&lt;/string&gt;
+            &lt;/dict&gt;
+        &lt;/dict&gt;
+
+        &lt;key&gt;wlan0&lt;/key&gt;
+        &lt;dict&gt;
+            &lt;key&gt;Method&lt;/key&gt; &lt;string&gt;WPA&lt;/string&gt;
+            &lt;key&gt;WPA&lt;/key&gt;
+            &lt;dict&gt;
+                &lt;key&gt;ConfigFile&lt;/key&gt; &lt;string&gt;/etc/wpa_supplicant.conf&lt;/string&gt;
+            &lt;/dict&gt;
+            &lt;key&gt;IPv4&lt;/key&gt;
+            &lt;dict&gt;
+                &lt;key&gt;Method&lt;/key&gt; &lt;string&gt;DHCP&lt;/string&gt;
+            &lt;/dict&gt;
+        &lt;/dict&gt;
+    &lt;/dict&gt;
+
+    &lt;key&gt;DNS&lt;/key&gt;
+    &lt;dict&gt;
+        &lt;!-- Optional. If absent, DNS is taken from DHCP. --&gt;
+        &lt;key&gt;Servers&lt;/key&gt;
+        &lt;array&gt;
+            &lt;string&gt;1.1.1.1&lt;/string&gt;
+            &lt;string&gt;1.0.0.1&lt;/string&gt;
+        &lt;/array&gt;
+        &lt;key&gt;Search&lt;/key&gt;
+        &lt;array&gt;&lt;string&gt;example.com&lt;/string&gt;&lt;/array&gt;
+    &lt;/dict&gt;
+&lt;/dict&gt;
+&lt;/plist&gt;</code></pre>
+
+<p><strong>Empty / absent <code>preferences.plist</code></strong> &rarr; IPConfiguration's defaults apply (auto-DHCP everything, RA on every iface). The no-config-needed default; today's live behavior.</p>
+
+<p><strong>Per-iface dict missing</strong> &rarr; IPConfiguration's defaults apply for that iface. A user who wants em0 to NOT auto-DHCP would express that through the SCPreferences API once it lands.</p>
+
+<h3>11.1 Schema versioning</h3>
+<p>The Apple <code>preferences.plist</code> ships an explicit version key in its top-level dict. The port follows.</p>
+
+<h2 id="cli">12. <code>scutil</code> CLI tool (FUTURE)</h2>
+
+<p>Apple's <code>scutil</code> is the system-configuration shell. Ported as a <code>libSystemConfiguration</code> client (which means it talks to configd over the same Mach RPC surface as every other client). Initial command set when it lands:</p>
+
+<ul>
+  <li><code>scutil --show</code> &mdash; dump the entire dynamic store</li>
+  <li><code>scutil --get Hostname</code> / <code>--set Hostname my-host</code> &mdash; single-key edits</li>
+  <li><code>scutil --interfaces</code> &mdash; list managed interfaces with current state</li>
+  <li><code>scutil --reload</code> &mdash; force configd to re-read SCPreferences (once SCPreferences lands)</li>
+  <li><code>scutil --watch &lt;key&gt;</code> &mdash; long-running, prints on store changes (via the Mach notify-port path)</li>
+</ul>
+
+<p>The Apple interactive store-shell mode is in scope &mdash; it builds on the same MIG surface configd already speaks, so it should be straightforward.</p>
+
+<p>In the meantime, the in-tree test programs (<code>configtest</code>, <code>listtest</code>, <code>patterntest</code>, <code>notifytest</code>, <code>multitest</code>, <code>sctest</code>, <code>scnotifytest</code>) cover most of what an early scutil would expose.</p>
+
+<h2 id="license">13. Licensing</h2>
+
+<p>Top-level BSD-2-Clause; Apple <code>configd</code> source files retain their Apache 2.0 headers per-file (inbound=outbound). New code is BSD-2-Clause with SPDX headers.</p>
+
+<table>
+<thead><tr><th>Source</th><th>License</th><th>How we handle it</th></tr></thead>
+<tbody>
+<tr><td>Apple <code>configd-963.270.3</code></td><td>Apache 2.0 (Apple OSRef)</td><td>Keep Apple header verbatim. Files stay Apache regardless of top-level.</td></tr>
+<tr><td>Apple <code>IPConfiguration</code> (Apple OSRef)</td><td>Apache 2.0</td><td>Keep Apple header verbatim; same handling.</td></tr>
+<tr><td>libdispatch, libCoreFoundation, libxpc (Apple OSRef, in this repo's tree)</td><td>Apache 2.0 with Runtime Library Exception</td><td>Per-file Apache; listed in NOTICE.</td></tr>
+<tr><td>wpa_supplicant (base, separate process)</td><td>BSD-3-Clause</td><td>Already in base; not linked into configd. Listed in NOTICE when WLAN ships.</td></tr>
+<tr><td>This repo's new code</td><td>BSD-2-Clause</td><td>Each new file gets a BSD-2-Clause SPDX header.</td></tr>
+</tbody>
+</table>
+
+<h2 id="phases">14. Phased delivery</h2>
+
+<div class="phase done">
+<h3>Phase 0 &mdash; repo scaffold + Apple source import <span class="pill ok">DONE</span></h3>
+<ul>
+  <li><code>src/configd/</code> + <code>src/libSystemConfiguration/</code> hosted under <code>freebsd-launchd-mach</code>. Apple source baseline <code>configd-963.270.3</code>.</li>
+  <li>Selective import: SCDynamicStore + configd.defs IDL + libSystemConfiguration surface. Plugin tree, InterfaceNamer, SimulatorSupport, QoSMarking, AWD reporter, Xcode infra not imported.</li>
+  <li>NOTICE updated.</li>
+</ul>
+</div>
+
+<div class="phase done">
+<h3>Phase 1 &mdash; configd daemon: MIG service publish + SCDynamicStore <span class="pill ok">DONE</span></h3>
+<ul>
+  <li><code>src/configd/configd.c</code>: <code>bootstrap_check_in("com.apple.SystemConfiguration", &amp;recv_port)</code>; <code>dispatch_source(MACH_RECV)</code>; MIG demux for <code>config.defs</code> routines.</li>
+  <li><code>config_store.c</code>: in-memory store (CF dictionary), pattern subscription via regex.</li>
+  <li><code>config_session.c</code>: per-client session state, notify-port tracking, subscription bookkeeping.</li>
+  <li>Notification fan-out: server sends a wake-up <code>mach_msg</code> to each subscribed client's notify port on matching key change.</li>
+  <li>In-tree tests: <code>configtest</code>, <code>listtest</code>, <code>patterntest</code>, <code>notifytest</code>, <code>multitest</code> &mdash; all exercise the live Mach service.</li>
+</ul>
+</div>
+
+<div class="phase done">
+<h3>Phase 2 &mdash; libSystemConfiguration client framework <span class="pill ok">DONE</span></h3>
+<ul>
+  <li><code>SCDynamicStore.c</code>: <code>SCDynamicStoreCreate / SetValue / CopyValue / SetNotificationKeys / CopyKeyList / CreateRunLoopSource</code>.</li>
+  <li>mig client stubs from <code>config.defs</code> linked in.</li>
+  <li>Notify rlsource: receives the daemon's wake-up <code>mach_msg</code>, demuxes keys, fires the user's callback on the runloop.</li>
+  <li>Multi-store / bulk variants (<code>SCDMultiple.c</code>).</li>
+  <li>Partial enumeration surface (<code>SCNetworkInterface.c</code>, <code>SCNetworkService.c</code>, etc.) &mdash; header-complete, runtime grows with SCPreferences.</li>
+</ul>
+</div>
+
+<div class="phase done">
+<h3>Phase 3 &mdash; first real consumer: IPConfiguration sc_publish <span class="pill ok">DONE</span></h3>
+<ul>
+  <li><code>src/IPConfiguration/sc_publish.c</code> &mdash; <code>sc_publish_ipv4()</code> / <code>sc_publish_ipv6()</code>.</li>
+  <li>On bound transition, IPConfiguration assembles the lease dictionary (IPv4/IPv6 addresses, router, DNS, lease time) and calls <code>SCDynamicStoreSetValue(store, "State:/Network/Service/&lt;UUID&gt;/IPv4", value)</code>.</li>
+  <li>Path proven end-to-end: <code>scnotifytest</code> subscribed to <code>State:/Network/Service/.*</code> wakes on IPConfiguration's publish.</li>
+</ul>
+</div>
+
+<div class="phase todo">
+<h3>Phase 4 &mdash; SCPreferences + Setup: keys <span class="pill info">PLANNED</span></h3>
+<ul>
+  <li>Wire <code>SCPreferencesCreate / Lock / Commit / Apply</code> on the libSystemConfiguration side.</li>
+  <li>configd-side: load <code>preferences.plist</code> on startup, populate <code>Setup:</code> keys; persist on commit; reload on SIGHUP.</li>
+  <li>Network-service enumeration becomes meaningful (<code>SCNetworkServiceCopyAll</code> returns real data).</li>
+</ul>
+</div>
+
+<div class="phase todo">
+<h3>Phase 5 &mdash; PF_ROUTE source + KernelEventMonitor-equivalent <span class="pill info">PLANNED</span></h3>
+<ul>
+  <li>configd-internal <code>DISPATCH_SOURCE_TYPE_READ</code> on PF_ROUTE.</li>
+  <li>Parse RTM_NEWADDR/DELADDR/IFINFO; update <code>State:/Network/Interface/&lt;iface&gt;/IPv{4,6}</code> + <code>/Link</code>.</li>
+  <li>Observation only &mdash; IPConfiguration still drives DHCP action via its own PF_ROUTE feed.</li>
+</ul>
+</div>
+
+<div class="phase todo">
+<h3>Phase 6 &mdash; scutil CLI <span class="pill info">PLANNED</span></h3>
+<ul>
+  <li>Port Apple's <code>scutil</code> as a libSystemConfiguration client.</li>
+  <li>Commands: <code>--show / --get / --set / --interfaces / --reload / --watch &lt;key&gt;</code>; interactive store-shell mode.</li>
+</ul>
+</div>
+
+<div class="phase todo">
+<h3>Phase 7 &mdash; SCNetworkReachability for apps <span class="pill info">PLANNED</span></h3>
+<ul>
+  <li>Port the public reachability API. Apps link <code>libSystemConfiguration.so</code>; reachability queries reach configd via MIG.</li>
+  <li>configd watches PF_ROUTE; reaches into the routing table; fires reachability callbacks on change.</li>
+</ul>
+</div>
+
+<div class="phase todo">
+<h3>Phase 8+ &mdash; optional, demand-driven <span class="pill info">FUTURE</span></h3>
+<ul>
+  <li>Captive-portal probing &mdash; when someone needs it.</li>
+  <li>Multiple-DNS-policy support (per-domain resolvers) &mdash; when someone needs it.</li>
+  <li>VPN integration &mdash; route + firewall coordination with VPN clients.</li>
+  <li><s>WLAN declarative config (<code>preferences.plist</code> credentials + per-iface wpa_supplicant management).</s> <strong>Reassigned to <code>wland</code></strong> &mdash; known networks live in SCPreferences and <code>wland</code> is the sole author of wpa_supplicant's network blocks. Not configd's. See the <a href="nextbsd-wlan-plan.html#phases">WLAN plan, Phase 3</a>.</li>
+  <li>Plugin loader, if it turns out the standalone-daemons-talk-over-Mach shape doesn't scale.</li>
+</ul>
+</div>
+
+<h2 id="open">15. Open questions</h2>
+
+<div class="resolved">
+<strong>RESOLVED &mdash; Daemon name.</strong> <code>configd</code> &mdash; Apple-canonical, retained. The sibling <code>freebsd-launchd</code> (AF_UNIX/DO) repo renames to <code>netconfigd</code>; this Mach-IPC repo does not.
+</div>
+
+<div class="resolved">
+<strong>RESOLVED &mdash; IPC mechanism.</strong> Mach IPC. <code>configd.defs</code> retained as the MIG IDL verbatim. mig-generated server stubs in configd; mig-generated client stubs in <code>libSystemConfiguration.so</code>. Service published as <code>com.apple.SystemConfiguration</code> via <code>bootstrap_check_in</code>.
+</div>
+
+<div class="resolved">
+<strong>RESOLVED &mdash; Lease publish surface.</strong> IPConfiguration calls <code>SCDynamicStoreSetValue</code> on <code>State:/Network/Service/&lt;UUID&gt;/IPv{4,6}</code> via <code>libSystemConfiguration</code> &mdash; the Apple-canonical key shape, the Apple-canonical API. Shipped at <code>src/IPConfiguration/sc_publish.c</code>.
+</div>
+
+<div class="resolved">
+<strong>RESOLVED &mdash; DHCP/RA/ARP daemon.</strong> In-tree <code>IPConfiguration</code> (Apple source lineage), running as a standalone daemon &mdash; not loaded as a configd plugin. RFC 5227 ARP probe/announce shipped in iter 6.
+</div>
+
+<div class="resolved">
+<strong>RESOLVED &mdash; Repo layout.</strong> <code>src/configd/</code> and <code>src/libSystemConfiguration/</code> under <code>freebsd-launchd-mach</code>.
+</div>
+
+<div class="resolved">
+<strong>RESOLVED &mdash; Daemon binary path.</strong> <code>/usr/libexec/configd</code> for the daemon (matches Apple); <code>/usr/sbin/scutil</code> for the CLI client (when ported).
+</div>
+
+<div class="open-q">
+<strong>Q. <code>/etc/resolv.conf</code> ownership.</strong> Apple's IPMonitor plugin watches DNS-related State: keys and writes resolv.conf via merging policy. Port that logic into configd directly when multi-service DNS composition matters (today, single-service IPConfiguration writes resolv.conf via its own path).
+</div>
+
+<div class="open-q">
+<strong>Q. SCPreferences storage format.</strong> Apple's <code>preferences.plist</code> ships a specific shape (NetworkServices / Sets / System dicts, version key). Port the schema as-is or simplify for the FreeBSD-only world? Lean Apple-as-is for ABI affinity with macOS scutil dumps.
+</div>
+
+<div class="open-q">
+<strong>Q. WLAN credentials storage.</strong> <em>Moved &mdash; this is now <a href="nextbsd-wlan-plan.html#openq">WLAN plan Q2</a>, and it is <code>wland</code>'s question, not configd's.</em> Short version: plaintext either way, because there is no keychain and none is started. The only choice is <em>which</em> plaintext file &mdash; <code>/etc/wpa_supplicant.conf</code> (0600, root) or a root-owned <code>preferences.plist</code> under <code>/Local/Library/Preferences/SystemConfiguration</code>. Not a security difference, only an architectural one. A real keychain is greenfield and its own multi-month project (<a href="freebsd-keychain-port-plan.html">Keychain plan</a>).
+</div>
+
+<div class="open-q">
+<strong>Q. Plugin loader, ever?</strong> Currently every Apple "plugin" is either rolled into configd or out as a standalone daemon. If a third party wants to extend configd at runtime without modifying it, the plugin loader becomes interesting. Until then, deferred.
+</div>
+
+<div class="open-q">
+<strong>Q. nwi (network-information) component.</strong> Apple ships <code>libsystem_network</code>'s nwi as a small read-only mmaped state file that configd writes. Useful for fast in-process reachability heuristics without IPC. Port when an in-process consumer cares.
+</div>
+
+<h2 id="refs">16. References</h2>
+
+<ul>
+  <li>This repo: <a href="https://github.com/pkgdemon/freebsd-launchd-mach">github.com/pkgdemon/freebsd-launchd-mach</a>.</li>
+  <li>Apple <code>configd</code> source: <a href="https://github.com/apple-oss-distributions/configd">github.com/apple-oss-distributions/configd</a> (latest tag <code>configd-963.270.3</code>).</li>
+  <li>Apple <code>IPConfiguration</code> source: <a href="https://github.com/apple-oss-distributions/bootp">github.com/apple-oss-distributions/bootp</a> (IPConfiguration lives under <code>bootp/IPConfiguration.bproj/</code>).</li>
+  <li>Sibling repo (AF_UNIX/DO track): <a href="https://github.com/pkgdemon/freebsd-launchd">github.com/pkgdemon/freebsd-launchd</a> &mdash; same upstream port effort, different architecture; daemon renamed <code>netconfigd</code> there.</li>
+  <li>wpa_supplicant: <a href="https://w1.fi/wpa_supplicant/">w1.fi/wpa_supplicant/</a>. FreeBSD port at <code>security/wpa_supplicant</code>.</li>
+  <li>Companion plans: <a href="freebsd-launchd-plan.html">freebsd-launchd-mach</a> (the parent repo), <a href="freebsd-hardware-registry-iokit-plan.html">hwregd</a> (the hardware-registry daemon backing <code>libIOKit</code>).</li>
+  <li>FreeBSD <code>route(4)</code> / <code>PF_ROUTE</code>: <code>man 4 route</code>.</li>
+  <li>MIG IDL: <code>man 1 mig</code>; the regenerator runs at build-time from <code>src/configd/config.defs</code>.</li>
+</ul>
+
+<hr>
+
+<p class="footnote">
+<strong>Revision history.</strong>
+<br>
+<strong>2026-05-23</strong> &mdash; Architecture pivot: refactored from the sibling AF_UNIX/DO track to <code>freebsd-launchd-mach</code> (v2, the Mach-IPC track). Daemon name restored to Apple-canonical <code>configd</code>; <code>configd.defs</code> MIG IDL retained verbatim; Mach service <code>com.apple.SystemConfiguration</code> registered via <code>bootstrap_check_in</code>; <code>libSystemConfiguration.so</code> client framework hosts the mig-generated client stubs. <strong>PARTIALLY SHIPPED</strong>: the core SCDynamicStore RPC surface is live and consumed by IPConfiguration's <code>sc_publish_ipv4</code> / <code>sc_publish_ipv6</code>. SCPreferences, PF_ROUTE source, scutil CLI, and SCNetworkReachability are planned in subsequent iterations. The plugin loader is deferred indefinitely; IPConfiguration runs as a standalone daemon and reaches configd over Mach RPC for <code>State:/Network/Service/&lt;UUID&gt;/IPv{4,6}</code> publishes.
+<br>
+<strong>(previous)</strong> &mdash; Original plan filed against the sibling <code>freebsd-launchd</code> (AF_UNIX/DO) track; daemon renamed <code>netconfigd</code>; service-to-service IPC via GNUstep Distributed Objects over AF_UNIX. Superseded for this repo.
+</p>
+
+</body>
+</html>

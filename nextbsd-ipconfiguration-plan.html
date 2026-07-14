@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD IPConfiguration — porting plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.objc { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  table.compact td, table.compact th { padding: .35rem .55rem; font-size: .88rem; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .phase.todo { border-left: 4px solid var(--accent2); }
+  .phase.future { border-left: 4px solid var(--warn); }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#goal">Goal</a>
+  <a href="#source">Source</a>
+  <a href="#arch">Architecture</a>
+  <a href="#files">Shipped files</a>
+  <a href="#ipc">MIG IDL</a>
+  <a href="#deps">Apple deps</a>
+  <a href="#hard">Hard parts</a>
+  <a href="#dhcpcd">vs dhcpcd</a>
+  <a href="#decisions">Decisions</a>
+  <a href="#phases">Iters</a>
+  <a href="#future">Future iters</a>
+  <a href="#open">Open questions</a>
+</nav>
+
+<h1>NextBSD IPConfiguration — porting plan <span class="pill info">Filed under: freebsd-launchd-mach (v2) effort</span> <span class="pill ok">SHIPPED through iter 8</span></h1>
+<p class="subtitle">A phased plan to replace dhcpcd in this project with a port of Apple's <code>IPConfiguration</code> daemon. Targets <code>freebsd-launchd-mach</code> (v2) — the Mach IPC + libxpc + libdispatch track. <strong>Shipped through iter 8</strong> as a standalone Mach daemon at <code>src/IPConfiguration/</code>, NOT as a configd plugin (this repo's configd has no plugin loader). DHCPv4 INIT→BOUND, RFC 5227 ARP probe, IPv6 RA/SLAAC, SCDynamicStore publish, MIG service worker, and the Apple-shape <code>ipconfig(8)</code> CLI are live.</p>
+
+<div class="resolved">
+<strong>Revision 2026-05-23 — architecture pivot + status update.</strong> This plan originally targeted the sibling <code>freebsd-launchd</code> (AF_UNIX/DO) repo as a <code>netconfigd</code> plugin. Refactored 2026-05-23 to target <code>freebsd-launchd-mach</code> (v2): standalone Mach daemon (this repo's configd has no plugin loader), Mach service <code>com.apple.IPConfiguration</code>, <code>ipconfig.defs</code> MIG IDL retained. <strong>SHIPPED through iter 8</strong> — PRs #42–#51 merged covering daemon skeleton, full DHCPv4 INIT→BOUND, ARP probe (RFC 5227), IPv6 RA/SLAAC, SCDynamicStore publish, MIG service worker thread, <code>IPCONFIGD_FAST_LEASE</code> renewal gate, and the Apple-shape <code>ipconfig(8)</code> CLI at <code>/usr/sbin/ipconfig</code>. iter 7b (DHCPv6 stateful) deferred indefinitely — SLAAC covers the common case; Apple's <code>DHCPv6Client.c</code> is 3717 LOC with no CI validation path (QEMU SLIRP doesn't run a DHCPv6 server). Future iters grow the MIG surface as real consumers need it (Apple's <code>ipconfig.defs</code> has 21+ routines; this repo has 2).
+</div>
+
+<section id="tldr" class="tldr">
+  <h3>TL;DR</h3>
+  <ul>
+    <li><strong>What it is:</strong> Apple's DHCPv4 + IPv4LL + RA/SLAAC client (and, in Apple's original, DHCPv6 stateful). In this repo it runs as a <strong>standalone Mach daemon</strong> at <code>/usr/sbin/ipconfigd</code>, NOT a configd plugin — this repo's configd has no plugin loader. Source upstream lives in the <code>apple-oss-distributions/bootp</code> repo (currently bootp-534.100.6) under <code>IPConfiguration.bproj/</code>.</li>
+    <li><strong>Why we wanted it:</strong> architectural symmetry with macOS. Exposes the same <code>State:/Network/Service/&lt;UUID&gt;/IPv4</code> + <code>/IPv6</code> dynamic-store keys (via Mach RPC to configd at <code>com.apple.SystemConfiguration</code>) and an Apple-shape <code>ipconfig(8)</code> CLI. Removes the third-party dhcpcd port dependency. Pairs cleanly with the SCDynamicStore Mach-IPC track.</li>
+    <li><strong>Status — SHIPPED through iter 8:</strong> PRs #42–#51 merged in <code>freebsd-launchd-mach</code>. DHCPv4 INIT→BOUND, RFC 2131 RENEWING/REBINDING, RFC 5227 ARP probe + announce, IPv6 RA listener + EUI-64 SLAAC + <code>::/0</code> route, <code>State:/Network/Service/&lt;UUID&gt;/IPv4</code> + <code>/IPv6</code> publish, MIG service worker thread (2-routine surface so far), <code>IPCONFIGD_FAST_LEASE</code> CI gate, and an Apple-shape <code>ipconfig(8)</code> CLI with command-table dispatch.</li>
+    <li><strong>Architecture:</strong> standalone daemon registers Mach service <code>com.apple.IPConfiguration</code> (advertised via libxpc / launchd). IPC IDL is <code>ipconfig.defs</code> (this repo's slim subset — 2 routines today: <code>ipconfig_if_count</code> + <code>ipconfig_if_addr</code>; Apple's is 21+). Talks to configd over Mach RPC for SCDynamicStore publish. Subscribes to nothing yet — DHCP fires once at boot on the first non-loopback Ethernet. Hot-plug / multi-interface deferred.</li>
+    <li><strong>iter 7b (DHCPv6 stateful) deferred indefinitely.</strong> SLAAC covers the common case. Apple's <code>DHCPv6Client.c</code> is 3717 LOC with no CI validation path — QEMU SLIRP doesn't run a DHCPv6 server. Build when a real consumer needs it.</li>
+    <li><strong>The honest framing:</strong> protocol cores (DHCPv4 state machine, RA parser, options tables, BPF / ARP helpers) are clean portable C from Dieter Siegmund. Most of the iter 1–8 cost was the Mach service plumbing + SCDynamicStore-over-MIG glue + the lease/RA/ARP/CLI surface. Apple-shape achieved without a configd plugin loader.</li>
+    <li><strong>Licensing:</strong> Apple OSReference 2.0 (Apache-licensed Apple OSS sources). BSD-2-Clause for our new code. No Apple per-file headers on new files; preserve them on imported ones.</li>
+  </ul>
+</section>
+
+<h2 id="goal">1. Goal &amp; non-goals</h2>
+
+<h3>1.1 Goal</h3>
+<p>Replace dhcpcd in the <code>freebsd-launchd-mach</code> (v2) project with a port of Apple's IPConfiguration. End state (now reached through iter 8): a standalone Mach daemon <code>/usr/sbin/ipconfigd</code> owns DHCPv4 / RA-SLAAC / ARP processing for the first non-loopback Ethernet; state lands in this repo's SCDynamicStore (via Mach RPC to configd at <code>com.apple.SystemConfiguration</code>) under the canonical Apple key namespace (<code>State:/Network/Service/&lt;UUID&gt;/IPv4</code> + <code>/IPv6</code>); client tools (<code>scutil</code>, <code>ipconfig(8)</code>) reach the daemon via MIG over <code>mach_msg</code> on service name <code>com.apple.IPConfiguration</code>.</p>
+
+<h3>1.2 Non-goals</h3>
+<ul>
+  <li><strong>No configd-plugin model.</strong> This repo's configd has no plugin loader. IPConfiguration is a separate Mach daemon, not a bundle loaded into configd's address space. The two daemons talk Mach RPC.</li>
+  <li><strong>No AF_UNIX / Distributed Objects.</strong> The sibling <code>freebsd-launchd</code> repo uses that pattern; this is the Mach-IPC track. <code>ipconfig.defs</code> MIG IDL is retained (this repo's slim 2-routine subset).</li>
+  <li><strong>No IOKit power-management integration.</strong> Apple's <code>IORegisterForSystemPower</code> + <code>IOPMConnectionCreate</code> + scheduled wake events have no FreeBSD equivalent. Live without sleep-coordinated lease renewal.</li>
+  <li><strong>No <code>Apple80211</code>.</strong> WLAN association state arrives as the <code>State:/Network/Interface/&lt;iface&gt;/AirPort</code> key published by <code>wland</code> &mdash; <code>ipconfigd</code> does <em>not</em> read <code>wpa_supplicant</code>'s control socket itself. Current iters target Ethernet only; the DHCP gate that consumes <code>AirPort{Authenticated}</code> is specced in the <a href="nextbsd-wlan-plan.html#blockers">WLAN plan &sect;1.4</a>.</li>
+  <li><strong>No <code>SymptomReporter</code> / <code>IPv6AWDReport</code>.</strong> Apple wireless diagnostics telemetry — deleted on import.</li>
+  <li><strong>No <code>MobileGestalt</code>.</strong> One call site in <code>dhcp.c</code>; stub returns "FreeBSD".</li>
+  <li><strong>No NetBoot / BSDP.</strong> Out of scope.</li>
+  <li><strong>No <code>EAPOLController</code>.</strong> 802.1X auth coordination skipped; if needed later, route through wpa_supplicant.</li>
+  <li><strong>No CLAT46 / L4S</strong> ioctls. Darwin-private; <code>#ifdef</code>'d out.</li>
+  <li><strong>No DHCPv6 stateful (iter 7b deferred indefinitely).</strong> SLAAC covers the common case; QEMU SLIRP doesn't run a DHCPv6 server so there's no CI validation path. Build when a real consumer needs it.</li>
+</ul>
+
+<h2 id="source">2. Apple source overview (reference)</h2>
+
+<p>For context: Apple's <code>bootp</code> repo total scope. This repo's port is much smaller — a fresh-written thin daemon at <code>src/IPConfiguration/</code> that draws on Apple's protocol cores rather than re-shaping Apple's plugin tree wholesale.</p>
+
+<table class="compact">
+<thead><tr><th>Component</th><th>Apple LOC</th><th>This repo's approach</th></tr></thead>
+<tbody>
+<tr><td><code>IPConfiguration.bproj/</code> (Apple's daemon-as-plugin)</td><td>39,722</td><td>Fresh thin standalone daemon; protocol cores referenced as Apple-shape oracles.</td></tr>
+<tr><td><code>bootplib/</code> (shared protocol library)</td><td>26,997</td><td>Reference for option tables + RA parser + DHCP packet structs.</td></tr>
+<tr><td><code>IPConfiguration_framework/</code> (Mach client API library)</td><td>5,228</td><td>Not built. CLI talks MIG directly via stubs from <code>ipconfig.defs</code>.</td></tr>
+<tr><td><code>IPConfigurationHelper/</code> (XPC helper for PvD HTTPS fetch)</td><td>1,250</td><td>Not built. PvD deferred indefinitely.</td></tr>
+<tr><td><code>ipconfig.tproj/</code> (CLI tool)</td><td>1,630</td><td>Fresh Apple-shape <code>ipconfig(8)</code> in iter 8 (<code>ipconfig.c</code>).</td></tr>
+<tr><td><strong>Total Apple scope</strong></td><td><strong>~74,827</strong></td><td>This repo: a few thousand LOC of fresh-written daemon code.</td></tr>
+<tr><td>Out-of-scope siblings (<code>bootpd</code>, <code>bsdpd</code>, <code>dhcp6d</code>, <code>rtadvd</code>, <code>BSDPClient</code>, <code>netbootdisk</code>, <code>tests</code>)</td><td>~24,000</td><td>Not imported.</td></tr>
+</tbody>
+</table>
+
+<p><strong>Largest single Apple files</strong> (for orientation):</p>
+<ul>
+  <li><code>IPConfiguration.bproj/ipconfigd.c</code> — 10,312 LOC. Plugin shell + IFState + SCDynamicStore + power events + service lifecycle. <strong>Not ported wholesale</strong>; this repo's <code>ipconfigd.c</code> is fresh-written and much smaller.</li>
+  <li><code>IPConfiguration.bproj/dhcp.c</code> — 4,660 LOC. DHCPv4 state machine; protocol-core reference for our <code>dhcp_discover.c</code>.</li>
+  <li><code>IPConfiguration.bproj/DHCPv6Client.c</code> — 3,717 LOC. <strong>Not built — iter 7b deferred indefinitely.</strong></li>
+  <li><code>bootplib/RouterAdvertisement.c</code> — 1,788 LOC. RA parser/builder; reference for our <code>ra_listen.c</code>.</li>
+  <li><code>bootplib/dhcp_options.c</code> — 1,716 LOC. 113 known DHCPv4 options; option-table reference.</li>
+  <li><code>bootplib/DHCPv6Options.c</code> — 1,637 LOC. DHCPv6 options — not built (iter 7b deferred).</li>
+  <li><code>bootplib/interfaces.c</code> — 1,589 LOC. Uses <code>getifaddrs(3)</code> + <code>SIOCGIFMEDIA</code>; FreeBSD-portable.</li>
+</ul>
+
+<h2 id="arch">3. Architecture (shipped)</h2>
+
+<div class="ascii-diagram">                          +------------------------------------+
+                          |   scutil / ipconfig(8) / consumers  |
+                          +------------------+-----------------+
+                                             | MIG over mach_msg
+                                             | (com.apple.IPConfiguration)
+                                             v
++--------------------+              +--------+----------+
+|  configd           |  Mach RPC    |  ipconfigd        |
+|  (SCDynamicStore)  |&lt;------------>|  /usr/sbin/       |
+|  com.apple.        |  publish     |   ipconfigd       |
+|  SystemConfig.     |  IPv4/IPv6   |                   |
++--------------------+              |  - dhcp_discover  |
+                                    |  - apply_lease    |
++--------------------+   BPF /      |  - apply_lease_v6 |
+|  kernel            |   PF_ROUTE / |  - arp_probe      |
+|  (BPF, route,      |&lt;------------>|  - ra_listen      |
+|   ifconfig, SLAAC) |   ICMPv6 RA  |  - lease_loop     |
++--------------------+   sockets    |  - sc_publish     |
+                                    |  - mach_service   |
+                                    |  - bound_state    |
+                                    +-------------------+</div>
+
+<p>Standalone Mach daemon (NOT a configd plugin — this repo's configd has no plugin loader). The two daemons live in separate address spaces and communicate exclusively over Mach RPC. <code>ipconfigd</code> registers Mach service <code>com.apple.IPConfiguration</code>; it publishes to <code>com.apple.SystemConfiguration</code> via <code>sc_publish.c</code>. Subscribes to nothing yet — DHCP fires once at boot on the first non-loopback Ethernet. Hot-plug / multi-interface deferred.</p>
+
+<h2 id="files">4. Shipped files (file-by-file)</h2>
+
+<p>Source tree lives at <code>src/IPConfiguration/</code> in the <code>freebsd-launchd-mach</code> repo. Translation units below are what's on disk through iter 8 (PRs #42–#51).</p>
+
+<table class="compact">
+<thead>
+<tr><th>File</th><th>Role</th><th>Iter</th></tr>
+</thead>
+<tbody>
+<tr><td><code>src/IPConfiguration/ipconfigd.c</code></td><td>Main daemon loop. Wires DHCPv4 + RA + lease loop. Boot-time first-Ethernet selection.</td><td>1 → 7a</td></tr>
+<tr><td><code>src/IPConfiguration/dhcp_discover.c</code></td><td>DHCPv4 state machine (DISCOVER / OFFER / REQUEST / ACK) over BPF.</td><td>2 → 3</td></tr>
+<tr><td><code>src/IPConfiguration/apply_lease.c</code></td><td>SIOCAIFADDR (assign IPv4 address) + RTM_ADD (default route).</td><td>3</td></tr>
+<tr><td><code>src/IPConfiguration/apply_lease_v6.c</code></td><td>EUI-64 SLAAC + IFDISABLED clear + SIOCAIFADDR_IN6 + RTM_ADD <code>::/0</code>.</td><td>7a</td></tr>
+<tr><td><code>src/IPConfiguration/arp_probe.c</code></td><td>RFC 5227 ARP probe + announce over BPF. <code>BIOCGBLEN = 4096</code> rxbuf.</td><td>6</td></tr>
+<tr><td><code>src/IPConfiguration/ra_listen.c</code></td><td>ICMPv6 Router Advertisement listener (RFC 4861).</td><td>7a</td></tr>
+<tr><td><code>src/IPConfiguration/sc_publish.c</code></td><td>SCDynamicStore publish over Mach RPC (CF translation unit) — <code>State:/Network/Service/&lt;UUID&gt;/IPv4</code> + <code>/IPv6</code>.</td><td>4, 7a</td></tr>
+<tr><td><code>src/IPConfiguration/mach_service.c</code></td><td>MIG service worker thread; bootstrap_check_in + mach_msg_server loop on <code>com.apple.IPConfiguration</code>.</td><td>5a</td></tr>
+<tr><td><code>src/IPConfiguration/lease_loop.c</code></td><td>RFC 2131 RENEWING/REBINDING timers; <code>IPCONFIGD_FAST_LEASE</code> env var collapses the T1/T2 wait for CI.</td><td>4, 5b</td></tr>
+<tr><td><code>src/IPConfiguration/bound_state.c</code></td><td>Shared lease state readable by the MIG worker (ifname / IP / lease metadata).</td><td>5a</td></tr>
+<tr><td><code>src/IPConfiguration/ipconfig.c</code></td><td><strong>iter 8 CLI</strong> at <code>/usr/sbin/ipconfig</code> — Apple-shape command-table dispatch with <code>getifaddr</code> + <code>ifcount</code> subcommands.</td><td>8</td></tr>
+<tr><td><code>src/IPConfiguration/ipconfig.defs</code></td><td>MIG IDL — this repo's slim subset. 2 routines today: <code>ipconfig_if_count</code> + <code>ipconfig_if_addr</code>. (Apple's has 21+.)</td><td>5a</td></tr>
+<tr><td><code>src/IPConfiguration/ipconfigtest.c</code></td><td>Test binary exercising the lease pipeline directly.</td><td>3+</td></tr>
+<tr><td><code>src/IPConfiguration/ipconfigrpctest.c</code></td><td>Test binary exercising the MIG client-server path end-to-end.</td><td>5a+</td></tr>
+</tbody>
+</table>
+
+<h3>4.1 Deleted on import (Apple subtrees out of scope)</h3>
+<ul>
+  <li>Whole subtrees: <code>bootpd.tproj</code>, <code>bootpdutil.tproj</code>, <code>bsdpc.tproj</code>, <code>BSDPClient/</code>, <code>dhcp6d.tproj/</code>, <code>DHCPServer/</code>, <code>netbootdisk/</code>, <code>rtadvd/</code> — all sibling daemons not in scope.</li>
+  <li><code>IPConfiguration.bproj/IPv6AWDReport.{h,m}</code> — Apple Wireless Diagnostics telemetry.</li>
+  <li><code>IPConfiguration.bproj/report_symptoms.{c,h}</code> — same.</li>
+  <li><code>IPConfiguration.bproj/Embedded-Info.plist</code> — iOS variant manifest.</li>
+  <li><code>IPConfiguration.bproj/wireless-entitlements.plist</code> — code-signing entitlements.</li>
+  <li><code>bootplib/ioregpath.{c,h}</code> — IORegistry walker, only used for NetBoot.</li>
+  <li><code>bootplib/{nbimages,nbsp,bsdplib,macnc_options,netinfo,subnets}.{c,h}</code> — NetBoot internals.</li>
+  <li><code>SCTest-Swift/</code>, <code>tests/IPConfigurationTest/</code> Xcode test schemes — replace with our own.</li>
+  <li>All Xcode project files (<code>*.xcodeproj</code>, <code>xcconfigs/</code>).</li>
+</ul>
+
+<h3>4.2 Fresh-written for this repo (Apple shapes, Mach-IPC track)</h3>
+
+<p>Rather than line-for-line reshape Apple's <code>ipconfigd.c</code> (10k LOC of plugin shell + power events + service lifecycle + Mach RPC server), iter 1–8 wrote a thin daemon from scratch that reuses Apple's protocol cores (DHCPv4 state machine, DHCP option tables, RA parser, ARP packet build) and replaces everything Darwin-specific with native FreeBSD code.</p>
+
+<table class="compact">
+<thead>
+<tr><th>File</th><th>Apple LOC (origin)</th><th>What changed in our port</th></tr>
+</thead>
+<tbody>
+<tr><td><code>mach_service.c</code></td><td><code>server.c</code> (654)</td><td>Fresh-written Mach service: <code>bootstrap_check_in</code> + worker thread running <code>mach_msg_server</code> on <code>com.apple.IPConfiguration</code>. No BSM audit-token entitlement check (no Apple entitlement system in this repo); identity gating deferred.</td></tr>
+<tr><td><code>ipconfigd.c</code></td><td><code>ipconfigd.c</code> (10,312)</td><td>Fresh thin daemon main loop. First-Ethernet selection + DHCPv4 launch + RA listener thread + lease loop. Power-event handlers (<code>IORegisterForSystemPower</code>) dropped entirely. No plugin shell — runs as a regular launchd-managed daemon at <code>/usr/sbin/ipconfigd</code>.</td></tr>
+<tr><td><code>sc_publish.c</code></td><td>(scattered in <code>ipconfigd.c</code>)</td><td>Fresh CF translation unit. Builds the IPv4 / IPv6 dictionaries and publishes via Mach RPC to <code>com.apple.SystemConfiguration</code>. Avoids the plugin model entirely.</td></tr>
+<tr><td><code>ipconfig.c</code></td><td><code>ipconfig.tproj/client.c</code> (1,630)</td><td>Fresh Apple-shape CLI. Command-table dispatch (<code>getifaddr</code>, <code>ifcount</code>) calling the MIG client stubs generated from <code>ipconfig.defs</code>. Same Mach-IPC shape as Apple — different (smaller) routine set.</td></tr>
+<tr><td><code>ipconfig.defs</code></td><td><code>bootplib/ipconfig.defs</code> (196, 21+ routines)</td><td>Slim 2-routine subset: <code>ipconfig_if_count</code> + <code>ipconfig_if_addr</code>. Grows as real consumers arrive.</td></tr>
+<tr><td><code>ifutil.c</code> (Darwin-specific ioctls)</td><td><code>ifutil.c</code> (2,211)</td><td>Replaced by direct ioctl calls in <code>apply_lease.c</code> + <code>apply_lease_v6.c</code>. <code>SIOCAUTOADDR</code> / <code>SIOCSIFL4S</code> / <code>SIOCCLAT46_*</code> / <code>SIOCPROTOATTACH</code> not used. CLAT46 + L4S features unavailable by design.</td></tr>
+<tr><td><code>HostUUID</code></td><td><code>HostUUID.c</code> (56)</td><td>Use <code>sysctlbyname("kern.hostuuid", ...)</code>. ISO first-boot seeds <code>kern.hostuuid</code> if blank.</td></tr>
+<tr><td><code>IPHXPCServer.m</code> + <code>IPHPvDInfoRequestServer.m</code> (PvD helper)</td><td>1,167</td><td>Not built. PvD support deferred indefinitely; RFC 8801 deployment is rare.</td></tr>
+<tr><td><code>os_log</code> wiring</td><td>throughout</td><td>Mapped to <code>syslog(3)</code>, same shape as the launchd-mach <code>mylog.h</code>.</td></tr>
+</tbody>
+</table>
+
+<h3>4.3 Apple protocol-core inventory (reference)</h3>
+
+<p>Files in Apple's tree that would be portable verbatim (or near) on a future expansion. Today this repo's fresh-written daemon uses these as <em>reference oracles</em> rather than importing them directly — the iter 1–8 codebase is much smaller. Listed here for orientation when growing the surface in future iters.</p>
+
+<table class="compact">
+<thead>
+<tr><th>File</th><th>Apple LOC</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>IPConfiguration.bproj/dhcp.c</code></td><td>4,660</td><td>DHCPv4 state machine. One <code>MobileGestalt</code> call at line 447 to stub.</td></tr>
+<tr><td><code>IPConfiguration.bproj/DHCPv6Client.c</code></td><td>3,717</td><td>DHCPv6 state machine. RFC 8415 retry constants in <code>bootplib/DHCPv6.h:79-94</code> — no source changes.</td></tr>
+<tr><td><code>IPConfiguration.bproj/arp_session.c</code></td><td>2,505</td><td>ARP probe/announce/conflict via BPF. <code>bpflib</code> is BSD-portable.</td></tr>
+<tr><td><code>IPConfiguration.bproj/rtadv.c</code></td><td>2,133</td><td>RA consumer; PIO/RDNSS/DNSSL/PvD state.</td></tr>
+<tr><td><code>IPConfiguration.bproj/bootp_session.c</code></td><td>827</td><td>Raw IP/UDP DHCPv4 socket on port 68.</td></tr>
+<tr><td><code>IPConfiguration.bproj/RTADVSocket.c</code></td><td>801</td><td>ICMPv6 RS sender / RA receiver via <code>&lt;netinet6/nd6.h&gt;</code>.</td></tr>
+<tr><td><code>IPConfiguration.bproj/CGA.c</code></td><td>711</td><td>RFC 3972 Cryptographically Generated Addresses.</td></tr>
+<tr><td><code>IPConfiguration.bproj/DHCPv6Socket.c</code></td><td>685</td><td>UDP socket on port 546.</td></tr>
+<tr><td><code>IPConfiguration.bproj/linklocal.c</code></td><td>577</td><td>IPv4LL (RFC 3927).</td></tr>
+<tr><td><code>IPConfiguration.bproj/manual.c</code> + <code>manual_v6.c</code></td><td>742</td><td>Static IP config method.</td></tr>
+<tr><td><code>IPConfiguration.bproj/DHCPDUIDIAID.c</code></td><td>371</td><td>DUID/IAID generation, persisted to <code>DUID_IA.plist</code>.</td></tr>
+<tr><td><code>IPConfiguration.bproj/timer.c</code> + <code>FDSet.c</code></td><td>494</td><td>libdispatch-source timers + FD wrappers.</td></tr>
+<tr><td><code>bootplib/RouterAdvertisement.c</code></td><td>1,788</td><td>RA parser/builder.</td></tr>
+<tr><td><code>bootplib/dhcp_options.c</code></td><td>1,716</td><td>DHCPv4 option parse/build.</td></tr>
+<tr><td><code>bootplib/DHCPv6Options.c</code></td><td>1,637</td><td>DHCPv6 option parse/build.</td></tr>
+<tr><td><code>bootplib/DNSEncryptedServers.c</code> + <code>DNSNameList.c</code></td><td>2,868</td><td>RFC 1035 DNS-name compression + DDR.</td></tr>
+<tr><td><code>bootplib/interfaces.c</code></td><td>1,589</td><td><code>getifaddrs</code> + <code>SIOCGIFMEDIA</code>; few Darwin-only <code>IFEF_</code>/<code>IFXNAMSIZ</code> usages.</td></tr>
+<tr><td><code>bootplib/cfutil.c</code></td><td>1,068</td><td>CFPropertyList helpers — corebase already provides.</td></tr>
+<tr><td><code>bootplib/IPv4ClasslessRoute.c</code></td><td>651</td><td>Option 121 parser.</td></tr>
+<tr><td><code>bootplib/NICache.c</code></td><td>646</td><td>DHCPv4 binding cache.</td></tr>
+<tr><td><code>bootplib/arp.c</code></td><td>633</td><td>ARP packet build/parse.</td></tr>
+<tr><td><code>bootplib/{ptrlist,dynarray,util}.c</code></td><td>~700</td><td>Utility types.</td></tr>
+<tr><td><code>bootplib/DHCPDUID.c</code></td><td>283</td><td>DUID factory.</td></tr>
+<tr><td><code>bootplib/inetroute.c</code></td><td>263</td><td>Route table reader.</td></tr>
+<tr><td><code>bootplib/udp_transmit.c</code></td><td>245</td><td>Raw UDP send.</td></tr>
+<tr><td><code>bootplib/bpflib.c</code></td><td>204</td><td>BPF socket open/filter.</td></tr>
+</tbody>
+</table>
+
+<h2 id="ipc">5. MIG IDL (Mach-IPC track)</h2>
+
+<p>Apple's <code>bootplib/ipconfig.defs</code> is 196 LOC, 21+ routines. This repo retains the same MIG-over-mach_msg shape but ships a <strong>slim 2-routine subset</strong> as <code>src/IPConfiguration/ipconfig.defs</code>. The MIG-generated stubs link into both the daemon (<code>mach_service.c</code>) and the CLI (<code>ipconfig.c</code>).</p>
+
+<pre class="objc"><code>subsystem ipconfig 17000;
+
+#include &lt;mach/std_types.defs&gt;
+#include &lt;mach/mach_types.defs&gt;
+
+/* Iter 5a — 2 routines. */
+routine ipconfig_if_count(
+        server          : mach_port_t;
+    out  count           : int);
+
+routine ipconfig_if_addr(
+        server          : mach_port_t;
+     in  ifname          : (string_t);
+    out  ipv4            : (string_t);
+    out  result          : int);</code></pre>
+
+<p>Future routines (Apple's full surface) grow the IDL as real consumers arrive — see §12 <a href="#future">Future iters</a>. Caller-identity gating on these MIG entry points is currently TODO; no BSM audit-token / Apple entitlement system exists in this repo. Production hardening would gate on the Mach audit-token PID + uid via <code>set_security_token</code> already used elsewhere in the launchd-mach kernel module (cf. fork_bsport).</p>
+
+<h2 id="kev">6. Kernel events: publish-only today</h2>
+
+<p>Apple's <code>ipconfigd</code> subscribes to <strong>seven</strong> SCDynamicStore key suffixes (<code>kSCEntNetLink</code>, <code>kSCEntNetAirPort</code>, <code>kSCEntNetRefreshConfiguration</code>, <code>kSCEntNetIPv6</code>, <code>kSCEntNetIPv4ARPCollision</code>, <code>kSCEntNetIPv6RouterExpired</code>, <code>kSCEntNetNAT64</code>) translated from kernel events by the sibling <code>KernelEventMonitor.bundle</code> configd plugin. This repo's <code>ipconfigd</code> currently subscribes to <strong>none of them</strong> — it fires DHCPv4 once at boot on the first non-loopback Ethernet interface, runs the ARP probe, then publishes the resulting lease.</p>
+
+<p>Concretely, today (iter 8):</p>
+<ul>
+  <li><strong>Publishes:</strong> <code>State:/Network/Service/&lt;UUID&gt;/IPv4</code> + <code>/IPv6</code> over Mach RPC to <code>com.apple.SystemConfiguration</code> via <code>sc_publish.c</code>.</li>
+  <li><strong>Subscribes:</strong> nothing. No link up/down handling, no ARP-collision handling, no router-lifetime-expiry handling, no NAT64 handling, no WLAN association events.</li>
+  <li><strong>Lease renewal:</strong> driven by the timer in <code>lease_loop.c</code> (RFC 2131 T1/T2), not by external events. <code>IPCONFIGD_FAST_LEASE=1</code> collapses the wait for CI.</li>
+</ul>
+
+<p>Hot-plug, multi-interface, link-flap handling, and ARP-collision recovery all wait on a KEM-equivalent. The future-iters plan calls for hwregd-driven subscription rather than a configd KEM plugin (this repo has no plugin loader). PF_ROUTE → publish mapping is the same on FreeBSD vs. Darwin:</p>
+
+<table class="compact">
+<thead><tr><th>FreeBSD PF_ROUTE message</th><th>SC key suffix (when wired)</th></tr></thead>
+<tbody>
+<tr><td><code>RTM_IFINFO</code> (link state from <code>if_data.ifi_link_state</code>)</td><td><code>State:/Network/Interface/&lt;bsd&gt;/Link</code></td></tr>
+<tr><td><code>RTM_NEWADDR</code> (AF_INET)</td><td><code>State:/Network/Interface/&lt;bsd&gt;/IPv4</code></td></tr>
+<tr><td><code>RTM_NEWADDR</code> (AF_INET6)</td><td><code>State:/Network/Interface/&lt;bsd&gt;/IPv6</code></td></tr>
+<tr><td><code>RTM_DELADDR</code></td><td>same keys, recomputed</td></tr>
+<tr><td><code>RTM_IFANNOUNCE</code> (IFAN_ARRIVAL/IFAN_DEPARTURE)</td><td>recompute interface list</td></tr>
+</tbody>
+</table>
+
+<h2 id="deps">7. Apple-specific dependencies</h2>
+
+<table class="compact">
+<thead>
+<tr><th>Dependency</th><th>Where</th><th>FreeBSD plan</th></tr>
+</thead>
+<tbody>
+<tr><td><code>IORegisterForSystemPower</code> + <code>IOPMConnectionCreate</code></td><td><code>ipconfigd.c:8469, 8530</code></td><td>Drop in v1; FreeBSD has no pmset-equivalent. Sleep-coordinated lease renewal not supported. Future: bridge from <code>devd</code> ACPI events.</td></tr>
+<tr><td><code>IOPMCopyScheduledPowerEvents</code> / <code>IOPMCancelScheduledPowerEvent</code></td><td><code>ipconfigd.c:1515, 1531</code></td><td>Drop. No scheduled-wake support.</td></tr>
+<tr><td><code>gethostuuid(3)</code></td><td><code>HostUUID.c:52</code></td><td>Replace with <code>sysctlbyname("kern.hostuuid", ...)</code>. Caveat: ISO first-boot needs to seed <code>kern.hostuuid</code> if blank.</td></tr>
+<tr><td><code>MGCopyAnswer(kMGQProductType, ...)</code></td><td><code>dhcp.c:447</code></td><td>One-line stub: return <code>"FreeBSD"</code>.</td></tr>
+<tr><td><code>IO80211/Apple80211API.h</code></td><td><code>wireless.c:178</code></td><td>Replace with wpa_supplicant control-socket consumer (<code>/var/run/wpa_supplicant/&lt;ifname&gt;</code>, <code>STATUS</code> command).</td></tr>
+<tr><td><code>SymptomReporter.framework</code></td><td><code>report_symptoms.c</code>, <code>DHCPv6Client.c:2692</code></td><td>Delete entirely. Apple wireless-diag telemetry.</td></tr>
+<tr><td><code>os_log</code> family</td><td>throughout</td><td>Map to <code>syslog(3)</code> via opaque handle wrapper. Keep call-sites unchanged.</td></tr>
+<tr><td><code>bsm/libbsm.h</code> <code>audit_token_to_au32()</code></td><td><code>server.c:79-115</code></td><td>Not used today; MIG entry points are ungated. Future: gate via Mach audit token <code>set_security_token</code> path already used in fork_bsport.</td></tr>
+<tr><td><code>IODeviceTree:/chosen</code> NetBoot blob</td><td><code>ipconfigd.c:2933</code> via <code>ioregpath.c</code></td><td>Deleted (NetBoot out of scope).</td></tr>
+<tr><td>Darwin-only ioctls (<code>SIOCAUTOADDR</code>, <code>SIOCSIFL4S</code>, <code>SIOCCLAT46_*</code>, <code>SIOCPROTOATTACH</code>)</td><td><code>ifutil.c</code> (~12 ioctls)</td><td>Not used in fresh-written <code>apply_lease.c</code> / <code>apply_lease_v6.c</code>. CLAT46 (464XLAT) and L4S features unavailable by design.</td></tr>
+<tr><td><code>SCPreferences</code> watcher</td><td>throughout for tunables file</td><td>Not used. <code>IPCONFIGD_FAST_LEASE</code> env var is the only tunable today; future tunables can ride configd SCPreferences once the watcher is exposed over Mach RPC.</td></tr>
+</tbody>
+</table>
+
+<h2 id="hard">8. The hard parts (what bit in iter 1–8)</h2>
+
+<ol>
+  <li><strong>BPF rxbuf sizing for ARP probe (iter 6).</strong> <code>arp_probe.c</code> initially undersized the BPF rxbuf; <code>BIOCGBLEN</code> returns 4096 by default. Fixed in commit e790468 — match the kernel's reported buffer size, not a guessed-smaller value. The exact failure mode was probe responses getting truncated silently.</li>
+  <li><strong>SCDynamicStore publish from a non-plugin daemon (iter 4).</strong> Apple's pattern is "publish from inside configd's address space." This repo's <code>sc_publish.c</code> instead bundles up the CF dictionary and ships it as a Mach RPC to configd's <code>com.apple.SystemConfiguration</code> port. CF lifetime + key-shape symmetry both had to be right or scutil would not see the value.</li>
+  <li><strong>MIG worker thread coexistence with the main DHCP loop (iter 5a).</strong> The worker runs <code>mach_msg_server</code> blocking on the registered port while the main thread runs select() over BPF / PF_ROUTE / RA sockets. Shared lease state lives in <code>bound_state.c</code> behind locks. Bootstrap_check_in must happen before the MIG service can be reached.</li>
+  <li><strong>RFC 2131 RENEWING/REBINDING timer accuracy under CI (iter 5b).</strong> Real T1/T2 timers are minutes-to-hours; CI must observe the renewal without sleeping for hours. Solution: <code>IPCONFIGD_FAST_LEASE=1</code> env var collapses T1/T2 to seconds; the IPCFG-RENEW-OK boot marker gates CI on observing one full renew cycle.</li>
+  <li><strong>SLAAC vs. FreeBSD's accept_rtadv flag (iter 7a).</strong> The kernel's <code>net.inet6.ip6.accept_rtadv=0</code> default plus per-iface IFDISABLED meant SLAAC silently did nothing until <code>apply_lease_v6.c</code> explicitly cleared IFDISABLED and called SIOCAIFADDR_IN6 with the EUI-64 we derived ourselves. RTM_ADD for <code>::/0</code> goes through the standard route socket.</li>
+  <li><strong>Apple-shape <code>ipconfig(8)</code> command-table dispatch (iter 8).</strong> The CLI is structurally identical to Apple's — a static table of <code>{name, handler, min_args, help}</code> rows that the main dispatcher matches against <code>argv[1]</code>. Built fresh against our MIG client stubs.</li>
+  <li><strong>DHCPv6 not built (iter 7b deferred indefinitely).</strong> Apple's <code>DHCPv6Client.c</code> is 3717 LOC. QEMU SLIRP doesn't run a DHCPv6 server, so there's no CI validation path. SLAAC covers home / SOHO / most enterprise. Build when a real consumer needs it.</li>
+  <li><strong>Caller-identity gating is currently TODO.</strong> MIG entry points are ungated. Production hardening should gate on the Mach audit-token PID + uid via the <code>set_security_token</code> path already in <code>mach.ko</code> (cf. fork_bsport).</li>
+  <li><strong>Subscribes to nothing yet.</strong> Hot-plug / link-flap / multi-interface / ARP-collision-recovery handling all wait on a kernel-event-subscription path. Future iters plan a hwregd-driven subscription (see <a href="#future">§12</a>).</li>
+</ol>
+
+<h2 id="dhcpv6-spam">9. The DHCPv6-spam-on-broken-networks problem</h2>
+
+<p>Confirmed: <strong>IPConfiguration has the same problem as dhcpcd.</strong> Both implement RFC 8415 verbatim. RFC 8415 says DHCPv6 Solicit has no max retransmission count (<code>SOL_MAX_RC = 0</code> = infinite). Both clients retry Solicit forever on networks where the router advertises the M-flag but the DHCPv6 server returns "No Addresses Available." Both cap at one Solicit per hour with random jitter (<code>SOL_MAX_RT = 3600</code>).</p>
+
+<p>Source citations:</p>
+<ul>
+  <li>IPConfiguration: <code>bootplib/DHCPv6.h:79-94</code> defines constants. <code>DHCPv6Client.c:2641-2691</code> sends Solicit with <code>DHCPv6ClientNextRetransmit(client, DHCPv6_SOL_TIMEOUT, DHCPv6_SOL_MAX_RT)</code>. No max-retry check.</li>
+  <li>dhcpcd: <code>src/dhcp6.h:120-121</code> defines same constants. <code>src/dhcp6.c:1723</code> sets <code>state->MRC = SOL_MAX_RC</code> (= 0).</li>
+</ul>
+
+<p>The Apple-vs-FreeBSD difference is purely <strong>logging policy</strong>:</p>
+<ul>
+  <li>Apple's <code>os_log</code> infrastructure suppresses <code>LOG_INFO</code> "Solicit Transmit (try=N)" messages from default user-visible streams. Packets still go out the wire; users don't see them.</li>
+  <li>FreeBSD's <code>syslog(3)</code> shows everything at default priority. dhcpcd at <code>LOG_NOTICE</code> for "DHCPv6 REPLY: No Addresses Available" → spammy.</li>
+</ul>
+
+<p>Knob to disable in IPConfiguration: <code>DHCPv6Enabled</code> boolean in <code>Embedded-Info.plist</code> (default <code>true</code> upstream). Per-service: set <code>kSCNetworkProtocolTypeIPv6 ConfigMethod</code> to <code>Manual</code> or <code>LinkLocal</code>.</p>
+
+<p><strong>Conclusion (iter 8 resolution):</strong> this repo's <code>ipconfigd</code> doesn't build the DHCPv6 stateful path at all (iter 7b deferred indefinitely). The spam problem is sidestepped entirely. SLAAC handles the IPv6 case. If someone later builds DHCPv6 here, they'll need to default it to off and require per-service opt-in.</p>
+
+<h2 id="dhcpcd">10. Comparison with dhcpcd</h2>
+
+<table class="compact">
+<thead>
+<tr><th>Feature</th><th>IPConfiguration</th><th>dhcpcd</th></tr>
+</thead>
+<tbody>
+<tr><td>DHCPv4 (RFC 2131)</td><td>✓</td><td>✓</td></tr>
+<tr><td>DHCPv4 rapid commit (RFC 4039)</td><td>✗</td><td>✗ (yes for v6)</td></tr>
+<tr><td>BOOTP (RFC 951)</td><td>✓ (separate ConfigMethod)</td><td>partial (frame layout shared)</td></tr>
+<tr><td>IPv4LL (RFC 3927)</td><td>✓ (<code>linklocal.c</code>)</td><td>✓ (<code>src/ipv4ll.c</code>)</td></tr>
+<tr><td>DHCPv6 stateful (RFC 8415)</td><td>✓</td><td>✓</td></tr>
+<tr><td>DHCPv6 IA_PD prefix delegation</td><td>✓</td><td>✓</td></tr>
+<tr><td>DHCPv6 Information-Request (RFC 3736)</td><td>✓</td><td>✓</td></tr>
+<tr><td>DHCPv6 Reconfigure (RFC 8415 §18)</td><td>partial (option codes, no full handler)</td><td>✓</td></tr>
+<tr><td>RS/RA (RFC 4861)</td><td>✓</td><td>✓</td></tr>
+<tr><td>RDNSS / DNSSL (RFC 8106)</td><td>✓</td><td>✓</td></tr>
+<tr><td>DHCP authentication (RFC 3118)</td><td>✗</td><td>✓</td></tr>
+<tr><td>Dynamic SOL_MAX_RT learning</td><td>✗ (fixed 3600)</td><td>✓</td></tr>
+<tr><td>Bonjour Sleep Proxy coordination</td><td>✓ (Apple-only)</td><td>✗</td></tr>
+<tr><td>IOKit power-management awareness</td><td>✓ (Apple-only)</td><td>✗</td></tr>
+<tr><td>CGA (RFC 3972)</td><td>✓</td><td>✗</td></tr>
+<tr><td>RFC 7217 stable IIDs</td><td>✗</td><td>✓ (<code>slaac private</code>)</td></tr>
+<tr><td>Captive portal URL option (RFC 8910)</td><td>✓ (DHCPv6 code 103)</td><td>partial</td></tr>
+<tr><td>Hook-script framework</td><td>✗ (publishes to SCDynamicStore instead)</td><td>✓ (<code>/lib/dhcpcd/dhcpcd-hooks/</code>)</td></tr>
+<tr><td><code>resolvconf(8)</code> integration</td><td>writes <code>/etc/resolv.conf</code> directly via configd plugin chain</td><td>✓ via hook</td></tr>
+<tr><td>WLAN association coordination</td><td>via Apple80211 (<code>wireless.c</code>)</td><td>via the <code>AirPort</code> key <code>wland</code> publishes (not a wpa_supplicant hook &mdash; NextBSD has no dhcpcd, so no such hook exists)</td></tr>
+<tr><td>Bridge / lagg / vlan layering</td><td>partial (Apple's interface model)</td><td>✓</td></tr>
+<tr><td>Per-iface profiles</td><td>✓ (each Service has its own UUID)</td><td>✓</td></tr>
+<tr><td>Privsep</td><td>✗ (runs in configd as root)</td><td>✓ (<code>src/privsep*.c</code>)</td></tr>
+<tr><td>Cross-platform</td><td>macOS only</td><td>NetBSD, FreeBSD, OpenBSD, DragonFly, Linux, Solaris, Haiku</td></tr>
+<tr><td>SCDynamicStore publication</td><td>✓ (canonical Apple keys)</td><td>✗ (lease file + hooks)</td></tr>
+<tr><td>Native ObjC client API (<code>IPConfigurationServiceCreate</code>)</td><td>✓</td><td>✗ (control socket protocol)</td></tr>
+</tbody>
+</table>
+
+<p><strong>What IPConfiguration gave us (iter 1–8):</strong> SCDynamicStore-keyed publication (cleaner integration with the rest of the Mach-IPC track), Apple-shape <code>ipconfig(8)</code> CLI with MIG-stub dispatch, RFC 5227 ARP probe + announce, IPv6 RA listener + SLAAC, RFC 2131 lease loop. CGA + Bonjour Sleep Proxy + IOKit power coordination remain Apple-only (no FreeBSD equivalents — out of scope by design).</p>
+
+<p><strong>What dhcpcd had that we gave up:</strong> RFC 3118 authentication (rare in real deployments), DHCPv6 Reconfigure handler (deferred — iter 7b), dynamic SOL_MAX_RT learning (DHCPv6 not built), hook-script ecosystem (replaced by SCDynamicStore publish), bridge/lagg/vlan layering recognition (deferred — multi-interface future iter), privilege separation (daemon runs as root under launchd), RFC 7217 stable IIDs (deferred), cross-platform maintenance burden shared with NetBSD/Linux/etc. (intentional — this is an Apple-track port).</p>
+
+<h2 id="decisions">11. Locked architectural decisions</h2>
+
+<table>
+<thead><tr><th>Decision</th><th>Choice</th></tr></thead>
+<tbody>
+<tr><td>Repo / track</td><td><code>freebsd-launchd-mach</code> (v2) — the Mach IPC + libxpc + libdispatch track. The sibling <code>freebsd-launchd</code> (AF_UNIX/DO) track is a separate effort.</td></tr>
+<tr><td>Deployment shape</td><td><strong>Standalone Mach daemon</strong> at <code>/usr/sbin/ipconfigd</code> — NOT a configd plugin. This repo's configd has no plugin loader; the two daemons live in separate address spaces.</td></tr>
+<tr><td>Source repo (Apple)</td><td><a href="https://github.com/apple-oss-distributions/bootp">apple-oss-distributions/bootp</a> at the latest tag (currently <code>bootp-534.100.6</code>). Used as reference + protocol-core source; the daemon shell is fresh-written.</td></tr>
+<tr><td>IPC</td><td><strong>MIG over <code>mach_msg</code></strong>. Mach service name <code>com.apple.IPConfiguration</code>. IDL <code>src/IPConfiguration/ipconfig.defs</code> — slim 2-routine subset (<code>ipconfig_if_count</code>, <code>ipconfig_if_addr</code>); grows as real consumers arrive.</td></tr>
+<tr><td>SCDynamicStore</td><td>Publish-only via Mach RPC to configd at <code>com.apple.SystemConfiguration</code>. Subscribes to nothing yet.</td></tr>
+<tr><td>Power management</td><td>Dropped. No FreeBSD equivalent for IOPMConnection. Sleep-coordinated renew unsupported.</td></tr>
+<tr><td>WLAN coordination</td><td>Not built in iter 1&ndash;8 (Ethernet only). Next: the ~70-LOC <code>sc_link_watch.c</code> gate requiring <code>Link{Active}</code> <em>and</em> <code>AirPort{Authenticated}</code>, key-absent meaning ready so wired NICs are untouched. <a href="nextbsd-wlan-plan.html#blockers">WLAN plan &sect;1.4</a>.</td></tr>
+<tr><td>EAPOL / 802.1X</td><td>Skipped. Route through wpa_supplicant if needed later.</td></tr>
+<tr><td>NetBoot / BSDP</td><td>Out of scope.</td></tr>
+<tr><td>Logging</td><td><code>syslog(3)</code> wrapper around the <code>os_log</code> macros, matching the launchd-mach <code>mylog.h</code>.</td></tr>
+<tr><td>Privsep</td><td>Runs as root under launchd. No separate sandboxing.</td></tr>
+<tr><td>License</td><td>BSD-2-Clause for new code; preserve Apple OSReference 2.0 (Apache) headers on imported files.</td></tr>
+<tr><td>DHCPv6 (iter 7b)</td><td><strong>Deferred indefinitely.</strong> SLAAC covers the common case; Apple's DHCPv6Client.c is 3717 LOC with no CI validation path (QEMU SLIRP doesn't run a DHCPv6 server). Build when a real consumer needs it.</td></tr>
+<tr><td>CLI shape</td><td>Apple-shape <code>ipconfig(8)</code> at <code>/usr/sbin/ipconfig</code>. Command-table dispatch with <code>getifaddr</code> + <code>ifcount</code> so far (iter 8).</td></tr>
+</tbody>
+</table>
+
+<h2 id="phases">12. Iter history (shipped)</h2>
+
+<div class="phase">
+<h3>Iter 1 — Daemon skeleton + Mach service registration <span class="pill ok">SHIPPED (PR #42)</span></h3>
+<ul>
+  <li>Created <code>src/IPConfiguration/</code> tree, <code>ipconfigd</code> binary, launchd plist.</li>
+  <li>Mach service <code>com.apple.IPConfiguration</code> registered via <code>bootstrap_check_in</code>.</li>
+  <li>No DHCP traffic yet; daemon idles on its registered port.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Iter 2 — DHCPDISCOVER/OFFER over BPF <span class="pill ok">SHIPPED (PR #43)</span></h3>
+<ul>
+  <li><code>dhcp_discover.c</code> opens BPF on the first non-loopback Ethernet, builds the DHCPv4 packet, sends DISCOVER, parses OFFER.</li>
+  <li>BPF filter program matches UDP 67/68 only.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Iter 3 — Full DHCPv4 INIT→BOUND <span class="pill ok">SHIPPED (PR #44)</span></h3>
+<ul>
+  <li>REQUEST + ACK; <code>apply_lease.c</code> calls SIOCAIFADDR and RTM_ADD for the default route.</li>
+  <li>Interface gets an IPv4 address from QEMU SLIRP; pings out.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Iter 4 — SCDynamicStore publish + RENEWING/REBINDING <span class="pill ok">SHIPPED (PR #45)</span></h3>
+<ul>
+  <li><code>sc_publish.c</code> ships the CF dictionary to configd over Mach RPC; <code>scutil</code> sees <code>State:/Network/Service/&lt;UUID&gt;/IPv4</code>.</li>
+  <li><code>lease_loop.c</code> implements RFC 2131 T1/T2 timers, sends RENEW unicast, falls back to REBIND broadcast.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Iter 5a — MIG service (worker thread, 2-routine surface) <span class="pill ok">SHIPPED (PR #46)</span></h3>
+<ul>
+  <li><code>ipconfig.defs</code> MIG IDL with <code>ipconfig_if_count</code> + <code>ipconfig_if_addr</code>.</li>
+  <li><code>mach_service.c</code> runs a worker thread blocked in <code>mach_msg_server</code>; <code>bound_state.c</code> holds shared lease state behind locks.</li>
+  <li><code>ipconfigrpctest.c</code> verifies end-to-end MIG client-server path.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Iter 5b — IPCONFIGD_FAST_LEASE + IPCFG-RENEW-OK CI gate <span class="pill ok">SHIPPED (PR #47)</span></h3>
+<ul>
+  <li>Env var collapses T1/T2 to seconds so CI can observe a full renew cycle without waiting hours.</li>
+  <li>Boot-test marker <code>IPCFG-RENEW-OK</code> added to the QEMU CI lane.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Iter 6 — RFC 5227 ARP probe + announce <span class="pill ok">SHIPPED (PR #49)</span></h3>
+<ul>
+  <li><code>arp_probe.c</code> sends 3 ARP probes pre-claim, listens for conflicts, then 2 ARP announces post-claim.</li>
+  <li>Defends the lease against duplicate use on the LAN.</li>
+  <li>Fix in e790468: BPF rxbuf must match BIOCGBLEN (4096) to avoid truncated probe responses.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Iter 7a — IPv6 RA listener + SLAAC + ::/0 + State:/.../IPv6 <span class="pill ok">SHIPPED (PR #50)</span></h3>
+<ul>
+  <li><code>ra_listen.c</code> opens an ICMPv6 socket, parses Router Advertisements (RFC 4861), extracts the PIO prefix.</li>
+  <li><code>apply_lease_v6.c</code> derives EUI-64 from the interface MAC, clears IFDISABLED, calls SIOCAIFADDR_IN6, adds <code>::/0</code> via the announced router.</li>
+  <li><code>sc_publish.c</code> also publishes <code>State:/Network/Service/&lt;UUID&gt;/IPv6</code>.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Iter 7b — DHCPv6 stateful <span class="pill warn">DEFERRED INDEFINITELY</span></h3>
+<ul>
+  <li>Enterprise-only feature; SLAAC covers the common case.</li>
+  <li>Apple's <code>DHCPv6Client.c</code> is 3717 LOC with no CI validation path — QEMU SLIRP doesn't run a DHCPv6 server.</li>
+  <li>Will revisit when a real consumer demands stateful DHCPv6.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Iter 8 — Apple-shape ipconfig(8) CLI <span class="pill ok">SHIPPED (PR #51)</span></h3>
+<ul>
+  <li><code>/usr/sbin/ipconfig</code> with Apple-shape command-table dispatch.</li>
+  <li>Subcommands so far: <code>getifaddr</code>, <code>ifcount</code>. Each calls a MIG client stub generated from <code>ipconfig.defs</code>.</li>
+  <li>Future subcommands grow the CLI table and the IDL together (see <a href="#future">§13</a>).</li>
+</ul>
+</div>
+
+<h2 id="future">13. Future iters</h2>
+
+<div class="phase future">
+<h3>Grow the MIG surface <span class="pill warn">FUTURE</span></h3>
+<ul>
+  <li>Add more <code>ipconfig.defs</code> routines as real consumers arrive: <code>getsummary</code>, <code>getpacket</code>, <code>getra</code>, <code>getoption</code>, <code>set</code>.</li>
+  <li>Apple's <code>ipconfig.defs</code> has 21+ routines; this repo's is 2 today. Don't gold-plate — grow when needed.</li>
+  <li>Corresponding <code>ipconfig(8)</code> subcommands track the IDL routines 1:1.</li>
+</ul>
+</div>
+
+<div class="phase future">
+<h3>Multi-interface + per-interface workers <span class="pill warn">FUTURE</span></h3>
+<ul>
+  <li>Today: DHCP fires once at boot on the first non-loopback Ethernet. No second interface, no WLAN, no USB Ethernet. <strong>This is not merely unbuilt &mdash; it is two bugs</strong> (<a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/37">#37</a> dead re-arm, <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/38">#38</a> global single-flight), both hard blockers for the WLAN DHCP gate. See <a href="nextbsd-wlan-plan.html#ipconfigd">WLAN plan &sect;8</a>.</li>
+  <li>Future: per-interface worker thread; each owns its own DHCP state machine + ARP + RA listener.</li>
+</ul>
+</div>
+
+<div class="phase future">
+<h3>BPF → kqueue <span class="pill warn">FUTURE</span></h3>
+<ul>
+  <li>Today: select() loop over BPF / PF_ROUTE / ICMPv6 sockets.</li>
+  <li>Future: kqueue with EVFILT_READ on each fd plus EVFILT_TIMER for the T1/T2 timers. Lets the daemon scale to many interfaces cleanly.</li>
+</ul>
+</div>
+
+<div class="phase future">
+<h3>Hot-plug via hwregd subscription <span class="pill warn">FUTURE</span></h3>
+<ul>
+  <li>Today: subscribes to nothing. New interfaces appearing post-boot are ignored.</li>
+  <li>Future: subscribe to hwregd's interface-arrival/departure events (the Phase K hardware-registry daemon, see <a href="hwregd-phase0-state">hwregd state</a>). New Ethernet appears → spawn a new per-interface worker.</li>
+  <li>Same path serves link up/down recovery and ARP-collision-triggered rebind.</li>
+</ul>
+</div>
+
+<h2 id="open">14. Open questions / deferred features</h2>
+
+<p>Deferred-by-design (per the iter plan):</p>
+<ul>
+  <li><strong>RDNSS (RFC 8106).</strong> Today we ignore RDNSS in RA options. <code>resolv.conf</code> integration deferred until a consumer needs it.</li>
+  <li><strong>Multiple IPv6 prefixes.</strong> Only the first PIO from the RA is used.</li>
+  <li><strong>RA lifetime expiry.</strong> No timer on the published <code>::/0</code> default route.</li>
+  <li><strong>RFC 7217 stable privacy addresses.</strong> EUI-64 only; no opaque interface identifier.</li>
+  <li><strong>IPv4LL (RFC 3927 fallback).</strong> DHCPv4 failure does not fall back to link-local.</li>
+  <li><strong>Manual / static config method.</strong> No <code>ConfigMethod=Manual</code> path yet.</li>
+  <li><strong>PvD / HTTPS provisioning (RFC 8801).</strong> Apple's <code>IPConfigurationHelper</code> XPC helper not ported.</li>
+  <li><strong>IO80211 / cellular.</strong> WLAN association coordination and cellular paths not built. The WLAN half is now specced &mdash; <code>ipconfigd</code> gates DHCP on <code>wland</code>'s <code>AirPort</code> key rather than talking 802.11 itself.</li>
+  <li><strong>Hot-plug / multi-interface.</strong> Subscribes to nothing; only the first boot-time Ethernet.</li>
+  <li><strong>Lease persistence.</strong> No <code>/var/db/dhcpclient/</code> equivalent — lease lives in <code>bound_state.c</code> RAM only.</li>
+  <li><strong>DHCPv6 stateful (iter 7b).</strong> Deferred indefinitely — SLAAC covers the common case.</li>
+</ul>
+
+<div class="open-q">
+<strong>Q1. When to grow the MIG IDL?</strong> Resolved policy: grow when a real consumer arrives. Apple's 21+ routines stay aspirational; don't gold-plate.
+</div>
+
+<div class="open-q">
+<strong>Q2. Caller-identity gating on MIG entry points.</strong> Currently ungated. Production hardening should gate on the Mach audit-token PID + uid via <code>set_security_token</code> (already used in <code>mach.ko</code>'s fork_bsport path). No urgency — the daemon runs as root and the queries are read-only.
+</div>
+
+<div class="open-q">
+<strong>Q3. Hot-plug subscription path.</strong> hwregd interface-arrival events vs. a configd KEM-equivalent. Lean toward hwregd subscription (Phase K hardware-registry daemon already ships interface enrichment). Decide when the first multi-interface consumer arrives.
+</div>
+
+<div class="open-q">
+<strong>Q4. Power-management integration.</strong> Apple's <code>IORegisterForSystemPower</code> + scheduled wake events let IPConfiguration coordinate lease renewal across sleep. FreeBSD has no pmset-equivalent. Build a bridge from <code>devd</code> ACPI events later, or live without sleep coordination on laptops.
+</div>
+
+<div class="open-q">
+<strong>Q5. Bonjour Sleep Proxy support.</strong> Apple's <code>ipconfigd</code> coordinates with mDNSResponder so a sleep proxy answers ARP/ND while the host sleeps. Useful on a Mac; less useful on a desktop. Requires <a href="freebsd-mdnsresponder-plan.html">freebsd-mdnsresponder</a> shipped first.
+</div>
+
+<h2 id="refs">15. References</h2>
+
+<ul>
+  <li>Apple source: <a href="https://github.com/apple-oss-distributions/bootp">github.com/apple-oss-distributions/bootp</a> (latest tag <code>bootp-534.100.6</code>). The <code>IPConfiguration.bproj/</code> directory is the upstream we reference.</li>
+  <li>RFC 2131 — DHCPv4. <a href="https://www.rfc-editor.org/rfc/rfc2131">rfc-editor.org/rfc/rfc2131</a></li>
+  <li>RFC 5227 — IPv4 Address Conflict Detection (ARP probe + announce). <a href="https://www.rfc-editor.org/rfc/rfc5227">rfc-editor.org/rfc/rfc5227</a></li>
+  <li>RFC 8415 — DHCPv6 (deferred indefinitely, iter 7b). <a href="https://www.rfc-editor.org/rfc/rfc8415">rfc-editor.org/rfc/rfc8415</a></li>
+  <li>RFC 4861 — IPv6 Neighbor Discovery (RS/RA). <a href="https://www.rfc-editor.org/rfc/rfc4861">rfc-editor.org/rfc/rfc4861</a></li>
+  <li>RFC 8106 — RDNSS / DNSSL (deferred). <a href="https://www.rfc-editor.org/rfc/rfc8106">rfc-editor.org/rfc/rfc8106</a></li>
+  <li>RFC 3927 — IPv4LL (link-local; deferred). <a href="https://www.rfc-editor.org/rfc/rfc3927">rfc-editor.org/rfc/rfc3927</a></li>
+  <li>RFC 7217 — Stable privacy IPv6 IIDs (deferred). <a href="https://www.rfc-editor.org/rfc/rfc7217">rfc-editor.org/rfc/rfc7217</a></li>
+  <li>RFC 3972 — Cryptographically Generated Addresses. <a href="https://www.rfc-editor.org/rfc/rfc3972">rfc-editor.org/rfc/rfc3972</a></li>
+  <li>dhcpcd source (the alternative we replaced): <a href="https://github.com/NetworkConfiguration/dhcpcd">github.com/NetworkConfiguration/dhcpcd</a></li>
+  <li>Companion plans: <a href="freebsd-launchd-plan.html">freebsd-launchd</a>, <a href="nextbsd-configd-plan.html">nextbsd-configd</a>, <a href="freebsd-mdnsresponder-plan.html">freebsd-mDNSResponder</a>, <a href="freebsd-kmodloader-plan.html">freebsd-kmodloader</a>.</li>
+  <li>Sibling track: <a href="freebsd-launchd-plan.html">freebsd-launchd</a> (AF_UNIX + GNUstep DO). This plan targets the <strong>v2</strong> Mach-IPC track.</li>
+</ul>
+
+<hr>
+<p class="subtitle" style="font-size: .85rem; margin-top: 2rem;">
+<em>Revision 2026-05-23.</em> Refactored from a deferred <code>netconfigd</code>-plugin plan (sibling AF_UNIX/DO track) to a shipped <code>freebsd-launchd-mach</code> (v2) standalone Mach daemon. Iter 1–8 (PRs #42–#51) merged: daemon skeleton, DHCPv4 INIT→BOUND, SCDynamicStore publish, RFC 2131 RENEW/REBIND with <code>IPCONFIGD_FAST_LEASE</code> CI gate, MIG service worker (2-routine surface), RFC 5227 ARP probe + announce, IPv6 RA listener + EUI-64 SLAAC + <code>::/0</code> route + State:/.../IPv6 publish, Apple-shape <code>ipconfig(8)</code> CLI. iter 7b (DHCPv6 stateful) deferred indefinitely. Future iters grow the MIG surface, add multi-interface workers, swap select() for kqueue, and subscribe to hwregd for hot-plug.
+</p>
+
+</body>
+</html>

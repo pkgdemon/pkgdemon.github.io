@@ -50,11 +50,11 @@
 <p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD Research</a> &middot; companion to the <a href="nextbsd-nvidia-userland-display-plan.html">NVIDIA userland / display plan</a> and the <a href="nextbsd-nvidia-kext-porting-plan.html">NVIDIA kext porting plan</a></p>
 
 <h1>GPU readiness &amp; <code>LoginWindow</code></h1>
-<p class="lede">Issue <a href="https://github.com/nextbsd-redux/nextbsd/issues/390">#390</a> asked: <em>how does <code>LoginWindow</code> know the GPU is ready, and how would Apple do it?</em> A 68-agent research workflow &mdash; six parallel passes, 60 adversarial verifiers, a synthesis and a completeness critic &mdash; came back with an answer nobody wanted: <strong>the premise is wrong, the panic is not a readiness problem at all, and it was fixed upstream twelve days ago.</strong> NVIDIA shipped the fix on 2026-05-17; FreeBSD ports landed it on 2026-07-01 in a commit literally titled &ldquo;Fix GPF in some configs&rdquo;. NextBSD builds <code>nvidia-drm</code> <em>without</em> it, because our kext factory hand-picks four <code>extra-patch-*</code> files and never applies the port&rsquo;s auto-applied <code>files/patch-*</code>. This page documents the correction, the real ordering bugs that <em>do</em> survive, how Apple genuinely solves this, and what to ship.</p>
+<p class="lede">Issue <a href="https://github.com/nextbsd-redux/nextbsd/issues/390">#390</a> asked: <em>how does <code>LoginWindow</code> know the GPU is ready, and how would Apple do it?</em> A 68-agent research workflow &mdash; six parallel passes, 60 adversarial verifiers, a synthesis and a completeness critic &mdash; came back with an answer nobody wanted: <strong>the premise is wrong, and the panic is not a readiness problem at all.</strong> It is a <strong>kernel defect</strong>: <code>nvidia-drm</code> hands LinuxKPI a raw VRAM BAR physical address as a PFN, and on amd64 <code>PHYS_TO_VM_PAGE()</code> returns a pointer to a <code>vm_page_array</code> entry that <strong>the kernel never initializes</strong> &mdash; so the only guard (a NULL check) passes and <code>vm_page_busy_acquire()</code> dereferences boot-time DRAM garbage. This page documents the mechanism, why it is intermittent, why the upstream &ldquo;fix&rdquo; does <em>not</em> fix it, how Apple genuinely solves readiness, and what to ship.</p>
 <p class="meta">2026-07-13. Sources are <code>file:line</code> against <code>nextbsd-userland</code>, <code>nextbsd-kernel</code>, <code>nextbsd-kernel-modules</code>, <code>gershwin-system</code>, <code>gershwin-on-nextbsd</code>, <code>freebsd-src@releng/15.1</code>, <code>freebsd/drm-kmod@6.12-lts</code>, <code>freebsd/freebsd-ports@main</code> and NVIDIA 595.84. Every load-bearing claim below was handed to an adversarial verifier instructed to refute it; the three that decided the recommendation were then re-verified by hand.</p>
 
 <div class="callout callout-bad">
-<p><span class="pill pill-bad">Retraction</span> <strong>My own analysis in #390 was wrong, twice.</strong> I claimed NVKMS display init continues asynchronously after <code>/dev/dri/card0</code> appears, and that <code>&ldquo;Lost display notification&rdquo;</code> was evidence of it. Both are false (&sect;2). Anyone building on those comments should stop. The corrected diagnosis is in &sect;3.</p>
+<p><span class="pill pill-bad">Retraction &times;2</span> <strong>This page has been corrected once already, and the correction was itself wrong.</strong> (1) My original #390 analysis &mdash; &ldquo;NVKMS keeps initializing after <code>card0</code>&rdquo; &mdash; is false (&sect;2), and that still stands. (2) The first version of this page then blamed an <em>integer underflow</em> in <code>nvidia-drm</code> and told you to apply the upstream ports patch. <strong>That is also false.</strong> The underflow is real but <em>inert</em> on the faulting path, and the upstream patch <strong>cannot fix this panic</strong> &mdash; it is still wrong on FreeBSD as merged. The verified mechanism is in &sect;3, and it puts the <code>register_fictitious_range()</code> theory <em>back</em>.</p>
 </div>
 
 <div class="toc">
@@ -62,8 +62,8 @@
 <ol>
   <li><a href="#tldr">The short version</a></li>
   <li><a href="#wrong">Three things #390 got wrong</a></li>
-  <li><a href="#realbug">What actually panics &mdash; and the upstream fix we&rsquo;re missing</a></li>
-  <li><a href="#whyus">Why NextBSD hits it and stock FreeBSD doesn&rsquo;t</a></li>
+  <li><a href="#realbug">What actually panics &mdash; the verified mechanism</a></li>
+  <li><a href="#whyus">Why the upstream patch does not fix it</a></li>
   <li><a href="#realgate">So what <em>is</em> #390 about? The four ordering bugs that survive</a></li>
   <li><a href="#apple">How Apple actually does it</a></li>
   <li><a href="#have">What NextBSD already has &mdash; an inventory</a></li>
@@ -78,26 +78,25 @@
 
 <h2 id="tldr">1. The short version</h2>
 
-<p>Two separate problems were tangled together in one ticket, and the interesting one turned out not to be ours.</p>
+<p>Two separate problems were tangled together in one ticket, and the interesting one is a kernel bug that nobody upstream has actually root-caused.</p>
 
 <table>
 <tr><th style="width:16%">Issue</th><th style="width:38%">What we thought</th><th>What it actually is</th></tr>
 <tr>
   <td><strong><a href="https://github.com/nextbsd-redux/nextbsd/issues/391">#391</a></strong><br>the panic</td>
-  <td>A LinuxKPI&harr;nvidia-drm mapping defect exposed by a boot race; needs kernel hardening and probably a <code>vm_phys_fictitious_reg_range()</code> call NVIDIA omits.</td>
-  <td><strong>A known integer underflow in <code>nvidia-drm</code>, fixed upstream.</strong> On FreeBSD <code>vmf-&gt;pgoff</code> is always 0, so <code>page_offset = vmf-&gt;pgoff - drm_vma_node_start()</code> underflows to a huge value and the driver reads <code>pages[]</code> out of bounds. NVIDIA&rsquo;s own fix (<code>c81cb2d8759</code>, Austin Shafer, 2026-05-17) is in <code>freebsd-ports</code> since <code>1959aaa9de6a</code> (2026-07-01). <strong>We never apply it.</strong></td>
+  <td>A LinuxKPI&harr;nvidia-drm mapping defect exposed by a boot race.</td>
+  <td><strong>Exactly that &mdash; and it is <em>only</em> that.</strong> For a vidmem-backed NVKMS surface, <code>nvidia-drm</code> hands LinuxKPI the raw VRAM <strong>BAR physical address</strong> as a PFN. If that BAR sits <em>below</em> top-of-RAM, <code>PHYS_TO_VM_PAGE()</code> returns an in-range pointer into <code>vm_page_array</code> &mdash; to an entry <strong>amd64 never initializes</strong> &mdash; so the NULL guard passes and <code>vm_page_busy_acquire()</code> dereferences boot-time DRAM garbage. No gate prevents it. <strong>No upstream fix exists.</strong></td>
 </tr>
 <tr>
   <td><strong><a href="https://github.com/nextbsd-redux/nextbsd/issues/390">#390</a></strong><br>the gate</td>
   <td><code>ls /dev/dri/card*</code> fires too early because NVKMS is still initializing; we need a real readiness signal, maybe IOKit-shaped.</td>
-  <td><strong>There is nothing to wait for after <code>card0</code>.</strong> <code>nvidia-drm</code>&rsquo;s entire init runs synchronously inside <code>kldload</code>, and <code>drm_dev_register()</code> is the <em>last</em> step. But the gate is still broken &mdash; for four different reasons than the one we filed (&sect;5), none of which are about safety once #391 lands.</td>
+  <td><strong>There is nothing to wait for after <code>card0</code>.</strong> <code>nvidia-drm</code>&rsquo;s entire init runs synchronously inside <code>kldload</code>, and <code>drm_dev_register()</code> is the <em>last</em> step. The gate is still broken &mdash; for four different reasons than the one we filed (&sect;5).</td>
 </tr>
 </table>
 
-<p><strong>Ship order matters, and it is the reverse of what the ticket implied.</strong> The completeness critic caught this and it is the single most important operational finding on this page:</p>
-
 <div class="callout callout-warn">
-<p><span class="pill pill-warn">Do not invert this</span> <strong>Landing the readiness gate <em>before</em> the nvidia-drm patch would probably make the panic worse, not better.</strong> Today X sometimes wins the race, <code>nvidia-drm</code> never binds, X lands on <code>modesetting</code>/<code>scfb</code>, and no NVKMS GEM object is ever mmap&rsquo;d &mdash; which is a strong candidate explanation for &ldquo;reboot and retry often succeeds.&rdquo; A correct gate <em>guarantees</em> <code>nvidia-drm</code> is bound before X starts, and then pins <code>Driver&nbsp;"nvidia"</code>, which holds the render node open for DRI3/GLX. That converts an intermittent panic into a deterministic one &mdash; in the PR that closes #390. <strong>Patch first. Gate second.</strong></p>
+<p><span class="pill pill-warn">Ship order &mdash; genuinely unresolved</span> The completeness critic warned that a <em>correct</em> gate guarantees <code>nvidia-drm</code> binds before X starts, which could turn an <strong>intermittent</strong> panic into a <strong>deterministic</strong> one. But &sect;3 turned up a fact that may invert that: <strong>the fault is only reachable through the DRM <code>OBJT_MGTDEVICE</code> populate path.</strong> X on the <code>nvidia</code> DDX talks to <code>/dev/nvidia0</code>, whose <em>older</em> <code>OBJT_DEVICE</code> path uses <code>vm_page_getfake()</code> and handles arbitrary BAR addresses safely. That is exactly why upstream&rsquo;s reporter saw <em>&ldquo;X11 fine, Plasma-Wayland panics every time&rdquo;</em> &mdash; and why our own hardware test recorded <strong>0 panics</strong> once <code>Driver "nvidia"</code> was active.</p>
+<p>So the gate + pinning <code>Driver "nvidia"</code> might <em>remove</em> our exposure rather than harden it &mdash; if our panic is really <code>modesetting</code> hotplug-attaching to <code>nvidia-drm</code> (the wrong-DDX bug in &sect;5.2, which our own display plan already recorded as fatal). <strong>The discriminating evidence is one line of <code>/var/log/Xorg.0.log</code> from the panicking boot: which DDX was loaded?</strong> Do not ship either way until that is read.</p>
 </div>
 
 <h2 id="wrong">2. Three things #390 got wrong</h2>
@@ -119,102 +118,118 @@ drm_dev_register(dev, 0);      &larr; /dev/dri/card0 appears HERE, last
 <h3>2.3 &ldquo;A readiness gate would prevent the panic&rdquo; &mdash; false, and this is the load-bearing one</h3>
 <p>The panic reproduces with <strong>no X at all</strong>: a GTX 750 Ti under Hyprland and under niri (FreeBSD forums 102022), and the same RTX 3060 Ti under <code>kwin_wayland</code> (drm-kmod#308). The NVKMS GEM ioctls are <code>DRM_RENDER_ALLOW</code> (<code>nvidia-drm-drv.c:1807-1815</code>), so the faulting path is reachable through the <em>render</em> node, with no DRM master, by any unprivileged GL client. <strong>No gate, of any shape, in any process, prevents it.</strong></p>
 
-<h2 id="realbug">3. What actually panics &mdash; and the upstream fix we&rsquo;re missing</h2>
+<h2 id="realbug">3. What actually panics &mdash; the verified mechanism</h2>
 
-<p>The bug is three lines of arithmetic in NVIDIA&rsquo;s own driver, and it is FreeBSD-specific.</p>
+<p>Every step below was read in the shipping source and independently re-verified by hand.</p>
 
-<pre><code>page_offset = vmf-&gt;pgoff - drm_vma_node_start(&amp;gem-&gt;vma_node);</code></pre>
+<h3>3.1 The faulting object is vidmem-backed, and <code>BUG_ON</code> proves it</h3>
+<p>The fault handler has two branches:</p>
+<pre><code>page_offset = vmf-&gt;pgoff - drm_vma_node_start(&amp;gem-&gt;vma_node);   /* 0 - 0x100000 =&gt; underflows */
 
-<p>On Linux, <code>vmf-&gt;pgoff</code> carries the file-level page index. <strong>On FreeBSD, <code>linux_cdev_pager_populate()</code> sets <code>vmf-&gt;pgoff = 0</code></strong> and passes the page index through <code>vmf-&gt;virtual_address</code> instead. So the subtraction is <code>0 - drm_vma_node_start(...)</code>, which underflows an <code>unsigned long</code> to an astronomically large value. The driver then indexes its page array with it:</p>
+if (nv_nvkms_memory-&gt;pages_count == 0) {              /* VIDMEM */
+    pfn = (unsigned long)(uintptr_t)nv_nvkms_memory-&gt;pPhysicalAddress;
+    pfn &gt;&gt;= PAGE_SHIFT;                                /* &lt;- a raw VRAM BAR1 address */
+#if defined(NV_LINUX)
+    pfn += page_offset;                               /* &lt;- COMPILED OUT ON FreeBSD */
+#endif
+} else {                                              /* SYSMEM */
+    BUG_ON(page_offset &gt;= nv_nvkms_memory-&gt;pages_count);
+    pfn = page_to_pfn(nv_nvkms_memory-&gt;pages[page_offset]);
+}
+<span class="cite">nvidia-drm-gem-nvkms-memory.c:119-138 (595.84, FreeBSD tarball)</span></code></pre>
 
-<pre><code>BUG_ON(page_offset &gt;= nv_nvkms_memory-&gt;pages_count);
-pfn = page_to_pfn(nv_nvkms_memory-&gt;pages[page_offset]);   &larr; out-of-bounds read</code></pre>
+<p>LinuxKPI&rsquo;s <code>BUG_ON</code> is an <strong>unconditional <code>panic()</code></strong>, not an <code>INVARIANTS</code>-gated no-op:</p>
+<pre><code>#define	BUG_ON(cond)		do {				\
+	if (cond) {						\
+		panic("BUG ON %s failed at %s:%d",		\
+		    __stringify(cond), __FILE__, __LINE__);	\
+	}							\
+} while (0)
+<span class="cite">freebsd-src releng/15.1, sys/compat/linuxkpi/common/include/linux/kernel.h:90-95</span></code></pre>
 
-<p>The garbage <code>struct page *</code> yields a garbage PFN, which goes to <code>vmf_insert_pfn()</code> &rarr; <code>lkpi_vmf_insert_pfn_prot_locked()</code>. On amd64 (<code>VM_PHYSSEG_DENSE</code>) <code>PHYS_TO_VM_PAGE()</code> happily returns a non-NULL pointer to an <em>uninitialized</em> <code>vm_page_array</code> entry, so the driver&rsquo;s only guard &mdash; a NULL check &mdash; passes; <code>vm_page_busy_acquire()</code> then dereferences a stale <code>m-&gt;object</code> and the kernel takes a general protection fault. That is the exact backtrace in #390.</p>
+<p>So if the sysmem branch were taken with an underflowed <code>page_offset</code>, the box would print <code>BUG ON page_offset &gt;= ...</code> &mdash; <strong>not</strong> a general protection fault. Both reporters photographed <em>&ldquo;Fatal trap 9: general protection fault&rdquo;</em>. <strong>Therefore the fault took the vidmem branch</strong> (<code>pages_count == 0</code>, which is exactly what <code>nvKms-&gt;isVidmem()</code> short-circuits to on a discrete GPU).</p>
 
-<p><strong>It is intermittent because the underflow only bites when <code>drm_vma_node_start()</code> is nonzero</strong>, which depends on GEM allocation order &mdash; not on timing, not on boot speed, and not on anything a gate can influence.</p>
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">The underflow is a red herring</span> On the vidmem branch, <code>pfn += page_offset</code> sits inside <code>#if defined(NV_LINUX)</code> and is <strong>compiled out on FreeBSD</strong>. The underflowed value is computed and then <em>never used</em>. It cannot be the cause &mdash; and the first version of this page was wrong to say it was. <code>pfn</code> is simply the <strong>raw BAR1 physical address</strong>.</p>
+</div>
 
-<h3>The fix already exists</h3>
-<p>NVIDIA&rsquo;s Austin Shafer found and fixed this, explicitly citing the FreeBSD panic report:</p>
+<h3>3.2 The kernel then dereferences an uninitialized <code>vm_page</code></h3>
+<pre><code>page = vm_page_grab_iter(vm_obj, pindex, VM_ALLOC_NOCREAT, &amp;pages);
+if (page == NULL) {
+    page = PHYS_TO_VM_PAGE(IDX_TO_OFF(pfn));
+    if (page == NULL)
+        return (VM_FAULT_SIGBUS);                       /* &lt;- the ONLY guard */
+    if (!vm_page_busy_acquire(page, VM_ALLOC_WAITFAIL)) /* &lt;- the crash */
+<span class="cite">sys/compat/linuxkpi/common/src/linux_page.c:526-531</span></code></pre>
 
-<pre><code>commit c81cb2d87591863cd1d37ccb6143981462f215b7
-Author: Austin Shafer &lt;ashafer@nvidia.com&gt;
-Date:   Sun May 17 14:14:58 2026 -0400
+<p>On amd64 (<code>VM_PHYSSEG_DENSE</code>), <code>PHYS_TO_VM_PAGE()</code> <em>is</em> bounds-checked &mdash; but the bound is the array span, not validity:</p>
+<pre><code>pi = atop(pa);
+if (pi &gt;= first_page &amp;&amp; (pi - first_page) &lt; vm_page_array_size) {
+    m = &amp;vm_page_array[pi - first_page];    /* &lt;- NO validity check */
+    return (m);
+}
+return (vm_phys_fictitious_to_vm_page(pa)); /* NULL unless a driver registered it */
+<span class="cite">sys/vm/vm_page.c:1300-1305</span></code></pre>
 
-    nvidia-drm: fix freebsd page offset during nvkms/user memory faults
+<p>And here is the load-bearing fact &mdash; <strong>amd64 never initializes the <code>vm_page_array</code> entries that correspond to PCI/MMIO holes:</strong></p>
+<pre><code>#if defined(__i386__) &amp;&amp; defined(VM_PHYSSEG_DENSE)     /* &lt;- amd64 EXCLUDED */
+	for (ii = 0; ii &lt; vm_page_array_size; ii++) {
+		m = &amp;vm_page_array[ii];
+		vm_page_init_page(m, (first_page + ii) &lt;&lt; PAGE_SHIFT, 0, VM_FREEPOOL_DEFAULT);
+		m-&gt;flags = PG_FICTITIOUS;
+	}
+#endif
+<span class="cite">sys/vm/vm_page.c:783-790 &mdash; only pages inside vm_phys_segs are initialized on amd64</span></code></pre>
 
-    This fixes the page offset calculation on freebsd with nvidia-drm
-    in our nvkms/user memory faults. With this we actually convert
-    virtual_address into a page index and use that to index into
-    our array of pages.
-
-    I found this and ran with it a bit myself, it also recently came
-    up and appears to fix a panic that an end user was running into:
-    https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=296195</code></pre>
-
-<p>It adds a helper that does the right thing per-OS, and deletes the <code>#if defined(NV_LINUX)</code> that was suppressing the offset add on FreeBSD:</p>
-
-<pre><code>+static inline unsigned long
-+nv_drm_vma_fault_get_page_offset(struct vm_fault *vmf,
-+                                 struct drm_gem_object *gem)
-+{
-+#if defined(NV_LINUX)
-+    unsigned long offset = vmf-&gt;pgoff;
-+#else
-+    unsigned long offset = OFF_TO_IDX((uintptr_t)vmf-&gt;virtual_address);
-+#endif
-+    return offset - drm_vma_node_start(&amp;gem-&gt;vma_node);
-+}
-<span class="cite">freebsd-ports: graphics/nvidia-drm-612-kmod/files/patch-nvidia-drm-helper.h</span></code></pre>
-
-<p>FreeBSD ports carried it on <strong>2026-07-01</strong> as <code>1959aaa9de6a</code> &mdash; commit title: <em>&ldquo;graphics/nvidia-drm-*-kmod*: Fix GPF in some configs&rdquo;</em> &mdash; as three patch files:</p>
-<ul>
-  <li><code>patch-nvidia-drm-helper.h</code></li>
-  <li><code>patch-nvidia-drm-gem-nvkms-memory.c</code></li>
-  <li><code>patch-nvidia-drm-gem-user-memory.c</code></li>
-</ul>
+<p>&hellip;and <code>pmap_page_array_startup()</code> maps that array from <code>vm_phys_early_alloc()</code> and <strong>never zeroes it</strong> (<code>sys/amd64/amd64/pmap.c:4960-4999</code>). So the returned <code>struct vm_page</code> is <strong>boot-time DRAM garbage</strong>. <code>vm_page_busy_acquire()</code> loads <code>m-&gt;object</code>, fails the <code>tryacquire</code> (garbage <code>busy_lock</code> &ne; <code>VPB_UNBUSIED</code>), and calls <code>VM_OBJECT_WOWNED(obj)</code> &rarr; <code>rw_wowned(&amp;obj-&gt;lock)</code> on a garbage pointer &mdash; <strong>trap 9, non-canonical address</strong>.</p>
 
 <div class="callout callout-good">
-<p><span class="pill pill-good">The fix for #391</span> Apply those three patches. They are not ours to write, they are already reviewed, and they target the actual defect. <strong>Do not</strong> pursue the <code>register_fictitious_range()</code> theory (see &sect;11) &mdash; it cannot rescue a PFN that came from an out-of-bounds array read, because that value is arbitrary, not a VRAM address.</p>
+<p><span class="pill pill-good">Corroboration</span> drm-kmod#308&rsquo;s backtrace literally shows the faulting IP inside <strong><code>_rw_wowned()</code></strong>, called from <code>vm_page_busy_acquire</code> &larr; <code>lkpi_vmf_insert_pfn_prot_locked</code> &larr; <code>__nv_drm_gem_nvkms_handle_vma_fault</code>. That is this mechanism, frame for frame. Trap <strong>9</strong> (not 12) is the signature of a non-canonical pointer &mdash; exactly what a garbage <code>m-&gt;object</code> produces.</p>
 </div>
 
-<h2 id="whyus">4. Why NextBSD hits it and stock FreeBSD doesn&rsquo;t</h2>
-
-<p>This was the critic&rsquo;s sharpest question &mdash; <em>a root cause that predicts universal breakage but is observed as rare is not a root cause</em> &mdash; and the answer is embarrassing and completely actionable.</p>
-
-<p>The FreeBSD ports framework <strong>auto-applies every <code>files/patch-*</code></strong> in a port. NextBSD does not use the ports framework for the NVIDIA kexts &mdash; <code>nextbsd-kernel-modules</code> fetches NVIDIA&rsquo;s tarball and re-implements the port&rsquo;s edits by hand. Two mechanisms, and we only reproduce one of them:</p>
-
-<ul>
-  <li><code>tools/nvidia-portpatch.sh</code> transcribes the port&rsquo;s <code>REINPLACE_CMD</code> (sed) edits &mdash; faithfully, as it happens.</li>
-  <li><code>build.yml:800</code> applies a <strong>hand-picked list of four</strong> <code>extra-patch-*</code> / <code>extra-gsp-patch-*</code> files.</li>
-</ul>
-
-<pre><code>for p in extra-patch-src-Makefile extra-patch-src-nv-freebsd.h \
-         extra-patch-src-Makefile-2 \
-         extra-gsp-patch-src-common-inc-nv_firmware_registry.h ; do
-<span class="cite">nextbsd-kernel-modules/.github/workflows/build.yml:800-802</span></code></pre>
-
-<p>The three <code>patch-nvidia-drm-*</code> files that fix the GPF are not in that list, are not <code>extra-patch-*</code>, and are never applied. <strong>Stock FreeBSD users got the fix on 2026-07-01. We are still building the broken driver.</strong></p>
-
-<p>Two hypotheses the critic raised for a NextBSD-specific cause were both checked and killed, which is worth recording so nobody re-opens them:</p>
-
-<table>
-<tr><th style="width:34%">Hypothesis</th><th>Verdict</th></tr>
-<tr>
-  <td><code>nvidia-portpatch.sh:118-119</code> adds <code>-Wno-implicit-function-declaration</code> to <code>NV_CONFTEST_CFLAGS</code> (a real delta from the port), and NVIDIA&rsquo;s conftests are inverted &mdash; so it could silently flip which code paths compile.</td>
-  <td><span class="pill pill-bad">Dead</span> <code>NV_VMF_INSERT_PFN_PRESENT</code> is <strong>force-defined regardless of the conftest</strong> (<code>nvidia-drm-conftest.h:156-157</code>), and the same <code>#ifndef</code> block supplies FreeBSD&rsquo;s <code>vmf_insert_pfn</code> wrapper. Had the flag flipped that conftest, the wrapper would be absent and <code>nvidia-drm.ko</code> <em>would not link</em>. It links. It resolved identically to stock. (Keep the flag &mdash; it is load-bearing for the cross-host build.)</td>
-</tr>
-<tr>
-  <td>NextBSD&rsquo;s kernel overlay carries a modified LinuxKPI <code>linux_page.c</code> or a <code>sys/vm</code> change.</td>
-  <td><span class="pill pill-bad">Dead</span> <code>nextbsd-kernel</code> contains <strong>no LinuxKPI source file and no <code>sys/vm</code> file</strong>. All seven patches touch <code>subr_bus.c</code>, <code>syscalls.master</code>, <code>event.h</code>, <code>eventhandler.h</code>, <code>subr_firmware.c</code>, <code>kern_ucoredump.c</code>, <code>unionfs</code>. <code>linux_page.c</code> is bit-for-bit stock <code>releng/15.1</code>. <code>drm-kmod</code> is cloned unpatched at <code>6.12-lts</code>.</td>
-</tr>
-</table>
-
-<p>And the premise itself &mdash; &ldquo;stock is fine&rdquo; &mdash; was false. Stock FreeBSD <em>did</em> hit this: <a href="https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=296195">FreeBSD PR 296195</a> (15.1-RELEASE, RTX 3060, identical backtrace, closed FIXED 2026-07-02) and <a href="https://github.com/freebsd/drm-kmod/issues/308">drm-kmod#308</a> (14.1, RTX 3060&nbsp;Ti &mdash; <em>our exact GPU</em>, byte-for-byte the same trace).</p>
+<h3>3.3 Why it is intermittent &mdash; and why some machines never see it</h3>
+<ol>
+  <li><strong>The garbage varies boot to boot.</strong> Whatever DRAM <code>vm_phys_early_alloc()</code> handed out lands in that <code>vm_page</code>. A non-canonical <code>m-&gt;object</code> &rarr; GPF. A <code>NULL</code> or canonical one &rarr; no crash <em>that boot</em>. <strong>This is the &ldquo;reboot and retry often succeeds&rdquo; symptom</strong>, and it is the piece a deterministic mechanism could never explain.</li>
+  <li><strong>Whether the session CPU-faults a vidmem NVKMS mapping at all.</strong> X on the <code>nvidia</code> DDX goes through <code>/dev/nvidia0</code>, whose older <code>OBJT_DEVICE</code> path uses <code>vm_page_getfake()</code> and handles arbitrary BAR addresses safely (<code>linux_compat.c:452-492</code>). Only the DRM <code>OBJT_MGTDEVICE</code> <em>populate</em> path panics. Upstream&rsquo;s reporter: <em>X11 fine, Plasma-Wayland panics every time.</em></li>
+  <li><strong>Whether the box is even vulnerable.</strong> The BAR must sit <em>below</em> top-of-RAM to land inside <code>vm_page_array</code>&rsquo;s span. Above it, the fictitious lookup returns <code>NULL</code> and you get a clean <code>SIGBUS</code>, not a panic.</li>
+</ol>
 
 <div class="callout">
-<p><span class="pill pill-warn">The class of bug</span> The real lesson is not the three patches &mdash; it is that <strong>hand-picking <code>SUB_PATCHES</code> silently drops every future upstream fix</strong>. <code>build.yml</code> should apply <em>all</em> of <code>graphics/nvidia-drm-612-kmod/files/patch-*</code>, not an allowlist, or the next NVIDIA fix will be missed exactly the same way.</p>
+<p><span class="pill pill-warn">Cheap falsifiable test</span> On the RTX box, compare the NVIDIA <strong>BAR1 base</strong> (<code>pciconf -lb</code>) against top-of-RAM (<code>sysctl hw.physmem</code>, <code>vm.phys_segs</code>). This mechanism <em>predicts</em> BAR1 lands <strong>below</strong> top-of-RAM on machines that panic, and above it on machines that only ever SIGBUS. If BAR1 is above top-of-RAM on our box, this diagnosis is wrong and I want to know.</p>
 </div>
+
+<h2 id="whyus">4. Why the upstream patch does not fix it</h2>
+
+<p>The first version of this page told you to apply <code>freebsd-ports</code> commit <code>1959aaa9de6a</code> (&ldquo;Fix GPF in some configs&rdquo;, 2026-07-01), which carries NVIDIA&rsquo;s <code>c81cb2d8759</code>. <strong>Retracted.</strong> Here is what that patch actually does and why it cannot help.</p>
+
+<p>Its only effect on the vidmem path is to <strong>enable <code>pfn += page_offset</code></strong> (by deleting the <code>#if defined(NV_LINUX)</code>). The PFN <em>remains</em> a BAR-derived PFN handed to <code>PHYS_TO_VM_PAGE()</code>. Nothing in the patch registers a fictitious range and nothing changes the pager path &mdash; so every step of &sect;3.2 still executes.</p>
+
+<p><strong>Worse: as merged, the helper is still wrong on FreeBSD.</strong> Compare it with TTM, which <em>is</em> correct (and is why amdgpu/i915 do not do this):</p>
+
+<pre><code>/* TTM — correct on FreeBSD.  ttm_bo_vm.c:210-211 */
+page_offset = ((address - vma-&gt;vm_start) &gt;&gt; PAGE_SHIFT) + vma-&gt;vm_pgoff
+              - drm_vma_node_start(&amp;bo-&gt;base.vma_node);      /* = pidx + N - N = pidx  OK */
+
+/* NVIDIA c81cb2d8759, as merged into ports.  nvidia-drm-helper.h */
+unsigned long offset = OFF_TO_IDX((uintptr_t)vmf-&gt;virtual_address);  /* = pidx, 0-based */
+return offset - drm_vma_node_start(&amp;gem-&gt;vma_node);                  /* = pidx - N  =&gt; UNDERFLOW */</code></pre>
+
+<p>The helper drops the <code>+ vma-&gt;vm_pgoff</code> term that cancels the subtraction. On FreeBSD <code>pidx</code> is <strong>0-based within the mapping</strong> &mdash; <code>linux_file_mmap_single()</code> sets <code>*offset = 0</code> (<code>linux_compat.c:1420</code>) after handing the DRM fake offset to <code>cdev_pager_allocate()</code>, and the VMA is built with <code>vm_start = 0</code>, <code>vm_pgoff = node_start</code> (<code>:1302-1304</code>). So the correct FreeBSD answer is just <code>OFF_TO_IDX(vmf-&gt;virtual_address)</code>, and the merged code computes <code>pidx - 0x100000</code>.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">It was tested, and it &ldquo;worked&rdquo;</span> The reporter on <a href="https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=296195">FreeBSD PR 296195</a> did verify on hardware (&ldquo;kernel panic no longer occurs and plasma6 loads&rdquo;), and NVIDIA&rsquo;s own author hedged: <em>&ldquo;I&rsquo;m not 100% it could fix this issue.&rdquo;</em> The most likely reconciliation &mdash; <strong>inference, not established</strong> &mdash; is that subtracting ~4&nbsp;GiB moved the bogus PFN <em>out of the uninitialized hole</em> and into real, initialized RAM, so the fault silently succeeded while mapping <em>the wrong physical memory</em>. His own follow-ups (console-switch corruption, stale content from a dead Wayland session) are consistent with that. <strong>&ldquo;The panic stopped on one machine&rdquo; is not evidence the offset math is right &mdash; and the source says it is not.</strong></p>
+</div>
+
+<h3>The real fix, and it is ours to write</h3>
+<p>The gap the first version of this page dismissed as &ldquo;incidental&rdquo; is <strong>the actual defect</strong>: <code>nvidia-drm</code> never registers its VRAM aperture, while every in-tree FreeBSD DRM driver does.</p>
+<ul>
+  <li><code>register_fictitious_range()</code> &rarr; <code>vm_phys_fictitious_reg_range()</code> lives in <code>drm_os_freebsd.c:82-107</code> and is called from <strong><code>amdgpu_device.c:4504</code>, <code>radeon_fbdev.c:291</code>, and <code>i915/display/intel_fbdev.c:277</code></strong>.</li>
+  <li><code>grep -rn vm_phys_fictitious</code> over the entire NVIDIA 595.84 tree: <strong>zero hits.</strong></li>
+</ul>
+<p>Registering the aperture initializes exactly those <code>vm_page_array</code> hole entries in place, so <code>PHYS_TO_VM_PAGE()</code> stops returning garbage. Independently, <code>lkpi_vmf_insert_pfn_prot_locked()</code> should <strong>validate the PFN</strong> instead of trusting a NULL check that garbage passes &mdash; that is the &ldquo;userland must never panic the kernel&rdquo; principle #391 was opened on, and it is now the <em>primary</em> fix, not defence-in-depth.</p>
+
+<h3>What survives from the first version</h3>
+<p>One finding stands, and it is still worth a ticket &mdash; just not as the panic fix. <code>build.yml:800</code> applies a <strong>hand-picked allowlist of four</strong> <code>extra-patch-*</code> files, while the ports framework auto-applies <em>every</em> <code>files/patch-*</code>. So we do silently drop upstream nvidia-drm patches. That is a real defect in the build; it simply is not what is panicking the box.</p>
 
 <h2 id="realgate">5. So what <em>is</em> #390 about? The four ordering bugs that survive</h2>
 
@@ -316,7 +331,8 @@ Date:   Sun May 17 14:14:58 2026 -0400
 <tr><td>Readiness sysctl in NVIDIA&rsquo;s glue</td><td><span class="pill pill-bad">Rejected</span></td><td>Every signal it could publish fires at-or-earlier-than <code>card0</code>. The state we want lives in a closed blob and is not exported.</td></tr>
 <tr><td>kextd publishes readiness; LoginWindow waits</td><td><span class="pill pill-neutral">Viable, later</span></td><td>Apple-shaped, and <code>KeepAlive&rarr;OtherJobEnabled</code> genuinely works. But the best predicate kextd can compute is &ldquo;my loads returned&rdquo; &mdash; which the barrier already observes <em>directly, synchronously, with no IPC</em>. And it <strong>fails closed</strong> on every VM.</td></tr>
 <tr><td>Apple-native <code>com.apple.iokit.matching</code></td><td><span class="pill pill-neutral">Right, long-term</span></td><td>The correct architecture; NextBSD is unusually well-placed for it. But ~700-1000 new lines, fail-closed on every VM by default, and <strong>it still does not fix this bug</strong>.</td></tr>
-<tr><td><strong>Apply the upstream nvidia-drm patches</strong></td><td><span class="pill pill-good">Ship first</span></td><td>Fixes the actual panic, for X, Wayland, and unprivileged GL clients, on every affected GPU. Already reviewed upstream.</td></tr>
+<tr><td><strong>Apply the upstream nvidia-drm patches</strong></td><td><span class="pill pill-bad">Rejected</span></td><td><strong>Does not fix this panic</strong> (&sect;4). It only enables <code>pfn += page_offset</code>; the PFN stays a BAR address handed to <code>PHYS_TO_VM_PAGE()</code>. And as merged the helper is still wrong on FreeBSD (it drops TTM&rsquo;s <code>+ vma-&gt;vm_pgoff</code> term and underflows). Apply it for correctness of the offset math if you like &mdash; but not as the fix.</td></tr>
+<tr><td><strong>Register the VRAM aperture as a fictitious range + harden LinuxKPI</strong></td><td><span class="pill pill-good">Ship first</span></td><td><strong>The actual fix.</strong> <code>vm_phys_fictitious_reg_range()</code> initializes the <code>vm_page_array</code> hole entries so <code>PHYS_TO_VM_PAGE()</code> stops returning garbage &mdash; exactly what amdgpu/i915/radeon already do and nvidia-drm alone omits. Plus: make <code>lkpi_vmf_insert_pfn_prot_locked()</code> validate the PFN and <code>SIGBUS</code> rather than trust a NULL check garbage passes.</td></tr>
 <tr><td><strong>Synchronous kext-load barrier + terminal verdict</strong></td><td><span class="pill pill-good">Ship second</span></td><td>A real barrier (<code>kld_sx</code>), not a poll. No timeout, no sleep, zero new C. Closes the load-not-yet-requested race that <em>no poll design can</em>.</td></tr>
 <tr><td><strong>kenv failsafes</strong></td><td><span class="pill pill-good">Ship with it</span></td><td>Prerequisite for anything that can decline to start X.</td></tr>
 </table>
@@ -397,7 +413,8 @@ exec LoginWindow
 <ul>
   <li><strong>Do not raise the timeout, add a settle delay, or build a <code>drmModeGetResources</code> probe.</strong> All three are vacuous &mdash; they test state that is already true when <code>card0</code> appears.</li>
   <li><strong>Do not gate X on <code>IOKitWaitQuiet</code>.</strong> It cannot see <code>nvidia-drm</code>, and it goes quiet <em>before</em> <code>card0</code> exists. It would be a regression wearing an Apple badge.</li>
-  <li><strong>Do not pursue <code>register_fictitious_range()</code> for #391.</strong> The theory was seductive &mdash; <code>amdgpu</code>/<code>i915</code>/<code>radeon</code> all register their VRAM aperture and <code>nvidia-drm</code> never does &mdash; and the gap is <em>real</em>. But it is <strong>incidental</strong>: it cannot rescue a PFN that came from an out-of-bounds array read, because that value is arbitrary, not a VRAM address. Upstream fixed this panic without touching it.</li>
+  <li><strong>Do not treat the upstream ports patch as the fix.</strong> It does not address the mechanism, and as merged its FreeBSD offset is still wrong (&sect;4). Shipping it and closing #391 would leave a live kernel-panic DoS behind a green tick.</li>
+  <li><strong>Do not blame the integer underflow.</strong> It is real, deterministic, and <em>inert</em> &mdash; <code>pfn += page_offset</code> is compiled out on FreeBSD. (This page said otherwise for a day. It was wrong.)</li>
   <li><strong>Do not close #390 as &ldquo;fixed&rdquo; on the strength of the gate.</strong> Say plainly in the issue that the gate fixes <em>ordering</em> and the panic is #391.</li>
   <li><strong>Do not ship the gate before the patch.</strong> See the warning in &sect;1.</li>
 </ul>
@@ -408,8 +425,8 @@ exec LoginWindow
 <tr><th style="width:24%">Repo</th><th style="width:34%">Change</th><th>Notes</th></tr>
 <tr>
   <td><code>nextbsd-kernel-modules</code><br><span class="pill pill-bad">First</span></td>
-  <td><strong>#391: apply the upstream <code>patch-nvidia-drm-*</code> files</strong></td>
-  <td>Pull <code>patch-nvidia-drm-{helper.h,gem-nvkms-memory.c,gem-user-memory.c}</code> from <code>freebsd-ports</code>. Better: have <code>build.yml</code> apply <strong>all</strong> of <code>graphics/nvidia-drm-612-kmod/files/patch-*</code> rather than a hand-picked list, so the next upstream fix is not silently missed. Validate on the RTX 3060&nbsp;Ti.</td>
+  <td><strong>#391: register the NVIDIA VRAM aperture as a fictitious range</strong></td>
+  <td>Call drm-kmod&rsquo;s <code>register_fictitious_range()</code> (&rarr; <code>vm_phys_fictitious_reg_range()</code>) over the NVIDIA BAR1/VRAM aperture at nvidia-drm device registration &mdash; exactly what <code>amdgpu_device.c:4504</code>, <code>radeon_fbdev.c:291</code> and <code>intel_fbdev.c:277</code> already do, and what nvidia-drm alone omits (zero hits for <code>vm_phys_fictitious</code> in the whole 595.84 tree). Goes in the <code>nvidia-portpatch.sh</code> we already own. <strong>First, get <code>pciconf -lb</code> from the box</strong> and confirm BAR1 sits below top-of-RAM.</td>
 </tr>
 <tr>
   <td><code>gershwin-system</code><br><span class="pill pill-warn">Second</span></td>
@@ -425,6 +442,16 @@ exec LoginWindow
   <td><code>nextbsd</code></td>
   <td>Loader: a Safe Graphics menu entry</td>
   <td><code>beastie_disable="YES"</code> today, so the menu ships but is unreachable (the OK prompt still is). Without this, a wrong verdict needs a rescue USB.</td>
+</tr>
+<tr>
+  <td><code>nextbsd-kernel</code><br><span class="pill pill-bad">First</span></td>
+  <td><strong>#391 backstop: harden <code>lkpi_vmf_insert_pfn_prot_locked()</code></strong></td>
+  <td>Its only guard is <code>if (page == NULL) return VM_FAULT_SIGBUS</code> &mdash; and on amd64/DENSE, <code>PHYS_TO_VM_PAGE()</code> returns a <strong>non-NULL pointer to an uninitialized <code>vm_page</code></strong> for any address inside the array span, including a PCI hole. Require the pa to be in a physical segment <em>or</em> fictitious-registered; <code>SIGBUS</code> otherwise. This closes the unprivileged local kernel-panic DoS through the DRM render node regardless of what NVIDIA does, and it is the literal principle #391 was opened on. Note NextBSD&rsquo;s kernel carries <strong>no</strong> LinuxKPI overlay today, so this is a new patch in <code>nextbsd-kernel/patches/</code>.</td>
+</tr>
+<tr>
+  <td><code>nextbsd-kernel-modules</code></td>
+  <td>Apply <em>all</em> of the port&rsquo;s <code>files/patch-*</code>, not an allowlist</td>
+  <td><code>build.yml:800</code> hand-picks four <code>extra-patch-*</code> files; the ports framework auto-applies every <code>files/patch-*</code>. We therefore silently drop upstream nvidia-drm patches (including <code>1959aaa9de6a</code>). A real build defect worth fixing on its own merits &mdash; but <strong>it is not the panic fix</strong>, and the offset patch it would pull in is itself wrong on FreeBSD (&sect;4).</td>
 </tr>
 <tr>
   <td><code>nextbsd-userland</code></td>
@@ -445,10 +472,11 @@ exec LoginWindow
 
 <h2 id="open">13. Open questions &mdash; answer before shipping</h2>
 
-<p>The completeness critic&rsquo;s list, minus the three I settled by hand (the <code>kextload</code> barrier is real; the LinuxKPI overlay is stock; the conftest CFLAGS delta is innocent). These remain genuinely open:</p>
+<p>The completeness critic&rsquo;s list, minus what I settled by hand (the <code>kextload</code> barrier is real; NextBSD&rsquo;s kernel carries no LinuxKPI overlay; the conftest CFLAGS delta is innocent; the box has <strong>no Intel iGPU</strong>, so hybrid <code>card0</code> misattribution is latent-only and not our intermittency). <strong>The first two now gate everything:</strong></p>
 
 <ol>
-  <li><strong>Get ground truth from the RTX box.</strong> There is no <code>pciconf -lv</code> or <code>dmesg</code> in #390/#391. Does it have an Intel iGPU (i.e. is the hybrid <code>card0</code> misattribution the actual generator of the intermittency)? And on the boots that <em>succeed</em> &mdash; was <code>nvidia-drm</code> bound at all?</li>
+  <li><strong>Is BAR1 below top-of-RAM?</strong> <code>pciconf -lb</code> vs <code>sysctl hw.physmem</code> / <code>vm.phys_segs</code>. The &sect;3 mechanism <em>predicts</em> it is. If it is above top-of-RAM, <code>PHYS_TO_VM_PAGE()</code> returns <code>NULL</code>, the guard fires, and you would get a <code>SIGBUS</code> rather than a panic &mdash; which would falsify this whole diagnosis.</li>
+  <li><strong>Which DDX was loaded on the panicking boot?</strong> One line of <code>/var/log/Xorg.0.log</code>. If it is <code>modesetting</code>, then our panic is the wrong-DDX bug (&sect;5.2) taking the DRM dumb-buffer path, and the gate + pinning <code>Driver "nvidia"</code> <em>removes</em> our exposure rather than making it deterministic &mdash; inverting the ship-order warning in &sect;1. If it is <code>nvidia</code>, the critic&rsquo;s warning stands and #391 must land first. <strong>This single line decides the entire sequencing.</strong></li>
   <li><strong>BIOS-mode VirtualBox will break if we do the scfb/vesa change blind.</strong> Both boot tests use OVMF, so CI always has an EFI GOP framebuffer and scfb always works. <strong>VirtualBox defaults to BIOS</strong>, where there is no GOP framebuffer for scfb and no DRM driver &mdash; making <code>vesa</code> the only DDX that can work. Do not write <code>Driver "scfb"</code> and do not remove <code>xf86-video-vesa</code> until someone boots BIOS-mode VirtualBox on today&rsquo;s image and reports which DDX X actually selects. (Also: <code>xlibre-minimal</code> <code>RUN_DEPENDS</code> on vesa, so it cannot simply be deleted from <code>pkglist.txt</code>.)</li>
   <li><strong>Define the <code>nvidia-drm</code>-bound-but-<code>nvidia_drv.so</code>-not-activated case.</strong> Activation is a separate pkg step, so this is a real state. Pinning <code>modesetting</code> there would select the <code>CREATE_DUMB</code> path this document elsewhere calls fatal. The safe action is to refuse the NVIDIA DDX and fall back &mdash; not to pin modesetting.</li>
   <li><strong>Does <code>nvidia_drv.so</code> still work with <code>hw.nvidiadrm.modeset=0</code>?</strong> This decides whether modeset=0 is a valid loader-level safe-graphics knob for NVIDIA, or a black screen.</li>
@@ -456,7 +484,7 @@ exec LoginWindow
   <li><strong>Does the single getty on <code>/dev/console</code> survive Xorg&rsquo;s VT takeover?</strong> (<a href="https://github.com/nextbsd-redux/nextbsd/issues/272">#272</a>.) Until answered, the kenv knobs &mdash; not the console &mdash; are the only proven rescue path.</li>
 </ol>
 
-<p class="footnote">Produced by a 68-agent workflow: six parallel research passes (NextBSD IOKit/kextd machinery, Apple&rsquo;s real mechanism, NVIDIA/NVKMS readiness signals, the no-<code>card0</code> device matrix, launchd-native gating, and prior art in systemd/udev/logind, NomadBSD, GhostBSD and helloSystem), 60 adversarial verifiers instructed to refute every load-bearing claim, a synthesis, and a completeness critic &mdash; whose objections then drove three further hand-verification passes. The critic&rsquo;s central catch (that shipping the gate first could make the panic deterministic) and the discovery of the upstream fix both came out of that adversarial layer, not the initial research. Corrections to <a href="https://github.com/nextbsd-redux/nextbsd/issues/390">#390</a> and <a href="https://github.com/nextbsd-redux/nextbsd/issues/391">#391</a> follow from this page.</p>
+<p class="footnote">Produced by a 68-agent workflow (six parallel research passes, 60 adversarial verifiers, a synthesis, and a completeness critic), then corrected twice by hand. Worth recording how: the initial research blamed an integer underflow and declared the panic fixed upstream. The critic objected that the mechanism predicted a <em>deterministic</em> panic while the ticket reports an <em>intermittent</em> one &mdash; and that objection, chased down, broke the story open: the underflow is compiled out on FreeBSD, the sysmem branch would have tripped a live <code>BUG_ON</code> rather than a GPF, and the real cause is a raw BAR PFN reaching an uninitialized <code>vm_page_array</code> entry that amd64 never initializes. The lesson is the critic&rsquo;s, not the researchers&rsquo;: <strong>a mechanism that cannot explain the defining symptom is not the mechanism.</strong> Corrections to <a href="https://github.com/nextbsd-redux/nextbsd/issues/390">#390</a> and <a href="https://github.com/nextbsd-redux/nextbsd/issues/391">#391</a> follow from this page.</p>
 
 </div>
 </body>

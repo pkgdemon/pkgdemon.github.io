@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD WiFi plan — wlan_xauth, wifid, and the DHCP gate</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.objc { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  table.compact td, table.compact th { padding: .35rem .55rem; font-size: .88rem; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .gap { background: #fff5f5; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .gap strong { color: var(--bad); }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .yesno { font-weight: 600; }
+  .yesno.yes { color: var(--ok); }
+  .yesno.no  { color: var(--bad); }
+  .yesno.partial { color: var(--warn); }
+  .src { color: var(--muted); font-size: .85em; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#blockers">Three blockers</a>
+  <a href="#exists">What exists</a>
+  <a href="#ruledout">Ruled out</a>
+  <a href="#arch">Architecture</a>
+  <a href="#fork">The path (decided)</a>
+  <a href="#phases">Phases</a>
+  <a href="#constraints">Constraints</a>
+  <a href="#ipconfigd">ipconfigd debt</a>
+  <a href="#hardware">Hardware</a>
+  <a href="#tickets">Tickets</a>
+  <a href="#openq">Open questions</a>
+</nav>
+
+<h1>NextBSD WiFi plan <span class="pill warn">PLAN</span></h1>
+<p class="subtitle">Grounded in a source-level review of <code>nextbsd-redux/{nextbsd-userland, nextbsd-kernel, nextbsd-kernel-modules, nextbsd-freebsd-compat, nextbsd, nextbsd-overlays}</code> and <code>gershwin-components</code> at 2026-07-13. Background: <a href="nextbsd-wifi-research.html">WiFi on NextBSD — the Apple stack</a>, whose integration half this replaces. That half was written against the pre-Mach <code>freebsd-*</code> / <code>pkgdemon</code> era and assumed dhcpcd and Distributed Objects — neither of which NextBSD uses.</p>
+
+<section id="tldr" class="tldr">
+  <h3>TL;DR</h3>
+  <ul>
+    <li><strong>WPA is broken today by a one-line kernel bug.</strong> <code>wlan_xauth</code> is absent from the kernel config, and NextBSD deletes <code>/boot/kernel/*.ko</code>, so net80211's autoload can't self-heal. Every WPA/WPA2/WPA3 association fails <code>EINVAL</code> at the first ioctl. Open networks work. <strong>Fix: <code>device wlan_xauth</code> in <code>config/NEXTBSD</code>.</strong> This is a bug, not a feature — it should land regardless of everything else here.</li>
+    <li><strong>Everything else in the protocol stack is already built.</strong> <code>wpa_supplicant</code> 2.11 ships in base untouched; <code>IntelWiFi.kext</code> (<code>if_iwlwifi</code>) is built, firmware-bundled (267 MB), and boot-load-proven in CI; LinuxKPI's mac80211 shim is statically linked.</li>
+    <li><strong>But there is no zero-glue path.</strong> Two more things are broken: nothing creates the <code>wlan0</code> VAP (that's <code>rc.conf</code>'s job on FreeBSD, and NextBSD has no <code>/etc/rc.d</code>), and <code>ipconfigd</code> fires DHCP at net80211 RUN state — <em>before</em> the 4-way handshake — then never retries.</li>
+    <li><strong>Keep <code>wpa_supplicant</code> stock, from base.</strong> Do not vendor it into <code>nextbsd-userland/src</code>, do not teach it Mach, do not add the port. It never needs to know configd exists.</li>
+    <li><strong><code>wifid</code> is C + CoreFoundation, not Objective-C.</strong> There is no ObjC runtime and no Foundation in <code>nextbsd-userland</code>. The CoreWLAN-shaped ObjC API belongs <em>above</em> the Mach line, in Gershwin.</li>
+    <li><strong>Gershwin already has the UI.</strong> <code>Network.prefPane</code> has a working WLAN tab and a <code>NetworkBackend</code> protocol that is already, in effect, the WiFi API spec.</li>
+    <li><strong>iwd is out.</strong> nl80211-welded, LGPL-2.1, plus <code>ell</code> and D-Bus. It contributes its object model as a design reference, not code.</li>
+    <li><strong>Decided (2026-07-13): we build <code>wifid</code> properly &mdash; no shortcut.</strong> The cheap path was rejected because it does not actually work: without something publishing an association-complete signal, there is nothing for the DHCP gate to gate on, and the minimum honest shim <em>is</em> <code>wifid</code> v0. See <a href="#fork">&sect;5</a>. Scope ends at System Preferences; a menubar item is Gershwin's call.</li>
+    <li><strong>Nine foundation tickets are filed</strong> &mdash; <a href="#tickets">&sect;10</a>. Every one is a real bug <em>independent</em> of WiFi, masked until now because NextBSD has only ever run on a single wired NIC. They land before <code>wifid</code>.</li>
+  </ul>
+</section>
+
+<h2 id="blockers">1. Three blockers between "Intel card" and "IP address"</h2>
+
+<p>Each is independent. All three must be fixed before WiFi works at all.</p>
+
+<h3>1.1 <code>wlan_xauth</code> is missing <span class="pill bad">BLOCKER</span> <span class="pill ok">SHIP THIS NOW</span> <a class="pill info" href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/51">kernel#51</a></h3>
+
+<div class="resolved">
+<strong>This one is a self-contained bug fix. It does not depend on any other decision in this document, and it should not wait for one.</strong> It is a regression NextBSD introduced against stock FreeBSD, the fix is one additive line, the blast radius is zero, and it is independently testable. Everything else in this plan is about making WiFi <em>good</em>; this is the difference between WPA being <em>impossible</em> and WPA <em>working</em>.
+</div>
+
+<h4>Symptom</h4>
+<p>Every WPA / WPA2 / WPA3 network fails to associate. Open networks work fine. There is no useful error surfaced to the user — <code>wpa_supplicant</code> simply never leaves <code>SCANNING</code>.</p>
+
+<h4>Root cause</h4>
+
+<div class="gap">
+<strong><code>ioctl(SIOCS80211, IEEE80211_IOC_AUTHMODE)</code> returns <code>EINVAL</code>, always.</strong> <code>wpa_supplicant</code> sets the authmode to <code>IEEE80211_AUTH_WPA</code>. <code>ieee80211_ioctl.c:2858-2870</code> calls <code>ieee80211_authenticator_get()</code>, which (<code>ieee80211_proto.c:471-478</code>) looks up <code>auth_modnames[IEEE80211_AUTH_WPA]</code> = <code>"wlan_xauth"</code> and tries <code>ieee80211_load_module("wlan_xauth")</code> &rarr; <code>kldload</code> &rarr; <strong>no such module on disk</strong> &rarr; returns NULL &rarr; <code>EINVAL</code>. Association never begins.
+</div>
+
+<p>Two independent facts combine to produce this, and <em>neither is wrong on its own</em>:</p>
+
+<ol>
+  <li><strong><code>wlan_xauth</code> is not in the kernel.</strong> NextBSD's config is <code>include GENERIC</code> plus additions (<code>nextbsd-kernel/config/NEXTBSD:1</code>) — nothing wireless is excluded, and <code>device wlan</code> + <code>wlan_ccmp</code>/<code>wlan_tkip</code>/<code>wlan_wep</code>/<code>wlan_gcmp</code>/<code>wlan_amrr</code> all arrive from GENERIC. But <code>wlan_xauth</code> is <em>not</em> in GENERIC either &mdash; upstream FreeBSD deliberately leaves it out, because net80211 autoloads it as a <code>.ko</code> on demand. On stock FreeBSD this is invisible and self-healing.</li>
+  <li><strong>NextBSD has no <code>.ko</code> tree to autoload from.</strong> <code class="src">nextbsd-kernel/ci/assemble-image.sh:168</code> does <code>rm -f "$ROOTFS"/boot/kernel/*.ko</code> — the entire module tree is deleted at image-assembly time; only <code>.kext</code> bundles survive. This is intentional and correct for the kext model.</li>
+</ol>
+
+<div class="gap">
+<strong>The general lesson, beyond WiFi: on NextBSD, <em>every</em> lazy <code>kldload</code> path in the kernel is dead.</strong> Any subsystem that relies on autoloading a module on first use will fail silently and non-obviously, because the recovery mechanism upstream depends on has been removed wholesale. net80211 alone has four such call sites (<code>ieee80211_proto.c:476</code>, <code>ieee80211_crypto.c:370</code>, <code>ieee80211_ratectl.c:125</code>, <code>ieee80211_scan.c:191</code>). <strong>This is worth a separate audit</strong> — <code>wlan_xauth</code> is simply the first instance anyone tripped over. Tracked as <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/52">kernel#52</a>.
+</div>
+
+<h4>Fix</h4>
+
+<pre class="shell"><code># nextbsd-kernel/config/NEXTBSD
+device      wlan_xauth   # 802.11 802.1x/WPA authenticator.
+                         # net80211 autoloads this as a .ko on stock FreeBSD;
+                         # NextBSD ships no .ko tree (assemble-image.sh:168),
+                         # so it must be compiled in.</code></pre>
+
+<p><strong>Risk: none.</strong> It is a purely additive kernel-config line that statically links a small, in-tree net80211 module that upstream ships and every other FreeBSD system loads on demand. It cannot regress the wired path, it changes no userland, and it touches no other subsystem. If WiFi is not present on a machine, the code is simply never entered.</p>
+
+<h4>Verification (standalone — no other phase required)</h4>
+<pre class="shell"><code># Before: expect this to fail with "Invalid argument"
+ifconfig wlan0 create wlandev iwlwifi0
+wpa_supplicant -i wlan0 -c /tmp/wpa.conf -d      # never leaves SCANNING
+
+# After: expect association to complete
+wpa_cli -i wlan0 status                          # wpa_state=COMPLETED
+
+# Sanity-check the authenticator actually registered:
+sysctl net.wlan.devices                          # radio is visible
+ifconfig wlan0 list caps                         # WPA/RSN advertised</code></pre>
+
+<p><code>wlan_acl</code> and <code>wlan_rssadapt</code> are the same latent class of failure and would be reasonable to add in the same commit, but neither is needed for a station &mdash; they only matter for hostap mode and alternate rate control, so leaving them out is defensible.</p>
+
+<h3>1.2 Nothing creates the <code>wlan0</code> VAP <span class="pill bad">BLOCKER</span> <span class="pill warn">new work — <code>wifid</code></span></h3>
+
+<p>On FreeBSD, <code>wlans_iwlwifi0="wlan0"</code> in <code>rc.conf</code> clones the 802.11 VAP from the physical device. NextBSD has neither: <code class="src">nextbsd-freebsd-compat/.github/workflows/build.yml:127</code> hard-strips <code>/stage/etc</code>, <code>installworld</code> (not <code>make distribution</code>) is used deliberately so <code>/etc</code> content is never generated, and <code>/sbin/init</code> is in the <code>superseded</code> list because launchd is PID 1. There is no <code>rc.d</code> and never will be.</p>
+
+<p>So <code>ifconfig wlan0 create wlandev iwlwifi0</code> has <strong>no owner</strong>. This is a responsibility Apple's <code>wifid</code> never had — IO80211 presents <code>en0</code> directly — and it means the phy&rarr;VAP lifecycle must belong to something on NextBSD. That something is <code>wifid</code>.</p>
+
+<h3>1.3 <code>ipconfigd</code> DHCPs too early, then gives up forever <span class="pill bad">BLOCKER</span> <a class="pill info" href="https://github.com/nextbsd-redux/nextbsd-userland/issues/37">userland#37</a></h3>
+
+<p>The trigger path has <strong>no interface-type check at all</strong>. The only filter anywhere is <code>strncmp(ifname, "lo", 2)</code>.</p>
+
+<div class="ascii-diagram">wlan0 hits net80211 RUN  (associated, NOT yet keyed)
+   → if_link_state_change(LINK_STATE_UP)
+   → RTM_IFINFO
+   → configd config_link_monitor.c:269  publish_link("wlan0", 1)
+   → State:/Network/Interface/wlan0/Link = {Active: true}
+   → ipconfigd sc_link_watch.c:148      handle_link_key()      ← "wlan0" is not "lo*"
+   → ipconfigd.c:359                    on_link_event(active=1) ← no type check
+   → dhcp_run_on_interface("wlan0")     DHCPDISCOVER on an unauthenticated port
+   → dropped. {4,8,16}s ladder burns ~28s. IPCFG-BOUND-FAIL.
+   → re-arm… but Link is ALREADY Active, so no new event ever arrives.
+   → silence, forever.</div>
+
+<p>Two aggravations. net80211 VAPs go through <code>ether_ifattach</code>, so they report <code>IFT_ETHER</code> — meaning even <code>dhcp_pick_interface()</code>'s <code>sdl_type != 6</code> filter (<code class="src">dhcp_discover.c:111</code>) will happily select <code>wlan0</code>. And the <code>{4,8,16}s</code> retransmit ladder means the user watches a 28-second hang before nothing happens.</p>
+
+<h3>1.4 The fix: gate DHCP on an <code>AirPort</code> key</h3>
+
+<p>Make <code>ipconfigd</code>'s contract honest. Today it assumes <code>Link{Active}</code> means "L2 is usable for IP"; net80211's RUN state breaks that assumption for WPA. The repair is to require a second predicate — but <strong>only</strong> where a WiFi daemon has declared itself the authority.</p>
+
+<p>Single file, <code>src/IPConfiguration/sc_link_watch.c</code>, ~70 LOC:</p>
+
+<table class="compact">
+<thead><tr><th>Change</th><th>LOC</th></tr></thead>
+<tbody>
+<tr><td>Second subscription pattern <code>State:/Network/Interface/[^/]+/AirPort</code> alongside the existing <code>…/Link</code>; widen the <code>CFArrayCreate</code> at <code>:251-253</code> and the initial <code>SCDynamicStoreCopyKeyList</code> sweep at <code>:282</code>.</td><td>~8</td></tr>
+<tr><td>Rename <code>handle_link_key</code> &rarr; <code>handle_iface_key</code>. Its ifname parse (<code>:165-173</code>) already works verbatim for both entities; route both into one <code>evaluate_interface()</code>.</td><td>~15</td></tr>
+<tr><td><code>evaluate_interface(store, ifname)</code> — read <code>/Link</code> <code>{Active}</code>, call <code>wifi_ready()</code>, fire <code>schedule_link_event(ifname, 1)</code> only when <em>both</em> hold. The admin-up path (<code>active=0</code>) is unchanged.</td><td>~25</td></tr>
+<tr><td><code>wifi_ready(store, ifname)</code> — <code>SCDynamicStoreCopyValue</code> on <code>State:/Network/Interface/&lt;if&gt;/AirPort</code>. <strong>Key absent &rArr; return 1.</strong></td><td>~25</td></tr>
+</tbody>
+</table>
+
+<div class="resolved">
+<strong>Key-absent-means-ready is the load-bearing default.</strong> No WiFi daemon has claimed <code>em0</code>, so <code>em0</code> behaves bit-for-bit as it does today. Zero regression risk on the existing wired CI path — which matters, because <code>tests/boot-test.sh</code> gates on it.
+</div>
+
+<p>And the re-trigger falls out for free. <code>wifid</code> publishes <code>AirPort {Authenticated: false}</code> on association and <code>{Authenticated: true}</code> on <code>CTRL-EVENT-CONNECTED</code>. That second <code>configset</code> is itself a change on the new pattern, so configd wakes the <em>existing</em> linkwatch session, <code>evaluate_interface("wlan0")</code> re-runs, <code>/Link</code> is already Active, the gate is now open &rarr; DHCP. Event-driven, no polling, no debounce, no new IPC. It also incidentally fixes the "one failed attempt then silence" hole: a re-association generates a fresh trigger even though <code>/Link</code> never moved.</p>
+
+<p>No <code>configd</code> change. No <code>ipconfig.defs</code> change. No MIG regeneration.</p>
+
+<h2 id="exists">2. What already exists (so we don't rebuild it)</h2>
+
+<table class="compact">
+<thead><tr><th>Piece</th><th>Status</th><th>Evidence</th></tr></thead>
+<tbody>
+<tr><td><code>wpa_supplicant</code> 2.11, <code>wpa_cli</code>, <code>wpa_passphrase</code>, <code>hostapd</code>, <code>ifconfig</code>, <code>wlandebug</code></td><td><span class="yesno yes">SHIPS</span></td><td>FreeBSD <code>releng/15.1</code> base, untouched. Zero wireless paths in <code>collisions</code> or <code>superseded</code>; no <code>WITHOUT_WIRELESS</code> knob anywhere.</td></tr>
+<tr><td>net80211 + <code>wlan_ccmp</code>/<code>tkip</code>/<code>wep</code>/<code>gcmp</code>/<code>amrr</code></td><td><span class="yesno yes">IN KERNEL</span></td><td>Inherited from GENERIC. <code>config/NEXTBSD:1</code></td></tr>
+<tr><td>LinuxKPI mac80211 shim (<code>linux_80211.c</code>)</td><td><span class="yesno yes">IN KERNEL</span></td><td><code>options COMPAT_LINUXKPI</code> + <code>optional compat_linuxkpi wlan</code></td></tr>
+<tr><td><code>IntelWiFi.kext</code> (<code>if_iwlwifi</code>) + 267 MB firmware</td><td><span class="yesno yes">SHIPS</span></td><td>Built by <code>nextbsd-kernel-modules</code>; firmware bundled in <code>Contents/Resources/firmware</code>, found via patch 0004's <code>linker_file_foreach</code> search. kext-smoke-test in CI.</td></tr>
+<tr><td><code>SCDynamicStore</code> (create/get/set/copy-key-list/notify, dispatch + runloop sources)</td><td><span class="yesno yes">WORKS</span></td><td><code>libSystemConfiguration/SCDynamicStore.c</code>, <code>SCNotify.c</code></td></tr>
+<tr><td><code>SCPreferences</code> — atomic, locked, commit-notifying plist store</td><td><span class="yesno yes">WORKS</span></td><td><code>SCPreferences.c</code>: temp-file + <code>rename()</code>, lockfile, <code>/Local/Library/Preferences/SystemConfiguration/preferences.plist</code></td></tr>
+<tr><td><code>wlanN</code> typed as <code>kSCNetworkInterfaceTypeIEEE80211</code></td><td><span class="yesno yes">WORKS</span></td><td><code>SCNetworkInterface.c:227-243</code> — name-prefix heuristic, because FreeBSD 802.11 clones report <code>IFT_ETHER</code></td></tr>
+<tr><td>CoreFoundation plist read/write (XML + binary)</td><td><span class="yesno yes">WORKS</span></td><td>Vendored swift-corelibs <code>CFPropertyList.c</code></td></tr>
+<tr><td>Gershwin <code>Network.prefPane</code> with WLAN tab (scan / connect-with-password / radio toggle)</td><td><span class="yesno yes">EXISTS</span></td><td><code>gershwin-components/Network/</code> — <code>NetworkBackend</code> protocol + <code>BSDBackend.m</code>. <em>Gershwin's to evolve, not this plan's — see &sect;6 Phase 5.</em></td></tr>
+<tr><td><code>kSCEntNetAirPort</code> + 802.11 property keys</td><td><span class="yesno no">ABSENT</span></td><td><code>SCSchemaDefinitions.h:71-78</code> stops at IPv4/IPv6/DHCP/DNS/Proxies/Interface/Link</td></tr>
+<tr><td>Keychain / Security.framework / any secret store</td><td><span class="yesno no">ABSENT</span></td><td>Not in <code>src/</code>, not in <code>PORTING.md</code>, not planned</td></tr>
+<tr><td>Objective-C runtime / Foundation in <code>nextbsd-userland</code></td><td><span class="yesno no">ABSENT</span></td><td>No libobjc2; zero <code>.m</code> files built; toolchains enable C/C++ only</td></tr>
+<tr><td>Any Gershwin process speaking Mach</td><td><span class="yesno no">NONE, EVER</span></td><td>Zero <code>mach/</code>, <code>bootstrap_look_up</code>, <code>xpc_</code>, or SC references in the component tree</td></tr>
+</tbody>
+</table>
+
+<h2 id="ruledout">3. Approaches ruled out (do not relitigate)</h2>
+
+<h3>3.1 iwd <span class="pill bad">DEAD</span></h3>
+<p>Two independent fatal blockers. It is welded to <code>nl80211</code>/<code>cfg80211</code> — there is no <code>net80211</code> backend, and iwd deliberately leans on cfg80211 semantics rather than abstracting over them, so a FreeBSD port is a rewrite of the layer the daemon is built on, not a driver shim. And it is LGPL-2.1 (can't go in base), on top of dragging in <code>ell</code> and D-Bus.</p>
+<p><strong>What survives:</strong> iwd's object model — <code>Station</code> / <code>Network</code> / <code>KnownNetwork</code> / <code>Agent</code> — maps almost one-to-one onto CoreWLAN's <code>CWInterface</code> / <code>CWNetwork</code> / credential-prompt flow, and it already contains the autojoin brain wpa_supplicant lacks. <strong>iwd contributes ideas; wpa_supplicant contributes code.</strong></p>
+
+<h3>3.2 A custom supplicant seeded from Apple's sources <span class="pill bad">DEAD</span></h3>
+<p>There is no seed. <code>eapolclient</code> (<a href="https://github.com/apple-oss-distributions/eap8021x">eap8021x</a>) does the EAP exchange <em>only</em> — it derives a PMK for Enterprise networks and hands it back. It does not scan, does not associate, and does not do the 4-way handshake. All of that lives in closed <code>wifid</code> and IO80211 firmware offload. And <code>eap8021x</code> is not in the NextBSD tree at all.</p>
+<p>So "custom wifid based on Apple's supplicant" means implementing SAE/Dragonfly, the 4-way handshake and key hierarchy, PMKSA caching, PMF/802.11w, and FT from scratch — the exact code that produced KRACK and Dragonblood — in a codebase where we are the only auditor. <strong>No.</strong></p>
+
+<h3>3.3 Vendoring <code>wpa_supplicant</code> into <code>nextbsd-userland/src</code> and teaching it Mach <span class="pill bad">REJECTED</span></h3>
+<p>Four reasons, any one sufficient:</p>
+<ul>
+  <li><strong>It violates the repo's own scope.</strong> <code>nextbsd-userland</code>'s README defines it as "Tiers 0–2 — the system layer that has <em>no FreeBSD equivalent</em>." <code>wpa_supplicant</code> is definitionally the FreeBSD thing; it already speaks net80211 through <code>driver_bsd.c</code>.</li>
+  <li><strong>CVE cadence.</strong> wpa_supplicant is the one component in the network stack where "three months behind upstream" is an exploit. Stock, a fix is a base rebuild. Vendored-and-patched, every upstream security release becomes a merge against our Mach patches, forever.</li>
+  <li><strong>The patch buys nothing.</strong> We need the policy brain regardless — wpa_supplicant has no autojoin, no known-networks model, no credential store, no scan list for a UI. Once <code>wifid</code> exists, <code>wifid</code> holds the Mach port and calls <code>SCDynamicStoreSetValue()</code>. A Mach-aware supplicant would duplicate a component we still have to write.</li>
+  <li><strong>Blast radius.</strong> It couples the most security-sensitive, most-frequently-updated daemon to the most bespoke, least-settled component (the <code>mach.ko</code> syscall-slot shim). A bug there should not be able to take down the supplicant.</li>
+</ul>
+<p><strong>Also don't add the port.</strong> <code>security/wpa_supplicant</code> is the same 2.11, but installs to <code>/usr/local/sbin</code> and shadows base for no benefit. (FreeBSD's official pkg repo <em>is</em> configured and enabled — <code>nextbsd/build.sh:169-187</code> writes <code>pkg+https://pkg.FreeBSD.org/FreeBSD:15:${ABIARCH}/latest</code> and rebrands ABI precisely so FreeBSD:15 packages install cleanly — so ports remain available if we ever need them. We don't, here.)</p>
+
+<div class="resolved">
+<strong><code>wpa_supplicant</code> never needs Mach.</strong> It speaks net80211 ioctls downward and a UNIX control socket upward. It does not link CoreFoundation and does not know configd exists. All Mach knowledge lives in <code>wifid</code>, which gets it for free by linking <code>libSystemConfiguration</code> — the same way <code>ipconfigd</code> does.
+</div>
+
+<h2 id="arch">4. The architecture</h2>
+
+<div class="ascii-diagram">  Gershwin  (ObjC / GNUstep — no Mach, non-Mach libdispatch, own Foundation)
+
+     ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+       menubar WiFi status item   — OUT OF SCOPE. Gershwin's call.
+     └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  System Preferences → Network.prefPane          [IN SCOPE, ph.5] │
+  │  EXISTS: WLAN tab + NetworkBackend protocol                      │
+  │  ADD:    SCWiFiBackend (3rd impl, beside NMBackend/BSDBackend)   │
+  └───────────────────────────────┬──────────────────────────────────┘
+                                  │  NSTask + privileged helper
+                                  │  (BSDBackend.m already does exactly this)
+                                  ▼
+  ═══════════════════════════ Mach line ════════════════════════════════
+                          /usr/sbin/wifi      ← C CLI, MIG client
+                                  │             (mirrors ipconfig.c)
+                                  │  MIG / com.apple.wifi
+                                  ▼
+                          /usr/sbin/wifid     ← C + CoreFoundation
+                                  │
+      ┌───────────────┬───────────┴────────────┬────────────────────┐
+      │               │                        │                    │
+  VAP lifecycle   own PF_ROUTE            wpa_ctrl socket      SCPreferences
+  ifconfig create RTM_IFANNOUNCE          ───────────────►     known networks
+  /destroy        (configd does NOT       stock wpa_supplicant  preferences.plist
+                   handle this)           2.11 from base
+      │                                          │
+      └──────────────► SCDynamicStore ◄──────────┘
+              State:/Network/Interface/wlan0/AirPort
+                   { Authenticated, SSID, BSSID, RSSI, Channel, Security }
+                                  │
+                                  ▼
+              ipconfigd sc_link_watch.c  — DHCP requires
+              Link{Active:true} AND AirPort{Authenticated:true}</div>
+
+<h3>4.1 Why the CLI bridge, and not linking SC into the prefPane</h3>
+
+<p><strong>No Gershwin process has ever spoken Mach</strong> — zero <code>mach/</code>, <code>bootstrap_look_up</code>, <code>xpc_connection</code>, or SystemConfiguration references anywhere in <code>gershwin-components</code>. And this is deliberate, not accidental: <code>gershwin-developer/Library/Scripts/Install-System-Domain.sh:74-95</code> <em>force-disables</em> <code>HAVE_MACH</code> when building Gershwin's libdispatch on NextBSD, so the desktop's dispatch is isolated from the base stack's Mach one. Gershwin apps link gnustep-base's Foundation, not <code>libCoreFoundation.so.6</code>. <code>PORTING.md:838-846</code> states the policy: "three CF lanes, one CF per binary."</p>
+
+<p>Linking <code>libSystemConfiguration</code> + <code>libmach</code> into a GNUstep bundle collides head-on with that split. The cheap path is the one already in the tree: <code>ipconfigd</code> is a Mach daemon and <code>ipconfig</code> is a <strong>pure-C CLI Mach client</strong> (<code>bootstrap_look_up</code> at <code>ipconfig.c:150-154</code>). Do the same. <code>BSDBackend.m:262-268</code> already invokes a privileged helper via <code>NSTask</code>, so a <code>/usr/sbin/wifi</code> binary drops straight into the existing invocation path with <strong>no ObjC&harr;Mach linkage problem at all</strong>.</p>
+
+<p>The CoreWLAN-shaped ObjC API stays <em>above</em> the Mach line, where ObjC actually exists. That is also where it belongs architecturally.</p>
+
+<h2 id="fork">5. The path <span class="pill ok">DECIDED: BUILD IT PROPERLY</span></h2>
+
+<div class="resolved">
+<strong>Decision (2026-07-13): we build <code>wifid</code>. The shortcut is rejected.</strong> The table below is retained as the rationale, not as an open question &mdash; it records what we are choosing <em>against</em> and why, so this doesn't get relitigated.
+</div>
+
+<p>The two options were never competing architectures &mdash; the shortcut is a strict subset of the real thing's first phases. The only question was where to stop, and the answer is: we don't.</p>
+
+<h3>Why the shortcut was rejected</h3>
+
+<p><strong>It doesn't actually work.</strong> That is the decisive argument, and it isn't an aesthetic one. Without <code>wifid</code>, nothing publishes an <code>AirPort</code> key &mdash; so the DHCP gate in <a href="#blockers">&sect;1.4</a> has nothing to gate on, and every alternative is worse: hold the interface admin-down until <code>wpa_supplicant</code> reports CONNECTED (ugly, and racy against <code>ipconfigd</code>'s own <code>iface_bring_up</code>), or let the 28-second DISCOVER ladder fail and hope for a manual retry (which the sticky-failure bug means never comes). <strong>The minimum honest shim &mdash; something that watches <code>wpa_ctrl</code> and publishes <code>AirPort{Authenticated}</code> &mdash; <em>is</em> <code>wifid</code> v0.</strong> There is no cheaper thing that is also correct.</p>
+
+<p><strong>And the shortcut's end state is one we'd have to demolish.</strong> It leaves PSKs in <code>/etc/wpa_supplicant.conf</code>, autojoin as an integer, nothing in the dynamic store, and System Preferences shelling out through <code>sudo -A</code> to tools that don't exist on this system. Every one of those is later thrown away. The work isn't saved, it's deferred and then discarded.</p>
+
+<table>
+<thead><tr><th></th><th>Shortcut <span class="pill bad">REJECTED</span></th><th>What we're building <span class="pill ok">CHOSEN</span></th></tr></thead>
+<tbody>
+<tr><td><strong>Scope</strong></td><td><code>wlan_xauth</code> + a launchd job that creates the VAP and runs <code>wpa_supplicant</code> + a DHCP gate</td><td>All of that, plus <code>wifid</code> + the <code>wifi</code> CLI + an SC-backed System Preferences backend</td></tr>
+<tr><td><strong>Effort</strong></td><td>Weeks</td><td>Months</td></tr>
+<tr><td><strong>Credentials</strong></td><td>Plaintext <code>/etc/wpa_supplicant.conf</code>, 0600, via <code>wpa_cli save_config</code> — what <code>BSDBackend.m</code> does today</td><td>Plaintext root-owned <code>preferences.plist</code> via SCPreferences. <em>Still plaintext</em> — there is no keychain either way</td></tr>
+<tr><td><strong>Autojoin</strong></td><td>wpa_supplicant's <code>priority</code> integer</td><td><code>wifid</code> policy: RSSI ranking, last-used, per-network enable</td></tr>
+<tr><td><strong>Dynamic store</strong></td><td>Nothing published. DHCP gate has to be hacked another way (see below)</td><td><code>State:/…/AirPort</code> published; gate is clean and event-driven</td></tr>
+<tr><td><strong>System Preferences</strong></td><td><code>sudo -A</code> + <code>NSTask</code> shell-outs &mdash; and to <em>what</em> is unclear, since <code>dhclient</code> and <code>sysrc</code> don't exist here</td><td><code>Network.prefPane</code> gets a real backend: <code>wifi</code> CLI &rarr; MIG &rarr; <code>wifid</code></td></tr>
+<tr><td><strong>Shape</strong></td><td>GhostBSD</td><td>Apple</td></tr>
+</tbody>
+</table>
+
+<div class="resolved">
+<strong>What "decided" does and doesn't mean.</strong> It does <em>not</em> mean nothing lands until <code>wifid</code> is finished. Phases 0&ndash;2 are independently useful and independently shippable &mdash; <a href="#blockers">&sect;1.1</a>'s <code>wlan_xauth</code> fix in particular should go in as its own PR this week, and Phase 2's <code>ipconfigd</code> repairs are worth doing on their own merits (they fix two latent bugs that have nothing to do with WiFi). What it means is that we <strong>don't stop there</strong>, and we don't build a throwaway credential store or a throwaway DHCP hack on the way.
+</div>
+
+<h2 id="phases">6. Phases</h2>
+
+<h3>Phase 0 — unblock the kernel <span class="pill ok">1 LINE · SHIP NOW</span></h3>
+<p><code>device wlan_xauth</code> in <code>nextbsd-kernel/config/NEXTBSD</code>. <strong>This is not really a phase — it is a bug fix that happens to be a prerequisite.</strong> It has no dependency on Q1 (ship vs right), on <code>wifid</code>, or on anything else in this document, and it should go in as its own PR rather than waiting for a WiFi decision. Full write-up, risk assessment, and standalone verification steps: <a href="#blockers">&sect;1.1</a>. <strong>Ticket: <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/51">nextbsd-kernel#51</a></strong> (and the systemic audit, <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/52">#52</a>).</p>
+
+<h3>Phase 1 — prove the chain by hand</h3>
+<pre class="shell"><code>ifconfig wlan0 create wlandev iwlwifi0
+ifconfig wlan0 up
+wpa_supplicant -i wlan0 -c /tmp/wpa.conf -B
+wpa_cli -i wlan0 status          # expect wpa_state=COMPLETED</code></pre>
+<p>Expect DHCP to fail here — that is the §1.3 race, and observing it is the point. Confirms driver, firmware, net80211, <code>wlan_xauth</code>, and the supplicant all work before any new code is written.</p>
+
+<h3>Phase 2 — <code>ipconfigd</code>: the gate + the latent bugs</h3>
+<p>The ~70-LOC <code>sc_link_watch.c</code> gate from <a href="#blockers">&sect;1.4</a>, <em>plus</em> the pre-existing bugs in <a href="#ipconfigd">&sect;8</a> — the gate does not work without them. <strong>Tickets: <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/37">#37</a> (dead re-arm) and <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/38">#38</a> (global single-flight) are hard blockers for the gate; <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/39">#39</a>, <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/40">#40</a>, <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/41">#41</a> are the rest of the multi-interface debt.</strong></p>
+
+<h3>Phase 3 — <code>wifid</code> v1 (C + CoreFoundation)</h3>
+<p><code>/usr/sbin/wifid</code>, launchd job <code>com.apple.wifid</code> serving Mach service <code>com.apple.wifi</code>. Responsibilities:</p>
+<ul>
+  <li><strong>VAP lifecycle</strong> — enumerate 802.11 phys, <code>ifconfig wlanN create wlandev &lt;phy&gt;</code>, destroy on removal.</li>
+  <li><strong>Its own <code>PF_ROUTE</code> listener for <code>RTM_IFANNOUNCE</code></strong> — <em>unless <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/42">userland#42</a> lands first, in which case configd does this and <code>wifid</code> just subscribes.</em> Today configd's link monitor handles <code>RTM_IFINFO</code> <em>only</em>, so a VAP cloned at runtime is invisible to it until the first link-state transition, and a destroyed one leaves a stale <code>Link</code> key forever. Since <code>wifid</code> is the thing doing the cloning, it must track arrivals and departures itself.</li>
+  <li><strong>Drive <code>wpa_supplicant</code></strong> over <code>wpa_ctrl</code> — <code>SCAN</code>, <code>SCAN_RESULTS</code>, <code>ADD_NETWORK</code>, <code>SET_NETWORK</code>, <code>SELECT_NETWORK</code>; consume the async event stream (<code>CTRL-EVENT-CONNECTED</code>, <code>-DISCONNECTED</code>, <code>-SSID-TEMP-DISABLED</code>) off a <code>dispatch_source</code> on the control-socket fd. <code>wpa_ctrl.c</code> is BSD-licensed and small enough to compile in directly.</li>
+  <li><strong>Be the sole author of wpa_supplicant's network blocks.</strong> Run it with an empty config and inject everything at runtime. If <code>wpa_supplicant.conf</code> also carries SSIDs, two autojoin brains fight — the classic NetworkManager failure mode.</li>
+  <li><strong>Known networks</strong> in SCPreferences.</li>
+  <li><strong>Publish</strong> <code>State:/Network/Interface/&lt;wlan&gt;/AirPort</code>.</li>
+</ul>
+
+<h3>Phase 4 — the <code>wifi</code> CLI</h3>
+<p><code>/usr/sbin/wifi</code>, a pure-C MIG client modeled on <code>src/IPConfiguration/ipconfig.c</code>. This is both the debugging tool (there is <strong>no <code>scutil</code></strong> — see §7) and the desktop's bridge across the Mach line.</p>
+
+<h3>Phase 5 — System Preferences backend</h3>
+<p>A third <code>NetworkBackend</code> implementation (<code>SCWiFiBackend</code>) in <code>Network.prefPane</code>, alongside <code>NMBackend</code> and <code>BSDBackend</code>, driving the <code>wifi</code> CLI from Phase 4.</p>
+
+<p>This is needed rather than optional: the existing <code>BSDBackend</code> shells out to <code>wpa_cli</code>, <code>dhclient</code> and <code>sysrc</code>, <strong>none of which exist on NextBSD</strong>. So the NextBSD backend cannot be <code>BSDBackend</code> with tweaks — it needs something to talk to, and Phase 4 is what gives it one. The protocol itself doesn't change: <code>scanForWLANs</code>, <code>connectToWLAN:withPassword:</code>, <code>setWLANEnabled:</code>, <code>savedConnections</code> are already declared and already drive the WLAN tab.</p>
+
+<div class="open-q">
+<strong>Scope stops at System Preferences.</strong> A menubar WiFi status item is <strong>not</strong> part of this plan — that is Gershwin's to design and schedule, on Gershwin's own roadmap. This plan's obligation to it is only to make it <em>possible</em>: the <code>wifi</code> CLI and a stable <code>State:/Network/Interface/&lt;wlan&gt;/AirPort</code> schema are the contract, and anything Gershwin builds on top of them is out of scope here.
+</div>
+
+<h2 id="constraints">7. Constraints that shape the code</h2>
+
+<div class="gap">
+<strong>MIG out-of-line data is broken in this port's kernel.</strong> <code>ipconfig.defs:19-22</code> says so explicitly — which is exactly why <code>ipconfigd</code> vendors only 2 of Apple's ~21 routines (Apple's <code>ipconfig_set</code> takes OOL <code>xmlData</code>). So <strong><code>wifid</code> cannot return a scan-results plist over MIG.</strong> Use the flat indexed pattern <code>ipconfigd</code> already established (<code>ipconfig_if_count</code> + <code>ipconfig_if_addr</code>): <code>wifi_scan_count()</code> then <code>wifi_scan_entry(i)</code>.
+</div>
+
+<div class="gap">
+<strong>Scan results cannot go in the dynamic store either.</strong> <code>CONFIG_DATA_MAX</code> (<code>config_types.h:74</code>) rejects any key <em>or value</em> over 8192 bytes, and a busy scan blows straight past that. Only the compact connected-state summary belongs in <code>State:/…/AirPort</code>. Scan results go over the MIG surface to the CLI.
+</div>
+
+<div class="gap">
+<strong>There is no keychain, not started, not planned.</strong> WiFi passwords are plaintext-on-disk regardless of path. The only choice is <em>which</em> plaintext file. Decide it consciously (§9 Q2) rather than letting it happen by default.
+</div>
+
+<p>Three more, less severe:</p>
+<ul>
+  <li><strong>No <code>kSCEntNetAirPort</code>.</strong> The 802.11 entity and all its property keys must be added to <code>SCSchemaDefinitions.h</code>. We are inventing this schema; nothing consumes it today.</li>
+  <li><strong>No <code>scutil</code>.</strong> The only mention in the tree is an <code>.Xr scutil 8</code> cross-reference in configd's man page pointing at a binary that does not exist. There is <em>no</em> way to inspect the dynamic store ad hoc. The <code>wifi</code> CLI partly fills this; a general store dumper (<code>CopyKeyList(".*")</code> + <code>CopyMultiple</code>) is worth ~50 LOC on its own.</li>
+  <li><strong>No launchd service ordering.</strong> No <code>StartAfter</code>/<code>Requires</code>; the plist directory scan isn't even sorted. "Start after configd" is expressed as <code>KeepAlive=true</code> + open the SCDynamicStore lazily and tolerate NULL (<code>sc_publish.c:136-143</code> is the model). Never assume configd is up in <code>main()</code>.</li>
+</ul>
+
+<h3>7.1 The daemon recipe, concretely</h3>
+<p>Binary to <code>/usr/sbin/wifid</code> — <code>/System/Library</code> holds <em>data</em> only (plists, kexts), never executables. A <code>bsd.prog.mk</code> Makefile, not CMake (CMake is used by exactly two components and the cross-toolchain file says so explicitly). Plist in <code>overlay/System/Library/LaunchDaemons/</code>, which ships verbatim via <code>cp -aR overlay/. /stage/</code>. Build block in <code>build-userland.sh</code> after IPConfiguration, generating MIG stubs externally and passing them in via <code>MIGOUT=</code>.</p>
+
+<p>The link line matters and is easy to get wrong after the <code>#378</code> rename:</p>
+<pre><code>LDADD+=  -llaunch -lsystem_kernel
+LDADD+=  -lSystemConfiguration -lCoreFoundation
+LDADD+=  -lsystem_dispatch -l:libsystem_blocks.so
+CFLAGS+= -fblocks
+WARNS=   0                       # CF public headers are not -Werror clean
+BINDIR=  /usr/sbin</code></pre>
+<div class="gap">
+<strong><code>-ldispatch</code> and <code>-lBlocksRuntime</code> no longer exist in base.</strong> Those names now belong to Gershwin's separate stock copies; linking them is what caused the rtld collision that crashed launchctl/dbus/sshd. Use <code>-lsystem_dispatch</code> and the exact-file <code>-l:libsystem_blocks.so</code> form.
+</div>
+
+<h2 id="ipconfigd">8. ipconfigd debt that WiFi forces us to pay</h2>
+
+<p>Both bugs are pre-existing and independent of WiFi. Both will defeat the §1.4 gate if left alone. Neither has been noticed because NextBSD has only ever been tested on a single wired NIC.</p>
+
+<div class="gap">
+<strong>The re-arm is dead code.</strong> <code>bound_state_set(NULL, …)</code> is never called anywhere — the only call site (<code>ipconfigd.c:262</code>) always passes a live lease. So after a lease expires, <code>bound_state_any()</code> stays true forever and the re-arm at <code>ipconfigd.c:426</code> can never fire. <strong>Expire once &rArr; that <code>ipconfigd</code> never DHCPs again until restarted.</strong>
+</div>
+
+<div class="gap">
+<strong>DHCP is a global single-flight.</strong> <code>g_dhcp_started</code> (<code>ipconfigd.c:97-98</code>) + <code>bound_state</code> (<code>bound_state.c:12-17</code>, one global struct, <code>bound_state_count()</code> returns 0 or 1) permit <strong>exactly one bound interface for the daemon's lifetime</strong>. On a laptop with <code>em0</code> and <code>wlan0</code>, whichever links first wins and the other is ignored forever — so the WiFi gate will work correctly and still be defeated by <code>em0</code> winning the race.
+</div>
+
+<p>Related, and the next thing to break: <code>State:/Network/Global/IPv4</code> is <strong>last-binder-wins</strong>. <code>sc_publish.c:230-235</code> has <code>ipconfigd</code> declare whichever service just bound to be primary — the comment admits it. There is no IPMonitor, no service-order arbitration anywhere. mDNSResponder and hostnamed both read that key. Wired-only, nobody noticed. Add WiFi and "primary interface" is a race.</p>
+
+<p><strong>The honest read: <code>ipconfigd</code> is currently a single-interface wired-desktop daemon, and WiFi is what forces it to grow up.</strong> Also unhandled and worth knowing: no teardown on link-down (address and default route stay installed), no <code>SIOCDIFADDR</code>/<code>RTM_DELETE</code>/DHCPRELEASE anywhere, and <code>/etc/resolv.conf</code> is rewritten on bind but <em>not</em> on renew — so a renewal that changes DNS servers updates the store and not the resolver.</p>
+
+<h2 id="hardware">9. Hardware scope</h2>
+
+<table class="compact">
+<thead><tr><th>Target</th><th>Status</th><th>What's needed</th></tr></thead>
+<tbody>
+<tr><td>amd64 + Intel (iwlwifi)</td><td><span class="yesno yes">WORKS after Phase 0</span></td><td>Nothing. Kext + firmware already ship.</td></tr>
+<tr><td>amd64 + legacy Atheros (<code>ath</code>)</td><td><span class="yesno partial">SHOULD WORK after Phase 0</span></td><td>Compiled into the kernel from GENERIC; needs no firmware. Untested.</td></tr>
+<tr><td>Realtek (<code>rtw88</code>/<code>rtw89</code>), MediaTek (<code>mt76</code>), <code>ath10k/11k</code></td><td><span class="yesno no">NO</span></td><td>Each needs a kext + firmware following the IntelWiFi pattern (personality generator + <code>ko2kext</code> + <code>linux-firmware</code> sparse-clone). No kernel work — LinuxKPI is already baked in.</td></tr>
+<tr><td>USB WiFi (<code>run</code>, <code>urtwn</code>, <code>otus</code>, <code>rsu</code>)</td><td><span class="yesno no">NO</span></td><td>Above, <em>plus</em> IOKit matcher work — the personality generator only emits <code>IOProviderClass = IOPCIDevice</code>.</td></tr>
+<tr><td><strong>arm64 — any WiFi at all</strong></td><td><span class="yesno no">NO net80211 WHATSOEVER</span></td><td>arm64 GENERIC never sets <code>device wlan</code>. The entire 802.11 stack is absent from that kernel. Needs <code>device wlan</code> + the crypto set added explicitly to <code>config/NEXTBSD</code>.</td></tr>
+</tbody>
+</table>
+
+<h2 id="tickets">10. Tickets</h2>
+
+<p>Filed 2026-07-13. <strong>Every one of these is a real bug independent of WiFi</strong> — they are all currently masked by the fact that NextBSD has only ever been exercised on a single wired NIC. WiFi is simply what makes them reachable. They are the foundation, and they go in before <code>wifid</code>.</p>
+
+<h3>Foundation — must land first</h3>
+<table class="compact">
+<thead><tr><th>Ticket</th><th>What</th><th>Blocks</th></tr></thead>
+<tbody>
+<tr>
+  <td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/51"><strong>kernel#51</strong></a> <span class="pill bad">blocker</span></td>
+  <td><code>wlan_xauth</code> missing — every WPA/WPA2/WPA3 association fails <code>EINVAL</code></td>
+  <td><strong>Everything.</strong> One additive config line; zero risk; ship independently. <a href="#blockers">&sect;1.1</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/37"><strong>userland#37</strong></a> <span class="pill bad">blocker</span></td>
+  <td><code>ipconfigd</code>: dead re-arm — <code>bound_state_set(NULL,…)</code> is never called, so after one lease expiry DHCP never runs again</td>
+  <td>The DHCP gate. <a href="#ipconfigd">&sect;8</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/38"><strong>userland#38</strong></a> <span class="pill bad">blocker</span></td>
+  <td><code>ipconfigd</code>: global single-flight — exactly one interface can ever bind, for the daemon's lifetime</td>
+  <td>The DHCP gate. Without this, <code>em0</code> wins the race and <code>wlan0</code> is ignored forever even when the gate works correctly. <a href="#ipconfigd">&sect;8</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/42"><strong>userland#42</strong></a> <span class="pill warn">strongly wanted</span></td>
+  <td><code>configd</code>: link monitor handles <code>RTM_IFINFO</code> only — no <code>RTM_IFANNOUNCE</code>, so runtime-created interfaces are invisible and destroyed ones leave stale <code>Link</code> keys</td>
+  <td>Not a hard blocker, but if it lands, <code>wifid</code> does <em>not</em> need to run a duplicate <code>PF_ROUTE</code> listener just to see the VAPs it creates. Worth doing first. <a href="#phases">Phase 3</a></td>
+</tr>
+</tbody>
+</table>
+
+<h3>Multi-interface debt — same root cause, do them together</h3>
+<table class="compact">
+<thead><tr><th>Ticket</th><th>What</th></tr></thead>
+<tbody>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/39"><strong>userland#39</strong></a></td><td><code>ipconfigd</code>: no deconfigure path — address and default route survive link-down, lease expiry, and interface removal. Every time you walk out of WiFi range, a stale IP and a stale default route stay installed.</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/40"><strong>userland#40</strong></a></td><td><code>ipconfigd</code>: <code>/etc/resolv.conf</code> not rewritten on renew (DNS change updates the store but not the resolver), and the write is non-atomic (no temp file, no <code>rename()</code>, no <code>fsync</code>).</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/41"><strong>userland#41</strong></a></td><td><code>ipconfigd</code>: <code>State:/Network/Global/IPv4</code> is last-binder-wins — no service-order arbitration, no IPMonitor. mDNSResponder and hostnamed both consume this key, so a wrong answer propagates into Bonjour and hostname resolution.</td></tr>
+</tbody>
+</table>
+
+<h3>Systemic / scope</h3>
+<table class="compact">
+<thead><tr><th>Ticket</th><th>What</th></tr></thead>
+<tbody>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/52"><strong>kernel#52</strong></a></td><td><strong>Every lazy <code>kldload</code> path in the kernel is dead</strong> — <code>assemble-image.sh:168</code> deletes the whole <code>.ko</code> tree, so any subsystem that autoloads a module on first use fails silently. <code>wlan_xauth</code> is just the first instance anyone tripped over; net80211 alone has four such call sites, and three of them work today only by the accident that GENERIC happens to compile them in. Deserves a real audit and a CI guard.</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/53"><strong>kernel#53</strong></a></td><td>arm64 has no net80211 whatsoever — arm64 GENERIC never sets <code>device wlan</code>. WiFi is amd64-only. Low priority; filed so the hardware matrix is honest. <a href="#hardware">&sect;9</a></td></tr>
+</tbody>
+</table>
+
+<div class="resolved">
+<strong>Suggested order.</strong> <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/51">kernel#51</a> first and alone — it is one line and unblocks WPA on hardware we already ship. Then <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/37">#37</a> + <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/38">#38</a> together (they are the same "ipconfigd assumes one interface forever" mistake seen from two angles), ideally with <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/39">#39</a> since teardown is coupled to clearing the bound state. Then <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/42">#42</a>, which simplifies <code>wifid</code>. Only then start <code>wifid</code> itself.
+</div>
+
+<h2 id="openq">11. Open questions</h2>
+
+<div class="resolved">
+<strong>Q1 — Shortcut or build it properly? <em>Answered 2026-07-13: build it properly.</em></strong> Not an open question. The rejected alternative is documented in full at <a href="#fork">&sect;5</a>, deliberately &mdash; so that it is on the record what we chose against and why, and so it does not get re-proposed as a fresh idea in six months. Short version: the shortcut doesn't work (nothing publishes the association-complete signal the DHCP gate needs), and its end state is entirely throwaway.
+</div>
+
+<div class="open-q">
+<strong>Q2 — Where do PSKs live, given there is no keychain?</strong> Plaintext either way. <code>/etc/wpa_supplicant.conf</code> (0600, root — what Gershwin's <code>BSDBackend</code> does today) or a root-owned <code>preferences.plist</code> under <code>/Local/Library/Preferences/SystemConfiguration</code>. The latter is Darwin-shaped and gives <code>wifid</code> sole ownership of network blocks (which we want anyway, per §6 Phase 3); the former is what already works. Not a security difference — only an architecture one. <strong>A real keychain is greenfield and its own multi-month project.</strong>
+</div>
+
+<div class="open-q">
+<strong>Q3 — Does <code>wifid</code> own the VAP, or does a separate one-shot job create it?</strong> A trivial launchd job could run <code>ifconfig wlan0 create wlandev iwlwifi0</code> at boot and be done. But it can't handle hotplug (USB dongles), can't handle multiple radios, and leaves nobody owning teardown. Since <code>wifid</code> must run a <code>RTM_IFANNOUNCE</code> listener regardless (configd doesn't), giving it the VAP lifecycle is barely more work than not.
+</div>
+
+<div class="open-q">
+<strong>Q4 — Enterprise (802.1X/EAP)?</strong> Comes free from <code>wpa_supplicant</code>'s built-in EAP stack, or not at all — <code>eap8021x</code> is absent from the tree and porting it buys nothing wpa_supplicant lacks. Defer until someone actually needs WPA-Enterprise.
+</div>
+
+<div class="open-q">
+<strong>Q5 — <code>ipconfigd</code> multi-interface: how far?</strong> §8's two bugs are the minimum. But a laptop that roams between wired and WiFi really wants service-order arbitration (an IPMonitor), which is a genuinely larger piece. Is "both interfaces can bind, primary is whoever bound last" acceptable for v1?
+</div>
+
+<h2 id="prov">12. Provenance</h2>
+
+<p>Written 2026-07-13 against these trees at these commits:</p>
+<table class="compact">
+<thead><tr><th>Repo</th><th>HEAD</th></tr></thead>
+<tbody>
+<tr><td><code>nextbsd-redux/nextbsd-userland</code></td><td><code>df01921</code> (2026-07-10)</td></tr>
+<tr><td><code>nextbsd-redux/nextbsd-kernel</code></td><td><code>1b2eb00</code> (2026-07-10)</td></tr>
+<tr><td><code>nextbsd-redux/nextbsd-kernel-modules</code></td><td><code>f9f065c</code> (2026-07-12)</td></tr>
+<tr><td><code>nextbsd-redux/nextbsd-freebsd-compat</code></td><td><code>afeb233</code> (2026-07-05)</td></tr>
+<tr><td><code>nextbsd-redux/nextbsd</code></td><td><code>f2c647e</code> (2026-07-10)</td></tr>
+<tr><td><code>nextbsd-redux/nextbsd-overlays</code></td><td><code>8fe48d0</code> (2026-07-03)</td></tr>
+<tr><td><code>gershwin-desktop/gershwin-on-nextbsd</code></td><td><code>436d423</code> (2026-07-13)</td></tr>
+</tbody>
+</table>
+
+<h3>What this supersedes</h3>
+<p>The companion research doc — now <a href="nextbsd-wifi-research.html">WiFi on NextBSD — the Apple stack, and why we use wpa_supplicant</a>, renamed from <code>freebsd-wifi-management.html</code> — remains correct on <em>Apple's stack, what's open source, the wpa_supplicant/iwd comparison, and the glossary</em>. Its integration sections (old §4 "What this project ships today", §5 "Hypothetical wifid-fbsd", §7 "Open questions") have been <strong>deleted</strong>, not just flagged, because they asserted the following — all false on NextBSD:</p>
+<ul>
+  <li>"<code>wpa_supplicant</code> from ports… already in <code>pkglist.txt</code> alongside dhcpcd" — <strong>NextBSD does not use dhcpcd</strong>. <code>nextbsd/README.md:33</code> explicitly lists dhcpcd among the DHCP clients replaced by <code>ipconfigd</code>. And wpa_supplicant comes from <em>base</em>, not ports.</li>
+  <li>"dhcpcd's built-in wpa_supplicant hook gates DHCP behind ASSOCIATED — out-of-the-box pairing, no extra glue" — <strong>that hook does not exist here.</strong> This was the doc's entire argument for not building a <code>wifid</code>, and it rested on a component NextBSD doesn't ship.</li>
+  <li>"Exposes a CoreWLAN-equivalent API over DO IPC (consistent with the project's Mach-IPC-replacement choice)" — <strong>the project went Mach.</strong> configd is a MIG server on <code>com.apple.SystemConfiguration.configd</code>. Distributed Objects was the abandoned sibling track.</li>
+  <li>The ObjC <code>@protocol NCWiFiClient</code> sketch — <strong>there is no ObjC runtime in <code>nextbsd-userland</code>.</strong></li>
+  <li>"<code>wifid</code> is a cosmetic / API-symmetry investment, not a functional one" — <strong>false.</strong> Without something publishing an association-complete signal, DHCP on WiFi does not work at all.</li>
+</ul>
+
+<p class="src" style="margin-top:2rem">Companion plans: <a href="freebsd-configd-plan.html">configd</a> (note: its repo pointer at <code>pkgdemon/freebsd-launchd-mach</code> is stale — the code now lives at <code>nextbsd-redux/nextbsd-userland</code>) &middot; <a href="freebsd-ipconfiguration-plan.html">IPConfiguration</a> &middot; <a href="freebsd-launchd-mach-plan.html">launchd (Mach)</a> &middot; <a href="freebsd-keychain-port-plan.html">Keychain</a></p>
+
+</body>
+</html>

@@ -87,7 +87,7 @@
 </nav>
 
 <h1>FreeBSD Keychain — porting / alternatives plan <span class="pill info">Scoping</span></h1>
-<p class="subtitle">What macOS Keychain actually is, what's open vs closed, and the full set of options for giving NextBSD/gershwin a local secret store with Apple's <code>SecItem</code> API — from porting Apple's <code>Security.framework</code> wholesale, to wrapping <code>gnome-keyring</code>, to a clean-room <code>secd</code>-equivalent. Companion to the <a href="freebsd-wifi-management.html">WiFi management</a>, <a href="freebsd-pam-port-plan.html">PAM port</a>, and <a href="freebsd-configd-plan.html">configd</a> plans.</p>
+<p class="subtitle">What macOS Keychain actually is, what's open vs closed, and the full set of options for giving NextBSD/gershwin a local secret store with Apple's <code>SecItem</code> API — from porting Apple's <code>Security.framework</code> wholesale, to wrapping <code>gnome-keyring</code>, to a clean-room <code>secd</code>-equivalent. Companion to the <a href="nextbsd-wifi-research.html">WiFi management</a>, <a href="freebsd-pam-port-plan.html">PAM port</a>, and <a href="freebsd-configd-plan.html">configd</a> plans.</p>
 
 <section id="tldr" class="tldr">
   <h3>TL;DR</h3>
@@ -97,7 +97,7 @@
     <li><strong>We don't need most of it.</strong> No iCloud Keychain sync, no SEP/biometric gating, no code-signing trust evaluation (separate concern). What we need is a <em>local</em> secret store exposing the public <code>SecItem</code> (and legacy <code>SecKeychain</code>) C API, so Apple-derived apps and our own daemons (<code>wifid-fbsd</code>, configd, a future mail/browser) have somewhere safe to put passwords and keys.</li>
     <li><strong>Recommendation: clean-room <code>secd</code>-equivalent.</strong> A launchd-managed Mach/<a href="freebsd-libxpc-plan.html">DO</a> daemon implementing the <code>SecItem</code> facade over an encrypted file store, using base crypto (<code>libcrypto</code> / libsodium), optionally TPM2-backed. Per the shipped system's convention it keeps Apple's own name — launchd job label <em>and</em> Mach service both <strong><code>com.apple.securityd</code></strong> (modern alt <code>com.apple.secd</code>), exactly like the running <code>com.apple.configd</code> / <code>com.apple.notifyd</code> — see <a href="#naming">§5.1</a>. Reuses the project's existing launchd + CoreFoundation + Mach substrate. Estimated <strong>~2–3 person-months for a usable per-user subset</strong>; more for full ACL/access-group fidelity.</li>
     <li><strong>Alternatives considered &amp; why they lose:</strong> full <code>Security.framework</code> port (closed crypto + SEP + enormous); wrapping <code>gnome-keyring</code>/<code>libsecret</code> (drags in D-Bus, LGPL, and a non-Apple API shape); KWallet (Qt/KDE weight); <code>pass</code>/gpg-agent (no daemon API, CLI-shaped); plaintext <code>Network.plist</code> (status quo, no protection).</li>
-    <li><strong>Not a commitment.</strong> Sequenced behind a real consumer. Until one lands, secrets stay inline in plaintext <code>Network.plist</code> (the WiFi plan's <a href="freebsd-wifi-management.html#open">Q2</a>). This plan exists so the option space is settled and we don't relitigate.</li>
+    <li><strong>Not a commitment.</strong> Sequenced behind a real consumer. Until one lands, secrets stay inline in plaintext <code>Network.plist</code> (the WiFi plan's <a href="nextbsd-wifi-plan.html#openq">Q2</a>). This plan exists so the option space is settled and we don't relitigate.</li>
   </ul>
 </section>
 
@@ -356,7 +356,7 @@ SecKeychainAddInternetPassword(...);</code></pre>
 <p>Getting <code>GenericPassword</code> + <code>InternetPassword</code> CRUD correct covers WiFi creds, network shares, and the vast majority of app needs. Key/cert/identity classes and a possible PKCS#11 (§4.F) backend come later.</p>
 
 <h2 id="open">8. Open questions</h2>
-<div class="open-q"><strong>Q1. First consumer?</strong> The plan only starts when something needs it. Likely candidates: <code>wifid-fbsd</code> network creds, a future mail/browser, or network-share mounts. Until then, plaintext <code>Network.plist</code> stands (WiFi plan <a href="freebsd-wifi-management.html#open">Q2</a>).</div>
+<div class="open-q"><strong>Q1. First consumer?</strong> The plan only starts when something needs it. Likely candidates: <code>wifid-fbsd</code> network creds, a future mail/browser, or network-share mounts. Until then, plaintext <code>Network.plist</code> stands (WiFi plan <a href="nextbsd-wifi-plan.html#openq">Q2</a>).</div>
 <div class="open-q"><strong>Q2. Per-user vs system scope on day one?</strong> The System keychain (root, pre-login) is what <code>wifid-fbsd</code> would need first; the per-user login keychain is what desktop apps need. Probably ship the system instance first since WiFi is the nearer consumer.</div>
 <div class="open-q"><strong>Q3. TPM2 from the start or as a follow-up?</strong> Software-only is simpler and works everywhere; TPM2 sealing is the meaningful hardening but adds a conditional dependency and PCR-policy complexity. Lean: ship software-only, add TPM2 as opt-in phase 2.</div>
 <div class="open-q"><strong>Q4. How faithful must access control be?</strong> Full Apple ACLs are tied to code-signing identities we don't have. Start with uid+path; revisit if/when a code-signing story exists. Document the gap so nobody assumes Apple-grade app isolation.</div>
@@ -369,7 +369,7 @@ SecKeychainAddInternetPassword(...);</code></pre>
   <li><strong>Keychain Services API:</strong> <a href="https://developer.apple.com/documentation/security/keychain_services">developer.apple.com/documentation/security/keychain_services</a></li>
   <li><strong>freedesktop Secret Service / libsecret:</strong> <a href="https://specifications.freedesktop.org/secret-service/latest/">specifications.freedesktop.org/secret-service</a></li>
   <li><strong>FreeBSD TPM2 stack:</strong> <a href="https://www.freshports.org/security/tpm2-tss/">freshports.org/security/tpm2-tss</a>, <code>man 4 tpm</code></li>
-  <li><strong>Companion plans:</strong> <a href="freebsd-wifi-management.html">WiFi management</a>, <a href="freebsd-pam-port-plan.html">PAM port</a>, <a href="freebsd-opendirectory-port-plan.html">OpenDirectory scoping</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-libcorefoundation-icu-audit.html">libCoreFoundation</a></li>
+  <li><strong>Companion plans:</strong> <a href="nextbsd-wifi-research.html">WiFi management</a>, <a href="freebsd-pam-port-plan.html">PAM port</a>, <a href="freebsd-opendirectory-port-plan.html">OpenDirectory scoping</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-libcorefoundation-icu-audit.html">libCoreFoundation</a></li>
 </ul>
 
 </body>

@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU readiness &amp; LoginWindow — what actually panics, and what the gate is really for</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.1rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.45rem; margin:56px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.15rem; margin:32px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; }
+  li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e6e6; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); }
+  .pill-warn { background:#f4dfbf; color:var(--warn); }
+  .pill-bad { background:#f0c8c8; color:var(--bad); }
+  .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+  .strike { text-decoration:line-through; color:var(--fg-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD Research</a> &middot; companion to the <a href="nextbsd-nvidia-userland-display-plan.html">NVIDIA userland / display plan</a> and the <a href="nextbsd-nvidia-kext-porting-plan.html">NVIDIA kext porting plan</a></p>
+
+<h1>GPU readiness &amp; <code>LoginWindow</code></h1>
+<p class="lede">Issue <a href="https://github.com/nextbsd-redux/nextbsd/issues/390">#390</a> asked: <em>how does <code>LoginWindow</code> know the GPU is ready, and how would Apple do it?</em> A 68-agent research workflow &mdash; six parallel passes, 60 adversarial verifiers, a synthesis and a completeness critic &mdash; came back with an answer nobody wanted: <strong>the premise is wrong, the panic is not a readiness problem at all, and it was fixed upstream twelve days ago.</strong> NVIDIA shipped the fix on 2026-05-17; FreeBSD ports landed it on 2026-07-01 in a commit literally titled &ldquo;Fix GPF in some configs&rdquo;. NextBSD builds <code>nvidia-drm</code> <em>without</em> it, because our kext factory hand-picks four <code>extra-patch-*</code> files and never applies the port&rsquo;s auto-applied <code>files/patch-*</code>. This page documents the correction, the real ordering bugs that <em>do</em> survive, how Apple genuinely solves this, and what to ship.</p>
+<p class="meta">2026-07-13. Sources are <code>file:line</code> against <code>nextbsd-userland</code>, <code>nextbsd-kernel</code>, <code>nextbsd-kernel-modules</code>, <code>gershwin-system</code>, <code>gershwin-on-nextbsd</code>, <code>freebsd-src@releng/15.1</code>, <code>freebsd/drm-kmod@6.12-lts</code>, <code>freebsd/freebsd-ports@main</code> and NVIDIA 595.84. Every load-bearing claim below was handed to an adversarial verifier instructed to refute it; the three that decided the recommendation were then re-verified by hand.</p>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">Retraction</span> <strong>My own analysis in #390 was wrong, twice.</strong> I claimed NVKMS display init continues asynchronously after <code>/dev/dri/card0</code> appears, and that <code>&ldquo;Lost display notification&rdquo;</code> was evidence of it. Both are false (&sect;2). Anyone building on those comments should stop. The corrected diagnosis is in &sect;3.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#tldr">The short version</a></li>
+  <li><a href="#wrong">Three things #390 got wrong</a></li>
+  <li><a href="#realbug">What actually panics &mdash; and the upstream fix we&rsquo;re missing</a></li>
+  <li><a href="#whyus">Why NextBSD hits it and stock FreeBSD doesn&rsquo;t</a></li>
+  <li><a href="#realgate">So what <em>is</em> #390 about? The four ordering bugs that survive</a></li>
+  <li><a href="#apple">How Apple actually does it</a></li>
+  <li><a href="#have">What NextBSD already has &mdash; an inventory</a></li>
+  <li><a href="#matrix">The no-<code>card0</code> problem: VMs, hybrids, headless, failsafe</a></li>
+  <li><a href="#options">Options, ranked</a></li>
+  <li><a href="#design">The recommended gate</a></li>
+  <li><a href="#donot">What not to do</a></li>
+  <li><a href="#tickets">Ticket plan</a></li>
+  <li><a href="#open">Open questions &mdash; answer before shipping</a></li>
+</ol>
+</div>
+
+<h2 id="tldr">1. The short version</h2>
+
+<p>Two separate problems were tangled together in one ticket, and the interesting one turned out not to be ours.</p>
+
+<table>
+<tr><th style="width:16%">Issue</th><th style="width:38%">What we thought</th><th>What it actually is</th></tr>
+<tr>
+  <td><strong><a href="https://github.com/nextbsd-redux/nextbsd/issues/391">#391</a></strong><br>the panic</td>
+  <td>A LinuxKPI&harr;nvidia-drm mapping defect exposed by a boot race; needs kernel hardening and probably a <code>vm_phys_fictitious_reg_range()</code> call NVIDIA omits.</td>
+  <td><strong>A known integer underflow in <code>nvidia-drm</code>, fixed upstream.</strong> On FreeBSD <code>vmf-&gt;pgoff</code> is always 0, so <code>page_offset = vmf-&gt;pgoff - drm_vma_node_start()</code> underflows to a huge value and the driver reads <code>pages[]</code> out of bounds. NVIDIA&rsquo;s own fix (<code>c81cb2d8759</code>, Austin Shafer, 2026-05-17) is in <code>freebsd-ports</code> since <code>1959aaa9de6a</code> (2026-07-01). <strong>We never apply it.</strong></td>
+</tr>
+<tr>
+  <td><strong><a href="https://github.com/nextbsd-redux/nextbsd/issues/390">#390</a></strong><br>the gate</td>
+  <td><code>ls /dev/dri/card*</code> fires too early because NVKMS is still initializing; we need a real readiness signal, maybe IOKit-shaped.</td>
+  <td><strong>There is nothing to wait for after <code>card0</code>.</strong> <code>nvidia-drm</code>&rsquo;s entire init runs synchronously inside <code>kldload</code>, and <code>drm_dev_register()</code> is the <em>last</em> step. But the gate is still broken &mdash; for four different reasons than the one we filed (&sect;5), none of which are about safety once #391 lands.</td>
+</tr>
+</table>
+
+<p><strong>Ship order matters, and it is the reverse of what the ticket implied.</strong> The completeness critic caught this and it is the single most important operational finding on this page:</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Do not invert this</span> <strong>Landing the readiness gate <em>before</em> the nvidia-drm patch would probably make the panic worse, not better.</strong> Today X sometimes wins the race, <code>nvidia-drm</code> never binds, X lands on <code>modesetting</code>/<code>scfb</code>, and no NVKMS GEM object is ever mmap&rsquo;d &mdash; which is a strong candidate explanation for &ldquo;reboot and retry often succeeds.&rdquo; A correct gate <em>guarantees</em> <code>nvidia-drm</code> is bound before X starts, and then pins <code>Driver&nbsp;"nvidia"</code>, which holds the render node open for DRI3/GLX. That converts an intermittent panic into a deterministic one &mdash; in the PR that closes #390. <strong>Patch first. Gate second.</strong></p>
+</div>
+
+<h2 id="wrong">2. Three things #390 got wrong</h2>
+
+<h3>2.1 &ldquo;NVKMS keeps initializing after <code>card0</code> appears&rdquo; &mdash; false</h3>
+<p>I asserted this from dmesg ordering. It does not survive contact with the source. In NVIDIA 595.84, <code>nv_drm_register_drm_device()</code> calls <code>nv_drm_dev_load()</code>, which performs <em>all</em> of the bring-up &mdash; <code>nvKms-&gt;allocateDevice()</code>, mode-config init, CRTC/plane enumeration, encoder/connector enumeration &mdash; and only <em>then</em> calls <code>drm_dev_register()</code>, the call that creates <code>/dev/dri/card0</code>. The source even says so:</p>
+
+<pre><code>/* Load DRM device before registering it */
+nv_drm_dev_load(dev);          &larr; allocateDevice, mode-config, CRTCs, connectors
+...
+drm_dev_register(dev, 0);      &larr; /dev/dri/card0 appears HERE, last
+<span class="cite">nvidia-drm-drv.c:2019-2026 (595.84)</span></code></pre>
+
+<p>And <code>LKPI_DRIVER_MODULE</code> runs the whole thing from the <code>MOD_LOAD</code> event handler &mdash; i.e. <strong>inside <code>kldload</code>, under <code>kld_sx</code>, synchronously</strong>. The instant <code>card0</code> exists, there is nothing left to settle. Raising the 10&nbsp;s cap, adding a settle delay, or probing <code>drmModeGetResources()</code> are all <em>vacuous</em>: they test state that is already true before the node appears.</p>
+
+<h3>2.2 &ldquo;<code>Lost display notification</code> proves async init&rdquo; &mdash; false</h3>
+<p>It is an EVO core-channel notifier <em>timeout</em> that NVKMS papers over (<code>nvkms-dma.c:257-268</code>), emitted from modeset work that <strong>X itself triggers</strong> when it becomes DRM master. It arrives <em>because</em> X started. It cannot be waited out before X starts, and it is not a readiness signal.</p>
+
+<h3>2.3 &ldquo;A readiness gate would prevent the panic&rdquo; &mdash; false, and this is the load-bearing one</h3>
+<p>The panic reproduces with <strong>no X at all</strong>: a GTX 750 Ti under Hyprland and under niri (FreeBSD forums 102022), and the same RTX 3060 Ti under <code>kwin_wayland</code> (drm-kmod#308). The NVKMS GEM ioctls are <code>DRM_RENDER_ALLOW</code> (<code>nvidia-drm-drv.c:1807-1815</code>), so the faulting path is reachable through the <em>render</em> node, with no DRM master, by any unprivileged GL client. <strong>No gate, of any shape, in any process, prevents it.</strong></p>
+
+<h2 id="realbug">3. What actually panics &mdash; and the upstream fix we&rsquo;re missing</h2>
+
+<p>The bug is three lines of arithmetic in NVIDIA&rsquo;s own driver, and it is FreeBSD-specific.</p>
+
+<pre><code>page_offset = vmf-&gt;pgoff - drm_vma_node_start(&amp;gem-&gt;vma_node);</code></pre>
+
+<p>On Linux, <code>vmf-&gt;pgoff</code> carries the file-level page index. <strong>On FreeBSD, <code>linux_cdev_pager_populate()</code> sets <code>vmf-&gt;pgoff = 0</code></strong> and passes the page index through <code>vmf-&gt;virtual_address</code> instead. So the subtraction is <code>0 - drm_vma_node_start(...)</code>, which underflows an <code>unsigned long</code> to an astronomically large value. The driver then indexes its page array with it:</p>
+
+<pre><code>BUG_ON(page_offset &gt;= nv_nvkms_memory-&gt;pages_count);
+pfn = page_to_pfn(nv_nvkms_memory-&gt;pages[page_offset]);   &larr; out-of-bounds read</code></pre>
+
+<p>The garbage <code>struct page *</code> yields a garbage PFN, which goes to <code>vmf_insert_pfn()</code> &rarr; <code>lkpi_vmf_insert_pfn_prot_locked()</code>. On amd64 (<code>VM_PHYSSEG_DENSE</code>) <code>PHYS_TO_VM_PAGE()</code> happily returns a non-NULL pointer to an <em>uninitialized</em> <code>vm_page_array</code> entry, so the driver&rsquo;s only guard &mdash; a NULL check &mdash; passes; <code>vm_page_busy_acquire()</code> then dereferences a stale <code>m-&gt;object</code> and the kernel takes a general protection fault. That is the exact backtrace in #390.</p>
+
+<p><strong>It is intermittent because the underflow only bites when <code>drm_vma_node_start()</code> is nonzero</strong>, which depends on GEM allocation order &mdash; not on timing, not on boot speed, and not on anything a gate can influence.</p>
+
+<h3>The fix already exists</h3>
+<p>NVIDIA&rsquo;s Austin Shafer found and fixed this, explicitly citing the FreeBSD panic report:</p>
+
+<pre><code>commit c81cb2d87591863cd1d37ccb6143981462f215b7
+Author: Austin Shafer &lt;ashafer@nvidia.com&gt;
+Date:   Sun May 17 14:14:58 2026 -0400
+
+    nvidia-drm: fix freebsd page offset during nvkms/user memory faults
+
+    This fixes the page offset calculation on freebsd with nvidia-drm
+    in our nvkms/user memory faults. With this we actually convert
+    virtual_address into a page index and use that to index into
+    our array of pages.
+
+    I found this and ran with it a bit myself, it also recently came
+    up and appears to fix a panic that an end user was running into:
+    https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=296195</code></pre>
+
+<p>It adds a helper that does the right thing per-OS, and deletes the <code>#if defined(NV_LINUX)</code> that was suppressing the offset add on FreeBSD:</p>
+
+<pre><code>+static inline unsigned long
++nv_drm_vma_fault_get_page_offset(struct vm_fault *vmf,
++                                 struct drm_gem_object *gem)
++{
++#if defined(NV_LINUX)
++    unsigned long offset = vmf-&gt;pgoff;
++#else
++    unsigned long offset = OFF_TO_IDX((uintptr_t)vmf-&gt;virtual_address);
++#endif
++    return offset - drm_vma_node_start(&amp;gem-&gt;vma_node);
++}
+<span class="cite">freebsd-ports: graphics/nvidia-drm-612-kmod/files/patch-nvidia-drm-helper.h</span></code></pre>
+
+<p>FreeBSD ports carried it on <strong>2026-07-01</strong> as <code>1959aaa9de6a</code> &mdash; commit title: <em>&ldquo;graphics/nvidia-drm-*-kmod*: Fix GPF in some configs&rdquo;</em> &mdash; as three patch files:</p>
+<ul>
+  <li><code>patch-nvidia-drm-helper.h</code></li>
+  <li><code>patch-nvidia-drm-gem-nvkms-memory.c</code></li>
+  <li><code>patch-nvidia-drm-gem-user-memory.c</code></li>
+</ul>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">The fix for #391</span> Apply those three patches. They are not ours to write, they are already reviewed, and they target the actual defect. <strong>Do not</strong> pursue the <code>register_fictitious_range()</code> theory (see &sect;11) &mdash; it cannot rescue a PFN that came from an out-of-bounds array read, because that value is arbitrary, not a VRAM address.</p>
+</div>
+
+<h2 id="whyus">4. Why NextBSD hits it and stock FreeBSD doesn&rsquo;t</h2>
+
+<p>This was the critic&rsquo;s sharpest question &mdash; <em>a root cause that predicts universal breakage but is observed as rare is not a root cause</em> &mdash; and the answer is embarrassing and completely actionable.</p>
+
+<p>The FreeBSD ports framework <strong>auto-applies every <code>files/patch-*</code></strong> in a port. NextBSD does not use the ports framework for the NVIDIA kexts &mdash; <code>nextbsd-kernel-modules</code> fetches NVIDIA&rsquo;s tarball and re-implements the port&rsquo;s edits by hand. Two mechanisms, and we only reproduce one of them:</p>
+
+<ul>
+  <li><code>tools/nvidia-portpatch.sh</code> transcribes the port&rsquo;s <code>REINPLACE_CMD</code> (sed) edits &mdash; faithfully, as it happens.</li>
+  <li><code>build.yml:800</code> applies a <strong>hand-picked list of four</strong> <code>extra-patch-*</code> / <code>extra-gsp-patch-*</code> files.</li>
+</ul>
+
+<pre><code>for p in extra-patch-src-Makefile extra-patch-src-nv-freebsd.h \
+         extra-patch-src-Makefile-2 \
+         extra-gsp-patch-src-common-inc-nv_firmware_registry.h ; do
+<span class="cite">nextbsd-kernel-modules/.github/workflows/build.yml:800-802</span></code></pre>
+
+<p>The three <code>patch-nvidia-drm-*</code> files that fix the GPF are not in that list, are not <code>extra-patch-*</code>, and are never applied. <strong>Stock FreeBSD users got the fix on 2026-07-01. We are still building the broken driver.</strong></p>
+
+<p>Two hypotheses the critic raised for a NextBSD-specific cause were both checked and killed, which is worth recording so nobody re-opens them:</p>
+
+<table>
+<tr><th style="width:34%">Hypothesis</th><th>Verdict</th></tr>
+<tr>
+  <td><code>nvidia-portpatch.sh:118-119</code> adds <code>-Wno-implicit-function-declaration</code> to <code>NV_CONFTEST_CFLAGS</code> (a real delta from the port), and NVIDIA&rsquo;s conftests are inverted &mdash; so it could silently flip which code paths compile.</td>
+  <td><span class="pill pill-bad">Dead</span> <code>NV_VMF_INSERT_PFN_PRESENT</code> is <strong>force-defined regardless of the conftest</strong> (<code>nvidia-drm-conftest.h:156-157</code>), and the same <code>#ifndef</code> block supplies FreeBSD&rsquo;s <code>vmf_insert_pfn</code> wrapper. Had the flag flipped that conftest, the wrapper would be absent and <code>nvidia-drm.ko</code> <em>would not link</em>. It links. It resolved identically to stock. (Keep the flag &mdash; it is load-bearing for the cross-host build.)</td>
+</tr>
+<tr>
+  <td>NextBSD&rsquo;s kernel overlay carries a modified LinuxKPI <code>linux_page.c</code> or a <code>sys/vm</code> change.</td>
+  <td><span class="pill pill-bad">Dead</span> <code>nextbsd-kernel</code> contains <strong>no LinuxKPI source file and no <code>sys/vm</code> file</strong>. All seven patches touch <code>subr_bus.c</code>, <code>syscalls.master</code>, <code>event.h</code>, <code>eventhandler.h</code>, <code>subr_firmware.c</code>, <code>kern_ucoredump.c</code>, <code>unionfs</code>. <code>linux_page.c</code> is bit-for-bit stock <code>releng/15.1</code>. <code>drm-kmod</code> is cloned unpatched at <code>6.12-lts</code>.</td>
+</tr>
+</table>
+
+<p>And the premise itself &mdash; &ldquo;stock is fine&rdquo; &mdash; was false. Stock FreeBSD <em>did</em> hit this: <a href="https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=296195">FreeBSD PR 296195</a> (15.1-RELEASE, RTX 3060, identical backtrace, closed FIXED 2026-07-02) and <a href="https://github.com/freebsd/drm-kmod/issues/308">drm-kmod#308</a> (14.1, RTX 3060&nbsp;Ti &mdash; <em>our exact GPU</em>, byte-for-byte the same trace).</p>
+
+<div class="callout">
+<p><span class="pill pill-warn">The class of bug</span> The real lesson is not the three patches &mdash; it is that <strong>hand-picking <code>SUB_PATCHES</code> silently drops every future upstream fix</strong>. <code>build.yml</code> should apply <em>all</em> of <code>graphics/nvidia-drm-612-kmod/files/patch-*</code>, not an allowlist, or the next NVIDIA fix will be missed exactly the same way.</p>
+</div>
+
+<h2 id="realgate">5. So what <em>is</em> #390 about? The four ordering bugs that survive</h2>
+
+<p>The gate does not fix the panic. It never did. But it is not worthless &mdash; it is fixing four <em>real, currently-live</em> bugs that were hiding behind the panic, and every one of them is about <strong>correctness and boot behaviour</strong>, not safety:</p>
+
+<ol>
+  <li><strong>X can start before the GPU kext load has even been <em>requested</em>.</strong> kextd&rsquo;s boot personality push races <code>LoginWindow</code>&rsquo;s launchd start, and <strong>launchd has no ordering primitive at all</strong> (its own <code>com.apple.kextd.plist</code> says so). A poll-then-give-up loop structurally cannot wait for a load nobody has asked for yet. This is the actual race, and it is not the one we filed.</li>
+  <li><strong>Wrong-DDX selection.</strong> XLibre picks <code>nvidia_drv.so</code> <em>only</em> via its <code>OutputClass MatchDriver "nvidia-drm"</code> rule, which requires the DRM platform device to exist <em>at server start</em>. The FreeBSD PCI fallback list for <code>0x10de</code> is <code>[modesetting, nvidia, nv]</code> &mdash; <strong>modesetting first</strong>. Start X early and you get the wrong DDX, or <code>xf86platformAddDevice()</code> hotplug-attaches <code>modesetting</code> to <code>nvidia-drm</code> later and takes the <code>CREATE_DUMB</code> path already proven fatal on this box.</li>
+  <li><strong>Hybrid-GPU misattribution.</strong> DRM primary minors come first-come-first-served from one shared xarray, so on any Intel-iGPU + NVIDIA-dGPU laptop <code>i915kms</code> takes <code>card0</code> and <code>nvidia-drm</code> takes <code>card1</code>. <code>ls /dev/dri/card*</code> is then satisfied <em>with certainty, on iteration 1, by the wrong GPU</em> &mdash; made worse by <code>LoginWindow.sh:33</code>, which <code>kldload</code>s <code>i915kms</code> itself immediately before the loop.</li>
+  <li><strong>No failsafe, and a 10&nbsp;s stall on every box with no DRM driver.</strong> There is no safe-graphics mode anywhere in <code>nextbsd</code>, <code>nextbsd-userland/overlay</code> or <code>gershwin-on-nextbsd</code>. A wrong verdict is unrecoverable without a rescue USB.</li>
+</ol>
+
+<h2 id="apple">6. How Apple actually does it</h2>
+
+<p>You asked whether we should add &ldquo;some kind of Mach support to LoginWindow so it cannot start until IOKit says we are good &mdash; however Apple does it.&rdquo; Here is what Apple actually does, and the honest verdict on whether it would have helped.</p>
+
+<h3>Readiness is <em>driver-asserted</em>, never inferred</h3>
+<table>
+<tr><th style="width:30%">Mechanism</th><th>What it really is</th></tr>
+<tr><td><code>registerService()</code></td><td>The driver calls it <strong>when it is ready to be used</strong>, publishing an <code>IOService</code> into the registry. It is a <em>promise by the driver</em> (<code>IOService.h:650-655</code>), not a kernel check. Nothing verifies it.</td></tr>
+<tr><td><code>IOServiceAddMatchingNotification</code> / <code>IOServiceGetMatchingService</code></td><td>Clients block until that service is published, rather than spinning on the filesystem.</td></tr>
+<tr><td><code>IOKitWaitQuiet()</code> / <code>IOServiceWaitQuiet()</code></td><td>Blocks until the registry is <em>quiet</em> &mdash; all matching/probing settled. XNU holds the registry root busy from <code>StartIOKitMatching()</code> until <code>iokitDaemonLaunched()</code>, so it cannot succeed vacuously at boot. Returns <code>kIOReturnTimeout</code> on deadline.</td></tr>
+<tr><td><code>LaunchEvents</code> &rarr; <code>com.apple.iokit.matching</code></td><td>The launchd-native shape: a job is <strong>launched by a service matching</strong>. Real example: <code>com.apple.iomfb_fdr_loader.plist</code> uses <code>IOPropertyMatch { IOMFBLaunchFDR: true }</code> &mdash; the job starts when <em>the driver sets that property</em>.</td></tr>
+<tr><td>WindowServer</td><td>Waits on <code>IOFramebuffer</code> &mdash; <code>IOServiceGetMatchingService</code> &rarr; <code>IOServiceGetBusyState</code> &rarr; <code>IOServiceWaitQuiet</code>. Never a <code>/dev</code> entry.</td></tr>
+</table>
+
+<h3>Why Apple has no race at all &mdash; and why we can&rsquo;t copy it</h3>
+<p>The structural detail that matters: <code>IOFramebuffer::start()</code> only <em>publishes</em>. <code>enableController()</code> runs inside <code>IOFramebuffer::open()</code> &mdash; <strong>the WindowServer&rsquo;s open of the framebuffer user client is what drives modeset.</strong> The display server is not racing the driver; it <em>is</em> the trigger. There is no window to lose.</p>
+
+<p><code>nvidia-drm.ko</code> inverts that completely. It is a Linux-shaped module with no <code>IOService</code>, no <code>registerService()</code>, and nothing to publish. And per &sect;2, it has no readiness edge left to publish <em>anyway</em> &mdash; by the time anything could observe it, init is done.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">The honest answer</span> Apple&rsquo;s model requires the <strong>driver</strong> to sign a contract. An opaque vendor blob will never sign it. We can build the whole Apple-shaped apparatus &mdash; and we arguably should, because launch-on-hardware is the right architecture for NextBSD &mdash; but <strong>IOKit matching fires on <em>publication</em>, which is the same too-early edge as <code>/dev/dri/card0</code></strong>. The event plumbing is the easy half; the readiness predicate is the whole problem, and it does not exist. Build it because it is right, not because it fixes this.</p>
+</div>
+
+<h2 id="have">7. What NextBSD already has &mdash; an inventory</h2>
+
+<p>The good news from the research: we have far more of this machinery than <code>LoginWindow.sh</code> uses. The bad news: none of it can see <code>nvidia-drm</code>.</p>
+
+<table>
+<tr><th style="width:24%">Component</th><th style="width:16%">Status</th><th>Reality check</th></tr>
+<tr><td>In-kernel IOKit matcher</td><td><span class="pill pill-good">Shipped</span></td><td><code>sys/dev/iokit/iokit_catalogue.c</code>. hwregd is <strong>retired</strong> (#218); the kernel matches and asks kextd to load via Mach message to <code>HOST_KEXTD_PORT</code>. Three load triggers, no settle timer (#67 is closed).</td></tr>
+<tr><td>In-kernel IORegistry</td><td><span class="pill pill-good">Shipped</span></td><td><code>sys/dev/iokit/iokit_registry.c</code>, <code>/dev/ioregistry</code>, frozen ioctl ABI, Mach-port watch channel. Real, not synthesized.</td></tr>
+<tr><td>libIOKit APIs</td><td><span class="pill pill-good">Shipped</span></td><td><code>IOServiceGetMatchingService(s)</code>, <code>IOServiceAddMatchingNotification</code>, <code>IORegistryEntryGetBusyState</code>, <code>IOServiceWaitQuiet</code>, <code>IOKitWaitQuiet</code> &mdash; <strong>all real implementations, none are stubs</strong>.</td></tr>
+<tr><td>busyState / waitQuiet (#176)</td><td><span class="pill pill-warn">Merged, but</span></td><td>Kernel patch 0002 brackets <code>device_probe_and_attach()</code> with <code>device_match_start/end</code>; <code>mach.ko</code> keeps <code>mach.bus.busy</code> + a <code>mach_wait_quiet</code> syscall. <strong>It cannot see <code>nvidia-drm</code> at all</strong> &mdash; that registers via <code>LKPI_DRIVER_MODULE</code> (a <code>MOD_LOAD</code> evhand), not newbus. It goes quiet <em>before</em> <code>card0</code> exists. Gating on it is <strong>strictly weaker than today&rsquo;s loop.</strong></td></tr>
+<tr><td>kextd</td><td><span class="pill pill-warn">Fire-and-forget</span></td><td><code>mach_msg</code> RCV &rarr; <code>OSKextLoad</code> &rarr; <code>kldload(2)</code> &rarr; loop. No reply to the kernel, no attach callback, no way to say &ldquo;I have pushed everything.&rdquo;</td></tr>
+<tr><td>launchd ordering</td><td><span class="pill pill-bad">Absent</span></td><td>No ordering key. <code>KeepAlive&rarr;PathState</code>, <code>WatchPaths</code>, <code>QueueDirectories</code> are <strong>parsed nowhere</strong> in <code>core.c</code>. <code>LaunchEvents</code> parses (<code>core.c:3038</code>) but <strong>no event-monitor job exists</strong>, so the stream has no publisher and any <code>LaunchEvents</code> plist silently never fires. <code>xpc_set_event_stream_handler</code> is declared (<code>xpc.h:2525</code>) and <strong>defined nowhere</strong>.</td></tr>
+<tr><td>notifyd</td><td><span class="pill pill-bad">Unusable</span></td><td>Both in-tree clients had to comment out <code>notify_post</code>/<code>notify_register_dispatch</code> because libnotify aborts the caller (<a href="https://github.com/nextbsd-redux/nextbsd/issues/160">#160</a>, still open). Do not build on it.</td></tr>
+<tr><td><code>kextload</code> / <code>kextstat</code></td><td><span class="pill pill-good">Shipped</span></td><td>The sleeper asset &mdash; see &sect;10. <code>/usr/sbin/kextload &lt;bundle&gt;</code> is a <strong>genuine synchronous barrier</strong>.</td></tr>
+</table>
+
+<h3>The barrier that already exists</h3>
+<p>This one deserves its own note, because the critic tried to kill it and the attempt <em>proved</em> it instead.</p>
+
+<p><code>kern_kldload()</code> takes <code>kld_sx</code> <strong>exclusive</strong> and holds it unbroken across <code>linker_file_sysinit()</code> &mdash; i.e. across <code>MOD_LOAD</code>, which is where <code>nv_drm_init()</code> and <code>drm_dev_register()</code> run. kextd&rsquo;s autoload goes through that same syscall. The critic objected that <code>OSKextLoad</code> short-circuits in userland (<code>if (OSKextIsLoaded(thisKext)) continue;</code>, <code>OSKext.c:8654</code>) and would skip the syscall, leaving no barrier. But:</p>
+
+<pre><code>Boolean OSKextIsLoaded(OSKextRef aKext) {
+    ...
+    return (kldfind(execName) &gt;= 0) ? true : false;   &larr; a live syscall, not a cache
+}
+<span class="cite">nextbsd-userland/src/kext_tools/kext.subproj/OSKext.c:10050-10068</span></code></pre>
+
+<p><code>kldfind(2)</code> takes <code>kld_sx</code> <strong>exclusive</strong>. So the &ldquo;short-circuit&rdquo; <em>is</em> a lock acquisition: it blocks until the concurrent loader&rsquo;s <code>MOD_LOAD</code> has returned, then reports loaded. <strong>The barrier holds in every interleaving</strong> &mdash; including the one that matters, where kextd has not yet been asked to load anything, because then <code>kextload</code> simply performs the load itself.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-bad">Trap</span> <strong>Never use <code>kextstat -m &lt;module&gt;</code> as the barrier.</strong> That is <code>modfind(2)</code>, which takes only <code>MOD_SLOCK</code> and sees a module <em>registered before <code>MOD_LOAD</code> runs</em>. It will lie to you in precisely the racing window. Use <code>kldstat -n</code> (<code>kldfind</code>) or the <code>kextload</code> return.</p>
+</div>
+
+<h2 id="matrix">8. The no-<code>card0</code> problem: VMs, hybrids, headless, failsafe</h2>
+
+<p>You flagged this and you were right to: a gate that hangs &mdash; or that starts X on the wrong assumption &mdash; on these is unacceptable. The decisive insight is that <strong>the gate must be driver-keyed, not vendor-keyed</strong>. Today&rsquo;s <code>grep -qE 'vendor=0x(8086|1002|10de)'</code> allowlist is an accident waiting to happen: it goes stale the day a virtual-GPU kext ships.</p>
+
+<table>
+<tr><th style="width:22%">Environment</th><th style="width:16%">PCI id</th><th style="width:16%">DRM node?</th><th>Gate must</th></tr>
+<tr><td>Bare-metal NVIDIA</td><td><code>10de:*</code></td><td>yes (<code>nvidia-drm</code>)</td><td>Wait for the load, pin <code>Driver "nvidia"</code>.</td></tr>
+<tr><td>Bare-metal Intel / AMD</td><td><code>8086:*</code> / <code>1002:*</code></td><td>yes (i915 / amdgpu)</td><td>Wait, pin <code>modesetting</code>.</td></tr>
+<tr><td><strong>Hybrid laptop</strong></td><td>both</td><td><strong><code>card0</code>=iGPU, <code>card1</code>=dGPU</strong></td><td>Wait for <strong>both</strong>, keyed per PCI device. Never glob. Do <em>not</em> use <code>hw.pci.default_vgapci_unit</code> to skip the NVIDIA arm &mdash; on Optimus that names the iGPU, and the dGPU is the thing that panics.</td></tr>
+<tr><td>VirtualBox</td><td><code>80ee:beef</code> / <code>15ad:0405</code></td><td><strong>no</strong></td><td>Terminal verdict, sub-second. <code>drm-kmod</code> 6.12-lts ships <strong>no</strong> vboxvideo (it has exactly <code>amd</code>, <code>display</code>, <code>i915</code>, <code>radeon</code>, <code>scheduler</code>, <code>ttm</code>).</td></tr>
+<tr><td>VMware</td><td><code>15ad:0405/0406</code></td><td><strong>no</strong></td><td>Same &mdash; <code>vmwgfx</code> was removed from drm-kmod.</td></tr>
+<tr><td>QEMU <code>-vga std</code> <span class="pill pill-neutral">CI</span></td><td><code>1234:1111</code></td><td><strong>no</strong></td><td>Same. <strong>This is what CI boots</strong>, so CI can only ever exercise the <em>negative</em> branch of the gate.</td></tr>
+<tr><td>Parallels / UTM / qxl / virtio</td><td><code>1ab8:4005</code> etc.</td><td><strong>no</strong></td><td>Same.</td></tr>
+<tr><td>Hyper-V Gen2, ramfb, arm64 SoC, serial-only</td><td>&mdash;</td><td><strong>no PCI display at all</strong></td><td><code>sysctl dev.vgapci</code> is empty &rarr; start immediately. Never an error, never a wait.</td></tr>
+<tr><td>BMC / ASPEED server</td><td><code>1a03:2000</code></td><td><strong>no</strong></td><td>No claimant &rarr; start on scfb.</td></tr>
+<tr><td>NVIDIA card, no kext installed</td><td><code>10de:*</code></td><td><strong>no</strong></td><td><strong>0&nbsp;s, not 10&nbsp;s.</strong> Today this stalls for the full timeout on every boot.</td></tr>
+<tr><td>Kext present, <code>kldload</code> fails</td><td>any</td><td>no</td><td>Log loudly, fall back to scfb, <strong>do not stall</strong>.</td></tr>
+</table>
+
+<p>The design consequence: resolve <em>which kext claims each GPU</em> by grepping <code>IOPCIPrimaryMatch</code> in the on-disk <code>/System/Library/Extensions/*/Contents/Info.plist</code>. That is <strong>race-free by construction</strong> &mdash; it reads the on-disk repo, not the kernel catalogue (which only exists <em>after</em> kextd&rsquo;s push, and kextd&rsquo;s push is the thing we are racing). &ldquo;No claimant&rdquo; then becomes a <strong>sub-second fact</strong> rather than a 10-second timeout, and when <code>BochsGraphics.kext</code> or <code>VBoxGraphics.kext</code> eventually ship, the same code starts waiting for them correctly <em>with no edit</em>.</p>
+
+<h2 id="options">9. Options, ranked</h2>
+
+<table>
+<tr><th style="width:26%">Option</th><th style="width:13%">Verdict</th><th>Why</th></tr>
+<tr><td>Raise the 10&nbsp;s cap</td><td><span class="pill pill-bad">Rejected</span></td><td>The loop already exits <em>early and successfully</em>. The cap only governs the case where no driver will ever load &mdash; where it is pure wasted boot time.</td></tr>
+<tr><td>Settle delay after <code>card0</code></td><td><span class="pill pill-bad">Rejected</span></td><td>Waits out something that does not exist. If it appears to help, that is only because it accidentally waits for kextd&rsquo;s <code>kldload</code> &mdash; and the barrier does that <em>deterministically, for free</em>.</td></tr>
+<tr><td>DRM readiness probe (<code>drmModeGetResources</code>)</td><td><span class="pill pill-bad">Rejected</span></td><td><strong>The most tempting wrong answer.</strong> Connector/CRTC enumeration all happen <em>inside</em> <code>nv_drm_dev_load()</code>, before <code>drm_dev_register()</code>. The probe passes on the first attempt, at the same instant <code>ls card0</code> does. It looks rigorous and is a no-op.</td></tr>
+<tr><td>Stop X touching DRM</td><td><span class="pill pill-bad">Rejected</span></td><td>The hoped-for sleeper fix. Killed: the NVKMS GEM ioctls are <code>DRM_RENDER_ALLOW</code>, and the validated <code>Driver "nvidia"</code> Xorg holds the render node open for DRI3/GLX anyway.</td></tr>
+<tr><td>Gate on IOKit <code>waitQuiet</code> (#176)</td><td><span class="pill pill-bad">Rejected</span></td><td><strong>A regression, and the most dangerous wrong answer because it looks authoritative.</strong> It cannot see <code>nvidia-drm</code> (not a newbus attach), it goes quiet <em>before</em> <code>card0</code> exists, it returns success on timeout, and it is host-global.</td></tr>
+<tr><td>Readiness sysctl in NVIDIA&rsquo;s glue</td><td><span class="pill pill-bad">Rejected</span></td><td>Every signal it could publish fires at-or-earlier-than <code>card0</code>. The state we want lives in a closed blob and is not exported.</td></tr>
+<tr><td>kextd publishes readiness; LoginWindow waits</td><td><span class="pill pill-neutral">Viable, later</span></td><td>Apple-shaped, and <code>KeepAlive&rarr;OtherJobEnabled</code> genuinely works. But the best predicate kextd can compute is &ldquo;my loads returned&rdquo; &mdash; which the barrier already observes <em>directly, synchronously, with no IPC</em>. And it <strong>fails closed</strong> on every VM.</td></tr>
+<tr><td>Apple-native <code>com.apple.iokit.matching</code></td><td><span class="pill pill-neutral">Right, long-term</span></td><td>The correct architecture; NextBSD is unusually well-placed for it. But ~700-1000 new lines, fail-closed on every VM by default, and <strong>it still does not fix this bug</strong>.</td></tr>
+<tr><td><strong>Apply the upstream nvidia-drm patches</strong></td><td><span class="pill pill-good">Ship first</span></td><td>Fixes the actual panic, for X, Wayland, and unprivileged GL clients, on every affected GPU. Already reviewed upstream.</td></tr>
+<tr><td><strong>Synchronous kext-load barrier + terminal verdict</strong></td><td><span class="pill pill-good">Ship second</span></td><td>A real barrier (<code>kld_sx</code>), not a poll. No timeout, no sleep, zero new C. Closes the load-not-yet-requested race that <em>no poll design can</em>.</td></tr>
+<tr><td><strong>kenv failsafes</strong></td><td><span class="pill pill-good">Ship with it</span></td><td>Prerequisite for anything that can decline to start X.</td></tr>
+</table>
+
+<h2 id="design">10. The recommended gate</h2>
+
+<p>After #391 lands. Zero new C; every primitive below already ships.</p>
+
+<pre><code># LoginWindow.sh — replaces the poll loop. No sleep, no seq, no timeout.
+
+# ---------- 0. ESCAPE HATCHES (nothing like this exists today) ----------
+[ "$(kenv -q nextbsd.nox)" = "1" ] &amp;&amp; exec /bin/sh -c 'while :; do sleep 3600; done'
+if [ "$(kenv -q nextbsd.safe_graphics)" = "1" ]; then
+    force_scfb; exec LoginWindow          # &lt;- ALWAYS boots. The recovery path.
+fi
+
+# ---------- 1. ENUMERATE EVERY PCI DISPLAY DEVICE ----------
+# Not `ls /dev/dri/card*` (globs the wrong GPU on a hybrid) and not
+# hw.pci.default_vgapci_unit (names the CONSOLE owner, which on Optimus is
+# the iGPU — while the dGPU is the thing that matters).
+for oid in $(sysctl -Nq dev.vgapci | grep '\.%pnpinfo$'); do ... done
+[ -z "$GPUS" ] &amp;&amp; { force_scfb; exec LoginWindow; }   # Hyper-V, ramfb, serial-only
+
+# ---------- 2. WHICH INSTALLED KEXT CLAIMS EACH GPU? ----------
+# Race-free BY CONSTRUCTION: reads the ON-DISK kext repo, not the kernel
+# catalogue (which only exists after kextd's push — the thing we are racing).
+kext_for_gpu() {                              # $1=vendor $2=device
+    mw=$(printf '0x%s%s' "$2" "$1")           # IOPCIPrimaryMatch word = 0xDDDDVVVV
+    for p in /System/Library/Extensions/*/Contents/Info.plist; do
+        grep -qi "$mw" "$p" &amp;&amp; { echo "${p%/Contents/Info.plist}"; return 0; }
+    done
+    return 1
+}
+
+# No claimant => TERMINAL, sub-second verdict. This is KNOWLEDGE, not a timeout.
+# Covers: VirtualBox, VMware, QEMU (incl. CI), Parallels, UTM, BMC, and an
+# NVIDIA card with no kext installed. Driver-keyed, so it does not go stale
+# the day BochsGraphics.kext ships.
+[ -z "$CLAIMED" ] &amp;&amp; { force_scfb; exec LoginWindow; }
+
+# ---------- 3. THE BARRIER ----------
+# kextload -> OSKextLoad -> kldfind(2)/kldload(2). kern_kldload() holds kld_sx
+# EXCLUSIVE across MOD_LOAD, and kextd's autoload goes through the same syscall.
+# So this BLOCKS until nv_drm_init() — including drm_dev_register() — has
+# returned, then succeeds. It also works when kextd has NOT YET REQUESTED the
+# load, which is exactly what the old poll loop could not do.
+for k in $CLAIMED; do kextload "$k" || log "kextload $k FAILED"; done
+
+# ---------- 4. DID IT ACTUALLY BIND? ----------
+# dev.drm.&lt;minor&gt;.PCI_ID is created for every drm_dev_register, nvidia-drm
+# included. NOT `kextstat -m` — that is modfind(2), which lies pre-MOD_LOAD.
+[ -z "$BOUND" ] &amp;&amp; { force_scfb; exec LoginWindow; }   # loaded but never bound
+
+# ---------- 5. PIN THE DDX ----------
+# XLibre picks nvidia_drv.so ONLY via OutputClass MatchDriver "nvidia-drm",
+# i.e. only if the DRM platform device exists AT SERVER START — which step 3
+# now guarantees. The FreeBSD PCI fallback for 0x10de is
+# [modesetting, nvidia, nv] — modesetting FIRST — and a hotplugged DRM device
+# defaults to modesetting, i.e. the CREATE_DUMB path proven fatal on this box.
+# NOTE: if nvidia-drm is bound but nvidia_drv.so is NOT activated, refuse the
+# NVIDIA DDX and fall back to scfb — do NOT pin modesetting onto nvidia-drm.
+
+exec LoginWindow
+</code></pre>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-bad">Refusal must never <code>exit</code></span> <code>io.github.gershwin-desktop.loginwindow.plist</code> has <strong><code>RunAtLoad</code> <em>and</em> <code>KeepAlive=&lt;true/&gt;</code></strong> (verified). <code>job_keepalive()</code> returns true on <code>!ondemand</code> <em>without ever looking at exit status</em> &mdash; so any <code>exit</code> yields an infinite respawn loop throttled to 10&nbsp;s. A refusal path must terminate in a non-exiting state (<code>exec sleep infinity</code>).</p>
+</div>
+
+<h3>Also in this PR</h3>
+<ul>
+  <li><strong>Delete the three legacy <code>kldload</code> lines.</strong> On NextBSD they are already dead &mdash; <code>build.sh</code> removes <code>/sbin/kldload</code> entirely (#193), so they are <code>command-not-found</code> noise. But on the Gershwin-on-FreeBSD branch <strong>line 33 is live and wrong</strong>: it greps <code>0x1022</code>, which is AMD&rsquo;s <em>host-bridge</em> vendor, not <code>0x1002</code> (the GPU). And the NVIDIA line has always been a silent no-op: <code>/boot/modulesn/nvidia.ko</code>.</li>
+  <li><strong>Pin the DDX and get <code>xf86-video-vesa</code> out of the fallback chain</strong> &mdash; but see the open question below first; this one is not safe to do blind.</li>
+</ul>
+
+<h2 id="donot">11. What not to do</h2>
+
+<ul>
+  <li><strong>Do not raise the timeout, add a settle delay, or build a <code>drmModeGetResources</code> probe.</strong> All three are vacuous &mdash; they test state that is already true when <code>card0</code> appears.</li>
+  <li><strong>Do not gate X on <code>IOKitWaitQuiet</code>.</strong> It cannot see <code>nvidia-drm</code>, and it goes quiet <em>before</em> <code>card0</code> exists. It would be a regression wearing an Apple badge.</li>
+  <li><strong>Do not pursue <code>register_fictitious_range()</code> for #391.</strong> The theory was seductive &mdash; <code>amdgpu</code>/<code>i915</code>/<code>radeon</code> all register their VRAM aperture and <code>nvidia-drm</code> never does &mdash; and the gap is <em>real</em>. But it is <strong>incidental</strong>: it cannot rescue a PFN that came from an out-of-bounds array read, because that value is arbitrary, not a VRAM address. Upstream fixed this panic without touching it.</li>
+  <li><strong>Do not close #390 as &ldquo;fixed&rdquo; on the strength of the gate.</strong> Say plainly in the issue that the gate fixes <em>ordering</em> and the panic is #391.</li>
+  <li><strong>Do not ship the gate before the patch.</strong> See the warning in &sect;1.</li>
+</ul>
+
+<h2 id="tickets">12. Ticket plan</h2>
+
+<table>
+<tr><th style="width:24%">Repo</th><th style="width:34%">Change</th><th>Notes</th></tr>
+<tr>
+  <td><code>nextbsd-kernel-modules</code><br><span class="pill pill-bad">First</span></td>
+  <td><strong>#391: apply the upstream <code>patch-nvidia-drm-*</code> files</strong></td>
+  <td>Pull <code>patch-nvidia-drm-{helper.h,gem-nvkms-memory.c,gem-user-memory.c}</code> from <code>freebsd-ports</code>. Better: have <code>build.yml</code> apply <strong>all</strong> of <code>graphics/nvidia-drm-612-kmod/files/patch-*</code> rather than a hand-picked list, so the next upstream fix is not silently missed. Validate on the RTX 3060&nbsp;Ti.</td>
+</tr>
+<tr>
+  <td><code>gershwin-system</code><br><span class="pill pill-warn">Second</span></td>
+  <td><strong>#390: replace the poll loop with the kext-load barrier</strong></td>
+  <td>Per &sect;10. State explicitly in the PR that this fixes ordering and does <em>not</em> fix the panic.</td>
+</tr>
+<tr>
+  <td><code>gershwin-system</code></td>
+  <td><code>nextbsd.safe_graphics</code> / <code>nextbsd.nox</code> kenv failsafes</td>
+  <td>Refusal must never <code>exit</code>. Use absolute paths (<code>/usr/sbin/kextload</code>, <code>/bin/kenv</code>) &mdash; launchd&rsquo;s <code>PATH</code> is not to be trusted.</td>
+</tr>
+<tr>
+  <td><code>nextbsd</code></td>
+  <td>Loader: a Safe Graphics menu entry</td>
+  <td><code>beastie_disable="YES"</code> today, so the menu ships but is unreachable (the OK prompt still is). Without this, a wrong verdict needs a rescue USB.</td>
+</tr>
+<tr>
+  <td><code>nextbsd-userland</code></td>
+  <td>#176 follow-up: <code>IOKitWaitQuiet</code> must return <code>kIOReturnTimeout</code>; add an anti-vacuous busy floor</td>
+  <td>Two genuine defects, independent of #390 &mdash; and the reason waitQuiet must not be the GPU gate. NextBSD&rsquo;s <code>bus_busy</code> starts at zero, so it succeeds vacuously at t=0; XNU holds the registry root busy until the kext daemon checks in.</td>
+</tr>
+<tr>
+  <td><code>nextbsd-kernel-modules</code></td>
+  <td>Land <code>BochsGraphics.kext</code> (<code>1234:1111</code>)</td>
+  <td>CI boots QEMU <code>-vga std</code> and lands on scfb with no DRM node, so <strong>CI can only ever prove the gate&rsquo;s negative branch.</strong> A bochs kext would give it a real match&rarr;autoload&rarr;bind path.</td>
+</tr>
+<tr>
+  <td><code>nextbsd-userland</code><br><span class="pill pill-neutral">Long term</span></td>
+  <td>UserEventAgent-equivalent + <code>com.apple.iokit.matching</code> stream</td>
+  <td>launchd already parses <code>LaunchEvents</code> and has the whole XPC event-provider surface &mdash; but no publisher exists, so the stream silently never fires. Build it because it is the right architecture, <em>not</em> as a fix for this.</td>
+</tr>
+</table>
+
+<h2 id="open">13. Open questions &mdash; answer before shipping</h2>
+
+<p>The completeness critic&rsquo;s list, minus the three I settled by hand (the <code>kextload</code> barrier is real; the LinuxKPI overlay is stock; the conftest CFLAGS delta is innocent). These remain genuinely open:</p>
+
+<ol>
+  <li><strong>Get ground truth from the RTX box.</strong> There is no <code>pciconf -lv</code> or <code>dmesg</code> in #390/#391. Does it have an Intel iGPU (i.e. is the hybrid <code>card0</code> misattribution the actual generator of the intermittency)? And on the boots that <em>succeed</em> &mdash; was <code>nvidia-drm</code> bound at all?</li>
+  <li><strong>BIOS-mode VirtualBox will break if we do the scfb/vesa change blind.</strong> Both boot tests use OVMF, so CI always has an EFI GOP framebuffer and scfb always works. <strong>VirtualBox defaults to BIOS</strong>, where there is no GOP framebuffer for scfb and no DRM driver &mdash; making <code>vesa</code> the only DDX that can work. Do not write <code>Driver "scfb"</code> and do not remove <code>xf86-video-vesa</code> until someone boots BIOS-mode VirtualBox on today&rsquo;s image and reports which DDX X actually selects. (Also: <code>xlibre-minimal</code> <code>RUN_DEPENDS</code> on vesa, so it cannot simply be deleted from <code>pkglist.txt</code>.)</li>
+  <li><strong>Define the <code>nvidia-drm</code>-bound-but-<code>nvidia_drv.so</code>-not-activated case.</strong> Activation is a separate pkg step, so this is a real state. Pinning <code>modesetting</code> there would select the <code>CREATE_DUMB</code> path this document elsewhere calls fatal. The safe action is to refuse the NVIDIA DDX and fall back &mdash; not to pin modesetting.</li>
+  <li><strong>Does <code>nvidia_drv.so</code> still work with <code>hw.nvidiadrm.modeset=0</code>?</strong> This decides whether modeset=0 is a valid loader-level safe-graphics knob for NVIDIA, or a black screen.</li>
+  <li><strong>Is <code>hw.nvidiadrm.fbdev</code> actually off in our kexts?</strong> <code>nvidia-portpatch.sh:124</code>&rsquo;s fbdev sed is marked <code>opt</code> and <strong>no-ops silently if the string drifts</strong>. Grep CI for <code>opt no-op: drm fbdev</code> and check the sysctl on the box &mdash; if fbdev is on, that is an independent bug fighting X for modeset ownership.</li>
+  <li><strong>Does the single getty on <code>/dev/console</code> survive Xorg&rsquo;s VT takeover?</strong> (<a href="https://github.com/nextbsd-redux/nextbsd/issues/272">#272</a>.) Until answered, the kenv knobs &mdash; not the console &mdash; are the only proven rescue path.</li>
+</ol>
+
+<p class="footnote">Produced by a 68-agent workflow: six parallel research passes (NextBSD IOKit/kextd machinery, Apple&rsquo;s real mechanism, NVIDIA/NVKMS readiness signals, the no-<code>card0</code> device matrix, launchd-native gating, and prior art in systemd/udev/logind, NomadBSD, GhostBSD and helloSystem), 60 adversarial verifiers instructed to refute every load-bearing claim, a synthesis, and a completeness critic &mdash; whose objections then drove three further hand-verification passes. The critic&rsquo;s central catch (that shipping the gate first could make the panic deterministic) and the discovery of the upstream fix both came out of that adversarial layer, not the initial research. Corrections to <a href="https://github.com/nextbsd-redux/nextbsd/issues/390">#390</a> and <a href="https://github.com/nextbsd-redux/nextbsd/issues/391">#391</a> follow from this page.</p>
+
+</div>
+</body>
+</html>

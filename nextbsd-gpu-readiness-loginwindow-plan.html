@@ -421,6 +421,10 @@ exec LoginWindow
 
 <h2 id="tickets">12. Ticket plan</h2>
 
+<div class="callout callout-good">
+<p><span class="pill pill-good">Unblocked</span> <strong>Three of these need no hardware input at all</strong> and can be done before the readings in &sect;13: the <code>build.yml</code> patch-allowlist fix; the <code>nextbsd.safe_graphics</code>/<code>nextbsd.nox</code> failsafes (plus the &ldquo;refusal must never <code>exit</code>&rdquo; bug &mdash; <code>KeepAlive=&lt;true/&gt;</code> makes any <code>exit</code> an infinite 10&nbsp;s respawn loop); and deleting the three dead <code>kldload</code> lines (fixing <code>0x1022</code>&rarr;<code>0x1002</code> on the Gershwin-on-FreeBSD branch). Everything else waits on the two readings.</p>
+</div>
+
 <table>
 <tr><th style="width:24%">Repo</th><th style="width:34%">Change</th><th>Notes</th></tr>
 <tr>
@@ -475,8 +479,29 @@ exec LoginWindow
 <p>The completeness critic&rsquo;s list, minus what I settled by hand (the <code>kextload</code> barrier is real; NextBSD&rsquo;s kernel carries no LinuxKPI overlay; the conftest CFLAGS delta is innocent; the box has <strong>no Intel iGPU</strong>, so hybrid <code>card0</code> misattribution is latent-only and not our intermittency). <strong>The first two now gate everything:</strong></p>
 
 <ol>
-  <li><strong>Is BAR1 below top-of-RAM?</strong> <code>pciconf -lb</code> vs <code>sysctl hw.physmem</code> / <code>vm.phys_segs</code>. The &sect;3 mechanism <em>predicts</em> it is. If it is above top-of-RAM, <code>PHYS_TO_VM_PAGE()</code> returns <code>NULL</code>, the guard fires, and you would get a <code>SIGBUS</code> rather than a panic &mdash; which would falsify this whole diagnosis.</li>
-  <li><strong>Which DDX was loaded on the panicking boot?</strong> One line of <code>/var/log/Xorg.0.log</code>. If it is <code>modesetting</code>, then our panic is the wrong-DDX bug (&sect;5.2) taking the DRM dumb-buffer path, and the gate + pinning <code>Driver "nvidia"</code> <em>removes</em> our exposure rather than making it deterministic &mdash; inverting the ship-order warning in &sect;1. If it is <code>nvidia</code>, the critic&rsquo;s warning stands and #391 must land first. <strong>This single line decides the entire sequencing.</strong></li>
+  <li><strong>Is BAR1 below top-of-RAM?</strong> The &sect;3 mechanism <em>predicts</em> it is. If it is above top-of-RAM, <code>PHYS_TO_VM_PAGE()</code> returns <code>NULL</code>, the guard fires, and you would get a <code>SIGBUS</code> rather than a panic &mdash; which would <strong>falsify this whole diagnosis</strong>. Gates writing the #391 patch; nothing else.</li>
+  <li><strong>Which DDX is X actually loading?</strong> If <code>modesetting</code>, our panic is the wrong-DDX bug (&sect;5.2) taking the DRM dumb-buffer path, and the gate + pinning <code>Driver "nvidia"</code> <em>removes</em> our exposure rather than making it deterministic &mdash; inverting the ship-order warning in &sect;1. If <code>nvidia</code>, the critic&rsquo;s warning stands and #391 must land first. <strong>This decides the sequencing of both tickets.</strong>
+    <div class="callout callout-warn" style="margin-top:10px">
+    <p><span class="pill pill-warn">Caveat</span> <strong>The panicking boot&rsquo;s <code>Xorg.0.log</code> probably did not survive the panic</strong> (unflushed). Do not plan on reading it. Ask the equivalent question of <em>any</em> boot instead &mdash; and note that if <code>nvidia_drv.so</code> was never activated (it is a separate pkg step), X <em>cannot</em> select the nvidia DDX and <strong>must</strong> be on <code>modesetting</code>/<code>scfb</code>, which would settle it on its own.</p>
+    </div>
+  </li>
+</ol>
+
+<h3>The 30-second read, when you are next at the box</h3>
+<pre><code># which DDX is X actually loading?
+grep -iE "Loading.*drivers/|Using .* driver|\(II\) (NVIDIA|modesetting|scfb)" /var/log/Xorg.0.log
+ls -l /usr/local/lib/xorg/modules/drivers/      # is nvidia_drv.so even present / activated?
+sysctl hw.nvidiadrm.modeset hw.nvidiadrm.fbdev  # fbdev must be 0 (the portpatch sed is `opt` and no-ops silently)
+
+# is the NVIDIA BAR1 below top-of-RAM?  (the &sect;3 mechanism predicts YES on a panicking box)
+pciconf -lb | grep -i -A6 nvidia
+sysctl hw.physmem vm.phys_segs
+
+# and the basics nobody has captured yet
+pciconf -lv | grep -A3 vgapci
+dmesg | grep -iE "nvidia|drm|nvkms"</code></pre>
+
+<ol start="3">
   <li><strong>BIOS-mode VirtualBox will break if we do the scfb/vesa change blind.</strong> Both boot tests use OVMF, so CI always has an EFI GOP framebuffer and scfb always works. <strong>VirtualBox defaults to BIOS</strong>, where there is no GOP framebuffer for scfb and no DRM driver &mdash; making <code>vesa</code> the only DDX that can work. Do not write <code>Driver "scfb"</code> and do not remove <code>xf86-video-vesa</code> until someone boots BIOS-mode VirtualBox on today&rsquo;s image and reports which DDX X actually selects. (Also: <code>xlibre-minimal</code> <code>RUN_DEPENDS</code> on vesa, so it cannot simply be deleted from <code>pkglist.txt</code>.)</li>
   <li><strong>Define the <code>nvidia-drm</code>-bound-but-<code>nvidia_drv.so</code>-not-activated case.</strong> Activation is a separate pkg step, so this is a real state. Pinning <code>modesetting</code> there would select the <code>CREATE_DUMB</code> path this document elsewhere calls fatal. The safe action is to refuse the NVIDIA DDX and fall back &mdash; not to pin modesetting.</li>
   <li><strong>Does <code>nvidia_drv.so</code> still work with <code>hw.nvidiadrm.modeset=0</code>?</strong> This decides whether modeset=0 is a valid loader-level safe-graphics knob for NVIDIA, or a black screen.</li>

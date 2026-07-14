@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WiFi on NextBSD — the Apple stack, and why we use wpa_supplicant</title>
+<title>WLAN on NextBSD — the Apple stack, and why we use wpa_supplicant</title>
 <style>
   :root {
     --bg: #fbfbf8;
@@ -78,30 +78,30 @@
   <a href="#compare">vs wpa_supplicant</a>
   <a href="#whodoeswhat">Who does what</a>
   <a href="#refs">References</a>
-  <a href="nextbsd-wifi-plan.html"><strong>&rarr; The plan</strong></a>
+  <a href="nextbsd-wlan-plan.html"><strong>&rarr; The plan</strong></a>
 </nav>
 
-<h1>WiFi on NextBSD — the Apple stack, and why we use wpa_supplicant <span class="pill info">RESEARCH</span></h1>
-<p class="subtitle">What macOS actually uses for WiFi (it is not <code>wpa_supplicant</code>), what Apple published and what it kept closed, and how Apple's stack compares function-for-function against <code>wpa_supplicant</code> and iwd. Background reading for <a href="nextbsd-wifi-plan.html">the NextBSD WiFi plan</a>.</p>
+<h1>WLAN on NextBSD — the Apple stack, and why we use wpa_supplicant <span class="pill info">RESEARCH</span></h1>
+<p class="subtitle">What macOS actually uses for WLAN (it is not <code>wpa_supplicant</code>), what Apple published and what it kept closed, and how Apple's stack compares function-for-function against <code>wpa_supplicant</code> and iwd. Background reading for <a href="nextbsd-wlan-plan.html">the NextBSD WLAN plan</a>.</p>
 
 <div class="tldr">
 <strong>This is the <em>research</em>, not the plan.</strong> It establishes why NextBSD cannot port Apple's <code>wifid</code> (closed, and welded to a kernel framework that does not exist here), why <code>wpa_supplicant</code> is the only viable protocol engine (BSD-licensed, and the only one that speaks <code>net80211</code>), and why iwd is not (nl80211-welded, LGPL). Those conclusions hold.
 <br><br>
-For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-creation gap, the DHCP-before-4-way-handshake race, and the <code>wifid</code> design &mdash; see <a href="nextbsd-wifi-plan.html"><strong>the NextBSD WiFi plan</strong></a>.
+For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-creation gap, the DHCP-before-4-way-handshake race, and the <code>wifid</code> design &mdash; see <a href="nextbsd-wlan-plan.html"><strong>the NextBSD WLAN plan</strong></a>.
 </div>
 
 <section id="tldr" class="tldr">
   <h3>TL;DR</h3>
   <ul>
-    <li><strong>Apple does NOT use <code>wpa_supplicant</code>.</strong> macOS has its own proprietary WiFi stack centered on <code>wifid</code> (the WiFi management daemon), <code>Apple80211.framework</code> (private 802.11 API), and <code>CoreWLAN.framework</code> (public app API).</li>
+    <li><strong>Apple does NOT use <code>wpa_supplicant</code>.</strong> macOS has its own proprietary WLAN stack centered on <code>wifid</code> (the WLAN management daemon), <code>Apple80211.framework</code> (private 802.11 API), and <code>CoreWLAN.framework</code> (public app API).</li>
     <li><strong>Most of it is closed source.</strong> The IEEE 802.11 state machine on macOS — scanning, AP selection, WPA2/WPA3 PSK handshake, key management, AP roaming — is all in closed-source <code>wifid</code> talking to a closed-source <code>IO80211Family</code> kernel framework. Nobody outside Apple has visibility into it.</li>
     <li><strong>The one open-source piece is <code>eapolclient</code>.</strong> Apple publishes the EAP / 802.1X authentication code as <a href="https://github.com/apple-oss-distributions/eap8021x">apple-oss-distributions/eap8021x</a> — handles EAP-TLS, EAP-PEAP, EAP-FAST, EAP-SIM, EAP-AKA. But this only covers the authentication side; it doesn't do 802.11 association.</li>
     <li><strong>What we ship: <code>wpa_supplicant</code>, from FreeBSD base.</strong> Version 2.11, shipped untouched on the NextBSD image. Battle-tested, portable, full WPA3-SAE / OWE / EAP coverage. Same client every Linux distro and BSD desktop uses.</li>
-    <li><strong>Why this matters for NextBSD:</strong> we can't port <code>wifid</code> — it's closed source, and depends on the closed-source <code>IO80211Family</code> kernel framework, which doesn't exist here. But Apple's <em>API surface</em> (CoreWLAN, the <code>airport(8)</code>-equivalent) can be replicated in a daemon that drives <code>wpa_supplicant</code> over its control socket. That's the only realistic Apple-shape WiFi path. <strong>See <a href="nextbsd-wifi-plan.html">the plan</a> for what that daemon actually looks like on NextBSD.</strong></li>
+    <li><strong>Why this matters for NextBSD:</strong> we can't port <code>wifid</code> — it's closed source, and depends on the closed-source <code>IO80211Family</code> kernel framework, which doesn't exist here. But Apple's <em>API surface</em> (CoreWLAN, the <code>airport(8)</code>-equivalent) can be replicated in a daemon that drives <code>wpa_supplicant</code> over its control socket. That's the only realistic Apple-shape WLAN path. <strong>See <a href="nextbsd-wlan-plan.html">the plan</a> for what that daemon actually looks like on NextBSD.</strong></li>
   </ul>
 </section>
 
-<h2 id="stack">1. Apple's WiFi stack</h2>
+<h2 id="stack">1. Apple's WLAN stack</h2>
 
 <p>Multiple components, layered. From hardware up:</p>
 
@@ -112,17 +112,17 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
 <tbody>
 <tr>
   <td><code>IO80211Family.kext</code> + per-vendor drivers (<code>AirPortBrcmNIC</code>, <code>AppleBCMWLANCore</code>, etc.)</td>
-  <td>Kernel WiFi driver framework. Hardware-specific drivers attach here. Provides the IEEE 802.11 MAC/PHY layer to userspace.</td>
+  <td>Kernel WLAN driver framework. Hardware-specific drivers attach here. Provides the IEEE 802.11 MAC/PHY layer to userspace.</td>
   <td><span class="yesno no">Closed</span></td>
 </tr>
 <tr>
   <td><code>wifid</code> (binary at <code>/usr/libexec/wifid</code>)</td>
-  <td>The main WiFi management daemon. Runs as a launchd job (<code>com.apple.wifid.plist</code>). Owns: AP scanning, BSS selection, association, WPA2/WPA3 4-way handshake, key management, autojoin policy, profile management, fast-roam (802.11r/k/v) coordination.</td>
+  <td>The main WLAN management daemon. Runs as a launchd job (<code>com.apple.wifid.plist</code>). Owns: AP scanning, BSS selection, association, WPA2/WPA3 4-way handshake, key management, autojoin policy, profile management, fast-roam (802.11r/k/v) coordination.</td>
   <td><span class="yesno no">Closed</span></td>
 </tr>
 <tr>
   <td><code>eapolclient</code> (binary at <code>/usr/libexec/eapolclient</code>)</td>
-  <td>Per-iface 802.1X authentication daemon. wifid spawns one per WiFi iface that needs EAP. Implements EAP-TLS, EAP-PEAP, EAP-TTLS, EAP-FAST, EAP-SIM, EAP-AKA, LEAP. Talks to wifid via Mach IPC for key delivery.</td>
+  <td>Per-iface 802.1X authentication daemon. wifid spawns one per WLAN iface that needs EAP. Implements EAP-TLS, EAP-PEAP, EAP-TTLS, EAP-FAST, EAP-SIM, EAP-AKA, LEAP. Talks to wifid via Mach IPC for key delivery.</td>
   <td><span class="yesno yes">Open</span> — <a href="https://github.com/apple-oss-distributions/eap8021x">apple-oss-distributions/eap8021x</a></td>
 </tr>
 <tr>
@@ -142,17 +142,17 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
 </tr>
 <tr>
   <td><code>AirPort.framework</code></td>
-  <td>Older WiFi API; mostly superseded by CoreWLAN. Still present for compatibility.</td>
+  <td>Older WLAN API; mostly superseded by CoreWLAN. Still present for compatibility.</td>
   <td><span class="yesno no">Closed</span></td>
 </tr>
 <tr>
   <td><code>networksetup(8)</code> / <code>airport(8)</code> CLIs</td>
-  <td>User-facing tools for WiFi config. <code>networksetup</code> for general network, <code>airport</code> for WiFi-specific (scan, info, sniff). Both are CoreWLAN clients.</td>
+  <td>User-facing tools for WLAN config. <code>networksetup</code> for general network, <code>airport</code> for WLAN-specific (scan, info, sniff). Both are CoreWLAN clients.</td>
   <td><span class="yesno no">Closed</span></td>
 </tr>
 <tr>
   <td><code>SecKeychain</code> integration</td>
-  <td>WiFi passwords stored in the user's keychain via Security.framework. Per-network credentials, per-user.</td>
+  <td>WLAN passwords stored in the user's keychain via Security.framework. Per-network credentials, per-user.</td>
   <td><span class="yesno partial">Security.framework partial open</span></td>
 </tr>
 </tbody>
@@ -163,7 +163,7 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
 <h3>1.1 The architecture diagram</h3>
 
 <div class="ascii-diagram">                   +----------------------+   +-----------------------+
-                   |  WiFi prefs UI       |   | Third-party apps      |
+                   |  WLAN prefs UI       |   | Third-party apps      |
                    |  (System Settings)   |   | (CWInterface, etc.)   |
                    +-----------+----------+   +-----------+-----------+
                                |                          |
@@ -180,7 +180,7 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
                                v Mach IPC (com.apple.wifi.client)
                    +-----------+----------+      +--------------------+
                    |       wifid          |      | eapolclient (per   |
-                   |  (.plist as launchd  |&lt;----&gt;|   wifi iface)      |
+                   |  (.plist as launchd  |&lt;----&gt;|   wlan iface)      |
                    |   job; closed src)   |      |  (eap8021x repo,   |
                    +-----------+----------+      |   open src)        |
                                |                 +---------+----------+
@@ -211,7 +211,7 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
 </tr>
 <tr>
   <td>(no repo) — <code>wifid</code></td>
-  <td>The main WiFi management daemon</td>
+  <td>The main WLAN management daemon</td>
   <td>n/a — closed source</td>
 </tr>
 <tr>
@@ -221,25 +221,25 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
 </tr>
 <tr>
   <td>(no repo) — <code>IO80211Family.kext</code></td>
-  <td>Kernel WiFi driver framework</td>
+  <td>Kernel WLAN driver framework</td>
   <td>n/a — closed source. FreeBSD has its own (<code>net80211(4)</code>); architecturally different.</td>
 </tr>
 <tr>
   <td><a href="https://github.com/apple-oss-distributions/IOKitTools">apple-oss-distributions/IOKitTools</a></td>
   <td>kextd, kextload, kextstat — kext loading infrastructure</td>
-  <td>For kmodloader plan, yes (referenced for design). For WiFi, no.</td>
+  <td>For kmodloader plan, yes (referenced for design). For WLAN, no.</td>
 </tr>
 <tr>
   <td><a href="https://github.com/apple-oss-distributions/Security">apple-oss-distributions/Security</a></td>
   <td>Security.framework — Keychain Services, code signing, certificate handling</td>
-  <td>Maybe long-term for keychain-equivalent; not for WiFi specifically.</td>
+  <td>Maybe long-term for keychain-equivalent; not for WLAN specifically.</td>
 </tr>
 </tbody>
 </table>
 
-<p>So when people say "Apple uses <code>eapolclient</code>" — that's true for the 802.1X piece, and that piece IS open source. But "Apple's WiFi" as a whole is overwhelmingly closed.</p>
+<p>So when people say "Apple uses <code>eapolclient</code>" — that's true for the 802.1X piece, and that piece IS open source. But "Apple's WLAN" as a whole is overwhelmingly closed.</p>
 
-<h2 id="compare">3. macOS WiFi stack vs <code>wpa_supplicant</code></h2>
+<h2 id="compare">3. macOS WLAN stack vs <code>wpa_supplicant</code></h2>
 
 <p>Function-by-function comparison.</p>
 
@@ -325,13 +325,13 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
 </tr>
 <tr>
   <td>User control GUI</td>
-  <td>System Settings WiFi pane (CoreWLAN client)</td>
+  <td>System Settings WLAN pane (CoreWLAN client)</td>
   <td>NetworkManager-applet, iwd, wpa_gui, etc.</td>
 </tr>
 <tr>
   <td>DHCP coordination</td>
   <td>wifid → IPConfiguration via configd dynamic store</td>
-  <td>wpa_supplicant ASSOCIATED state → DHCP client. <em>(On NextBSD there is no such hook: <code>ipconfigd</code> triggers on link-state alone and fires before the 4-way handshake — see <a href="nextbsd-wifi-plan.html#blockers">the plan §1.3</a>.)</em></td>
+  <td>wpa_supplicant ASSOCIATED state → DHCP client. <em>(On NextBSD there is no such hook: <code>ipconfigd</code> triggers on link-state alone and fires before the 4-way handshake — see <a href="nextbsd-wlan-plan.html#blockers">the plan §1.3</a>.)</em></td>
 </tr>
 </tbody>
 </table>
@@ -343,7 +343,7 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
 <p>The word <em>supplicant</em> is the source of most confusion in this whole area, so pin it down first:</p>
 <ul>
   <li><strong>Supplicant (strict IEEE 802.1X sense)</strong> — the client that <em>authenticates</em> to the network: it runs the EAP exchange against the RADIUS server, and nothing else. This is exactly what Apple's <code>eapolclient</code> is.</li>
-  <li><strong>Supplicant (colloquial, "<code>wpa_supplicant</code>" sense)</strong> — the whole userspace WiFi protocol process: EAP auth <em>plus</em> the WPA 4-way handshake / key management <em>plus</em> driving scan and association. Much broader.</li>
+  <li><strong>Supplicant (colloquial, "<code>wpa_supplicant</code>" sense)</strong> — the whole userspace WLAN protocol process: EAP auth <em>plus</em> the WPA 4-way handshake / key management <em>plus</em> driving scan and association. Much broader.</li>
 </ul>
 <p>Apple <em>split</em> those two apart (narrow <code>eapolclient</code> + closed <code>wifid</code> for everything else); <code>wpa_supplicant</code> and <code>iwd</code> <em>fuse</em> them into one process. That mismatch is why a one-to-one comparison needs the table below rather than a single sentence.</p>
 
@@ -416,23 +416,23 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
 <tbody>
 <tr>
   <td><strong>AWDL</strong><br>(Apple Wireless Direct Link)</td>
-  <td>Apple's proprietary peer-to-peer WiFi protocol. Lets two Apple devices talk directly without a shared access point by having the WiFi radio time-slice between the normal infrastructure network and an ad-hoc AWDL channel. It is the transport layer underneath AirDrop, AirPlay peer-to-peer, and Continuity features. Closed and Apple-specific; there is no open-source equivalent (the reverse-engineered <code>OWL</code> / "Open Wireless Link" research project is the only outside implementation).</td>
+  <td>Apple's proprietary peer-to-peer WLAN protocol. Lets two Apple devices talk directly without a shared access point by having the WLAN radio time-slice between the normal infrastructure network and an ad-hoc AWDL channel. It is the transport layer underneath AirDrop, AirPlay peer-to-peer, and Continuity features. Closed and Apple-specific; there is no open-source equivalent (the reverse-engineered <code>OWL</code> / "Open Wireless Link" research project is the only outside implementation).</td>
 </tr>
 <tr>
   <td><strong>AirDrop</strong></td>
-  <td>Apple's ad-hoc file-sharing feature. Uses <strong>Bluetooth LE</strong> to discover nearby devices and negotiate, then brings up an <strong>AWDL</strong> WiFi link for the actual high-speed transfer. So AirDrop = discovery (BLE + Bonjour/mDNS) + transport (AWDL). Reproducing it needs both the AWDL layer and the Bonjour service-discovery layer (see the mDNSResponder plan).</td>
+  <td>Apple's ad-hoc file-sharing feature. Uses <strong>Bluetooth LE</strong> to discover nearby devices and negotiate, then brings up an <strong>AWDL</strong> WLAN link for the actual high-speed transfer. So AirDrop = discovery (BLE + Bonjour/mDNS) + transport (AWDL). Reproducing it needs both the AWDL layer and the Bonjour service-discovery layer (see the mDNSResponder plan).</td>
 </tr>
 <tr>
   <td><strong>Continuity</strong></td>
-  <td>The umbrella name for Apple's cross-device handoff features — Handoff, Universal Clipboard, Instant Hotspot, iPhone-as-webcam, etc. Many of them ride on AWDL + BLE + Bonjour, coordinated by higher-level daemons. WiFi-relevant only insofar as several Continuity features depend on AWDL being available.</td>
+  <td>The umbrella name for Apple's cross-device handoff features — Handoff, Universal Clipboard, Instant Hotspot, iPhone-as-webcam, etc. Many of them ride on AWDL + BLE + Bonjour, coordinated by higher-level daemons. WLAN-relevant only insofar as several Continuity features depend on AWDL being available.</td>
 </tr>
 <tr>
   <td><strong>P2P / Wi-Fi Direct</strong></td>
-  <td>The <em>standard</em> (Wi-Fi Alliance) peer-to-peer WiFi mechanism — the open-standard analog of AWDL. <code>wpa_supplicant</code> ships a full P2P stack; <code>iwd</code>'s is limited. Neither speaks AWDL, so neither interoperates with AirDrop without an additional Apple-protocol layer on top.</td>
+  <td>The <em>standard</em> (Wi-Fi Alliance) peer-to-peer WLAN mechanism — the open-standard analog of AWDL. <code>wpa_supplicant</code> ships a full P2P stack; <code>iwd</code>'s is limited. Neither speaks AWDL, so neither interoperates with AirDrop without an additional Apple-protocol layer on top.</td>
 </tr>
 <tr>
   <td><strong>EAP</strong><br>(Extensible Authentication Protocol)</td>
-  <td>The authentication framework used by <em>Enterprise</em> WiFi (802.1X). Not one protocol but a family of methods — EAP-TLS (client certs), PEAP / EAP-TTLS (username+password inside a TLS tunnel), EAP-FAST, EAP-SIM / EAP-AKA (cellular SIM-based). This is the <em>only</em> part Apple open-sourced, as <code>eapolclient</code> in the <code>eap8021x</code> repo.</td>
+  <td>The authentication framework used by <em>Enterprise</em> WLAN (802.1X). Not one protocol but a family of methods — EAP-TLS (client certs), PEAP / EAP-TTLS (username+password inside a TLS tunnel), EAP-FAST, EAP-SIM / EAP-AKA (cellular SIM-based). This is the <em>only</em> part Apple open-sourced, as <code>eapolclient</code> in the <code>eap8021x</code> repo.</td>
 </tr>
 <tr>
   <td><strong>EAPOL</strong><br>(EAP over LAN)</td>
@@ -440,7 +440,7 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
 </tr>
 <tr>
   <td><strong>4-way handshake</strong></td>
-  <td>The WPA/WPA2/WPA3 key-exchange that runs <em>after</em> authentication. Using a shared master key (the PMK — from the WiFi password for Personal, or from EAP for Enterprise), client and AP exchange four messages to derive and install the per-session encryption keys (PTK/GTK). On Apple this is owned by <code>wifid</code> (often firmware-offloaded), not <code>eapolclient</code>.</td>
+  <td>The WPA/WPA2/WPA3 key-exchange that runs <em>after</em> authentication. Using a shared master key (the PMK — from the WLAN password for Personal, or from EAP for Enterprise), client and AP exchange four messages to derive and install the per-session encryption keys (PTK/GTK). On Apple this is owned by <code>wifid</code> (often firmware-offloaded), not <code>eapolclient</code>.</td>
 </tr>
 <tr>
   <td><strong>PMK / PTK / GTK</strong></td>
@@ -460,7 +460,7 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
 </tr>
 <tr>
   <td><strong>PMF / 802.11w</strong><br>(Protected Management Frames)</td>
-  <td>Cryptographic protection for WiFi management frames (deauth/disassoc), which were historically unprotected and spoofable. Optional under WPA2, <em>mandatory</em> under WPA3.</td>
+  <td>Cryptographic protection for WLAN management frames (deauth/disassoc), which were historically unprotected and spoofable. Optional under WPA2, <em>mandatory</em> under WPA3.</td>
 </tr>
 <tr>
   <td><strong>802.11r (FT)</strong></td>
@@ -472,7 +472,7 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
 </tr>
 <tr>
   <td><strong>net80211</strong></td>
-  <td>FreeBSD's in-kernel 802.11 stack — the layer WiFi drivers plug into and that userspace supplicants drive. <code>wpa_supplicant</code> talks to it through <code>driver_bsd.c</code>. The FreeBSD analog of Apple's <code>IO80211Family</code>.</td>
+  <td>FreeBSD's in-kernel 802.11 stack — the layer WLAN drivers plug into and that userspace supplicants drive. <code>wpa_supplicant</code> talks to it through <code>driver_bsd.c</code>. The FreeBSD analog of Apple's <code>IO80211Family</code>.</td>
 </tr>
 <tr>
   <td><strong>nl80211 / cfg80211</strong></td>
@@ -484,11 +484,11 @@ For what to actually build &mdash; the missing <code>wlan_xauth</code>, the VAP-
 </tr>
 <tr>
   <td><strong><code>KnownNetwork</code> / <code>Agent</code> (iwd)</td>
-  <td><code>iwd</code> D-Bus objects. <code>KnownNetwork</code> = a remembered network with auto-managed profile storage and autoconnect ranking (the analog of a saved WiFi profile / CoreWLAN configuration). <code>Agent</code> = the interface <code>iwd</code> calls back into when it needs a credential, i.e. the "prompt the user for the password" hook (the analog of Apple's keychain/UI prompt flow).</td>
+  <td><code>iwd</code> D-Bus objects. <code>KnownNetwork</code> = a remembered network with auto-managed profile storage and autoconnect ranking (the analog of a saved WLAN profile / CoreWLAN configuration). <code>Agent</code> = the interface <code>iwd</code> calls back into when it needs a credential, i.e. the "prompt the user for the password" hook (the analog of Apple's keychain/UI prompt flow).</td>
 </tr>
 <tr>
   <td><strong>CoreWLAN</strong><br>(<code>CWInterface</code> / <code>CWNetwork</code>)</td>
-  <td>Apple's <em>public</em> Objective-C WiFi API for apps. <code>CWInterface</code> = a WiFi adapter (scan, associate, power); <code>CWNetwork</code> = a discovered network. This is the API surface <code>wifid</code> would replicate so Gershwin apps look like Mac apps.</td>
+  <td>Apple's <em>public</em> Objective-C WLAN API for apps. <code>CWInterface</code> = a WLAN adapter (scan, associate, power); <code>CWNetwork</code> = a discovered network. This is the API surface <code>wifid</code> would replicate so Gershwin apps look like Mac apps.</td>
 </tr>
 </tbody>
 </table>

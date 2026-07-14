@@ -84,26 +84,26 @@
 </nav>
 
 <h1>FreeBSD Bluetooth management — Apple stack research <span class="pill info">RESEARCH</span></h1>
-<p class="subtitle">How macOS Bluetooth works (a fully closed <code>bluetoothd</code> + <code>IOBluetooth</code>/<code>CoreBluetooth</code> + <code>IOBluetoothFamily.kext</code> stack), why there is <em>zero</em> Apple open-source for it, why FreeBSD's ancient Netgraph stack can't do BLE, and what an Apple-shape Bluetooth path would actually require. Companion to the <a href="nextbsd-wifi-research.html">WiFi management</a> and <a href="freebsd-keychain-port-plan.html">Keychain</a> plans.</p>
+<p class="subtitle">How macOS Bluetooth works (a fully closed <code>bluetoothd</code> + <code>IOBluetooth</code>/<code>CoreBluetooth</code> + <code>IOBluetoothFamily.kext</code> stack), why there is <em>zero</em> Apple open-source for it, why FreeBSD's ancient Netgraph stack can't do BLE, and what an Apple-shape Bluetooth path would actually require. Companion to the <a href="nextbsd-wlan-research.html">WLAN management</a> and <a href="freebsd-keychain-port-plan.html">Keychain</a> plans.</p>
 
 <section id="tldr" class="tldr">
   <h3>TL;DR</h3>
   <ul>
-    <li><strong>Apple's Bluetooth stack is the most closed part of the system.</strong> WiFi had one open piece (<code>eap8021x</code>); Keychain had published-but-unbuildable source. Bluetooth has <strong>nothing</strong> — no daemon source, no kext source, no framework implementation. Only the public API <em>headers</em> exist.</li>
+    <li><strong>Apple's Bluetooth stack is the most closed part of the system.</strong> WLAN had one open piece (<code>eap8021x</code>); Keychain had published-but-unbuildable source. Bluetooth has <strong>nothing</strong> — no daemon source, no kext source, no framework implementation. Only the public API <em>headers</em> exist.</li>
     <li><strong>How it works:</strong> apps call <code>CoreBluetooth</code> (BLE/GATT) or <code>IOBluetooth</code> (Classic) → those proxy over XPC/Mach IPC to <strong><code>bluetoothd</code></strong>, the userspace management brain → which drives <code>IOBluetoothFamily.kext</code> → which speaks HCI to the controller. Same shape as <code>wifid</code>, mapped almost one-to-one.</li>
     <li><strong>Plus a proprietary layer on top.</strong> <code>MagicPairing</code> (iCloud-synced keys for AirPods / Magic peripherals) and the <code>Continuity</code> BLE-advertisement protocol (Handoff, AirDrop discovery, proximity pairing) are Apple-only protocols riding on standard HCI — documented only via reverse engineering.</li>
-    <li><strong>FreeBSD's side is the real problem.</strong> The Netgraph stack (<code>ng_hci</code>/<code>ng_l2cap</code>/<code>ng_btsocket</code> + <code>hcsecd</code>/<code>sdpd</code>/<code>bthidd</code>) dates to 2002 and supports <strong>Classic Bluetooth only — no BLE, no GATT, no SMP.</strong> Unlike WiFi, the gap is in the <em>kernel</em>, and there is no <code>wpa_supplicant</code>-equivalent BSD-licensed engine to lean on.</li>
-    <li><strong>Why this matters for the project:</strong> a CoreBluetooth-equivalent is fundamentally a <em>BLE/GATT</em> API, and FreeBSD can't do BLE. So an Apple-shape Bluetooth story needs a kernel/stack BLE effort <em>first</em> (extend Netgraph, port the GPL/Linux-bound BlueZ, or build a greenfield userland LE stack), then a <code>com.apple.bluetoothd</code> brain on top. Much heavier than WiFi. Out of scope now; documented so the option space is settled.</li>
+    <li><strong>FreeBSD's side is the real problem.</strong> The Netgraph stack (<code>ng_hci</code>/<code>ng_l2cap</code>/<code>ng_btsocket</code> + <code>hcsecd</code>/<code>sdpd</code>/<code>bthidd</code>) dates to 2002 and supports <strong>Classic Bluetooth only — no BLE, no GATT, no SMP.</strong> Unlike WLAN, the gap is in the <em>kernel</em>, and there is no <code>wpa_supplicant</code>-equivalent BSD-licensed engine to lean on.</li>
+    <li><strong>Why this matters for the project:</strong> a CoreBluetooth-equivalent is fundamentally a <em>BLE/GATT</em> API, and FreeBSD can't do BLE. So an Apple-shape Bluetooth story needs a kernel/stack BLE effort <em>first</em> (extend Netgraph, port the GPL/Linux-bound BlueZ, or build a greenfield userland LE stack), then a <code>com.apple.bluetoothd</code> brain on top. Much heavier than WLAN. Out of scope now; documented so the option space is settled.</li>
   </ul>
 </section>
 
 <h2 id="stack">1. How the closed Apple stack works</h2>
 
-<p>macOS Bluetooth is layered exactly like the WiFi stack: a kernel driver family, a closed userspace management daemon that owns all the policy, and public framework facades that proxy to it over IPC. From the controller up:</p>
+<p>macOS Bluetooth is layered exactly like the WLAN stack: a kernel driver family, a closed userspace management daemon that owns all the policy, and public framework facades that proxy to it over IPC. From the controller up:</p>
 
 <table>
 <thead>
-<tr><th>Component</th><th>Role</th><th>WiFi analog</th><th>Source</th></tr>
+<tr><th>Component</th><th>Role</th><th>WLAN analog</th><th>Source</th></tr>
 </thead>
 <tbody>
 <tr>
@@ -162,7 +162,7 @@
                  |  HCI  (USB on Intel; custom transport on Apple Silicon)
                  v
      +-----------+-----------+
-     |  Bluetooth controller |   (Broadcom/Apple combo Wi-Fi+BT silicon)
+     |  Bluetooth controller |   (Broadcom/Apple combo WLAN+BT silicon)
      +-----------------------+</div>
 
 <h3 id="classic-vs-ble">1.2 Two frameworks because there are two Bluetooths</h3>
@@ -191,12 +191,12 @@
 <p>Beyond standard Bluetooth, <code>bluetoothd</code> implements two Apple-only protocols that are the actual "magic" and are <strong>entirely undocumented</strong> (known only through reverse engineering of <code>bluetoothd</code> strings and device firmware):</p>
 <ul>
   <li><strong>MagicPairing</strong> — Apple's proprietary pairing for AirPods and Magic Keyboard/Mouse/Trackpad. You pair once, and the keys sync via iCloud so the peripheral works on every device on your account. It rides on top of standard HCI (so it works with off-the-shelf radios) but is not part of any Bluetooth spec. TU Darmstadt's analysis reverse-engineered it from <code>bluetoothd</code> and the AirPods' RTKit firmware, and found ten security flaws across the iOS/macOS/RTKit implementations. (<a href="https://arxiv.org/pdf/2005.07255">Heinze et al., MagicPairing, WiSec 2020</a>)</li>
-  <li><strong>Continuity</strong> — a family of <em>BLE advertisement</em> messages Apple devices broadcast for Handoff, AirDrop discovery, proximity pairing ("bring AirPods near your Mac"), Universal Clipboard, and instant hotspot. Reverse-engineered and catalogued by the <a href="https://github.com/furiousMAC/continuity">furiousMAC/continuity</a> project. This is the BLE half of how Apple devices <em>find</em> each other before falling back to AWDL/WiFi for bulk transfer.</li>
+  <li><strong>Continuity</strong> — a family of <em>BLE advertisement</em> messages Apple devices broadcast for Handoff, AirDrop discovery, proximity pairing ("bring AirPods near your Mac"), Universal Clipboard, and instant hotspot. Reverse-engineered and catalogued by the <a href="https://github.com/furiousMAC/continuity">furiousMAC/continuity</a> project. This is the BLE half of how Apple devices <em>find</em> each other before falling back to AWDL/WLAN for bulk transfer.</li>
 </ul>
 <p>Neither is portable — they depend on iCloud key infrastructure (MagicPairing) and the broader Continuity daemon ecosystem. Even with a perfect BLE stack, AirDrop-grade interop would require reimplementing these closed protocols.</p>
 
 <h3 id="keys">1.5 Where pairing keys live — the keychain tie-in</h3>
-<p>Bluetooth bonding produces long-lived secrets (Classic link keys, BLE LTKs) that must persist across reboots and be available before login (so a paired keyboard works at the login window). On macOS these live in a mix of <code>com.apple.Bluetooth.plist</code> and keychain-protected storage. This is the same problem the <a href="freebsd-keychain-port-plan.html">Keychain plan</a> addresses for WiFi PSKs: a <code>com.apple.bluetoothd</code> would want a <strong>system-scoped secret store</strong> for bond keys — exactly the System-keychain consumer that plan calls out. Bluetooth and WiFi both push toward the same <code>secd</code>-equivalent.</p>
+<p>Bluetooth bonding produces long-lived secrets (Classic link keys, BLE LTKs) that must persist across reboots and be available before login (so a paired keyboard works at the login window). On macOS these live in a mix of <code>com.apple.Bluetooth.plist</code> and keychain-protected storage. This is the same problem the <a href="freebsd-keychain-port-plan.html">Keychain plan</a> addresses for WLAN PSKs: a <code>com.apple.bluetoothd</code> would want a <strong>system-scoped secret store</strong> for bond keys — exactly the System-keychain consumer that plan calls out. Bluetooth and WLAN both push toward the same <code>secd</code>-equivalent.</p>
 
 <h2 id="oss">2. Open-source status — there is none</h2>
 <p>This is the headline difference from every other component we've researched. Apple publishes <strong>no Bluetooth implementation at all.</strong></p>
@@ -209,7 +209,7 @@
 <tr><td>MagicPairing / Continuity</td><td><span class="yesno no">Closed</span></td><td>Undocumented proprietary protocols; only third-party reverse-engineering exists.</td></tr>
 </tbody>
 </table>
-<div class="gap"><strong>The spectrum, across everything we've looked at:</strong> Security/Keychain — framework source <em>published</em> (just unbuildable). WiFi — one component open (<code>eap8021x</code>). <strong>Bluetooth — nothing open; headers only.</strong> So there is no Apple code to even <em>study</em> for a port, let alone vendor. Any FreeBSD Bluetooth work is clean-room by necessity.</div>
+<div class="gap"><strong>The spectrum, across everything we've looked at:</strong> Security/Keychain — framework source <em>published</em> (just unbuildable). WLAN — one component open (<code>eap8021x</code>). <strong>Bluetooth — nothing open; headers only.</strong> So there is no Apple code to even <em>study</em> for a port, let alone vendor. Any FreeBSD Bluetooth work is clean-room by necessity.</div>
 
 <h2 id="layers">3. The protocol layers, explained</h2>
 <p>Because "port Bluetooth" means rebuilding these layers, here's what each is — and which half (Classic / BLE) it belongs to.</p>
@@ -256,10 +256,10 @@
   <li><strong>Kernel coupling:</strong> BlueZ moved most of the host stack <em>into the Linux kernel</em> (the <code>bluetooth</code> subsystem: <code>AF_BLUETOOTH</code> sockets, the <code>mgmt</code> API, kernel L2CAP/SMP). <code>bluetoothd</code>(BlueZ) is a thin manager over that kernel stack — it does <em>not</em> contain a portable host stack. Porting it means porting or emulating the Linux kernel Bluetooth subsystem, not just building a daemon.</li>
   <li><strong>IPC:</strong> D-Bus API, foreign to the Mach/DO world.</li>
 </ul>
-<p>So BlueZ gives you a manager whose engine lives in a kernel you don't have. There is no clean, BSD-licensed, net80211-style userland BLE engine to adopt — the single biggest difference from the WiFi situation.</p>
+<p>So BlueZ gives you a manager whose engine lives in a kernel you don't have. There is no clean, BSD-licensed, net80211-style userland BLE engine to adopt — the single biggest difference from the WLAN situation.</p>
 
 <h2 id="path">6. What an Apple-shape Bluetooth path would require</h2>
-<p>Unlike WiFi (where the kernel was ready and only a userland brain was needed), Bluetooth needs the <strong>kernel/stack BLE layer built first</strong>. Three ways to get there:</p>
+<p>Unlike WLAN (where the kernel was ready and only a userland brain was needed), Bluetooth needs the <strong>kernel/stack BLE layer built first</strong>. Three ways to get there:</p>
 <table>
 <thead><tr><th>Option</th><th>Approach</th><th>Verdict</th></tr></thead>
 <tbody>
@@ -297,22 +297,22 @@
 - (NSData *)value;
 - (void)setNotifyValue:(BOOL)enabled;
 @end</code></pre>
-<p>Backed by the chosen engine for the actual GATT/SMP work, persisting bond keys in the <a href="freebsd-keychain-port-plan.html">System keychain</a>. This is the direct analog of <code>wifid-fbsd</code> — a thin Apple-shape brain over a protocol engine — except the engine has to be built, not adopted.</p>
+<p>Backed by the chosen engine for the actual GATT/SMP work, persisting bond keys in the <a href="freebsd-keychain-port-plan.html">System keychain</a>. This is the direct analog of <code>wland</code> — a thin Apple-shape brain over a protocol engine — except the engine has to be built, not adopted.</p>
 
 <h2 id="continuity">7. The AirDrop / Continuity tie-in</h2>
-<p>Bluetooth isn't independent of the WiFi work. Apple's proximity magic is a <strong>two-radio</strong> dance:</p>
+<p>Bluetooth isn't independent of the WLAN work. Apple's proximity magic is a <strong>two-radio</strong> dance:</p>
 <div class="ascii-diagram">  Discovery / signalling          Bulk transfer
   -----------------------         -----------------------
-  BLE Continuity adverts   --->   AWDL (Wi-Fi peer-to-peer)
-  (this doc's gap)                (WiFi doc's gap)
+  BLE Continuity adverts   --->   AWDL (WLAN peer-to-peer)
+  (this doc's gap)                (WLAN doc's gap)
         |                               |
         +------- AirDrop / Handoff ------+</div>
 <ul>
   <li><strong>BLE</strong> handles <em>discovery</em> — devices broadcast Continuity advertisements so a nearby Mac knows an iPhone is there and offering AirDrop.</li>
-  <li><strong>AWDL</strong> (the WiFi plan's gap) handles the <em>high-speed transfer</em> once discovery completes.</li>
+  <li><strong>AWDL</strong> (the WLAN plan's gap) handles the <em>high-speed transfer</em> once discovery completes.</li>
   <li><strong>Bonjour/mDNS</strong> (the <a href="freebsd-mdnsresponder-plan.html">mDNSResponder plan</a>) names the services.</li>
 </ul>
-<p>So full AirDrop interop requires <em>all three</em> gaps closed — BLE (here), AWDL (WiFi), and Bonjour — plus the closed Continuity/MagicPairing protocols reimplemented. That makes AirDrop a long-horizon, cross-cutting goal, not a single deliverable. The realistic near-term scope here is <strong>standard BLE</strong> (connect to a heart-rate monitor, a BLE keyboard, a sensor) — not Apple-proprietary peer interop.</p>
+<p>So full AirDrop interop requires <em>all three</em> gaps closed — BLE (here), AWDL (WLAN), and Bonjour — plus the closed Continuity/MagicPairing protocols reimplemented. That makes AirDrop a long-horizon, cross-cutting goal, not a single deliverable. The realistic near-term scope here is <strong>standard BLE</strong> (connect to a heart-rate monitor, a BLE keyboard, a sensor) — not Apple-proprietary peer interop.</p>
 
 <h2 id="open">8. Open questions</h2>
 <div class="open-q"><strong>Q1. Is BLE actually needed soon?</strong> Classic (existing Netgraph) already covers Bluetooth keyboards/mice/audio for a desktop. BLE matters for modern peripherals, watches, trackers, and Continuity. Is there a concrete near-term consumer, or is Classic-only acceptable for now?</div>
@@ -329,7 +329,7 @@
   <li><strong>CoreBluetooth API reference:</strong> <a href="https://developer.apple.com/documentation/corebluetooth">developer.apple.com/documentation/corebluetooth</a></li>
   <li><strong>FreeBSD Bluetooth handbook:</strong> <a href="https://docs.freebsd.org/en/books/handbook/network/#network-bluetooth">docs.freebsd.org — Bluetooth</a> (<code>ng_bluetooth</code>, <code>hcsecd</code>, <code>sdpd</code>, <code>bthidd</code>)</li>
   <li><strong>BlueZ (Linux stack, for contrast):</strong> <a href="http://www.bluez.org/">bluez.org</a></li>
-  <li><strong>Companion plans:</strong> <a href="nextbsd-wifi-research.html">WiFi management</a>, <a href="freebsd-keychain-port-plan.html">Keychain port</a>, <a href="freebsd-mdnsresponder-plan.html">mDNSResponder</a></li>
+  <li><strong>Companion plans:</strong> <a href="nextbsd-wlan-research.html">WLAN management</a>, <a href="freebsd-keychain-port-plan.html">Keychain port</a>, <a href="freebsd-mdnsresponder-plan.html">mDNSResponder</a></li>
 </ul>
 
 </body>

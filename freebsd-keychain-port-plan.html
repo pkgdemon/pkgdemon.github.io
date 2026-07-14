@@ -87,17 +87,17 @@
 </nav>
 
 <h1>FreeBSD Keychain — porting / alternatives plan <span class="pill info">Scoping</span></h1>
-<p class="subtitle">What macOS Keychain actually is, what's open vs closed, and the full set of options for giving NextBSD/gershwin a local secret store with Apple's <code>SecItem</code> API — from porting Apple's <code>Security.framework</code> wholesale, to wrapping <code>gnome-keyring</code>, to a clean-room <code>secd</code>-equivalent. Companion to the <a href="nextbsd-wifi-research.html">WiFi management</a>, <a href="freebsd-pam-port-plan.html">PAM port</a>, and <a href="freebsd-configd-plan.html">configd</a> plans.</p>
+<p class="subtitle">What macOS Keychain actually is, what's open vs closed, and the full set of options for giving NextBSD/gershwin a local secret store with Apple's <code>SecItem</code> API — from porting Apple's <code>Security.framework</code> wholesale, to wrapping <code>gnome-keyring</code>, to a clean-room <code>secd</code>-equivalent. Companion to the <a href="nextbsd-wlan-research.html">WLAN management</a>, <a href="freebsd-pam-port-plan.html">PAM port</a>, and <a href="freebsd-configd-plan.html">configd</a> plans.</p>
 
 <section id="tldr" class="tldr">
   <h3>TL;DR</h3>
   <ul>
     <li><strong>Keychain isn't one thing.</strong> On macOS it's a library (<code>Security.framework</code>) talking over Mach IPC to a <strong>launchd-managed daemon</strong> (<code>securityd</code> / <code>secd</code>) that owns the encrypted keychain files, with the hardware root of trust in the <strong>Secure Enclave (SEP)</strong> on modern Macs.</li>
     <li><strong>The source is published but not buildable.</strong> <a href="https://github.com/apple-oss-distributions/Security">apple-oss-distributions/Security</a> + <a href="https://github.com/apple-oss-distributions/securityd">securityd</a> are real source, but the tree doesn't build standalone (missing internal headers), depends on <code>corecrypto</code> (restrictive license) and <strong>SEP firmware that is closed and hardware-specific</strong>, and carries decades of CDSA/iCloud baggage we don't want. It's a <em>reference</em>, not a vendorable codebase.</li>
-    <li><strong>We don't need most of it.</strong> No iCloud Keychain sync, no SEP/biometric gating, no code-signing trust evaluation (separate concern). What we need is a <em>local</em> secret store exposing the public <code>SecItem</code> (and legacy <code>SecKeychain</code>) C API, so Apple-derived apps and our own daemons (<code>wifid-fbsd</code>, configd, a future mail/browser) have somewhere safe to put passwords and keys.</li>
+    <li><strong>We don't need most of it.</strong> No iCloud Keychain sync, no SEP/biometric gating, no code-signing trust evaluation (separate concern). What we need is a <em>local</em> secret store exposing the public <code>SecItem</code> (and legacy <code>SecKeychain</code>) C API, so Apple-derived apps and our own daemons (<code>wland</code>, configd, a future mail/browser) have somewhere safe to put passwords and keys.</li>
     <li><strong>Recommendation: clean-room <code>secd</code>-equivalent.</strong> A launchd-managed Mach/<a href="freebsd-libxpc-plan.html">DO</a> daemon implementing the <code>SecItem</code> facade over an encrypted file store, using base crypto (<code>libcrypto</code> / libsodium), optionally TPM2-backed. Per the shipped system's convention it keeps Apple's own name — launchd job label <em>and</em> Mach service both <strong><code>com.apple.securityd</code></strong> (modern alt <code>com.apple.secd</code>), exactly like the running <code>com.apple.configd</code> / <code>com.apple.notifyd</code> — see <a href="#naming">§5.1</a>. Reuses the project's existing launchd + CoreFoundation + Mach substrate. Estimated <strong>~2–3 person-months for a usable per-user subset</strong>; more for full ACL/access-group fidelity.</li>
     <li><strong>Alternatives considered &amp; why they lose:</strong> full <code>Security.framework</code> port (closed crypto + SEP + enormous); wrapping <code>gnome-keyring</code>/<code>libsecret</code> (drags in D-Bus, LGPL, and a non-Apple API shape); KWallet (Qt/KDE weight); <code>pass</code>/gpg-agent (no daemon API, CLI-shaped); plaintext <code>Network.plist</code> (status quo, no protection).</li>
-    <li><strong>Not a commitment.</strong> Sequenced behind a real consumer. Until one lands, secrets stay inline in plaintext <code>Network.plist</code> (the WiFi plan's <a href="nextbsd-wifi-plan.html#openq">Q2</a>). This plan exists so the option space is settled and we don't relitigate.</li>
+    <li><strong>Not a commitment.</strong> Sequenced behind a real consumer. Until one lands, secrets stay inline in plaintext <code>Network.plist</code> (the WLAN plan's <a href="nextbsd-wlan-plan.html#openq">Q2</a>). This plan exists so the option space is settled and we don't relitigate.</li>
   </ul>
 </section>
 
@@ -122,7 +122,7 @@
 </tr>
 <tr>
   <td>Keychain files</td>
-  <td>On-disk encrypted databases. Legacy: <code>~/Library/Keychains/login.keychain-db</code> (per-user, unlocked by login password) and <code>/Library/Keychains/System.keychain</code> (system-wide, e.g. WiFi). Modern: SQLite-backed data-protection keychain.</td>
+  <td>On-disk encrypted databases. Legacy: <code>~/Library/Keychains/login.keychain-db</code> (per-user, unlocked by login password) and <code>/Library/Keychains/System.keychain</code> (system-wide, e.g. WLAN). Modern: SQLite-backed data-protection keychain.</td>
   <td>n/a</td>
 </tr>
 <tr>
@@ -136,7 +136,7 @@
 <p>Critically for us, the daemon half is a <strong>textbook launchd-on-demand Mach service</strong>, the same pattern as configd / notifyd: a <code>.plist</code> declares a Mach service name, the library does a <code>bootstrap_look_up</code>, launchd starts the daemon on first use. That maps directly onto the infrastructure the <a href="freebsd-launchd-plan.html">launchd</a> and <a href="freebsd-libxpc-plan.html">libxpc/DO</a> work already provides.</p>
 
 <h3>1.1 The architecture</h3>
-<div class="ascii-diagram">     app / wifid-fbsd / configd
+<div class="ascii-diagram">     app / wland / configd
               |
               v  SecItemCopyMatching(...)
      +--------------------+
@@ -156,7 +156,7 @@
      +--------------------+     +-------------------+</div>
 
 <h3>1.2 What a "keychain item" is</h3>
-<p>Each item has a <strong>class</strong> (<code>kSecClassGenericPassword</code>, <code>kSecClassInternetPassword</code>, <code>kSecClassCertificate</code>, <code>kSecClassKey</code>, <code>kSecClassIdentity</code>), a set of <strong>attributes</strong> (account, service, server, protocol, label, …) used as search keys, an encrypted <strong>secret payload</strong>, and an <strong>access-control</strong> policy (which apps may read it, whether unlock/biometric is required). WiFi passwords, for example, are <code>kSecClassGenericPassword</code> / <code>kSecClassInternetPassword</code> items in the System keychain. Replicating <em>this</em> data model is the real work — the crypto is the easy part.</p>
+<p>Each item has a <strong>class</strong> (<code>kSecClassGenericPassword</code>, <code>kSecClassInternetPassword</code>, <code>kSecClassCertificate</code>, <code>kSecClassKey</code>, <code>kSecClassIdentity</code>), a set of <strong>attributes</strong> (account, service, server, protocol, label, …) used as search keys, an encrypted <strong>secret payload</strong>, and an <strong>access-control</strong> policy (which apps may read it, whether unlock/biometric is required). WLAN passwords, for example, are <code>kSecClassGenericPassword</code> / <code>kSecClassInternetPassword</code> items in the System keychain. Replicating <em>this</em> data model is the real work — the crypto is the easy part.</p>
 
 <h2 id="oss">2. Open-source status — published, not buildable</h2>
 
@@ -207,7 +207,7 @@
 <tbody>
 <tr><td>Local secret storage + <code>SecItem</code> CRUD</td><td><span class="yesno yes">Yes</span></td><td>The whole point — give apps/daemons a place to keep secrets behind a known API.</td></tr>
 <tr><td>Per-user keychain unlocked by login password</td><td><span class="yesno yes">Yes</span></td><td>Matches user expectation; integrates with the <a href="freebsd-pam-port-plan.html">PAM port</a> for unlock-at-login.</td></tr>
-<tr><td>System keychain (for WiFi etc.)</td><td><span class="yesno yes">Yes</span></td><td><code>wifid-fbsd</code> needs a root-owned store for network creds available before login.</td></tr>
+<tr><td>System keychain (for WLAN etc.)</td><td><span class="yesno yes">Yes</span></td><td><code>wland</code> needs a root-owned store for network creds available before login.</td></tr>
 <tr><td>Per-app / access-group access control</td><td><span class="yesno partial">Partial</span></td><td>A simplified uid/path-based policy is enough initially; full code-signing-identity ACLs are a later fidelity bump.</td></tr>
 <tr><td>iCloud Keychain sync</td><td><span class="yesno no">No</span></td><td>No Apple-ID infra; out of scope permanently.</td></tr>
 <tr><td>Secure Enclave / biometric gating</td><td><span class="yesno no">No</span></td><td>No SEP hardware. TPM2 is the only analog and it's optional (see §6).</td></tr>
@@ -266,7 +266,7 @@
 
 <h3>4.G — Status quo: plaintext <code>Network.plist</code> / flat files</h3>
 <ul>
-  <li><strong>Pros:</strong> Zero work; already how WiFi creds would land today.</li>
+  <li><strong>Pros:</strong> Zero work; already how WLAN creds would land today.</li>
   <li><strong>Cons:</strong> No encryption at rest, no API, no access control. Acceptable as an interim, not as a destination.</li>
 </ul>
 <p><span class="pill info">Interim</span> The honest current state until a consumer justifies B.</p>
@@ -312,18 +312,27 @@ PID   Status  Label
  46   -       com.apple.IPConfiguration
  45   -       com.apple.DiskArbitration
  55   -       com.openssh.sshd          # third-party → upstream's own reverse-DNS</code></pre>
-<p>So a daemon that <em>models or replaces an Apple service</em> takes Apple's own name outright. For the keychain that is <strong><code>com.apple.securityd</code></strong> (modern data-protection alt: <code>com.apple.secd</code>; legacy bootstrap alias: <code>com.apple.SecurityServer</code>). There is no separate "our identity" label — that was a wrong inference; the shipped daemons don't do it. A clean-room <code>Security.framework</code> has <code>bootstrap_look_up("com.apple.securityd")</code> baked in, and using Apple's label for the job too keeps everything aligned with the rest of the running stack.</p>
+<p>So a daemon that <em>models or replaces an Apple service</em> takes Apple's own name outright. For the keychain that is <strong><code>com.apple.securityd</code></strong> (modern data-protection alt: <code>com.apple.secd</code>; legacy bootstrap alias: <code>com.apple.SecurityServer</code>). A clean-room <code>Security.framework</code> has <code>bootstrap_look_up("com.apple.securityd")</code> baked in, and using Apple's label for the job too keeps everything aligned with the rest of the running stack. <em>(This is the convention as shipped. It is not permanent, and it does not extend to daemons we write both ends of — see the direction-of-travel note below.)</em></p>
 <div class="resolved"><strong>The project's namespace layering (read off the shipped image):</strong>
 <table class="compact">
 <thead><tr><th>Layer</th><th>Namespace</th><th>Examples</th></tr></thead>
 <tbody>
-<tr><td>Userland daemon modeling/replacing an Apple service</td><td><strong><code>com.apple.*</code></strong> (Apple's exact label; job = service)</td><td><code>com.apple.configd</code>, <code>com.apple.notifyd</code>, <code>com.apple.IPConfiguration</code>, <code>com.apple.DiskArbitration</code>, <code>com.apple.securityd</code></td></tr>
+<tr><td>Userland daemon whose label Apple-derived code <strong>looks up</strong> (<code>bootstrap_look_up</code>), or that already ships under it</td><td><strong><code>com.apple.*</code></strong> (Apple's exact label; job = service)</td><td><code>com.apple.configd</code>, <code>com.apple.notifyd</code>, <code>com.apple.IPConfiguration</code>, <code>com.apple.DiskArbitration</code>, <code>com.apple.securityd</code></td></tr>
+<tr><td>Userland daemon where <strong>we write both ends</strong> — no Apple-derived consumer, nothing shipped yet</td><td><strong><code>org.nextbsd.*</code></strong></td><td><code>org.nextbsd.wland</code> / <code>org.nextbsd.wlan</code> — see below</td></tr>
 <tr><td>Third-party daemon</td><td>upstream's own reverse-DNS</td><td><code>com.openssh.sshd</code></td></tr>
 <tr><td>Kernel kexts (loaded by <code>com.apple.kextd</code>)</td><td><strong><code>org.nextbsd.*</code></strong></td><td><code>org.nextbsd.driver.*</code>, <code>org.nextbsd.kpi.*</code>, <code>org.nextbsd.filesystems.*</code></td></tr>
 <tr><td>Desktop / GUI layer</td><td><strong><code>org.gershwin.*</code></strong></td><td><code>org.gershwin.loginwindow</code>, <code>org.gershwin.dshelper</code></td></tr>
 </tbody>
 </table>
-<strong>Not <code>org.nextbsd.secd</code></strong> (that namespace is kernel-space only) and <strong>not <code>org.freebsd.secd</code></strong> (the <code>org.freebsd.*</code> labels in older plan drafts don't match the shipped image, which uses <code>com.apple.*</code> for these daemons — see the audit note in the WiFi/Bluetooth companions).</div>
+<strong>Not <code>org.nextbsd.secd</code></strong> — and the reason is <em>not</em> "that namespace is kernel-only" (an earlier draft said so; it was wrong, see below). It is that a clean-room <code>Security.framework</code> carries <code>bootstrap_look_up("com.apple.securityd")</code> in Apple-derived source. The label is a <strong>compatibility surface</strong> here, not a branding choice. Also <strong>not <code>org.freebsd.secd</code></strong> (the <code>org.freebsd.*</code> labels in older plan drafts don't match the shipped image — see the audit note in the Bluetooth companion).</div>
+
+<div class="open-q"><strong>Direction of travel: <code>com.apple.*</code> &rarr; <code>org.nextbsd.*</code>.</strong> The table above describes <em>the shipped image as it is today</em>, not an endpoint we're defending. The intent is to move these labels to <code>org.nextbsd.*</code> across the board — they are our daemons, not Apple's, and the reverse-DNS should say so. What blocks it is cost, not principle: the labels are baked into running jobs, <code>.plist</code> filenames, and <code>bootstrap_look_up()</code> call sites in already-shipping code, so a sweep is a real code-breaking migration and has to be scheduled as one. Until then, <strong>existing</strong> daemons keep <code>com.apple.*</code>.
+
+<p style="margin:.6rem 0 0"><strong>So the real test is not "is it new?" — it is "does Apple-derived code look the label up?"</strong> Where some Apple-shaped consumer hardcodes <code>bootstrap_look_up("com.apple.X")</code>, the label is a compatibility surface and we are stuck with it however greenfield the daemon is. <code>securityd</code> is exactly that case: <code>Security.framework</code> is Apple's API and we would be porting its source. Where <em>we</em> write both ends, the label is free — and a free label should be ours.</p>
+
+<p style="margin:.6rem 0 0"><strong><code>wland</code> is the first daemon where both ends are ours.</strong> Nothing Apple-derived looks it up: we write the <code>wlan</code> CLI, we write <code>SCWLANBackend</code>, and the CoreWLAN-shaped ObjC API sits above the Mach line in Gershwin. So it takes <strong><code>org.nextbsd.wland</code></strong> (job) advertising Mach service <strong><code>org.nextbsd.wlan</code></strong>, with no shipped code to break and no migration to pay for later.</p>
+
+<p style="margin:.6rem 0 0">The rename settles it independently, too. The old rule was <em>inherit Apple's exact label</em> — which presupposes there is one, and Apple's daemon is <code>wifid</code>, not <code>wland</code>. <code>com.apple.wland</code> would have been a <em>fabricated</em> Apple label for a daemon Apple never shipped: the worst of both worlds. There was nothing left to inherit.</p></div>
 
 <h2 id="crypto">6. Crypto &amp; storage — the honest threat model</h2>
 <ul>
@@ -341,7 +350,7 @@ OSStatus SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate
 OSStatus SecItemDelete(CFDictionaryRef query);
 
 /* Classes to support first */
-kSecClassGenericPassword     // app/daemon secrets, WiFi PSKs
+kSecClassGenericPassword     // app/daemon secrets, WLAN PSKs
 kSecClassInternetPassword    // server creds (has protocol/server/port attrs)
 kSecClassKey / kSecClassCertificate / kSecClassIdentity   // later; PKCS#11 backend option
 
@@ -353,11 +362,11 @@ kSecAttrLabel    kSecAttrAccessGroup  kSecAttrAccessible
 SecKeychainAddGenericPassword(...);
 SecKeychainFindGenericPassword(...);
 SecKeychainAddInternetPassword(...);</code></pre>
-<p>Getting <code>GenericPassword</code> + <code>InternetPassword</code> CRUD correct covers WiFi creds, network shares, and the vast majority of app needs. Key/cert/identity classes and a possible PKCS#11 (§4.F) backend come later.</p>
+<p>Getting <code>GenericPassword</code> + <code>InternetPassword</code> CRUD correct covers WLAN creds, network shares, and the vast majority of app needs. Key/cert/identity classes and a possible PKCS#11 (§4.F) backend come later.</p>
 
 <h2 id="open">8. Open questions</h2>
-<div class="open-q"><strong>Q1. First consumer?</strong> The plan only starts when something needs it. Likely candidates: <code>wifid-fbsd</code> network creds, a future mail/browser, or network-share mounts. Until then, plaintext <code>Network.plist</code> stands (WiFi plan <a href="nextbsd-wifi-plan.html#openq">Q2</a>).</div>
-<div class="open-q"><strong>Q2. Per-user vs system scope on day one?</strong> The System keychain (root, pre-login) is what <code>wifid-fbsd</code> would need first; the per-user login keychain is what desktop apps need. Probably ship the system instance first since WiFi is the nearer consumer.</div>
+<div class="open-q"><strong>Q1. First consumer?</strong> The plan only starts when something needs it. Likely candidates: <code>wland</code> network creds, a future mail/browser, or network-share mounts. Until then, plaintext <code>Network.plist</code> stands (WLAN plan <a href="nextbsd-wlan-plan.html#openq">Q2</a>).</div>
+<div class="open-q"><strong>Q2. Per-user vs system scope on day one?</strong> The System keychain (root, pre-login) is what <code>wland</code> would need first; the per-user login keychain is what desktop apps need. Probably ship the system instance first since WLAN is the nearer consumer.</div>
 <div class="open-q"><strong>Q3. TPM2 from the start or as a follow-up?</strong> Software-only is simpler and works everywhere; TPM2 sealing is the meaningful hardening but adds a conditional dependency and PCR-policy complexity. Lean: ship software-only, add TPM2 as opt-in phase 2.</div>
 <div class="open-q"><strong>Q4. How faithful must access control be?</strong> Full Apple ACLs are tied to code-signing identities we don't have. Start with uid+path; revisit if/when a code-signing story exists. Document the gap so nobody assumes Apple-grade app isolation.</div>
 <div class="open-q"><strong>Q5. Reuse the on-disk format or invent our own?</strong> Apple's <code>.keychain-db</code> format is undocumented/SEP-entangled in modern form. Inventing a clean format (encrypted SQLite) is simpler and we control it; Apple-path filenames give familiarity without binary-format compatibility (which buys us nothing without macOS interop).</div>
@@ -369,7 +378,7 @@ SecKeychainAddInternetPassword(...);</code></pre>
   <li><strong>Keychain Services API:</strong> <a href="https://developer.apple.com/documentation/security/keychain_services">developer.apple.com/documentation/security/keychain_services</a></li>
   <li><strong>freedesktop Secret Service / libsecret:</strong> <a href="https://specifications.freedesktop.org/secret-service/latest/">specifications.freedesktop.org/secret-service</a></li>
   <li><strong>FreeBSD TPM2 stack:</strong> <a href="https://www.freshports.org/security/tpm2-tss/">freshports.org/security/tpm2-tss</a>, <code>man 4 tpm</code></li>
-  <li><strong>Companion plans:</strong> <a href="nextbsd-wifi-research.html">WiFi management</a>, <a href="freebsd-pam-port-plan.html">PAM port</a>, <a href="freebsd-opendirectory-port-plan.html">OpenDirectory scoping</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-libcorefoundation-icu-audit.html">libCoreFoundation</a></li>
+  <li><strong>Companion plans:</strong> <a href="nextbsd-wlan-research.html">WLAN management</a>, <a href="freebsd-pam-port-plan.html">PAM port</a>, <a href="freebsd-opendirectory-port-plan.html">OpenDirectory scoping</a>, <a href="freebsd-configd-plan.html">configd</a>, <a href="freebsd-launchd-plan.html">launchd</a>, <a href="freebsd-libcorefoundation-icu-audit.html">libCoreFoundation</a></li>
 </ul>
 
 </body>

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD DirectoryServices — file-level porting plan (directoryservicesd)</title>
+<style>
+  :root{
+    --bg:#faf9f7; --panel:#ffffff; --ink:#1b1b1e; --muted:#5c5c66; --faint:#8a8a94;
+    --line:#e4e2dd; --accent:#7a4d2b; --accent2:#2b5a7a; --accent3:#3d6b3d;
+    --code-bg:#f4f2ee; --code-ink:#2a2620;
+    --v1:#3d6b3d; --v2:#2b5a7a; --v3:#5a3d7a; --out:#8a2b2b; --warn:#8a2b2b;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#16151a; --panel:#1e1d24; --ink:#eceaf0; --muted:#a8a6b2; --faint:#75737e;
+      --line:#312f39; --accent:#d59b6a; --accent2:#7ab6df; --accent3:#8fce8f;
+      --code-bg:#141319; --code-ink:#d6d3dd;
+      --v1:#8fce8f; --v2:#7ab6df; --v3:#b79ae0; --out:#e88; --warn:#e88;
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0; background:var(--bg); color:var(--ink); font:16px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:960px; margin:0 auto; padding:0 22px 120px}
+  header.masthead{max-width:960px; margin:0 auto; padding:60px 22px 30px}
+  .eyebrow{font-size:12.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); font-weight:700; margin:0 0 14px}
+  h1{font-size:36px; line-height:1.13; margin:0 0 16px; letter-spacing:-.02em; font-weight:750}
+  .dek{font-size:18px; line-height:1.5; color:var(--muted); margin:0 0 22px; max-width:72ch}
+  .byline{font-size:13px; color:var(--faint); border-top:1px solid var(--line); padding-top:16px}
+  .byline b{color:var(--muted); font-weight:600}
+  h2{font-size:25px; margin:54px 0 6px; letter-spacing:-.015em; font-weight:720; scroll-margin-top:20px}
+  h2 .num{color:var(--accent); font-variant-numeric:tabular-nums; margin-right:12px; font-weight:800}
+  h3{font-size:18.5px; margin:32px 0 4px; font-weight:680; letter-spacing:-.01em}
+  h4{font-size:15px; margin:20px 0 2px; font-weight:700; color:var(--accent2)}
+  .sub{color:var(--muted); font-size:14.5px; margin:0 0 16px}
+  p{margin:13px 0}
+  a{color:var(--accent2); text-decoration:none; border-bottom:1px solid color-mix(in srgb, var(--accent2) 30%, transparent)}
+  a:hover{border-bottom-color:var(--accent2)}
+  strong{font-weight:660}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:.85em; background:var(--code-bg); color:var(--code-ink); padding:.09em .38em; border-radius:5px; border:1px solid var(--line)}
+  pre{background:var(--code-bg); border:1px solid var(--line); border-radius:12px; padding:15px 17px; overflow-x:auto; margin:15px 0}
+  pre code{background:none; border:none; padding:0; font-size:12.5px; line-height:1.65; color:var(--code-ink)}
+  .cmt{color:var(--faint)}
+  nav.toc{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:22px 26px; margin:30px 0 10px}
+  nav.toc h2{font-size:13px; letter-spacing:.12em; text-transform:uppercase; color:var(--faint); margin:0 0 14px; font-weight:700}
+  nav.toc ol{margin:0; padding:0; list-style:none; counter-reset:toc; columns:2; column-gap:40px}
+  nav.toc li{counter-increment:toc; margin:0 0 9px; break-inside:avoid; font-size:14.5px}
+  nav.toc li::before{content:counter(toc); color:var(--accent); font-weight:800; font-variant-numeric:tabular-nums; margin-right:10px}
+  nav.toc a{color:var(--ink); border:none}
+  nav.toc a:hover{color:var(--accent2)}
+  @media(max-width:640px){nav.toc ol{columns:1}}
+  .tldr{background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:12px; padding:20px 24px; margin:24px 0}
+  .tldr h3{margin:0 0 8px; font-size:14px; text-transform:uppercase; letter-spacing:.1em; color:var(--accent)}
+  .note{border:1px solid var(--line); border-left:4px solid var(--accent2); background:var(--panel); border-radius:10px; padding:14px 18px; margin:18px 0; font-size:14.5px}
+  .note.warn{border-left-color:var(--warn)}
+  .note .lbl{font-weight:700; color:var(--accent2); font-size:12px; letter-spacing:.08em; text-transform:uppercase; display:block; margin-bottom:4px}
+  .note.warn .lbl{color:var(--warn)}
+  .tbl{overflow-x:auto; margin:18px 0; border:1px solid var(--line); border-radius:12px}
+  table{border-collapse:collapse; width:100%; font-size:13.5px; min-width:560px}
+  th,td{text-align:left; padding:10px 13px; border-bottom:1px solid var(--line); vertical-align:top}
+  th{background:var(--code-bg); font-weight:680; font-size:12px; letter-spacing:.02em; color:var(--muted)}
+  tr:last-child td{border-bottom:none}
+  td code{white-space:nowrap}
+  .pill{display:inline-block; font-size:11px; font-weight:700; letter-spacing:.03em; padding:2px 9px; border-radius:20px; vertical-align:middle; white-space:nowrap}
+  .pill.v1{color:var(--v1); background:color-mix(in srgb,var(--v1) 15%,transparent)}
+  .pill.v2{color:var(--v2); background:color-mix(in srgb,var(--v2) 15%,transparent)}
+  .pill.v3{color:var(--v3); background:color-mix(in srgb,var(--v3) 15%,transparent)}
+  .pill.out{color:var(--out); background:color-mix(in srgb,var(--out) 14%,transparent)}
+  .pill.new{color:var(--accent); background:color-mix(in srgb,var(--accent) 14%,transparent)}
+  ul.tight,ol.tight{margin:11px 0}
+  ul.tight li,ol.tight li{margin:6px 0}
+  hr.sec{border:none; border-top:1px solid var(--line); margin:0}
+  mark{background:color-mix(in srgb,var(--accent) 22%,transparent); color:inherit; padding:.02em .2em; border-radius:3px}
+  .diagram{background:var(--code-bg); border:1px solid var(--line); border-radius:12px; padding:16px; overflow-x:auto; margin:16px 0; font-size:11.5px; line-height:1.5}
+  .u{color:var(--faint); font-style:italic}
+  footer{max-width:960px;margin:60px auto 0;padding:24px 22px;border-top:1px solid var(--line);color:var(--faint);font-size:13px}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <p class="eyebrow">NextBSD · Porting plan · Execution</p>
+  <h1>DirectoryServices on NextBSD — the file-level porting plan</h1>
+  <p class="dek">Exactly what Apple source to vendor into <code>nextbsd-userland/src</code>, where every file installs on the filesystem, what to drop/replace in the FreeBSD-compat layer (PAM, NSS, membership), and a phased roadmap for <code>directoryservicesd</code> — the net-new daemon that stands in for the closed <code>opendirectoryd</code>.</p>
+  <p class="byline"><b>Drafted</b> 2026-07-16 from a four-agent source-grounded scope (install layout · <code>src</code> vendoring · compat/PAM · daemon architecture), each reading the real <code>nextbsd-userland</code> / <code>nextbsd-freebsd-compat</code> trees against the verified Apple open-source inventory. <b>Supersedes</b> the deferred scoping doc <a href="freebsd-opendirectory-port-plan.html">freebsd-opendirectory-port-plan</a> at the execution level. <b>Background:</b> <a href="nextbsd-opendirectory-research.html">the directory-services history &amp; source-availability research</a>. <span style="color:var(--warn)">Planning only — no code written.</span></p>
+</header>
+
+<div class="wrap">
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#thesis">Thesis &amp; the one big shape decision</a></li>
+    <li><a href="#arch">Architecture: the full stack</a></li>
+    <li><a href="#vendor">What to vendor into <code>src/</code></a></li>
+    <li><a href="#makefile">The <code>directoryservicesd</code> Makefile</a></li>
+    <li><a href="#layout">Filesystem install layout</a></li>
+    <li><a href="#compat">Compat: drop / replace / add (PAM &amp; NSS)</a></li>
+    <li><a href="#auth">AuthenticationAuthority dispatch</a></li>
+    <li><a href="#roadmap">Phased roadmap</a></li>
+    <li><a href="#risks">Risks &amp; open decisions</a></li>
+    <li><a href="#names">Naming &amp; provenance</a></li>
+  </ol>
+</nav>
+
+<section id="thesis">
+  <div class="tldr">
+    <h3>Thesis</h3>
+    <p><code>directoryservicesd</code> is a <strong>net-new C daemon</strong> built on NextBSD's proven <code>wland</code>/<code>configd</code> pattern (<code>bootstrap_check_in</code> + a raw <code>mach_msg</code> MIG loop + a launchd job) that <strong>embeds the reusable Apple C++ plugin bodies from DirectoryService-621.12 in-process, behind the C <code>DirServices.h</code> API</strong>. It is <em>not</em> a port of Apple's ~50k-LOC C++ DirectoryService daemon core, and <em>not</em> the never-released <code>opendirectoryd</code>.</p>
+    <p>This resolves the old scoping doc's "Path A (port the C++ daemon) vs Path B (write a minimal daemon)" fork: we take <strong>Path B's daemon shell wrapping Path A's plugin logic</strong> — the smallest honest thing that runs local login, exactly how <code>wland</code> is a net-new shell around stock <code>wpa_supplicant</code>. Legally it also lands clean: the daemon is our code (functional name, <code>wland</code> precedent), the reused pieces keep their Apple names (compat identifiers), and nothing is branded <code>opendirectoryd</code>.</p>
+  </div>
+</section>
+
+<h2 id="thesis-dummy" style="display:none"></h2>
+
+<h2 id="arch"><span class="num">1</span>Architecture: the full stack</h2>
+<p class="sub">Client → daemon → backend, and what lives above vs below the Mach line</p>
+
+<div class="diagram"><pre style="border:none;background:none;padding:0;margin:0"><code>┌──────────────── GERSHWIN (above the Mach line — libobjc2 + Foundation exist here) ─────────────┐
+│  ObjC OpenDirectory.framework   ODNode / ODSession / ODQuery / ODRecord   (OpenDirectory-146)  │
+│  Accounts pref pane · Directory-Utility-equivalent                                             │
+└───────────────┬────────────────────────────────────────────────────────────────────────────────┘
+                │  ObjC → CF-C
+┌───────────────┼──────────────── nextbsd-userland (below the Mach line — NO ObjC) ───────────────┐
+│  libCFOpenDirectory.so   (OpenDirectory-146 Core/, CoreFoundation-C twin — ODNodeRef/ODSessionRef)│
+│  dscl · dsmbrutil · dscacheutil · pwpolicy   (DSTools-162 C/C++ CLIs)                            │
+│               │  MIG subsystem `directoryservices` (flat scalars, NO out-of-line — see R4)      │
+│      ╔════════▼══════════════════════════════════════════════════════════════════════════════╗  │
+│      ║  directoryservicesd    NET-NEW C shell · /usr/sbin · launchd org.nextbsd.directoryservicesd║
+│      ║   ├─ MIG server thread          (clone of WLAN/mach_service.c)                            ║
+│      ║   ├─ dispatcher: node routing + AuthenticationAuthority                                   ║
+│      ║   └─ in-process plugins behind DirServices.h   (DirectoryService-621.12, C++)             ║
+│      ║        • Local  (dslocal plist)   [v0.1]   • BSD-flat (/etc/master.passwd fallback)[v0.1] ║
+│      ║        • Cache / Search / Configure [v0.1]  • LDAPv3 (bind/search/replica)        [v0.2]  ║
+│      ╚═════╤══════════════════════╤═══════════════════════╤═══════════════════════════════════════╝
+│            │ ;ShadowHash; (local) │ ;ApplePasswordServer; │ ;Kerberosv5;                          │
+│            ▼                      ▼                       ▼                                       │
+│   in-proc hash verify     passwordserviced          libkrb5 (link, not a daemon)                 │
+│   (DSPasswordServerPlugin  (NET-NEW C daemon +       MIT-krb5 shipped; KDC external              │
+│    hash-slot logic)  [v0.1] Cyrus SASL)     [v0.3]                                    [v0.3]      │
+└──────▲───────────────────────────────────────────────────▲──────────────────────────────────────┘
+       │ nss_directoryservices.so (NSS → getpwnam/getgrnam) │ pam_directoryservices.so (PAM auth)</code></pre></div>
+
+<h3>1.1 Process model — in-process plugins, defer XPC modules</h3>
+<p>Real <code>opendirectoryd</code> (10.7+) runs out-of-process XPC modules. NextBSD <em>has</em> launchd + libxpc + libdispatch, so that path is technically open — but two facts make it the wrong first move: <code>dispatch_mach</code> is unfinished in this port (configd already falls back to a raw <code>mach_msg</code> loop), and <strong>MIG out-of-line data is broken in this kernel</strong>. An XPC-module fabric leans on exactly those. The DirectoryService-621.12 plugins were written to run <em>in-process</em> behind <code>DirServices.h</code> anyway, and NextBSD's <code>libCoreFoundation</code> already ships <code>CFPlugIn.c</code>/<code>CFBundle*.c</code> — so the native in-process loader is reusable as-is. Choosing XPC modules would mean writing the module host <em>and</em> reverse-engineering the never-released <code>odxpc</code> schema; choosing in-process means compiling code that already exists the way it exists.</p>
+<div class="note"><span class="lbl">Keep the seam</span> Structure plugins behind a stable in-process vtable (<code>Initialize/ProcessRequest/Shutdown</code>) so one could later be relocated behind an XPC transport without touching the dispatcher. That seam is exactly where a <em>closed</em> AD plugin would have to attach — which is the only reason to keep it clean, not a commitment to build AD (it stays permanently out, §8).</div>
+
+<h3>1.2 The ObjC / C++ split — forced by the tree</h3>
+<p>Verified by scanning the tree: the <strong>only</strong> <code>.m</code> files in <code>nextbsd-userland</code> are libdispatch internals and test fixtures — <strong>no Foundation, no <code>NSObject</code>, no libobjc2</strong>. So:</p>
+<ul class="tight">
+  <li><strong>OpenDirectory's ObjC layer</strong> (<code>ODNode.m</code>/<code>ODSession.m</code>…) <strong>cannot build in userland</strong> → it goes to <strong>Gershwin</strong>, above the Mach line — the identical split the WLAN plan used for CoreWLAN.</li>
+  <li><strong>OpenDirectory's CoreFoundation-C twin</strong> (<code>Core/CFOD*.c</code>) <em>can</em> live below the line as <code>libCFOpenDirectory.so</code> (libCoreFoundation is present). This is what actually marshals MIG requests to the daemon.</li>
+  <li>Apple's transport glue <code>odxpc.c</code> was <strong>never released</strong> → we <strong>author</strong> a thin MIG client (not port one). Because we write both ends, we own the Mach service name (§1.3).</li>
+  <li><strong>C++ risk:</strong> the DirectoryService core + plugins are C++, and <code>directoryservicesd</code> would be the <em>first</em> <code>bsd.prog.mk</code> daemon in the tree to link C++ (<code>-lc++ -lcxxrt</code>). That's <mark>the single biggest build unknown (R1)</mark> — smoke-test a one-file C++ <code>bsd.prog.mk</code> stub against the vendored CF/Mach headers under <code>-fblocks</code> before vendoring the whole <code>Server/</code> tree. Keep the daemon <em>shell</em> in C; confine C++ to the plugin bodies behind a C ABI.</li>
+</ul>
+
+<h3>1.3 Mach service names — <code>org.nextbsd.*</code></h3>
+<p>The two net-new daemons take functional NextBSD names (the <code>wland</code>→<code>org.nextbsd.wlan</code> rule): <strong><code>org.nextbsd.directoryservices</code></strong> and <strong><code>org.nextbsd.passwordservice</code></strong>; launchd job labels <code>org.nextbsd.directoryservicesd</code> / <code>…passwordserviced</code>.</p>
+<div class="note warn"><span class="lbl">Reconciled tension</span> One agent argued for keeping Apple's <code>com.apple.system.DirectoryService.*</code> Mach labels (because Apple's <code>libinfo</code> looks them up); another argued for <code>org.nextbsd.*</code>. <strong>Resolution: <code>org.nextbsd.*</code> wins</strong> — because (a) NextBSD abandons Apple's <code>libinfo</code>/<code>lookupd</code> path for FreeBSD <strong>nsswitch</strong> (§6), so those <code>libinfo_v1</code> labels are moot, and (b) we author the OD transport glue ourselves, so nothing Apple-derived hard-codes a label we must match. Fabricating <code>com.apple.opendirectoryd</code> for a NextBSD daemon would be the "fake Apple label" the <code>mach_service.c</code> comments explicitly reject. <strong>Mitigation (R9):</strong> grep the reused DSTools binaries at port time for a baked-in <code>com.apple.private.opendirectoryd.rpc</code> lookup; if present, patch it or register a bootstrap alias. (Contrast <code>configd</code>/<code>notifyd</code>, which keep <code>com.apple.*</code> precisely because they model a <em>released</em> Apple daemon that Apple-derived code binds to by that name.)</div>
+
+<hr class="sec">
+<h2 id="vendor"><span class="num">2</span>What to vendor into <code>src/</code></h2>
+<p class="sub">Three userland components + one Gershwin framework — not a monolith</p>
+
+<p>The daemon (C++/Mach), the password engine (separate Apple repo, separate trust boundary + BSD-licensed SASL), and the CLIs have different toolchain/link needs; and the ObjC OD API physically can't compile in userland. So the port splits:</p>
+
+<pre><code><span class="cmt"># ── nextbsd-userland/src/ (below the Mach line) ──</span>
+src/DirectoryService/          <span class="cmt"># directoryservicesd daemon + libDirectoryService (C API)</span>
+  directoryservicesd.cpp       <span class="cmt">WRITE-NEW  main(): liblaunch bootstrap + dispatch + MIG loop</span>
+  CServerPlugin.cpp CHandlers.cpp Mbrd_*.cpp CLog/CPlugInList/CRefTable.cpp
+                               <span class="cmt">VENDOR     DirectoryService-621.12 Server/ (in-proc CFPlugIn host)</span>
+  directoryservices.defs  mach_service.cpp  ds_mig.cpp
+                               <span class="cmt">WRITE-NEW  MIG surface, modeled on WLAN/wlan.defs + mach_service.c</span>
+  plugins/{BSD,Cache,Local,Search,Configure,Common}/*.cpp
+                               <span class="cmt">VENDOR     DirectoryService-621.12 PlugIns/ (6 built-ins, static-linked)</span>
+  plugins/LDAPv3/*.cpp         <span class="cmt">VENDOR-DEFERRED  needs OpenLDAP libldap; gate off until v0.2</span>
+  api/DirServices.cpp  include/DirectoryService/DirServices.h
+                               <span class="cmt">VENDOR     APIFramework/ — C++ impl behind the C header</span>
+
+src/libCFOpenDirectory/        <span class="cmt"># CoreFoundation-C twin — NO ObjC</span>
+  CFOpenDirectory.c CFOD{Node,Record,Query,Session}.c + headers
+                               <span class="cmt">VENDOR     OpenDirectory-146 Core/</span>
+
+src/PasswordService/           <span class="cmt"># net-new password-auth daemon (v0.3)</span>
+  passwordserviced.cpp  pws.defs  pws_mig.cpp
+                               <span class="cmt">WRITE-NEW  daemon host (never released by Apple)</span>
+  AuthFile.c CAuthFileBase.cpp DES.c SMBAuth.c KerberosInterface.c
+                               <span class="cmt">VENDOR     DSPasswordServerPlugin-281.1 (hash-slot / policy)</span>
+  PolicyBase.m → .c   CPSPlugIn.mm → .cpp
+                               <span class="cmt">REWRITE    strip ObjC/ObjC++ → C/C++</span>
+  sasl/                        <span class="cmt">VENDOR|PORTS  passwordserver_sasl-215 (Cyrus SASL, BSD) — or base cyrus-sasl2 [U]</span>
+
+src/DSTools/                   <span class="cmt"># CLIs</span>
+  dscl.m → dscl.c              <span class="cmt">REWRITE    ObjC → C over DirServices.h (WLAN CLI pattern)</span>
+  dscacheutil.c dsmbrutil.c dsconfigldap.c
+                               <span class="cmt">VENDOR     DSTools-162 (already C)</span>
+  pwpolicy.cpp                 <span class="cmt">VENDOR     DSTools-162 (C++)</span>
+
+<span class="cmt"># ── Gershwin (above the Mach line) ──</span>
+Gershwin …/OpenDirectory.framework/  ODSession.m ODNode.m ODRecord.m ODQuery.m
+                               <span class="cmt">VENDOR-INTO-GERSHWIN  OpenDirectory-146 Framework/ (ObjC)</span></code></pre>
+
+<div class="note"><span class="lbl">Not in any reusable tree — permanently absent</span> The <strong>Active Directory plugin</strong> (always closed), the <strong>PasswordServer daemon</strong> and <strong>opendirectoryd</strong> (never released → written new), and <strong>NetInfo</strong> (retired; a cautionary reference, not a target). <code>dseditgroup</code>/<code>dsimport</code>/<code>dsconfigad</code> are missing from DSTools-162 → write-new or omit (<code>dsconfigad</code> needs the absent AD plugin → omit).</div>
+
+<hr class="sec">
+<h2 id="makefile"><span class="num">3</span>The <code>directoryservicesd</code> Makefile</h2>
+<p class="sub">Modeled line-for-line on <code>src/WLAN/Makefile</code> — with the C++ and CFPlugIn deltas called out</p>
+<pre><code>PROG=		directoryservicesd
+MAN=		directoryservicesd.8
+BINDIR=		/usr/sbin
+
+SRCS=		directoryservicesd.cpp mach_service.cpp ds_mig.cpp
+SRCS+=		CServerPlugin.cpp CHandlers.cpp CPlugInList.cpp CRefTable.cpp CLog.cpp
+SRCS+=		Mbrd_MembershipResolver.cpp Mbrd_HashTable.cpp Mbrd_Cache.cpp
+.PATH:		${.CURDIR}/plugins/BSD ${.CURDIR}/plugins/Cache ${.CURDIR}/plugins/Local \
+		${.CURDIR}/plugins/Search ${.CURDIR}/plugins/Configure ${.CURDIR}/plugins/Common
+SRCS+=		CBSDPlugin.cpp CCachePlugin.cpp CDSLocalPlugin.cpp \
+		CSearchPlugin.cpp CConfigurePlugin.cpp CBasePlugin.cpp
+
+<span class="cmt"># MIG server stub: directoryservices.defs → directoryservicesServer.c (host mig, MIGOUT=)</span>
+MIGOUT?=
+.if !empty(MIGOUT)
+.PATH:				${MIGOUT}
+SRCS+=				directoryservicesServer.c
+CFLAGS+=			-I${MIGOUT} -I${.CURDIR}
+CFLAGS.directoryservicesServer.c+= -w
+CFLAGS+=			-Wno-macro-redefined   <span class="cmt"># mach/notify.h vs mach/message.h MACH_NOTIFY_*</span>
+.endif
+
+WARNS=		0                              <span class="cmt"># plugins pull the CF public header tree</span>
+CFLAGS+=	-O2 -pipe -fblocks
+CXXFLAGS+=	-O2 -pipe -fblocks -std=c++17 -fno-exceptions -fno-rtti
+CFLAGS+=	-I${.CURDIR}/../launchd/liblaunch -I${.CURDIR}/../launchd/freebsd-shims
+CXXFLAGS+=	-I${.CURDIR}/../launchd/liblaunch -I${.CURDIR}/../launchd/freebsd-shims
+
+SYSROOT?=
+.if !empty(SYSROOT)
+CFLAGS+=	-I${SYSROOT}/usr/include
+CXXFLAGS+=	-I${SYSROOT}/usr/include
+LDFLAGS+=	-L${SYSROOT}/usr/lib/system -Wl,-rpath,/usr/lib/system -Wl,--allow-shlib-undefined
+.endif
+
+<span class="cmt"># Link line — the WLAN-fixed system_* names, PLUS CFPlugIn + the C++ runtime.</span>
+LDADD+=		-llaunch -lsystem_kernel          <span class="cmt"># bootstrap_check_in + mach_msg</span>
+LDADD+=		-lCoreFoundation                  <span class="cmt"># CFBundle/CFPlugIn (in-proc plugin load)</span>
+LDADD+=		-lsystem_dispatch -l:libsystem_blocks.so
+LDADD+=		-lc++ -lcxxrt                     <span class="cmt"># [R1] first C++ daemon in tree — UNVERIFIED link</span>
+<span class="cmt"># NOT -ldispatch / NOT -lBlocksRuntime  (#378 rtld collision)</span>
+LIBADD+=	pthread
+.include &lt;bsd.prog.mk&gt;</code></pre>
+<p>The C API library <code>libDirectoryService.so</code> (<code>api/DirServices.cpp</code> + the public C header) is a sibling <code>bsd.lib.mk</code> target the daemon does <em>not</em> link but every CLI and <code>libCFOpenDirectory</code> does — same relationship as <code>configd</code> ↔ <code>libSystemConfiguration</code>.</p>
+
+<hr class="sec">
+<h2 id="layout"><span class="num">4</span>Filesystem install layout</h2>
+<p class="sub">Four-domain rules: bare <code>/Library/X</code> → <code>/Local/Library/X</code>; <code>/System/Library</code> &amp; <code>/var</code> stay; libs → <code>/usr/lib/system</code>; daemons → <code>/usr/sbin</code></p>
+
+<div class="note"><span class="lbl">Verified constraint</span> There is <strong>no <code>/System/Library/Frameworks</code> on NextBSD</strong> — every Apple <code>.framework</code> ships as a versioned <code>.so</code> in <code>/usr/lib/system</code> with headers under <code>/usr/include/&lt;Name&gt;/</code> (the <code>libSystemConfiguration</code> pattern). And there is <strong>no plugin loader</strong> — the DS plugins are statically linked into the daemon, so there are <em>no</em> <code>.dsplug</code> files on disk.</div>
+
+<div class="tbl"><table>
+<tr><th>Artifact</th><th>Apple original</th><th>NextBSD path</th></tr>
+<tr><td>Directory daemon</td><td><code>/usr/libexec/opendirectoryd</code> (closed)</td><td><strong><code>/usr/sbin/directoryservicesd</code></strong></td></tr>
+<tr><td>Password daemon <span class="pill v3">v0.3</span></td><td><code>/usr/sbin/PasswordService</code> (never released)</td><td><strong><code>/usr/sbin/passwordserviced</code></strong> <span class="u">(name = open decision)</span></td></tr>
+<tr><td>OpenDirectory CF-C twin</td><td><code>/System/Library/Frameworks/OpenDirectory.framework</code></td><td><code>/usr/lib/system/libCFOpenDirectory.so</code> + <code>/usr/include/CFOpenDirectory/</code></td></tr>
+<tr><td>OpenDirectory ObjC layer</td><td>same framework</td><td><strong>Gershwin</strong> <code>/System/Library/Frameworks/OpenDirectory.framework</code></td></tr>
+<tr><td>DirectoryService C API</td><td><code>/System/Library/Frameworks/DirectoryService.framework</code></td><td><code>/usr/lib/system/libDirectoryService.so</code> + <code>/usr/include/DirectoryService/</code></td></tr>
+<tr><td>All DS plugins</td><td><code>…/Resources/Plugins/*.dsplug</code></td><td><strong>statically linked into the daemon — no on-disk file</strong></td></tr>
+<tr><td>launchd plists</td><td>(closed)</td><td><code>overlay/System/Library/LaunchDaemons/org.nextbsd.directoryservicesd.plist</code> (+ <code>…passworderviced…</code>)</td></tr>
+<tr><td>Mutable OD config</td><td><code>/Library/Preferences/OpenDirectory/</code></td><td><mark><code>/Local/Library/Preferences/OpenDirectory/</code></mark> (runtime-created)</td></tr>
+<tr><td>Local record store</td><td><code>/var/db/dslocal/nodes/Default/</code></td><td><code>/var/db/dslocal/nodes/Default/</code> <span class="u">(unchanged — already /var-qualified)</span></td></tr>
+<tr><td>LDAP mapping templates</td><td><code>/System/Library/OpenDirectory/Templates/</code></td><td><code>/System/Library/OpenDirectory/Templates/</code> (System domain, read-only overlay)</td></tr>
+<tr><td>CLIs</td><td><code>/usr/bin/dscl</code> …</td><td><code>/usr/bin/{dscl,dscacheutil,dsmbrutil,pwpolicy,dserr}</code></td></tr>
+<tr><td>Mach service names</td><td><code>com.apple.system.opendirectoryd.*</code></td><td><strong><code>org.nextbsd.directoryservices</code></strong> (§1.3)</td></tr>
+</table></div>
+
+<h4>Overlay additions</h4>
+<pre><code>overlay/System/Library/LaunchDaemons/org.nextbsd.directoryservicesd.plist   <span class="cmt">new</span>
+overlay/System/Library/LaunchDaemons/org.nextbsd.passwordserviced.plist     <span class="cmt">new (v0.3)</span>
+overlay/System/Library/OpenDirectory/Templates/LDAPv3/                       <span class="cmt">new, read-only</span>
+overlay/private/var/db/dslocal/nodes/Default/users/{root,daemon,nobody}.plist <span class="cmt">seed [see R below]</span>
+overlay/private/var/db/dslocal/nodes/Default/groups/{wheel,staff,…}.plist    <span class="cmt">seed</span>
+overlay/private/etc/openldap/schema/apple.schema                             <span class="cmt">only if OD-server (v0.4+)</span></code></pre>
+<p>The plist mirrors <code>org.nextbsd.wland.plist</code> (<code>RunAtLoad</code>, <code>KeepAlive</code>, a <code>MachServices</code> dict the daemon claims via <code>bootstrap_check_in</code>). Since there's <strong>no launchd ordering and no first-boot provisioner</strong>, the <code>dslocal</code> tree must be <strong>seeded at image-assembly time via the overlay</strong>, not by the daemon on first run — <span class="u">[U] confirm <code>assemble-image.sh</code> recurses into <code>overlay/private/var</code>].</span></p>
+
+<hr class="sec">
+<h2 id="compat"><span class="num">5</span>Compat: drop / replace / add (PAM &amp; NSS)</h2>
+<p class="sub">Where the auth glue actually lands — and it's <em>not</em> in <code>nextbsd-freebsd-compat</code></p>
+
+<div class="note"><span class="lbl">Repo topology finding</span> <code>nextbsd-freebsd-compat</code> is <strong>fbsdglue</strong> — scaffold-only, ships <em>no</em> PAM/pam.d/OpenPAM. All directory-auth work lands in <strong><code>nextbsd-userland</code></strong>, which already ships <strong>Apple OpenPAM-35</strong> as <code>libpam.so.6</code> (replacing FreeBSD-pam in place) and <strong>Apple OpenBSM</strong> <code>libbsm</code>. OpenPAM on both sides ⇒ Apple's PAM modules port with <em>zero</em> PAM-API shim.</p></div>
+
+<h3>5.1 PAM — write <code>pam_directoryservices.so</code></h3>
+<p>Apple's <code>pam_opendirectory.c</code> <strong>is open</strong> (<code>apple-oss-distributions/pam_modules</code>) and is an OpenPAM module — but it calls the OpenDirectory framework, a thin XPC client to the <strong>closed</strong> <code>opendirectoryd</code>. Since our daemon is the net-new <code>directoryservicesd</code>, there's no closed schema to match. <strong>Verdict:</strong> keep <code>pam_opendirectory.c</code> as the <em>structural template</em> (the auth/account/password/session function-class layout, authtok conversation), but replace every <code>od_record_*</code> call with a <code>ds_*</code> client call into <code>directoryservicesd</code>. Critically, <strong>the module knows nothing about ShadowHash vs PasswordServer vs Kerberos</strong> — it calls one verb, <code>ds_record_verify_password()</code>, and the daemon dispatches on <code>AuthenticationAuthority</code> (§7). Installs to <code>/usr/lib/pam/pam_directoryservices.so.6</code> <span class="u">([U] confirm <code>OPENPAM_MODULES_DIR</code>).</span></p>
+<pre><code><span class="cmt"># overlay/private/etc/pam.d/login  — pam_unix kept as flat-file fallback</span>
+auth       optional   pam_directoryservices.so   <span class="cmt"># try directory first</span>
+auth       required   pam_unix.so                <span class="cmt"># /etc/master.passwd fallback</span>
+account    required   pam_nologin.so
+account    required   pam_directoryservices.so
+password   required   pam_directoryservices.so
+session    required   pam_uwtmp.so
+session    optional   pam_directoryservices.so</code></pre>
+
+<h3>5.2 Name service — nsswitch, not Apple libinfo</h3>
+<p>macOS routes <code>getpwnam</code> through Libinfo→<code>lookupd</code>→the <code>ds</code> module. NextBSD has <strong>deliberately not ported that path</strong> (the <code>libinfo.h</code> shim's <code>si_search_module_set_flags</code> is a no-op). So visibility comes from <strong>FreeBSD nsswitch</strong>: add <strong><code>nss_directoryservices.so</code></strong> (template = the in-tree <code>nss_mdns.c</code>) implementing <code>getpwnam_r</code>/<code>getpwuid_r</code>/<code>getgrnam_r</code>/<code>getgrgid_r</code>/<code>getgrouplist</code> as a thin MIG client to the daemon, plus an <code>/etc/nsswitch.conf</code> overlay: <code>passwd: files directoryservices</code> (<code>files</code> first = single-user safety).</p>
+
+<div class="tbl"><table>
+<tr><th>Component</th><th>Action</th><th>Detail</th></tr>
+<tr><td><code>pam_directoryservices.so</code></td><td><span class="pill new">ADD</span></td><td>Cloned from open <code>pam_opendirectory.c</code>; <code>od_record_*</code>→<code>ds_*</code>. → <code>/usr/lib/pam/</code></td></tr>
+<tr><td>pam.d <code>{login,su,sshd,passwd,other}</code></td><td><span class="pill new">ADD</span></td><td>Overlay policy; <code>pam_unix</code> retained as fallback</td></tr>
+<tr><td><code>nss_directoryservices.so</code></td><td><span class="pill new">ADD</span></td><td>nsswitch module, template <code>nss_mdns.c</code> → <code>/usr/lib/nss_directoryservices.so.1</code></td></tr>
+<tr><td><code>/etc/nsswitch.conf</code></td><td><span class="pill new">ADD</span></td><td><code>passwd/group: files directoryservices</code></td></tr>
+<tr><td><code>membership.h</code> <code>mbr_*</code> stubs</td><td>REPLACE</td><td>Currently <code>ENOENT</code>; make them daemon clients (uid↔UUID↔group) — needed for ACL/nested groups &amp; Apple <code>id</code></td></tr>
+<tr><td><code>libinfo.h</code> shim</td><td>KEEP (no-op)</td><td>Apple libinfo path stays abandoned</td></tr>
+<tr><td>FreeBSD <code>/etc/pam.d/*</code></td><td>DROP</td><td>Reference un-vendored FreeBSD-only modules; superseded by overlay set</td></tr>
+<tr><td>flat-file <code>master.passwd</code>/<code>pw</code></td><td>KEEP, demote</td><td>Stay as the <code>files</code> source + bootstrap authority; lose <em>primacy</em>, not presence</td></tr>
+<tr><td>MIT <code>libkrb5.so.122</code></td><td>KEEP</td><td>curl/git ABI; fine for local ShadowHash (no KDC) &amp; plain network krb5 (§7)</td></tr>
+</table></div>
+
+<h3>5.3 Kerberos: MIT (shipped) vs Heimdal (Apple)</h3>
+<p>NextBSD ships <strong>MIT krb5 1.22.1</strong>; Apple's directory-Kerberos stack is <strong>Heimdal</strong>-coupled (LKDC, <code>hdb</code>, the Password Server replica protocol). Impact: <strong>non-issue for <code>;ShadowHash;</code> local login</strong> (no KDC involved — the whole v0.1 case); <strong>fine for plain <code>;Kerberosv5;</code></strong> against any RFC-4120 KDC (link MIT <code>libkrb5</code>, call <code>krb5_get_init_creds_password</code>); <strong>a hard blocker only for Apple LKDC / Password Server SSO</strong> (Heimdal-only) — which is deferred anyway. If ever needed, add FreeBSD's Heimdal port <em>beside</em> MIT for the daemon only (keep MIT's SONAME for curl/git).</p>
+
+<hr class="sec">
+<h2 id="auth"><span class="num">6</span>AuthenticationAuthority dispatch</h2>
+<p class="sub">The daemon reads each record's authority attribute and routes the credential — the PAM/NSS clients never see this</p>
+<div class="tbl"><table>
+<tr><th>Authority tag</th><th>Route</th><th>Component</th><th>Phase</th></tr>
+<tr><td><code>;ShadowHash;&lt;slots&gt;</code></td><td><strong>in-process</strong> hash verify vs <code>ShadowHashData</code></td><td>DSPasswordServerPlugin hash-slot logic (SALTED-SHA512 / PBKDF2)</td><td><span class="pill v1">v0.1</span></td></tr>
+<tr><td><code>;ApplePasswordServer;…</code></td><td>IPC to <code>passwordserviced</code></td><td>net-new daemon + Cyrus SASL (CRAM/DIGEST-MD5, NTLM, MS-CHAPv2) + policy engine</td><td><span class="pill v3">v0.3</span></td></tr>
+<tr><td><code>;Kerberosv5;…</code></td><td><strong>link</strong> <code>libkrb5</code>, <code>get_init_creds</code></td><td>MIT krb5 (library call; KDC external)</td><td><span class="pill v3">v0.3</span></td></tr>
+<tr><td><code>;ActiveDirectory;</code></td><td>—</td><td>closed plugin</td><td><span class="pill out">never</span></td></tr>
+</table></div>
+<p>v0.1 needs <em>only</em> the <code>;ShadowHash;</code> path — reusing the hash logic in-process, with <strong>no <code>passwordserviced</code> at all</strong>. That keeps v0.1 to "daemon shell + Local plugin + local hash verify."</p>
+
+<hr class="sec">
+<h2 id="roadmap"><span class="num">7</span>Phased roadmap</h2>
+<p class="sub">Each phase mapped to the deferred scoping doc's end-states (§5.1 OD client / §5.2 OD+AD / §5.3 OD server)</p>
+
+<h3><span class="pill v1">v0.1</span> Local-only self-hosting box</h3>
+<p><strong>Goal:</strong> boot and log in with directory-backed local accounts — <code>getpwnam()</code> and PAM both served by <code>directoryservicesd</code>, not <code>/etc/master.passwd</code> (except system accounts).</p>
+<ol class="tight">
+  <li><code>directoryservicesd</code> C shell — clone <code>mach_service.c</code>; <code>bootstrap_check_in("org.nextbsd.directoryservices")</code>; raw <code>mach_msg</code> loop.</li>
+  <li><code>directoryservices.defs</code> MIG subsystem (base id ~<strong>31000</strong>, clear of configd 20000 / wland 30000) — flat-scalar, <strong>no OOL</strong> (R4): <code>ds_open_node</code>, <code>ds_get_record</code>, <code>ds_get_attr_value</code> (one value per round-trip), <code>ds_verify_password</code>, <code>ds_query_begin/next</code>.</li>
+  <li>Embed <strong>Local</strong> (dslocal) + thin <strong>BSD-flat</strong> plugins behind <code>DirServices.h</code>; seed <code>/var/db/dslocal</code> from <code>/etc/master.passwd</code>.</li>
+  <li>In-process <code>;ShadowHash;</code> verify.</li>
+  <li><code>nss_directoryservices</code> → getpw*/getgr* over MIG (<strong>non-blocking with flat-file fallback</strong>, R7).</li>
+  <li><code>pam_directoryservices.so</code> swapped into the <code>login</code> / LoginWindow policy.</li>
+  <li>C <code>dscl</code> CLI over MIG — the ground-truth admin tool.</li>
+</ol>
+<p><strong>Exit test:</strong> <code>dscl . -create /Users/alice</code> → <code>getent passwd alice</code> resolves → LoginWindow authenticates alice, <em>with no line in <code>/etc/master.passwd</code></em>.</p>
+
+<h3><span class="pill v2">v0.2</span> Network directory — the full "OD client" (§5.1)</h3>
+<p>Embed <strong>LDAPv3</strong> plugin; <code>dsconfigldap</code> binds a node; search-policy ordering (Local then LDAP); ObjC <code>OpenDirectory.framework</code> ships in Gershwin on the CF-C twin (Accounts / Directory-Utility UI). <strong>Exit:</strong> a network LDAP user logs into the box — exactly the scoping doc's §5.1 end-state, executed.</p>
+
+<h3><span class="pill v3">v0.3</span> Password Server + Kerberos reality</h3>
+<p><code>passwordserviced</code> net-new daemon (Cyrus SASL mechanisms + auth-file store + <strong>password policy</strong>: lockout/expiry/history/complexity — the biggest gap the scoping doc named); <code>;ApplePasswordServer;</code> + <code>;Kerberosv5;</code> dispatch wired; nested groups via a <code>memberd</code>-equivalent folded into the daemon.</p>
+
+<h3>Beyond &amp; permanently out</h3>
+<ul class="tight">
+  <li><strong>§5.3 OD server</strong> (Macs bind to us) = v0.3 + OpenLDAP <code>slapd</code> + a KDC + transport security → <strong>v0.4+ / on-demand</strong>.</li>
+  <li><span class="pill out">OUT</span> <strong>§5.2 OD+AD bind</strong> — needs the closed AD plugin (no reusable source; multi-month clean-room). The in-process seam is where it <em>would</em> attach; that's the only reason to keep the seam clean.</li>
+  <li><span class="pill out">OUT</span> <strong>§5.4 AD server impersonation</strong> — Samba-4 territory; use the FreeBSD port directly if ever needed.</li>
+</ul>
+
+<hr class="sec">
+<h2 id="risks"><span class="num">8</span>Risks &amp; open decisions</h2>
+<div class="tbl"><table>
+<tr><th>#</th><th>Risk / question</th><th>Assessment</th></tr>
+<tr><td>R1</td><td><strong>C++ in this tree</strong> — <code>directoryservicesd</code> is the first <code>bsd.prog.mk</code> C++ daemon</td><td><strong>Highest build risk.</strong> Smoke-test a one-file C++ stub (<code>-lc++ -lcxxrt</code>, <code>-fno-exceptions/-rtti</code>) against vendored CF/Mach headers under <code>-fblocks</code> before vendoring <code>Server/</code>. Keep the shell in C; C++ confined to plugin bodies behind a C ABI.</td></tr>
+<tr><td>R4</td><td><strong>MIG OOL broken + records are big</strong> — a full directory record easily exceeds an inline message</td><td><strong>Central IPC design problem.</strong> Never return a whole record — one attribute value per round-trip + paging tokens; big blobs (hash/cert) via chunked offset+len RPCs or a <code>0600</code> file-handoff (the wland run-dir pattern). Softener: the daemon has its <em>own</em> store, not bound by configd's 8&nbsp;KiB — the real ceiling is the <code>mach_msg</code> buffer (configd proves 32&nbsp;KiB works). <span class="u">[U] measure it.</span></td></tr>
+<tr><td>R7</td><td><strong>No launchd ordering</strong> — NSS/PAM callers (even launchd itself) may run before the daemon</td><td>NSS module must be <strong>non-blocking with a flat-file fallback</strong>, or a boot-time <code>getpwnam</code> deadlocks. v0.1 gating design item.</td></tr>
+<tr><td>—</td><td><strong>gershwin-DS role conflict</strong> — NextBSD may already ship a <code>nss_gershwin</code> user/group backend (plaintext, TCP/4721)</td><td><strong>Unresolved authority overlap.</strong> The <code>dslocal</code> <em>path</em> is free, but two directory backends answering <code>getpwnam</code> will race. Pick one authority (this plan assumes <code>directoryservicesd</code> supersedes gershwin-DS) — decide before v0.1 seeds root/wheel.</td></tr>
+<tr><td>R5</td><td><strong>No keychain</strong> — LDAP bind creds / machine secret have nowhere encrypted to live</td><td>v0.1 needs none (<code>ShadowHashData</code> is already a hash, <code>0600</code> in dslocal — matches macOS). v0.2 bind cred → plaintext <code>0600</code>, documented (wland precedent). Real secret-store is a separate future project; don't block.</td></tr>
+<tr><td>R6/R9</td><td><strong>Open naming decision</strong> — the password daemon; and reused DSTools baked-in Mach labels</td><td>Password daemon working name <code>passwordserviced</code> (parallel to <code>directoryservicesd</code>) — <strong>your call</strong>, v0.3 so not urgent. Grep DSTools at port time for <code>com.apple.private.opendirectoryd.rpc</code>; patch or alias if found.</td></tr>
+</table></div>
+
+<hr class="sec">
+<h2 id="names"><span class="num">9</span>Naming &amp; provenance</h2>
+<p>The naming boundary is drawn to line up with the authorship and open-source boundaries, which keeps trademark exposure on the parts that are entirely ours:</p>
+<ul class="tight">
+  <li><strong>Net-new code → functional NextBSD names:</strong> <code>directoryservicesd</code>, <code>passwordserviced</code>, <code>org.nextbsd.directoryservices</code> — the <code>wland</code>-not-<code>wifid</code> precedent. These are the pieces Apple never released, so they're ours to name.</li>
+  <li><strong>Reused APSL code → keeps Apple names</strong> as compatibility identifiers: <code>DirectoryService.framework</code>, <code>OpenDirectory.framework</code>, <code>dscl</code>, the <code>dsAttrTypeStandard</code>/<code>AuthenticationAuthority</code> attribute vocabulary — the GNUstep/Gershwin posture (functional API names reused for compatibility, project branded independently).</li>
+  <li><strong>Nothing is branded <code>opendirectoryd</code></strong> — Apple's strong "Open Directory" mark; and it's the one binary we're <em>not</em> reusing (closed), so there's no compatibility reason to adopt it.</li>
+  <li><strong>Licensing:</strong> DirectoryService-621.12 / OpenDirectory-146 / DSPasswordServerPlugin-281.1 are APSL 2.0; <code>passwordserver_sasl</code> is Cyrus/BSD (cleanest to redistribute); retain Apple notices, mark modified files. See the <a href="nextbsd-opendirectory-research.html">research doc</a> for the full source-availability audit.</li>
+</ul>
+
+</div>
+
+<footer>
+  Drafted 2026-07-16 · NextBSD DirectoryServices porting plan · Synthesized from a four-agent source-grounded scope over <code>nextbsd-userland</code>, <code>nextbsd-freebsd-compat</code>, and the verified Apple open-source inventory. Planning only — no code written. Supersedes <a href="freebsd-opendirectory-port-plan.html">freebsd-opendirectory-port-plan</a>; background in <a href="nextbsd-opendirectory-research.html">nextbsd-opendirectory-research</a>. Items tagged [U] are unverified and flagged for confirmation against live source before implementation.
+</footer>
+
+</body>
+</html>

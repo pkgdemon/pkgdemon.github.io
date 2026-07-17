@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD HFS+ — alternate research path (from Apple's open HFS)</title>
+<style>
+  :root{
+    --bg:#faf9f7;--panel:#ffffff;--ink:#1b1b1e;--muted:#5c5c66;--faint:#8a8a94;
+    --line:#e4e2dd;--accent:#7a4d2b;--accent2:#2b5a7a;--accent3:#3d6b3d;
+    --code-bg:#f4f2ee;--code-ink:#2a2620;--warn:#8a2b2b;--ok:#3d6b3d;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#16151a;--panel:#1e1d24;--ink:#eceaf0;--muted:#a8a6b2;--faint:#75737e;
+      --line:#312f39;--accent:#d59b6a;--accent2:#7ab6df;--accent3:#8fce8f;
+      --code-bg:#141319;--code-ink:#d6d3dd;--warn:#e88;--ok:#8fce8f;
+    }
+  }
+  *{box-sizing:border-box} html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:960px;margin:0 auto;padding:0 22px 120px}
+  header.m{max-width:960px;margin:0 auto;padding:58px 22px 28px}
+  .eyebrow{font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700;margin:0 0 14px}
+  h1{font-size:35px;line-height:1.14;margin:0 0 16px;letter-spacing:-.02em;font-weight:750}
+  .dek{font-size:18px;line-height:1.5;color:var(--muted);margin:0 0 22px;max-width:72ch}
+  .byline{font-size:13px;color:var(--faint);border-top:1px solid var(--line);padding-top:16px}
+  .byline b{color:var(--muted);font-weight:600}
+  h2{font-size:24px;margin:52px 0 6px;letter-spacing:-.015em;font-weight:720;scroll-margin-top:20px}
+  h2 .n{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:12px;font-weight:800}
+  h3{font-size:18px;margin:30px 0 4px;font-weight:680}
+  .sub{color:var(--muted);font-size:14.5px;margin:0 0 16px}
+  p{margin:13px 0} a{color:var(--accent2);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent2) 30%,transparent)} strong{font-weight:660}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.85em;background:var(--code-bg);color:var(--code-ink);padding:.09em .38em;border-radius:5px;border:1px solid var(--line)}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:12px;padding:15px 17px;overflow-x:auto;margin:15px 0}
+  pre code{background:none;border:none;padding:0;font-size:12.5px;line-height:1.65} .cmt{color:var(--faint)}
+  nav.toc{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:22px 26px;margin:30px 0 10px}
+  nav.toc h2{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin:0 0 14px;font-weight:700}
+  nav.toc ol{margin:0;padding:0;list-style:none;counter-reset:t;columns:2;column-gap:40px}
+  nav.toc li{counter-increment:t;margin:0 0 9px;break-inside:avoid;font-size:14.5px}
+  nav.toc li::before{content:counter(t);color:var(--accent);font-weight:800;margin-right:10px}
+  nav.toc a{color:var(--ink);border:none} @media(max-width:640px){nav.toc ol{columns:1}}
+  .tldr{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:20px 24px;margin:24px 0}
+  .tldr h3{margin:0 0 8px;font-size:14px;text-transform:uppercase;letter-spacing:.1em;color:var(--accent)}
+  .note{border:1px solid var(--line);border-left:4px solid var(--accent2);background:var(--panel);border-radius:10px;padding:14px 18px;margin:18px 0;font-size:14.5px}
+  .note.warn{border-left-color:var(--warn)} .note.ok{border-left-color:var(--ok)}
+  .note .lbl{font-weight:700;color:var(--accent2);font-size:12px;letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:4px}
+  .note.warn .lbl{color:var(--warn)} .note.ok .lbl{color:var(--ok)}
+  .tbl{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:12px}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:560px}
+  th,td{text-align:left;padding:10px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--code-bg);font-weight:680;font-size:12px;color:var(--muted)} tr:last-child td{border-bottom:none}
+  td code{white-space:nowrap}
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;white-space:nowrap}
+  .pill.alt{color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,transparent)}
+  .pill.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 15%,transparent)}
+  .pill.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
+  ul.tight li,ol.tight li{margin:6px 0} hr.s{border:none;border-top:1px solid var(--line);margin:0}
+  mark{background:color-mix(in srgb,var(--accent) 22%,transparent);color:inherit;padding:.02em .2em;border-radius:3px}
+  .u{color:var(--faint);font-style:italic}
+  .stage{border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:12px 0;background:var(--panel)}
+  .stage h4{margin:0 0 4px;font-size:15px} .stage .tag{font-size:11px;font-weight:700;color:var(--accent);letter-spacing:.05em}
+  footer{max-width:960px;margin:56px auto 0;padding:24px 22px;border-top:1px solid var(--line);color:var(--faint);font-size:13px}
+</style>
+</head>
+<body>
+
+<header class="m">
+  <p class="eyebrow">NextBSD · Research · <span style="color:var(--muted)">Alternate path</span></p>
+  <h1>HFS+ on NextBSD — porting Apple's open filesystem</h1>
+  <p class="dek">An <strong>alternate research path</strong> to the ZFS/SMB stack: adopt <strong>HFS+</strong> as NextBSD's Mac-native filesystem — the authentic backing for a future AFP server and the old-Mac aesthetic — by finishing the <code>freebsd_hfs</code> port of Apple's fully-open HFS source into <code>nextbsd-kernel</code>, with the matching Apple utilities in <code>nextbsd-userland</code>.</p>
+  <p class="byline"><b>Scoped</b> 2026-07-16 from three source-grounded agents (Apple HFS OSS inventory · <code>nextbsd-kernel</code> integration · <code>nextbsd-userland</code> tooling). <b>This does not supersede</b> the <a href="nextbsd-directoryservices-plan.html">main directory plan</a> (shared by both tracks) — it's a parallel filesystem/sharing track kept alive alongside it. <span style="color:var(--warn)">Planning only — no code written.</span></p>
+</header>
+
+<div class="wrap">
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#verdict">Verdict</a></li>
+    <li><a href="#framing">Where this sits (alternate track)</a></li>
+    <li><a href="#oss">Apple HFS is fully open</a></li>
+    <li><a href="#start">The starting point: <code>freebsd_hfs</code></a></li>
+    <li><a href="#kernel">Kernel integration (<code>nextbsd-kernel</code>)</a></li>
+    <li><a href="#userland">Utilities &amp; mount (<code>nextbsd-userland</code>)</a></li>
+    <li><a href="#roadmap">Staged roadmap</a></li>
+    <li><a href="#risks">Risks &amp; open items</a></li>
+    <li><a href="#direction">Strategic direction — replacing UFS</a></li>
+  </ol>
+</nav>
+
+<div class="tldr">
+  <h3>Verdict</h3>
+  <p><strong>Viable, and cleaner than it first looks — because the whole HFS+ stack is already open.</strong> Every piece (kernel filesystem <em>and</em> tools) is APSL-2.0 in one Apple repo, so the work isn't inventing anything — it's <mark>finishing the port of code that already exists</mark>. But it's a real, staged effort with a hard core (rw + journaling correctness) and two NextBSD-specific sharp edges.</p>
+  <ul class="tight" style="margin:8px 0 0">
+    <li><span class="pill ok">Open</span> Apple's <strong>complete HFS+</strong> — kernel FS (journaling, B-trees, forks, xattrs, ACLs, case-insensitive + HFSX) + <code>newfs_hfs</code>/<code>fsck_hfs</code>/<code>mount_hfs</code>/<code>hfs.util</code> — is APSL 2.0 in <code>apple-oss-distributions/hfs</code> (<code>hfs-715.120.4</code>).</li>
+    <li><span class="pill alt">Start</span> <code>freebsd_hfs</code> is a <strong>read-mostly PoC</strong> (read works; write nascent; <em>missing journaling, <code>fsck</code>, forks/ACLs/xattrs/case</em>) — but all those gaps exist in Apple's source and "just" need porting to FreeBSD-15 VFS.</li>
+    <li><span class="pill ok">Fits</span> Lands via the <strong>exact <code>vfs.pivot</code> precedent</strong>: source into <code>src-overlay/sys/fs/hfs/</code> + an <code>options HFS</code> config line — no fork patch. Utilities are a <strong>pure <code>/sbin</code> addition</strong> (FreeBSD has no HFS tools to conflict with). <code>mount(8)</code> stays FreeBSD; you just add <code>mount_hfs</code>.</li>
+    <li><span class="pill warn">Sharp edges</span> (1) <code>NO_MODULES</code> → HFS+ compiled <em>into</em> the kernel, where its Darwin shim typedefs may <strong>collide statically</strong> with the existing Mach/Apple compat layer; (2) the <strong>FreeBSD 14→15 rebase</strong> (modest <em>if</em> the PoC truly crossed the 14 <code>namei</code> cleanup); (3) <strong>rw corruption risk</strong> — the intrinsic hard part.</li>
+    <li><span class="pill ok">De-risk</span> Keep <strong>UFS as root</strong>; use HFS+ for <strong>data/shares/removable</strong>. Read-only mount first → rw non-root → features → (far future) root.</li>
+  </ul>
+</div>
+
+<h2 id="framing"><span class="n">1</span>Where this sits — the alternate track</h2>
+<p>This is Path 2 of two parallel research directions; nothing here retracts Path 1.</p>
+<div class="tbl"><table>
+<tr><th>Layer</th><th>Path 1 — main (documented)</th><th>Path 2 — this doc <span class="pill alt">alternate</span></th></tr>
+<tr><td>Filesystem</td><td>ZFS</td><td><strong>HFS+</strong> (Mac-native)</td></tr>
+<tr><td>File sharing</td><td>illumos <code>smbsrv</code> (SMB)</td><td>own <strong>AFP</strong> server (HFS+ native forks)</td></tr>
+<tr><td>Directory / login</td><td colspan="2" style="text-align:center"><code>directoryservicesd</code> — <strong>shared by both; independent of the FS choice</strong></td></tr>
+</table></div>
+<p>They diverge only at the <strong>filesystem + sharing</strong> layer and converge on the directory. The proposed sequencing for this track: <strong>HFS+ → own AFP server → DirectoryServices</strong>, with DirectoryServices run as a <em>parallel</em> track (it doesn't depend on HFS+/AFP), and HFS+ kept off the boot path (UFS root) until it's corruption-clean.</p>
+
+<hr class="s">
+<h2 id="oss"><span class="n">2</span>Apple's HFS+ is fully open — one repo, APSL 2.0</h2>
+<div class="note ok"><span class="lbl">Answer to "is all the HFS code open?"</span> <strong>Yes — the entire stack, kernel + tools, is APSL 2.0 in <code>apple-oss-distributions/hfs</code> (latest <code>hfs-715.120.4</code>, June 2026).</strong> Nothing is closed or absent. (xnu no longer carries <code>bsd/hfs</code> — it was split into this standalone repo; <code>diskdev_cmds</code> no longer ships the HFS tools either. The <code>hfs</code> repo is now canonical for everything.)</div>
+<div class="tbl"><table>
+<tr><th>Component</th><th>In <code>apple-oss-distributions/hfs</code></th><th>Feature-complete?</th></tr>
+<tr><td>Kernel filesystem</td><td><code>core/</code> — journaling (<code>hfs_journal.c</code>), catalog + extents B-trees, resource/named forks, xattrs + ACLs (<code>hfs_xattr.c</code>), HFSX case-sensitive + case-insensitive, per-file encryption</td><td>✅ full</td></tr>
+<tr><td><code>newfs_hfs</code> (mkfs)</td><td><code>newfs_hfs/</code></td><td>✅</td></tr>
+<tr><td><code>fsck_hfs</code> + <code>lib_fsck_hfs</code></td><td><code>fsck_hfs/</code></td><td>✅ (self-contained B-tree checker, no CoreFoundation)</td></tr>
+<tr><td><code>mount_hfs</code></td><td><code>mount_hfs/</code></td><td>✅</td></tr>
+<tr><td><code>hfs.util</code> (diskarb/mount helper)</td><td><code>hfs_util/</code></td><td>✅ (CoreFoundation-dependent)</td></tr>
+<tr><td>Extras</td><td><code>CopyHFSMeta</code>, <code>fstyp_hfs</code>, <code>livefiles_hfs_plugin</code>, …</td><td>✅</td></tr>
+</table></div>
+<p>The strategic consequence: <strong>the "missing" features in <code>freebsd_hfs</code> aren't gaps to invent — they're Apple code not yet ported.</strong> That turns the effort from "write a filesystem" into "finish a port," which is materially less risky (the on-disk-format and algorithm correctness already exist and are battle-tested).</p>
+
+<hr class="s">
+<h2 id="start"><span class="n">3</span>The starting point — <code>freebsd_hfs</code></h2>
+<p class="sub"><code>github.com/stupendoussuperpowers/freebsd_hfs</code> — a direct port of Apple's <code>hfs/core</code> to FreeBSD 14</p>
+<div class="tbl"><table>
+<tr><th></th><th>State</th></tr>
+<tr><td><strong>Works</strong></td><td>Read path: <code>ACCESS/OPEN/CLOSE/READDIR/READ/READLINK/LOOKUP</code>; <code>ls</code>, symlinks, <code>.</code>/<code>..</code> correct. Write path <em>started</em>: <code>VOP_CREATE</code> (mkdir/touch), <code>VOP_WRITE</code>.</td></tr>
+<tr><td><strong>Missing</strong> (the port-to-finish)</td><td><span class="pill warn">journaling</span> (TODO — rw is corruption-prone without it) · <code>newfs_hfs</code>/<code>fsck_hfs</code> (stubs) · <code>mmap</code> (EINVAL) · <strong>xattrs / resource forks / ACLs</strong> · <strong>case-insensitive vs HFSX</strong> handling · seek/truncate untested · macOS compat shims still present</td></tr>
+<tr><td><strong>Provenance</strong></td><td>Ports Apple's <code>core/hfscommon</code> tree → APSL 2.0 by inheritance. <mark>Clean derivation, but the repo declares no top-level license</mark> — add an explicit APSL-2.0 <code>LICENSE</code>/attribution before building on it.</td></tr>
+<tr><td><strong>Activity</strong></td><td>Single-author PoC; last commit 2025-07-02 ("Write support start"); "builds on work previously done on FreeBSD 5."</td></tr>
+</table></div>
+<p>So it's roughly <strong>Apple's read path + a nascent write path</strong>, minus journaling, tooling, and advanced metadata — a real head start on the mechanical VFS glue, with the hard correctness work (journaling, rw) still ahead. All of it is a <em>porting</em> job against Apple's complete source, not new design.</p>
+
+<hr class="s">
+<h2 id="kernel"><span class="n">4</span>Kernel integration — <code>nextbsd-kernel</code></h2>
+
+<h3>The repo model (verified)</h3>
+<p><code>nextbsd-kernel</code> is <strong>not a fork of freebsd-src</strong> — it's a thin overlay applied over a baked <code>/usr/src</code> (releng/15.1): <code>patches/*.patch</code> (edits to freebsd files) + <code>config/NEXTBSD</code> (kernel config) + <code>src-overlay/</code> (NextBSD-original sources copied in, with <code>conf/files.*</code> fragments appended). The custom <code>vfs_pivot.c</code> is the <strong>exact precedent</strong> for landing a new static subsystem — and HFS+ follows it almost verbatim.</p>
+
+<h3>Where HFS+ lands (no fork patch)</h3>
+<pre><code><span class="cmt"># thousands of NEW files → src-overlay, NOT patches/</span>
+src-overlay/sys/fs/hfs/**          <span class="cmt"># driver sources + private/format headers</span>
+src-overlay/conf/files.hfs         <span class="cmt"># the sys/conf/files fragment:</span>
+      fs/hfs/hfs_vfsops.c   optional hfs
+      fs/hfs/hfs_vnops.c    optional hfs
+      fs/hfs/hfs_journal.c  optional hfs
+      ...                   optional hfs
+config/NEXTBSD                     <span class="cmt"># add:  options HFS</span>
+.github/workflows/build.yml        <span class="cmt"># new "Wire in HFS" step (clone of the vfs_pivot step):</span>
+      cat src-overlay/conf/files.hfs &gt;&gt; /usr/src/sys/conf/files
+      printf 'HFS\topt_hfs.h\n'      &gt;&gt; /usr/src/sys/conf/options</code></pre>
+<p>Registration is standard static-FS: <code>VFS_SET(hfs_vfsops, hfs, 0)</code> → <code>vfs_register</code> at SYSINIT, <code>mount -t hfs</code> → <code>vfs_donmount</code> → <code>VFS_MOUNT</code>. No loader, no <code>kldload</code>.</p>
+
+<div class="note warn"><span class="lbl">Sharp edge #1 — NO_MODULES static-link collisions</span> The kernel is built <code>NO_MODULES=yes</code> and the image assembler <code>rm -f /boot/kernel/*.ko</code> — so HFS+ <strong>must be compiled in</strong> (like ZFS/geom_uzip/unionfs already are). As a <code>.ko</code>, <code>freebsd_hfs</code>'s Darwin compat shim resolved its symbols privately; <strong>compiled statically, its Darwin vocabulary (<code>vnode_t</code>, <code>mount_t</code>, <code>proc_t</code>, <code>uio_t</code>, <code>kauth_cred_t</code>…) shares one namespace with the Mach/Apple compat layer already in this kernel</strong> (<code>sys/apple/</code>, <code>compat/mach</code>). Duplicate typedefs → redefinition errors, or worse, silently divergent struct layouts. <strong>The single most likely first build-break.</strong> Fix (modeled on the repo's <code>COMPAT_MACH_C</code> pattern): a scoped <code>HFS_C</code> compile line, and — critically — make HFS <em>consume the repo's existing Apple typedef headers</em> rather than its own, so there's exactly one <code>vnode_t</code>.</div>
+
+<div class="note"><span class="lbl">Sharp edge #2 — the FreeBSD 14 → 15 rebase</span> <code>freebsd_hfs</code> targets 14; NextBSD is 15.1. The expensive VFS churn (the <code>namei</code>/<code>componentname</code>/<code>thread</code> cleanup, <code>NDFREE</code>→<code>NDFREE_PNBUF</code>) landed in <strong>14, not 15</strong> — so <em>if</em> the PoC genuinely crossed that, 14→15 is <strong>days of <code>-Werror</code> fixups</strong> (renamed struct fields, new-ish VOPs defaulting to <code>vop_eopnotsupp</code>, a <code>vget</code>/<code>insmntque</code> signature). <span class="u">UNVERIFIED: if it was actually written against 13.x with private shims, this balloons into a real port.</span> Confirm the PoC's true baseline early.</div>
+
+<h3>The iterate loop is real</h3>
+<p>A push touching <code>src-overlay/**</code>/<code>config/**</code>/<code>build.yml</code> triggers a kernel rebuild + a qemu <strong>smoke-test that boots the image to <code>login:</code></strong>. So "PR the driver, iterate until it works" genuinely works — each push rebuilds with HFS compiled in and boots it.</p>
+<div class="note warn"><span class="lbl">CI blind spot</span> The smoke-test proves only that <strong>the kernel still boots</strong> — it never mounts or exercises HFS. Green CI on a kernel whose HFS driver corrupts every write is entirely possible. A <strong>mount + <code>fsx</code>/<code>fsstress</code> CI job must be added</strong> before "it works" means anything for a read-write filesystem.</div>
+
+<hr class="s">
+<h2 id="userland"><span class="n">5</span>Utilities &amp; mount — <code>nextbsd-userland</code></h2>
+<p>The HFS tools are HFS-specific and FreeBSD base has <em>none</em>, so they belong in <code>nextbsd-userland</code> (the Apple system layer) as a <strong>pure addition — they supersede nothing</strong>. One <code>bsd.prog.mk</code> PROG per dir under <code>src/hfs/</code>, installed to <code>/sbin</code> (the mount/fsck helper path), <em>not</em> <code>/usr/sbin</code>.</p>
+<div class="tbl"><table>
+<tr><th>Tool</th><th>Action</th><th>Installs</th><th>Note</th></tr>
+<tr><td><code>newfs_hfs</code></td><td><strong>Vendor</strong></td><td><code>/sbin/newfs_hfs</code></td><td>touches raw device + <code>hfs_format.h</code>; no kernel ABI, no CF</td></tr>
+<tr><td><code>fsck_hfs</code></td><td><strong>Vendor</strong></td><td><code>/sbin/fsck_hfs</code></td><td>largest tool; self-contained checker; the recovery path (needed before rw is safe)</td></tr>
+<tr><td><code>mount_hfs</code></td><td><strong>Vendor</strong> <em>or</em> ~150-line rewrite</td><td><code>/sbin/mount_hfs</code></td><td>the one fork — see below</td></tr>
+<tr><td><code>hfs.util</code></td><td><strong>Defer</strong></td><td>(<code>.fs</code> bundle)</td><td>DiskArbitration auto-mount hook; CF-dependent; add when <code>diskarbitrationd</code> reaches iter 5</td></tr>
+</table></div>
+
+<div class="note"><span class="lbl">"Swap FreeBSD mount for Apple mount" — actually just <em>add</em> a helper</span> Nothing is swapped in <code>mount(8)</code> itself — <strong>keep FreeBSD's <code>mount(8)</code> verbatim</strong>. It already resolves <code>-t hfs</code> by exec'ing <code>/sbin/mount_hfs</code>. So you just <strong>add</strong> Apple's <code>mount_hfs</code> as that per-fstype helper (plus <code>newfs_hfs</code>/<code>fsck_hfs</code>), and <code>mount -t hfs</code>, <code>fsck -t hfs</code>, and fstab all work with zero changes to the mount framework.</div>
+
+<p><strong>The one branch:</strong> Apple's <code>mount_hfs</code> builds a <code>struct hfs_mount_args</code> and calls <code>mount(2)</code>. It vendors <em>verbatim</em> <strong>if</strong> the <code>freebsd_hfs</code> kernel kept Apple's <code>hfs_mount_args</code> ABI; if the driver went FreeBSD-native <code>nmount(2)</code> instead, <code>mount_hfs.c</code> is a ~150-line NextBSD-original rewrite. <span class="u">This is the key kernel↔userland handshake to confirm.</span> Top shim risk: <code>&lt;sys/attr.h&gt;</code>/<code>getattrlist</code> (used by <code>fsck</code>/<code>newfs</code>) isn't in the tree yet — one write-new shim. Format headers should be sourced from the <em>kernel driver's</em> exported headers (single source of truth).</p>
+
+<hr class="s">
+<h2 id="roadmap"><span class="n">6</span>Staged roadmap — read-only first, root last</h2>
+<div class="stage"><span class="tag">STAGE A</span><h4>Compiles &amp; boots</h4><p>Land the overlay + <code>options HFS</code>; the boot smoke-test proves the kernel still boots with HFS linked in. Shakes out the static-link symbol collisions (#1) and the 14→15 <code>-Werror</code> fixups (#2). No mounting yet.</p></div>
+<div class="stage"><span class="tag">STAGE B</span><h4>Read-only mount</h4><p>Gate <code>MNT_RDONLY</code>; mount a macOS-made HFS+ image in a VM; verify catalog/extent traversal, <code>ls -R</code>, checksummed reads. Zero corruption surface. This is where <strong>case-folding</strong> (HFS+ case-insensitive vs HFSX) first bites — get it right here.</p></div>
+<div class="stage"><span class="tag">STAGE C</span><h4>Read-write, non-root, data/shares only</h4><p>Enable rw + journaling for <strong>data volumes / shares / removable media — never root</strong>. Highest corruption risk. Harness: <code>fsx</code> (data-integrity), <code>fsstress</code> (parallel metadata), mount/umount/<code>fsck</code> cycles, power-fail journal-consistency. <strong>Add the mount+fsx CI job here.</strong></p></div>
+<div class="stage"><span class="tag">STAGE D</span><h4>Feature completion</h4><p>Port the remaining Apple code: resource <strong>forks</strong>, <strong>ACLs</strong> (→ FreeBSD <code>VOP_[GS]ETACL</code>), <strong>xattrs</strong> (→ <code>VOP_[GS]ETEXTATTR</code>), <code>mmap</code>. Each is an independent VOP-surface addition, testable in isolation. <em>This is the layer that makes HFS+ worth it for AFP serving.</em></p></div>
+<div class="stage"><span class="tag">STAGE E</span><h4>(Far future, optional) HFS+ as root</h4><p>Only after C+D are corruption-clean. Requires changing the baked <code>ROOTDEVNAME</code>/<code>vfs.root.mountfrom</code> and — critically — surviving <strong><code>vfs.pivot</code></strong>'s root-swap (<code>mountcheckdirs()</code> refcount balancing, union-layer membership). Keep HFS+ off the root path until then; <strong>UFS stays root</strong>, HFS+ serves data.</p></div>
+
+<hr class="s">
+<h2 id="risks"><span class="n">7</span>Risks &amp; open items</h2>
+<div class="tbl"><table>
+<tr><th>Risk</th><th>Assessment</th></tr>
+<tr><td><strong>RW corruption</strong> (highest)</td><td>A PoC-grade rw+journaling driver on real data is the dominant risk; journal-replay + crash-consistency is where HFS+ ports historically corrupt. Mitigate with read-only-first, rw-non-root-only, and mandatory <code>fsx</code>/<code>fsstress</code>+crash-injection <em>in CI</em>.</td></tr>
+<tr><td><strong>14→15 is a real port, not a rebase</strong></td><td><span class="u">UNVERIFIED</span> — hinges on whether <code>freebsd_hfs</code> truly compiled against FreeBSD-14 VFS (post-<code>namei</code> cleanup). If 13.x-based, the estimate balloons. Confirm first.</td></tr>
+<tr><td><strong>Static-link symbol conflicts</strong></td><td>Darwin typedefs in the HFS shim vs the Mach/Apple compat layer already in this <code>NO_MODULES</code> kernel — most likely first build-break. Fix: scoped <code>HFS_C</code> flags + reuse the repo's Apple typedef headers.</td></tr>
+<tr><td><strong><code>mount_hfs</code> ABI</strong></td><td>Vendor-verbatim vs ~150-line rewrite depends on whether the kernel kept Apple's <code>hfs_mount_args</code> or went <code>nmount()</code>. Confirm at the kernel↔userland boundary.</td></tr>
+<tr><td><strong><code>vfs.pivot</code> if HFS+ ever roots</strong></td><td>Stage E only; HFS+ would have to survive the union/root-swap refcount balancing. Kept off the root path until corruption-clean.</td></tr>
+<tr><td><strong>CI blind spot</strong></td><td>Smoke-test gates on <code>login:</code> only; add a mount+<code>fsx</code> job or "green" is meaningless for a filesystem.</td></tr>
+<tr><td><strong>License hygiene</strong></td><td><code>freebsd_hfs</code> declares no repo license — add explicit APSL-2.0 before building on it.</td></tr>
+</table></div>
+
+<div class="note ok"><span class="lbl">Why this path is attractive despite the work</span> It's a <strong>port of complete, open, battle-tested Apple code</strong> (not new design), it lands via an <strong>established precedent</strong> (<code>vfs.pivot</code> + <code>COMPAT_MACH</code> patterns), the utilities are a <strong>clean additive <code>/sbin</code> drop</strong>, the CI already <strong>builds-and-boots on every push</strong>, and the whole thing is <strong>de-riskable</strong> (read-only → rw-data → features; UFS stays root). And it's the authentic backing for a native AFP server — exactly the old-Mac stack this project exists to revive.</p></div>
+
+<hr class="s">
+<h2 id="direction"><span class="n">8</span>Strategic direction — replacing UFS, then the FreeBSD userland</h2>
+<p class="sub">The longer-range vision this research serves: make HFS+ the filesystem, not just an add-on — and let it pull the userland toward Apple's</p>
+
+<p>The staged roadmap above (§6) deliberately keeps <strong>UFS as root, HFS+ for data</strong> — the safe de-risking. The longer-range goal is more ambitious: <strong>HFS+ replaces UFS entirely</strong>, its Apple tools land in <code>nextbsd-userland</code>, the UFS equivalents are dropped from <code>nextbsd-freebsd-compat</code>, and — once the filesystem has moved — the <strong>FreeBSD POSIX userland is progressively swapped for Apple's <code>system_cmds</code>/<code>file_cmds</code></strong>. This is the "become an authentic old Mac" direction, and it has a real technical logic, not just an aesthetic one.</p>
+
+<div class="note ok"><span class="lbl">Why the filesystem pulls the userland toward Apple</span> On HFS+, files carry <strong>Mac metadata</strong> — resource forks, xattrs, Mac ACLs. FreeBSD's <code>cp</code>/<code>ls</code>/<code>tar</code> <strong>don't understand any of it</strong> — they silently drop forks and mangle metadata. Apple's <code>file_cmds</code> are the tools that handle it correctly. So on UFS, swapping FreeBSD tools for Apple's <em>buys nothing</em> (which is exactly why NextBSD's current design uses FreeBSD's); <strong>on HFS+, Apple's tools finally have a reason to exist.</strong> HFS+-first is therefore the correct order — the FS choice <em>justifies</em> the userland swap.</div>
+
+<h3>The conservative sequence (never lose bootability)</h3>
+<pre><code>1. HFS+ as a DATA filesystem  ─────────  de-risk the driver (read-only → rw non-root)   [§6 A–C]
+2. HFS+ rw corruption-clean  ──────────  fsx/fsstress/crash-injection all green         [§6 C]
+3. Boot chain: small boot partition + HFS+ root  ──  rework livecd/vfs.pivot for HFS+ root  ← GATE
+4. HFS+ boots reliably as root  ───────  NOW retire UFS + UFS tools from compat
+5. Port Apple's HFS-metadata-aware file tools  ──  cp/ls/tar that handle forks (real reason)
+6. (Optional) broader system_cmds swap  ──  purity, tool-by-tool, where it buys something</code></pre>
+
+<div class="note warn"><span class="lbl">Gate — the boot chain (unscoped hard problem)</span> FreeBSD's loader reads UFS/ZFS/FAT, <strong>not HFS+</strong> — so you can't simply "boot HFS+." The tractable fix is the standard separate-<code>/boot</code> pattern: a <strong>small UFS or FAT/EFI boot partition</strong> holds loader + kernel; the loader loads the kernel from there; the <strong>kernel (HFS+ compiled in) mounts the HFS+ root</strong> — no HFS+-in-loader needed. What that does <em>not</em> avoid is <strong>reworking the livecd + <code>vfs.pivot</code> flow</strong> (today deeply UFS/unionfs-based) for an HFS+ root. <strong>This is the gate that decides whether HFS+-as-root is real, and it needs its own scoping.</strong></div>
+
+<div class="note warn"><span class="lbl">Ordering rule — never drop UFS early</span> The moment you remove UFS + its tools from compat, you've bet the ability to <strong>boot and build</strong> on the HFS+ driver being solid. So UFS stays until <strong>step 4</strong> (HFS+ proven as a bootable root). A driver bug before then must never equal an unbootable, unbuildable system. <span class="u">(Nice consequence: the earlier compat audit flagged UFS tools as "impractical to port from Apple" because Apple has no UFS code — this plan resolves that: going HFS+ means using Apple's HFS tools and dropping UFS outright.)</span></div>
+
+<h3>Targeted vs. wholesale userland swap</h3>
+<p>Step 5 — the <strong>HFS+-metadata-aware tools</strong> (<code>cp</code>/<code>ls</code>/<code>tar</code>/archive) — is the part with a genuine capability reason and should be the real target. Step 6 — replacing the <em>rest</em> of the generic POSIX userland with Apple's — is mostly <strong>behavior-parity, not capability</strong> (Apple's build is functionally equivalent to FreeBSD's for generic tools), so it's a lot of shim work for authenticity alone. Do it gradually, tool-by-tool where it buys something, rather than as one big-bang replacement — unless authenticity itself is the goal, in which case it's a deliberate (large) cost.</p>
+
+<p><strong>Bottom line:</strong> the direction is coherent and on-brand — HFS+ root + Apple userland is literally "become an old Mac," and the FS→userland pull is a real justification. The cost is a <strong>multi-year program</strong>; the <strong>boot chain (step 3) is the gating unknown</strong>; and the governing rule is that <strong>UFS never leaves until HFS+ boots</strong>. The data-filesystem work (§6, steps 1–2) proves the driver before any of the riskier swaps begin.</p>
+
+</div>
+
+<footer>
+  Scoped 2026-07-16 · NextBSD HFS+ alternate research path · Synthesized from three source-grounded agents (Apple <code>hfs</code> repo inventory; <code>nextbsd-kernel</code> overlay/NO_MODULES integration; <code>nextbsd-userland</code> tooling + mount). Parallel to — not a replacement for — the ZFS + directory plan. Planning only. Items marked UNVERIFIED (esp. the <code>freebsd_hfs</code> FreeBSD-14-vs-13 baseline and the kernel mount ABI) need confirmation against live source before implementation.
+</footer>
+
+</body>
+</html>

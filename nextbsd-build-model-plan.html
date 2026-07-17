@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD Build Model — three targets, three tiers</title>
+<style>
+  :root{
+    --bg:#faf9f7; --panel:#ffffff; --ink:#1b1b1e; --muted:#5c5c66; --faint:#8a8a94;
+    --line:#e4e2dd; --accent:#7a4d2b; --accent2:#2b5a7a; --accent3:#3d6b3d;
+    --code-bg:#f4f2ee; --code-ink:#2a2620; --a:#8a2b2b; --b:#3d6b3d; --warn:#8a5a2b;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#16151a; --panel:#1e1d24; --ink:#eceaf0; --muted:#a8a6b2; --faint:#75737e;
+      --line:#312f39; --accent:#d59b6a; --accent2:#7ab6df; --accent3:#8fce8f;
+      --code-bg:#141319; --code-ink:#d6d3dd; --a:#e88; --b:#8fce8f; --warn:#d59b6a;
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:980px;margin:0 auto;padding:0 22px 120px}
+  header.m{max-width:980px;margin:0 auto;padding:58px 22px 28px}
+  .eyebrow{font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700;margin:0 0 14px}
+  h1{font-size:33px;line-height:1.14;margin:0 0 16px;letter-spacing:-.02em;font-weight:750}
+  .dek{font-size:18px;line-height:1.5;color:var(--muted);margin:0 0 22px;max-width:74ch}
+  .byline{font-size:13px;color:var(--faint);border-top:1px solid var(--line);padding-top:16px}
+  .byline b{color:var(--muted);font-weight:600}
+  h2{font-size:23px;margin:50px 0 6px;letter-spacing:-.015em;font-weight:720;scroll-margin-top:20px}
+  h2 .n{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:12px;font-weight:800}
+  h3{font-size:17px;margin:26px 0 4px;font-weight:680}
+  .sub{color:var(--muted);font-size:14.5px;margin:0 0 14px}
+  p{margin:13px 0}
+  a{color:var(--accent2);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent2) 30%,transparent)}
+  strong{font-weight:660}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.84em;background:var(--code-bg);color:var(--code-ink);padding:.08em .36em;border-radius:5px;border:1px solid var(--line)}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:12px;padding:15px 17px;overflow-x:auto;margin:15px 0}
+  pre code{background:none;border:none;padding:0;font-size:12.5px;line-height:1.6}
+  .cmt{color:var(--faint)}
+  .tldr{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:20px 24px;margin:24px 0}
+  .tldr h3{margin:0 0 8px;font-size:14px;text-transform:uppercase;letter-spacing:.1em;color:var(--accent)}
+  .note{border:1px solid var(--line);border-left:4px solid var(--accent2);background:var(--panel);border-radius:10px;padding:14px 18px;margin:18px 0;font-size:14.5px}
+  .note.warn{border-left-color:var(--warn)} .note.b{border-left-color:var(--b)} .note.a{border-left-color:var(--a)}
+  .note .lbl{font-weight:700;color:var(--accent2);font-size:12px;letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:4px}
+  .note.warn .lbl{color:var(--warn)} .note.b .lbl{color:var(--b)} .note.a .lbl{color:var(--a)}
+  .tbl{overflow-x:auto;margin:16px 0;border:1px solid var(--line);border-radius:12px}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:600px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--code-bg);font-weight:680;font-size:12px;color:var(--muted)}
+  tr:last-child td{border-bottom:none}
+  td code{white-space:nowrap}
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;white-space:nowrap}
+  .pill.b{color:var(--b);background:color-mix(in srgb,var(--b) 15%,transparent)}
+  .pill.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent)}
+  .pill.a{color:var(--a);background:color-mix(in srgb,var(--a) 14%,transparent)}
+  .pill.cur{color:var(--accent2);background:color-mix(in srgb,var(--accent2) 14%,transparent)}
+  ul.tight li,ol.tight li{margin:6px 0}
+  hr.s{border:none;border-top:1px solid var(--line);margin:32px 0}
+  mark{background:color-mix(in srgb,var(--accent) 22%,transparent);color:inherit;padding:.02em .2em;border-radius:3px}
+  .diagram{background:var(--code-bg);border:1px solid var(--line);border-radius:12px;padding:16px;overflow-x:auto;margin:16px 0;font-size:11.5px;line-height:1.55;font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  .u{color:var(--faint);font-style:italic}
+  footer{max-width:980px;margin:56px auto 0;padding:24px 22px;border-top:1px solid var(--line);color:var(--faint);font-size:13px}
+</style>
+</head>
+<body>
+
+<header class="m">
+  <p class="eyebrow">NextBSD · Driver delivery · build model</p>
+  <h1>One build system, three targets, three tiers</h1>
+  <p class="dek">How NextBSD produces the compiled-in kernel, the loadable klds, and the kexts from one tree without ever patching a stock FreeBSD build file. <code>buildkernel NO_MODULES</code> makes tier 1, <code>buildextensions</code> makes tiers 2–3 from in-tree modules, <code>buildgraphics</code> makes the out-of-tree GPU/nvidia kexts, and <code>buildworld</code> is untouched.</p>
+  <p class="byline"><b>Drafted</b> 2026-07-17 from the build-system research (grounded in the actual <code>freebsd-src</code> <code>Makefile.inc1</code> / <code>kern.post.mk</code> / <code>kmod.mk</code>) and the naming manifest. <span style="color:var(--warn)">Provisional — sub of the driver-delivery sidebar. One load-bearing decision (Pure vs Mixed) is still open. Planning only, no code written.</span></p>
+</header>
+
+<div class="wrap">
+
+<div class="tldr">
+  <h3>The target map</h3>
+  <div class="tbl" style="margin-top:6px"><table style="min-width:560px">
+  <thead><tr><th>Target</th><th>Owner</th><th>Produces</th><th>Tier</th></tr></thead>
+  <tbody>
+  <tr><td><code>make buildkernel NO_MODULES=yes</code></td><td><span class="pill cur">stock (flag only)</span></td><td>kernel image, no modules</td><td>1 · compiled-in</td></tr>
+  <tr><td><code>make buildextensions</code></td><td><span class="pill b">NextBSD</span></td><td>in-tree <code>sys/modules</code> → plain klds + firmware kexts</td><td>2 + 3</td></tr>
+  <tr><td><code>make buildgraphics</code></td><td><span class="pill b">NextBSD</span></td><td>out-of-tree drm-kmod + nvidia → custom-named kexts</td><td>3 (GPU)</td></tr>
+  <tr><td><code>make buildworld</code></td><td><span class="pill cur">stock (untouched)</span></td><td>userland</td><td>—</td></tr>
+  </tbody></table></div>
+  <p style="margin-bottom:0"><strong>Naming style tracks the target:</strong> <code>buildextensions</code> emits FreeBSD-name kexts (<code>if_iwlwifi.kext</code>, mechanical); <code>buildgraphics</code> emits the 12 custom names (<code>IntelGraphics.kext</code>, <code>NVIDIAGraphics&lt;NNN&gt;</code>). See the <a href="nextbsd-kext-naming-manifest.html">naming manifest</a> — it's the <code>KEXTS</code> table these targets read.</p>
+</div>
+
+<div class="diagram">  make buildkernel NO_MODULES=yes ─▶ /boot/kernel/kernel            (tier 1: compiled-in)
+                │ leaves configured obj tree (opt_*.h, machine/, kernel-toolchain)
+                ▼
+  make buildextensions ───────────▶ sys/modules → plain klds  ─┐    (tier 2)
+                │  (needs kernel config output)   + kext-wrap  ─┼─▶ /System/Library/Extensions
+  make buildgraphics ─────────────▶ drm-kmod + nvidia (fetch) ─┘    (tier 3)
+                                     └ shared bsd.kext.mk wrap ──▶  + firmware in Resources/
+
+  make buildworld ────────────────▶ userland  (independent, any order)</div>
+
+<h2 id="kernel"><span class="n">1</span><code>buildkernel NO_MODULES</code> — tier 1, stays stock</h2>
+<p>Stock <code>make buildkernel</code>'s <code>all</code> target is <code>kernel-all</code> + <code>modules-all</code> (in <code>sys/conf/kern.post.mk</code>). Passing <strong><code>NO_MODULES=yes</code></strong> (a flag — <em>not</em> a Makefile edit) drops the modules half, leaving just the kernel image. <code>installkernel NO_MODULES=yes</code> installs only the kernel to <code>/boot/kernel</code>.</p>
+<pre><code>make buildkernel   KERNCONF=NEXTBSD NO_MODULES=yes
+make installkernel KERNCONF=NEXTBSD NO_MODULES=yes DESTDIR=${STAGE}</code></pre>
+<p>Crucially this leaves behind the <strong>configured kernel obj tree</strong> — the <code>config</code> stage's <code>opt_*.h</code>, the <code>machine/</code> symlinks, and the kernel-toolchain — which the next target needs. Because it's just a flag on a stock target, <code>buildkernel</code> stays byte-for-byte upstream (keeps the monorepo's merge-clean rule intact).</p>
+<div class="note warn"><span class="lbl">The one deliberate divergence</span> With modules moved out, stock <code>buildkernel &amp;&amp; installkernel</code> no longer yields a bootable system on its own — your <strong>compiled-in tier must genuinely cover boot-to-<code>mountroot</code></strong> (root HBA, root FS, console, core buses), since the loadable tier now comes from a separate target. Document this so nobody's surprised.</p></div>
+
+<h2 id="extensions"><span class="n">2</span><code>buildextensions</code> — in-tree klds + kexts (tiers 2–3)</h2>
+<p>A NextBSD-owned target that builds <code>sys/modules</code> the way buildkernel used to, then wraps the kext-tier drivers. It emits a <strong>mix</strong>: the ~250 plain klds stay plain <code>.ko</code>, and the ~30 firmware drivers get wrapped into <code>.kext</code> bundles via a shared <code>bsd.kext.mk</code>.</p>
+<pre><code><span class="cmt"># nextbsd/extensions/Makefile — invoked AFTER buildkernel (needs its obj tree)</span>
+KODIR?= ${OBJTOP}/${MACHINE}.${MACHINE_ARCH}/${SRCTOP}/${KERNCONF}/modules${SRCTOP}/sys/modules
+.include "${SRCTOP}/nextbsd/share/mk/nextbsd.kexts.conf"   <span class="cmt"># the KEXTS table = the naming manifest</span>
+
+buildextensions: .PHONY
+	cd ${SRCTOP}/sys/modules &amp;&amp; ${MKMODULESENV} ${MAKE} all   <span class="cmt"># build every .ko (tier 2)</span>
+.for k in ${KEXTS}                                            <span class="cmt"># wrap only the firmware/multi-version ones (tier 3)</span>
+	@${MAKE} -f ${SRCTOP}/nextbsd/share/mk/bsd.kext.mk extension \
+	    KEXT_NAME=${${k}_NAME} KEXT_ID=${${k}_ID} KO=${KODIR}/${${k}_KO} \
+	    KEXT_PERSGEN=${SRCTOP}/nextbsd/tools/gen-${${k}_GEN}-personalities.sh \
+	    KEXT_FW="${${k}_FW}" KEXT_DEPS="${${k}_DEPS}"
+.endfor</code></pre>
+<p><code>bsd.kext.mk</code> is the formalized <code>ko2kext.sh</code>: it takes an already-built <code>.ko</code>, runs the personality generator, bundles firmware into <code>Resources/</code>, writes <code>Info.plist</code> + <code>OSBundleLibraries</code>, and stages <code>&lt;Name&gt;.kext/Contents/MacOS/&lt;ko&gt;</code>. Move <code>ko2kext.sh</code> + <code>gen-*-personalities.sh</code> from the separate <code>nextbsd-kernel-modules</code> repo into <code>nextbsd/tools/</code>.</p>
+
+<h2 id="graphics"><span class="n">3</span><code>buildgraphics</code> — out-of-tree GPU/nvidia (tier 3)</h2>
+<p>drm-kmod (<code>i915kms</code>/<code>amdgpu</code>/<code>radeonkms</code> + the <code>drm</code>/<code>ttm</code>/<code>dmabuf</code> cores) and nvidia are <strong>ports, not <code>sys/modules</code></strong>, so <code>buildextensions</code> can't reach them. They already need bespoke recipes (fetch, patch, per-branch), which is exactly why they get their own target — and their custom names cost nothing extra.</p>
+<ul class="tight">
+  <li><strong>drm-kmod:</strong> vendor into <code>nextbsd/vendor/drm-kmod/</code> (self-contained, but a second upstream-sync burden) <em>or</em> fetch at build.</li>
+  <li><strong>nvidia:</strong> <em>must</em> fetch the tarball at build (non-redistributable blob), patch it, build each branch (595/580/470/390/340/304), wrap into <code>NVIDIAGraphics&lt;NNN&gt;.kext</code>.</li>
+  <li>Both feed the <strong>same <code>bsd.kext.mk</code> wrap</strong> and install to the same <code>/System/Library/Extensions</code>.</li>
+</ul>
+<div class="note b"><span class="lbl">Build-time fetch does NOT violate base-never-requires-pkg</span> That constraint is about the <strong>target at runtime</strong>, not the builder. Fetching nvidia/drm-kmod source on the build host and baking the resulting kexts into the image leaves the shipped system with zero pkg dependency — it just has baked <code>.kext</code> bundles. So fetching here is squarely allowed.</p></div>
+
+<h2 id="world"><span class="n">4</span><code>buildworld</code> — unchanged</h2>
+<p>Userland only; it never touched kernel modules. Completely stock, runs in any order relative to the kernel/extensions targets. Your custom userland tools ride in via the <code>LOCAL_DIRS</code>/<code>LOCAL_LIB_DIRS</code> hooks (see the <a href="nextbsd-monorepo-plan.html">monorepo plan</a> §5), not here.</p>
+
+<h2 id="fork"><span class="n">5</span>The one open decision: Pure vs Mixed install layout</h2>
+<p class="sub">The build split above is compatible with <em>both</em>. What differs is <strong>where the loadable drivers install</strong> and <strong>who matches them</strong> — and it hinges on whether <code>/boot/kernel</code> holds loose klds.</p>
+<div class="tbl"><table>
+<thead><tr><th></th><th><span class="pill b">Mixed</span> (sidebar recommendation)</th><th><span class="pill warn">Pure</span> (clean-namespace)</th></tr></thead>
+<tbody>
+<tr><td><code>/boot/kernel</code></td><td>kernel + ~250 plain klds</td><td>kernel image only</td></tr>
+<tr><td><code>/System/Library/Extensions</code></td><td>~38 kexts</td><td><strong>all ~343</strong> as kexts</td></tr>
+<tr><td>Matching for the ~250</td><td>native <code>devmatch</code> (free, authoritative)</td><td>your in-kernel matcher (must scale to all HW)</td></tr>
+<tr><td>Personalities to generate</td><td>~38</td><td>343</td></tr>
+<tr><td><code>/boot/firmware</code></td><td>avoided if kexts serve fw from <code>Resources/</code> (D4)</td><td>avoided (same)</td></tr>
+<tr><td>Cost</td><td><code>/boot/kernel</code> has klds; least bespoke machinery</td><td>uniform bundles, no loose files; but no native devmatch, matcher owns everything</td></tr>
+</tbody></table></div>
+<div class="note warn"><span class="lbl">Why you can't have both "empty /boot/kernel" and "native devmatch"</span> <code>kern.module_path</code> defaults to <code>/boot/kernel;/boot/modules</code>, and <code>kldxref</code> builds <code>linker.hints</code> from those dirs — that's exactly where devmatch looks. Kexts in <code>/System/Library/Extensions</code> are bundle <em>directories</em> (the <code>.ko</code> is at <code>Contents/MacOS/</code>), which <code>kldxref</code> doesn't traverse — so they load via <em>your</em> loader/matcher, not devmatch. Keeping <code>/boot/kernel</code> empty of klds therefore forces <strong>everything through the kext path</strong> (Pure), which re-raises the 343-wide personality burden and makes your T420-verified matcher load-bearing for <em>all</em> hardware. Mixed keeps the matcher scoped to ~38 and lets devmatch carry the long tail. <mark>This is the decision to make; the build targets serve whichever you pick.</mark></p></div>
+
+<h2 id="alt"><span class="n">6</span>Alternatives — fewer targets for local building</h2>
+<p class="sub">Four ordered targets with flags is great for CI (selective builds need the granularity) but heavy for a developer who just wants "build me a working system." The fix isn't fewer capabilities — it's a friendlier front door. Three options, not mutually exclusive.</p>
+
+<div class="tbl"><table>
+<thead><tr><th>Option</th><th>Local experience</th><th>Trade-off</th></tr></thead>
+<tbody>
+<tr><td><strong>A · Umbrella + <code>build.sh</code></strong> <span class="pill b">cheapest</span></td><td>keep the granular targets for CI; add a <code>make nextbsd</code> meta-target that chains kernel→extensions→graphics→world in order, and/or a <code>build.sh</code> (your existing idiom) with sane defaults. <strong>Local = one command.</strong></td><td>~none. Pure convenience layer.</td></tr>
+<tr><td><strong>B · Collapse graphics into extensions</strong></td><td>3 targets: <code>buildkernel</code>, <code>buildextensions</code> (in-tree <em>and</em> out-of-tree via internal sub-makes), <code>buildworld</code>.</td><td>slightly coarser CI gating for GPU (recoverable with internal <code>if</code>s).</td></tr>
+<tr><td><strong>C · Local stays stock; kexts are release-only</strong> <span class="pill b">best local ergonomics</span></td><td>don't use <code>NO_MODULES</code> locally — plain <code>make buildkernel buildworld</code> builds a normal, bootable FreeBSD-shaped system (klds in <code>/boot/kernel</code>). The kext-wrap runs <strong>only in the release/image pipeline</strong>. Day-to-day kernel hacking is just stock FreeBSD.</td><td>the kext path is exercised at release/CI, not in every local build. Pairs with the Mixed model.</td></tr>
+</tbody></table></div>
+
+<div class="note b"><span class="lbl">The insight: the heavy target graph is mostly a Pure-model tax</span> <code>NO_MODULES</code> + the strict tier split exists to keep <code>/boot/kernel</code> empty — which is the <strong>Pure</strong> goal (§5). <strong>Mixed doesn't need <code>NO_MODULES</code> at all:</strong> stock <code>buildkernel</code> builds kernel + klds (self-sufficient, bootable at every step), and a single <code>make extensions</code>/<code>buildgraphics</code> wrap handles just the ~38 kexts on top. So if local ergonomics matter, <strong>Mixed + Option C gives the simplest possible local story — local building is plain FreeBSD</strong> — while CI still does the selective/kext work. Pure is what forces the four-target dance. Another entry in Mixed's column.</p></div>
+
+<p><strong>Recommendation:</strong> granular targets for CI + a <code>make nextbsd</code> umbrella and <code>build.sh</code> for local (A); and if you adopt Mixed, Option C makes routine local builds just stock FreeBSD. For iterating on a single driver you don't need any of this — <code>cd sys/modules/foo &amp;&amp; make</code> already works after one full build.</p>
+
+<h2 id="order"><span class="n">7</span>Ordering, incremental, and selective CI</h2>
+<ul class="tight">
+  <li><strong>Ordering:</strong> <code>buildextensions</code>/<code>buildgraphics</code> depend on <code>buildkernel</code>'s configured obj tree (opt headers, toolchain) — enforce <code>buildkernel → {extensions, graphics}</code>. <code>buildworld</code> is independent.</li>
+  <li><strong>Incremental:</strong> tier-2 klds get meta-mode incremental for free (unchanged <code>.ko</code> isn't relinked). Key each <code>.kext</code> off its <code>.ko</code> mtime (+ the personality generator + firmware set) so a bundle re-wraps only when its inputs move; wrapping is cheap, so rebuild-on-<code>.ko</code>-change is safe.</li>
+  <li><strong>Selective CI:</strong> gate the kernel+extensions job on <code>sys/**</code> + <code>nextbsd/{extensions,tools,share/mk}/**</code>; gate <code>buildgraphics</code> on the vendored/pinned drm-kmod + nvidia refs. A <code>sys/</code>-only change rebuilds kernel + affected klds/kexts, not GPU; a drm-kmod bump rebuilds only graphics.</li>
+</ul>
+
+<h2 id="clean"><span class="n">8</span>Keep upstream clean — exact touch list</h2>
+<p>Everything that enters the tree is a <strong>NextBSD-owned new file</strong>; no stock build file is edited.</p>
+<div class="tbl"><table>
+<thead><tr><th>Concern</th><th>Mechanism (no stock edit)</th></tr></thead>
+<tbody>
+<tr><td>No modules from buildkernel</td><td><code>NO_MODULES=yes</code> — a flag</td></tr>
+<tr><td>NextBSD-original klds</td><td><code>LOCAL_MODULES</code> / <code>LOCAL_MODULES_DIR</code> → <code>nextbsd/modules/</code></td></tr>
+<tr><td>Per-driver one-shot kext (NextBSD drivers)</td><td>driver Makefile <code>.include &lt;bsd.kext.mk&gt;</code>; or the stock <code>bsd.kmod.mk</code>'s existing <code>.-include &lt;local.kmod.mk&gt;</code> hook</td></tr>
+<tr><td>The extensions/graphics targets</td><td>new top-level <code>nextbsd/</code> dir (<code>extensions/</code>, <code>graphics/</code>, <code>share/mk/bsd.kext.mk</code>, <code>tools/</code>), invoked from the release/CI driver</td></tr>
+<tr><td>Kernel config</td><td>new file <code>sys/${ARCH}/conf/NEXTBSD</code> that <code>include GENERIC</code> — never edit <code>GENERIC</code></td></tr>
+</tbody></table></div>
+<p>Stock <code>Makefile.inc1</code>, <code>kern.post.mk</code>, <code>kmod.mk</code>, <code>bsd.kmod.mk</code>, <code>sys/modules/Makefile</code>, and <code>GENERIC</code> stay untouched — so upstream merges never conflict on the build system.</p>
+
+<h2 id="open"><span class="n">9</span>Open decisions</h2>
+<ul class="tight">
+  <li><strong>Pure vs Mixed (§5)</strong> — the load-bearing call. Everything downstream (personality count, matcher scope, <code>/boot/kernel</code> contents) follows from it.</li>
+  <li><strong>drm-kmod: vendor vs fetch</strong> — self-contained tree (second sync burden) vs simpler tree (build-time fetch).</li>
+  <li><strong>Firmware discovery (D4)</strong> — serve from <code>Resources/</code> (needs a <code>firmware(9)</code> hook, avoids <code>/boot/firmware</code>) vs nest a firmware <code>.ko</code> (unchanged <code>firmware_get()</code>) vs raw <code>/boot/firmware</code> files (FreeBSD-15 path).</li>
+  <li><strong>Multi-<code>.ko</code> kext packaging</strong> — <code>ko2kext.sh</code> can't yet bundle nvidia's <code>nvidia</code>+<code>modeset</code>+<code>drm</code> under one <code>CFBundleExecutable</code>; needed before <code>buildgraphics</code> ships nvidia KMS.</li>
+</ul>
+
+<footer>
+  NextBSD build model · drafted 2026-07-17 · sub of the <a href="nextbsd-driver-delivery-plan.html">driver-delivery plan</a> → <a href="nextbsd-monorepo-plan.html">monorepo plan</a>. Naming input: the <a href="nextbsd-kext-naming-manifest.html">kext naming manifest</a>.
+</footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD — UFS case-insensitivity patch</title>
+<style>
+  :root{--bg:#faf9f7;--panel:#fff;--ink:#1b1b1e;--muted:#5c5c66;--faint:#8a8a94;--line:#e4e2dd;--accent:#7a4d2b;--accent2:#2b5a7a;--ok:#3d6b3d;--warn:#8a2b2b;--code-bg:#f4f2ee;--code-ink:#2a2620}
+  @media (prefers-color-scheme:dark){:root{--bg:#16151a;--panel:#1e1d24;--ink:#eceaf0;--muted:#a8a6b2;--faint:#75737e;--line:#312f39;--accent:#d59b6a;--accent2:#7ab6df;--ok:#8fce8f;--warn:#e88;--code-bg:#141319;--code-ink:#d6d3dd}}
+  *{box-sizing:border-box}html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:940px;margin:0 auto;padding:0 22px 120px}
+  header.m{max-width:940px;margin:0 auto;padding:56px 22px 26px}
+  .eyebrow{font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700;margin:0 0 14px}
+  h1{font-size:34px;line-height:1.14;margin:0 0 16px;letter-spacing:-.02em;font-weight:750}
+  .dek{font-size:18px;line-height:1.5;color:var(--muted);margin:0 0 22px;max-width:72ch}
+  .byline{font-size:13px;color:var(--faint);border-top:1px solid var(--line);padding-top:16px}
+  .byline b{color:var(--muted);font-weight:600}
+  h2{font-size:24px;margin:50px 0 6px;letter-spacing:-.015em;font-weight:720;scroll-margin-top:20px}
+  h2 .n{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:12px;font-weight:800}
+  h3{font-size:18px;margin:28px 0 4px;font-weight:680}
+  .sub{color:var(--muted);font-size:14.5px;margin:0 0 16px}
+  p{margin:13px 0}a{color:var(--accent2);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent2) 30%,transparent)}strong{font-weight:660}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.85em;background:var(--code-bg);color:var(--code-ink);padding:.09em .38em;border-radius:5px;border:1px solid var(--line)}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:12px;padding:15px 17px;overflow-x:auto;margin:15px 0}
+  pre code{background:none;border:none;padding:0;font-size:12.5px;line-height:1.65}.cmt{color:var(--faint)}
+  .tldr{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:20px 24px;margin:24px 0}
+  .tldr h3{margin:0 0 8px;font-size:14px;text-transform:uppercase;letter-spacing:.1em;color:var(--accent)}
+  .note{border:1px solid var(--line);border-left:4px solid var(--accent2);background:var(--panel);border-radius:10px;padding:14px 18px;margin:18px 0;font-size:14.5px}
+  .note.warn{border-left-color:var(--warn)}.note.ok{border-left-color:var(--ok)}
+  .note .lbl{font-weight:700;color:var(--accent2);font-size:12px;letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:4px}
+  .note.warn .lbl{color:var(--warn)}.note.ok .lbl{color:var(--ok)}
+  .tbl{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:12px}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:560px}
+  th,td{text-align:left;padding:10px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--code-bg);font-weight:680;font-size:12px;color:var(--muted)}tr:last-child td{border-bottom:none}td code{white-space:nowrap}
+  ul.tight li,ol.tight li{margin:6px 0}hr.s{border:none;border-top:1px solid var(--line);margin:0}
+  mark{background:color-mix(in srgb,var(--accent) 22%,transparent);color:inherit;padding:.02em .2em;border-radius:3px}.u{color:var(--faint);font-style:italic}
+  footer{max-width:940px;margin:56px auto 0;padding:24px 22px;border-top:1px solid var(--line);color:var(--faint);font-size:13px}
+</style>
+</head>
+<body>
+<header class="m">
+  <p class="eyebrow">NextBSD · Kernel patch · Plan</p>
+  <h1>Case-insensitive UFS — a <code>nextbsd-kernel</code> patch</h1>
+  <p class="dek">The pragmatic alternative to porting a whole HFS+ filesystem just to get Mac-friendly case behavior: teach FreeBSD's UFS/FFS to fold case at name lookup. A tightly-bounded patch — three code changes and a superblock flag — that gives Macs the case-insensitivity Apple's own UFS never had.</p>
+  <p class="byline"><b>Scoped</b> 2026-07-16 from a source-grounded agent reading the baked <code>freebsd-src</code> (releng/15.1) + <code>nextbsd-kernel</code>. Half of the pragmatic "UFS + AFP" path (companion: <a href="nextbsd-afp-server-plan.html">native AFP server</a>). <span style="color:var(--warn)">Planning only — no code written.</span></p>
+</header>
+<div class="wrap">
+
+<div class="tldr">
+  <h3>Verdict</h3>
+  <p><strong>A genuinely small, ~4–6 week kernel change for the ASCII-only version</strong> — versus <em>years</em> for the HFS+ port that HFS+ was partly being adopted to get case-insensitivity from. The whole fold is essentially <mark>three lines and a flag</mark>.</p>
+  <ul class="tight" style="margin:8px 0 0">
+    <li><span class="note" style="display:inline;padding:1px 6px;border:none;border-left:none;background:none">Patch surface:</span> fold at <code>ufs_lookup.c</code> (the one <code>bcmp</code>), fold the <code>ufs_dirhash</code> key + verify, latch an <code>FS_CASEFOLD</code> superblock bit at mount. One shared <code>ufs_fold()</code> helper.</li>
+    <li><strong>Precedent is Linux ext4/f2fs "casefold" and FreeBSD's own <code>msdosfs</code></strong> — <em>not</em> Apple: Apple's UFS was <strong>case-sensitive</strong> (a known pain point), and even <strong>ravynos</strong> (a macOS-compat FreeBSD fork) skipped this — a signal it's tractable but not free.</li>
+    <li><strong>Ship ASCII-only first</strong> (handles the overwhelming majority of Mac filenames, never corrupts). Full Unicode/NFD parity adds <strong>months</strong> and a 324&nbsp;KB in-kernel table whose only ready source is HFS+'s APSL table — the same provenance headache HFS+ was being avoided to dodge.</li>
+    <li><strong>The tail is <code>fsck_ffs</code></strong> (case-collision detection, ~1–2 weeks) and the honest <strong>on-disk-compat caveat</strong>: a <code>FS_CASEFOLD</code> volume read by stock FreeBSD mounts case-sensitive → collision hazard. Treat as <strong>NextBSD-only volumes</strong>.</li>
+  </ul>
+</div>
+
+<h2 id="surface"><span class="n">1</span>The patch surface — three changes + a flag</h2>
+<p class="sub">All in <code>sys/ufs/</code>; line numbers from the baked releng/15.1 tree</p>
+<div class="tbl"><table>
+<tr><th>Site</th><th>Change</th></tr>
+<tr><td><code>ufs/ufs_lookup.c</code> → <code>ufs_lookup_ino()</code> ~<strong>l.422</strong></td><td>The single name-match <code>bcmp(cn_nameptr, ep-&gt;d_name, namlen)</code> — <strong>THE comparison.</strong> Fold it. Because CREATE/RENAME/DELETE all run <code>ufs_lookup_ino</code> first, fixing this one point <em>also</em> makes create/rename collision detection case-insensitive (creating <code>FOO</code> when <code>foo</code> exists now correctly returns <code>EEXIST</code>).</td></tr>
+<tr><td><code>ufs/ufs_dirhash.c</code> → <code>ufsdirhash_hash()</code> ~<strong>l.1033</strong></td><td>The <strong>keystone.</strong> <code>fnv_32_buf(name,...)</code> must hash the <strong>case-folded bytes</strong>, so <code>foo</code> and <code>FOO</code> land in the same slot (or the fast path silently misses case-variants the linear path would hit).</td></tr>
+<tr><td><code>ufs/ufs_dirhash.c</code> → <code>ufsdirhash_lookup()</code> ~<strong>l.645</strong></td><td>The dirhash verify compare — fold it too, matching l.422.</td></tr>
+<tr><td><code>ffs/fs.h</code> <code>struct fs.fs_flags</code></td><td>Add <code>FS_CASEFOLD</code> (next free bit, alongside <code>FS_ACLS</code>/<code>FS_NFS4ACLS</code>/…); latch into <code>ufsmount</code> in <code>ffs_mountfs()</code> so the fold path is gated per-volume.</td></tr>
+</table></div>
+<div class="note ok"><span class="lbl">Case is preserved on disk</span> Leave <code>ufs_makedirentry()</code>'s name write verbatim — the original case is stored; <strong>only comparison and hashing fold.</strong> Same as ext4/HFS+ ("case-insensitive, case-preserving"). The single <code>ufs_fold()</code> helper must live in a shared header so <code>fsck_ffs</code> can <code>#include</code> the identical logic — any drift between kernel and fsck is a guaranteed corruption source.</div>
+
+<hr class="s">
+<h2 id="precedent"><span class="n">2</span>Precedent — and why it's <em>not</em> Apple</h2>
+<div class="tbl"><table>
+<tr><th>System</th><th>Fold</th><th>Normalize?</th><th>Enable</th><th>Borrow</th></tr>
+<tr><td><strong>Linux ext4/f2fs</strong> "casefold" (2019)</td><td><code>fs/unicode</code> <code>utf8_casefold</code> over a trie, at compare+hash</td><td>NFD + full case-fold</td><td>superblock encoding stamp + per-dir <code>+F</code> flag</td><td><strong>The whole model</strong> — closest analogue</td></tr>
+<tr><td><strong>FreeBSD <code>msdosfs</code></strong> (already CI, in-tree)</td><td><code>win2unixfn</code> + iconv codepage fold</td><td>codepage, not Unicode</td><td>mount flags (<code>MSDOSFSMNT_*</code>)</td><td>Proves an in-kernel CI FS ships in FreeBSD today; mount-flag gate is idiomatic</td></tr>
+<tr><td><strong>HFS+</strong> (Apple)</td><td><code>FastUnicodeCompare</code> + <code>gLowerCaseTable</code> (compact, no ICU)</td><td>NFD on create</td><td>volume-wide</td><td>Compact fold table — but <strong>APSL</strong> (same provenance burden as the HFS+ port)</td></tr>
+</table></table></div>
+<div class="note warn"><span class="lbl">Two signals worth heeding</span> <strong>Apple's UFS was case-<em>sensitive</em></strong> — Apple never made a case-insensitive UFS; case-insensitivity was HFS+'s domain, and Apple's UFS being case-sensitive was itself a compatibility headache. And <strong>ravynos</strong> — a FreeBSD fork whose <em>entire purpose</em> is macOS compatibility — <strong>did not add UFS case-insensitivity</strong> (verified: no casefold/nfd/unicode in its <code>sys/ufs/</code>). A project that would most want this chose not to build it. So: novel, tractable, but the effort/risk is real enough that a Mac-compat project passed. The framing that survives: this is <em>"Apple's UFS + the case-insensitivity Apple never bothered to add."</em></div>
+
+<hr class="s">
+<h2 id="design"><span class="n">3</span>Design decisions</h2>
+<div class="tbl"><table>
+<tr><th>Choice</th><th>Recommendation</th></tr>
+<tr><td><strong>ASCII-only fold vs full Unicode</strong></td><td><strong>ASCII-only first.</strong> ~5-line <code>tolower</code>, no in-kernel table, handles English/code/app-bundle names (the vast majority). Non-ASCII names simply stay case-sensitive — <em>never corrupts.</em> Build the machinery so a Unicode table drops into the one <code>ufs_fold()</code> later. Full Unicode = a ~324&nbsp;KB table in a <code>NO_MODULES</code> kernel + the provenance problem → defer.</td></tr>
+<tr><td><strong>Enable granularity</strong></td><td><strong>Superblock flag, volume-wide</strong> (set by <code>newfs</code>/<code>tunefs</code>, read at mount). Matches HFS+/msdosfs, touches no inode format. Skip a mount option as the <em>primary</em> switch (a CI volume mounted case-sensitive = collision hazard); allow a mount option only to <em>override off</em> for recovery.</td></tr>
+<tr><td><strong>Normalization</strong></td><td><strong>Casefold only, no NFD, in v1.</strong> NFD-on-write changes on-disk bytes (breaks POSIX "bag of bytes" + needs the table). Accept the gap: names differing only by NFC/NFD stay distinct (same as APFS default). Add NFD later if real interop failures appear.</td></tr>
+</table></div>
+
+<hr class="s">
+<h2 id="userland"><span class="n">4</span>Userland: <code>fsck_ffs</code> / <code>newfs</code> / <code>tunefs</code></h2>
+<p>These are FreeBSD-base tools (fbsdglue), so changes are source patches in <code>nextbsd-freebsd-compat</code> — <span class="u">but that repo is scaffold-only today (the fbsdglue source hasn't migrated yet), so these are blocked on that migration.</span></p>
+<ul class="tight">
+  <li><strong><code>newfs</code></strong> — a <code>-o casefold</code> flag that sets <code>FS_CASEFOLD</code> in the superblock (~20 lines).</li>
+  <li><strong><code>tunefs</code></strong> — toggle <code>FS_CASEFOLD</code>, but <em>only on an empty FS</em> (turning it on with case-colliding files present is undefined — mirror ext4's rule) (~30 lines).</li>
+  <li><strong><code>fsck_ffs</code></strong> — <strong>the real work.</strong> On a <code>FS_CASEFOLD</code> volume, pass&nbsp;2 must detect two entries in one directory that fold to the same name as <strong>corruption</strong> (illegal on a CI volume). Must <code>#include</code> the identical <code>ufs_fold()</code> as the kernel. ~1–2 weeks for correct collision detection + tests.</li>
+  <li><code>dumpfs</code> — trivially print the flag.</li>
+</ul>
+
+<hr class="s">
+<h2 id="landing"><span class="n">5</span>Landing in <code>nextbsd-kernel</code></h2>
+<p>Edits to <em>existing</em> <code>sys/ufs/</code> files → a single <code>patches/</code> entry (not <code>src-overlay/</code>). The overlay repo applies <code>patches/series</code> over the baked <code>/usr/src</code>.</p>
+<pre><code>patches/0008-ufs-caseinsensitive.patch   <span class="cmt"># edits ufs_lookup.c, ufs_dirhash.c, fs.h,</span>
+                                          <span class="cmt"># ufsmount.h, ffs_vfsops.c + a new ufs_casefold.h</span>
+patches/series          <span class="cmt"># append the one line (verbatim, no comments)</span>
+config/NEXTBSD          <span class="cmt"># add:  options UFS_CASEFOLD   (#ifdef-gated code)</span>
+      <span class="cmt"># register the option token in sys/conf/options (opt_ufs.h already exists,</span>
+      <span class="cmt"># used by UFS_DIRHASH/UFS_EXTATTR) — add within the patch, no build.yml change</span></code></pre>
+<p><strong>Iterate loop:</strong> a push touching <code>patches/**</code>/<code>config/**</code> rebuilds the kernel (<code>NO_MODULES=yes</code>) and, on a PR, boots the image under qemu — but the boot smoke-test <strong>only proves boot</strong> (root is a normal case-sensitive UFS), so <mark>you must add a functional test</mark>: <code>newfs</code> a scratch image with the flag, mount, <code>touch FOO; stat foo</code>, verify the collision.</p>
+
+<hr class="s">
+<h2 id="effort"><span class="n">6</span>Effort &amp; risks</h2>
+<div class="tbl"><table>
+<tr><th>Piece</th><th>Effort</th></tr>
+<tr><td>ASCII-only fold, kernel only (working → hardened + qemu test)</td><td><strong>~1 → 2–3 weeks</strong></td></tr>
+<tr><td><code>newfs</code>/<code>tunefs</code> flag</td><td>~2–3 days <span class="u">(blocked on fbsdglue migration)</span></td></tr>
+<tr><td><code>fsck_ffs</code> collision detection</td><td>~1–2 weeks</td></tr>
+<tr><td><strong>Shippable ASCII-only CI-UFS w/ tools + fsck</strong></td><td><strong>~4–6 weeks</strong></td></tr>
+<tr><td>Full Unicode NFD+CF (table import + provenance + fsck sharing)</td><td>+1–3 months</td></tr>
+</table></div>
+<div class="tbl"><table>
+<tr><th>Risk</th><th></th></tr>
+<tr><td><strong>Stock-FreeBSD read = silent data hazard</strong> (highest)</td><td>A <code>FS_CASEFOLD</code> volume mounted on vanilla FreeBSD (or with the option not compiled) mounts <strong>case-sensitive</strong> and ignores the flag → <code>foo</code>/<code>FOO</code> become two files → a later CI mount sees a fold-collision. Stock <code>fsck_ffs</code> won't flag it. <strong>Accept "NextBSD-only volumes"</strong> (or use a feature bit stock fsck rejects).</td></tr>
+<tr><td><strong>dirhash correctness</strong> (high)</td><td>If the fold in the hash and the fold in the compares ever disagree → intermittent "file exists but can't be opened." Single shared <code>ufs_fold()</code> mandatory; existing dirhashes must be invalidated when fold logic changes.</td></tr>
+<tr><td><strong>fsck/kernel fold divergence</strong> (high)</td><td>fsck must use the <em>identical</em> fold routine or it mis-classifies collisions.</td></tr>
+<tr><td><strong>rename case-change</strong> (medium)</td><td><code>rename(foo→FOO)</code> on a CI volume is an in-place case rewrite (allowed, must update on-disk name); <code>rename(foo→BAR)</code> is distinct. Stock <code>ufs_rename</code> doesn't distinguish — needs explicit handling.</td></tr>
+<tr><td><strong>Unicode table provenance</strong> (medium, only if full-Unicode)</td><td>The one ready fold table is HFS+'s <code>gLowerCaseTable</code> (APSL) — importing it re-imports the provenance burden HFS+ was avoided to dodge. Generating fresh from the UCD sidesteps it but is extra tooling.</td></tr>
+</table></div>
+<div class="note"><span class="lbl">Bottom line</span> ASCII-only, superblock-flag, casefold-no-normalize, <code>#ifdef UFS_CASEFOLD</code> + a shared <code>ufs_fold()</code> is a genuinely pragmatic <strong>~4–6 week</strong> path to Mac-friendly case behavior — <em>provided</em> you accept NextBSD-only volumes and defer Unicode/NFD. Paired with the <a href="nextbsd-afp-server-plan.html">AFP server</a>, it delivers "serve Macs case-insensitively over AFP" at a fraction of the HFS+ port's cost. That even ravynos skipped it should temper expectations — the fsck-consistency and on-disk-compat tails are where the time goes.</div>
+
+</div>
+<footer>Scoped 2026-07-16 · NextBSD UFS case-insensitivity patch · Source-grounded agent over baked <code>freebsd-src</code> (releng/15.1) + <code>nextbsd-kernel</code>. Companion to the <a href="nextbsd-afp-server-plan.html">AFP server plan</a>; alternative to the <a href="nextbsd-hfsplus-research.html">HFS+ port</a>. Planning only. UNVERIFIED: exact free <code>fs_flags</code> bit; fbsdglue userland source not yet migrated; in-kernel Unicode-trie size.</footer>
+</body>
+</html>

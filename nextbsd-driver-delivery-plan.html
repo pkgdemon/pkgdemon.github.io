@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD Driver Delivery — kld / kext / IOKit scoping</title>
+<style>
+  :root{
+    --bg:#faf9f7; --panel:#ffffff; --ink:#1b1b1e; --muted:#5c5c66; --faint:#8a8a94;
+    --line:#e4e2dd; --accent:#7a4d2b; --accent2:#2b5a7a; --accent3:#3d6b3d;
+    --code-bg:#f4f2ee; --code-ink:#2a2620;
+    --a:#8a2b2b; --b:#3d6b3d; --warn:#8a5a2b;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#16151a; --panel:#1e1d24; --ink:#eceaf0; --muted:#a8a6b2; --faint:#75737e;
+      --line:#312f39; --accent:#d59b6a; --accent2:#7ab6df; --accent3:#8fce8f;
+      --code-bg:#141319; --code-ink:#d6d3dd; --a:#e88; --b:#8fce8f; --warn:#d59b6a;
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:980px;margin:0 auto;padding:0 22px 120px}
+  header.m{max-width:980px;margin:0 auto;padding:58px 22px 28px}
+  .eyebrow{font-size:12.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700;margin:0 0 14px}
+  h1{font-size:34px;line-height:1.14;margin:0 0 16px;letter-spacing:-.02em;font-weight:750}
+  .dek{font-size:18px;line-height:1.5;color:var(--muted);margin:0 0 22px;max-width:74ch}
+  .byline{font-size:13px;color:var(--faint);border-top:1px solid var(--line);padding-top:16px}
+  .byline b{color:var(--muted);font-weight:600}
+  h2{font-size:24px;margin:54px 0 6px;letter-spacing:-.015em;font-weight:720;scroll-margin-top:20px}
+  h2 .n{color:var(--accent);font-variant-numeric:tabular-nums;margin-right:12px;font-weight:800}
+  h3{font-size:18px;margin:30px 0 4px;font-weight:680}
+  .sub{color:var(--muted);font-size:14.5px;margin:0 0 16px}
+  p{margin:13px 0}
+  a{color:var(--accent2);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent2) 30%,transparent)}
+  strong{font-weight:660}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.85em;background:var(--code-bg);color:var(--code-ink);padding:.09em .38em;border-radius:5px;border:1px solid var(--line)}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:12px;padding:15px 17px;overflow-x:auto;margin:15px 0}
+  pre code{background:none;border:none;padding:0;font-size:12.5px;line-height:1.6}
+  .cmt{color:var(--faint)}
+  .tldr{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:20px 24px;margin:24px 0}
+  .tldr h3{margin:0 0 8px;font-size:14px;text-transform:uppercase;letter-spacing:.1em;color:var(--accent)}
+  .note{border:1px solid var(--line);border-left:4px solid var(--accent2);background:var(--panel);border-radius:10px;padding:14px 18px;margin:18px 0;font-size:14.5px}
+  .note.warn{border-left-color:var(--warn)}
+  .note.b{border-left-color:var(--b)}
+  .note.a{border-left-color:var(--a)}
+  .note .lbl{font-weight:700;color:var(--accent2);font-size:12px;letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:4px}
+  .note.warn .lbl{color:var(--warn)} .note.b .lbl{color:var(--b)} .note.a .lbl{color:var(--a)}
+  .tbl{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:12px}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:600px}
+  th,td{text-align:left;padding:10px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--code-bg);font-weight:680;font-size:12px;color:var(--muted)}
+  tr:last-child td{border-bottom:none}
+  td code{white-space:nowrap}
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;white-space:nowrap}
+  .pill.a{color:var(--a);background:color-mix(in srgb,var(--a) 14%,transparent)}
+  .pill.b{color:var(--b);background:color-mix(in srgb,var(--b) 15%,transparent)}
+  .pill.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent)}
+  .pill.cur{color:var(--accent2);background:color-mix(in srgb,var(--accent2) 14%,transparent)}
+  ul.tight li,ol.tight li{margin:6px 0}
+  hr.s{border:none;border-top:1px solid var(--line);margin:34px 0}
+  mark{background:color-mix(in srgb,var(--accent) 22%,transparent);color:inherit;padding:.02em .2em;border-radius:3px}
+  .diagram{background:var(--code-bg);border:1px solid var(--line);border-radius:12px;padding:16px;overflow-x:auto;margin:16px 0;font-size:11.5px;line-height:1.5;font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  .u{color:var(--faint);font-style:italic}
+  .big{font-size:20px;font-weight:750}
+  .toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:26px 0;font-size:14px;columns:2;column-gap:34px}
+  .toc a{display:block;padding:3px 0;border:none;color:var(--muted)}
+  .toc a:hover{color:var(--accent2)}
+  @media (max-width:640px){.toc{columns:1}}
+  footer{max-width:980px;margin:56px auto 0;padding:24px 22px;border-top:1px solid var(--line);color:var(--faint);font-size:13px}
+</style>
+</head>
+<body>
+
+<header class="m">
+  <p class="eyebrow">NextBSD · Driver delivery · kld / kext / IOKit</p>
+  <h1>kld, kext, or IOKit? Scoping how NextBSD delivers drivers</h1>
+  <p class="dek">A sidebar to the <a href="nextbsd-monorepo-plan.html">monorepo plan</a>. Should NextBSD reconstruct every driver as a "kext"? Only firmware drivers? A mixture of kexts and klds? And does any of it need Apple's in-kernel <strong>IOKit runtime</strong>? Short answer: <strong>a deliberate mixture — and no IOKit C++ runtime, which is already your direction.</strong> This unifies ~14 existing plans into one policy and refines it where the evidence points.</p>
+  <p class="byline"><b>Investigated</b> 2026-07-17 by seven parallel source-grounded agents (prior-art recon over your own docs + <code>ko2kext</code> tooling, firmware-without-pkg, devmatch &amp; wired-memory, multi-version coexistence, driver-form policy, one-build-system integration, IOKit-runtime verdict). <span style="color:var(--warn)">Provisional / not settled — this is the sidebar you flagged; IOKit is your open topic. Planning only, no code written.</span></p>
+</header>
+
+<div class="wrap">
+
+<div class="note warn" style="margin-top:26px"><span class="lbl">Draft · sidebar to the monorepo plan</span> This is the IOKit/kext breakout called out as unsettled in the monorepo plan's §12. It <strong>builds on</strong> your extensive existing work (the ko→kext conversion plan, the kld-to-kext catalog/naming, the in-kernel matcher feasibility, the nvidia kext + userland plans, the graphics plan, the input spike) rather than restarting the question. Where it disagrees with an older draft, it says so.</div>
+
+<div class="tldr">
+  <h3>Verdict</h3>
+  <ul class="tight" style="margin:4px 0 0">
+    <li><span class="pill b">No IOKit runtime</span> None of your four goals needs Apple's in-kernel IOKit C++ runtime (OSMetaClass / IOService / IORegistry / libkern C++). Your own shipped design already agrees — the matcher you built is <em>flat C on newbus</em>, not OSDictionary, and your ko→kext plan scoped the real runtime out as a "3–5 engineer-year diversion that collides with newbus." <strong>"kext" = a bundle wrapping a verbatim <code>.ko</code> that <code>kld</code> loads — that is entirely separable from the IOKit runtime, and you keep 100% of it.</strong></li>
+    <li><span class="pill b">A mixture, not "everything a kext"</span> Three tiers: <strong>compiled-in</strong> (boot minimum) / <strong>plain kld</strong> (devmatch-autoloaded: input, common ethernet, most drivers) / <strong>kext</strong> (firmware ∨ multi-version). The rule: <code>kext ⇐ has-firmware ∨ needs-multi-version</code>. <mark>Of your catalog's 343 "kext candidates," only ~50–60 actually meet that bar</mark> — the other ~250 should stay plain klds that native devmatch already matches, shrinking what your personality generators + in-kernel matcher must cover.</li>
+    <li><span class="pill b">Firmware offline = solved, pkg-free</span> The runtime firmware path is 100% local; <code>fwget</code>/<code>pkg</code> are only an install-time vehicle. <strong>FreeBSD 15.0 added raw-file firmware from <code>/boot/firmware/</code></strong> — bake blobs into the image, done. Your in-kext <code>Resources/firmware/</code> bundling (already shipping) is a legitimate curation layer on top, not what makes offline work.</li>
+    <li><span class="pill warn">Wired-memory win is modest</span> Honest number: <strong>tens of MB, not hundreds</strong> — a stripped 15&nbsp;MB kernel showed the same 120&nbsp;MB wired as GENERIC because the RAM-scaled <code>vm_page</code> array (~42&nbsp;MB) dominates. The big consumers (nvidia, amdgpu, zfs) are already loadable in stock FreeBSD. So lead the kext case with <strong>version-coexistence + the IOKit-shaped registry + modularity/attack-surface</strong>, not raw MB.</li>
+    <li><span class="pill warn">nvidia coexistence: on-disk only</span> Install 470/535/595 side-by-side and auto-select per GPU — yes, no pkg, no IOKit. Two branches <em>resident at once</em> for two GPUs — no, on any OS (singleton <code>nvidia</code> module name → <code>EEXIST</code>). IOKit wouldn't fix it either. This is a documented wall, not a defect.</li>
+    <li><span class="pill cur">One build system</span> <code>make buildkernel</code> already emits the klds. Add a NextBSD-owned <strong><code>make extensions</code></strong> target (formalizing <code>ko2kext.sh</code>) that wraps the built <code>.ko</code>s into kexts — zero edits to stock FreeBSD build files.</li>
+  </ul>
+</div>
+
+<div class="toc">
+  <a href="#decided">0 · What's already decided</a>
+  <a href="#verdict">1 · The IOKit verdict (A/B/C)</a>
+  <a href="#reasons">2 · Your four reasons, honestly</a>
+  <a href="#tiers">3 · The three-tier form policy</a>
+  <a href="#matching">4 · Matching: devmatch + your matcher</a>
+  <a href="#firmware">5 · Firmware without pkg</a>
+  <a href="#nvidia">6 · Multi-version coexistence</a>
+  <a href="#build">7 · One build system (make extensions)</a>
+  <a href="#open">8 · Open items &amp; honest tensions</a>
+  <a href="#decisions">9 · Decisions for you</a>
+</div>
+
+<h2 id="decided"><span class="n">0</span>What's already decided (don't relitigate)</h2>
+<p class="sub">The recon read all ~14 of your planning docs plus the live <code>ko2kext.sh</code> + <code>gen-*-personalities.sh</code> tooling and CI. You've made and shipped more of this than the "should we do IOKit" framing implied. This doc treats the following as settled and builds on them.</p>
+<ol class="tight">
+  <li><strong>A kext wraps a verbatim, unmodified FreeBSD <code>.ko</code></strong>; ELF stays ELF, <code>kld</code> is the real link/load engine, and <code>kextload/stat/unload</code> are thin front-ends over <code>kldload/…</code>.</li>
+  <li><strong>Apple's in-kernel IOKit C++ runtime (OSMetaClass/OSObject/IOService RTTI/KXLD) is OUT</strong> — ruled out consistently for three months as a 3–5 engineer-year diversion.</li>
+  <li><strong>Device→driver matching runs in-kernel</strong> via a <em>flat-C</em> IOCatalogue + matcher on newbus's <code>device_nomatch</code> path, reading <code>IOPCIPrimaryMatch</code>/<code>IOProbeScore</code> from bundle personalities — <strong>built and hardware-verified on a T420</strong> (<code>0x24f38086</code> → IntelWiFi).</li>
+  <li><strong>Personalities are auto-generated from each driver's own device-id tables</strong> (the six <code>gen-*-personalities.sh</code>), never hand-curated — the hand-curated experiment was explicitly ripped out as unscalable.</li>
+  <li><strong>Firmware is bundled inside the kext</strong> (<code>Contents/Resources/firmware/</code>, symlinks dereferenced) and found by <code>firmware(9)</code> — offline, no pkg. Already implemented.</li>
+  <li><strong>Naming:</strong> <code>org.nextbsd.{driver,filesystems,crypto,net,security,kpi,compat,firmware,kext}.*</code>; <code>CFBundleExecutable</code> = the real <code>KMOD=</code> name; nvidia = <code>NVIDIAGraphics&lt;NNN&gt;</code> per branch.</li>
+  <li><strong>Base-owned, never pkg</strong> — kexts ride the <code>NextBSD-kernel-extensions</code> package into <code>/System/Library/Extensions</code>; nvidia userland is staged from the vendor tarball with an LLVM-free <code>libgbm</code> closure guard (to stay off mesa→llvm19).</li>
+</ol>
+<div class="note a"><span class="lbl">The one thing NOT to relitigate</span> Whether to implement Apple's in-kernel IOKit <em>C++ runtime</em>. Settled <strong>NO</strong> across every doc, and the shipped design is unambiguous. Any "IOKit" in NextBSD is the flat-C matcher bolted onto newbus — already built — not the object runtime. §1 confirms this holds under fresh analysis.</div>
+
+<h2 id="verdict"><span class="n">1</span>The IOKit verdict — A, B, or C</h2>
+<p class="sub">The vocabulary is the trap: in NextBSD, <strong>"kext" = delivery/matching/versioning wrapper over a <code>kld</code></strong>. That is separable from the IOKit <em>runtime</em>. You can keep the entire kext model and never link a line of libkern C++.</p>
+
+<div class="tbl"><table>
+<thead><tr><th>Option</th><th>What</th><th>Assessment</th></tr></thead>
+<tbody>
+<tr><td><strong>A</strong></td><td>Native <code>kld</code> + <code>devmatch</code> (and your thin flat-C matcher) + personality/selector veneer + firmware-in-<code>.ko</code>/bundle. No IOKit runtime.</td><td><span class="pill b">Recommended — and what you already built.</span> Delivers all four goals. You keep the Apple-shaped bundle, <code>/System/Library/Extensions</code>, <code>IOKitPersonalities</code>, Apple-named CLIs, the in-kernel matcher, and the <code>HOST_KEXTD_PORT</code> load channel — all on unmodified <code>kld</code>.</td></tr>
+<tr><td><strong>B</strong></td><td>A + a minimal <em>source-level</em> IOKit-compat layer for one subsystem (HID or a graphics family), to reuse Apple family source.</td><td><span class="pill warn">No taker.</span> You use <code>evdev</code>/<code>hid</code> and <code>drm-kmod</code>, not Apple family source — so it would cost a libkern-C++/OSObject subsystem (the very wired memory goal 4 forbids) for a capability nothing consumes. Skip.</td></tr>
+<tr><td><strong>C</strong></td><td>Full in-kernel IOKit runtime — OSMetaClass, IOService, libkern C++, IORegistry object graph, real OSKext Mach-O linking.</td><td><span class="pill a">Never justified for these goals.</span> 3–5 engineer-years, duplicates newbus (two probe/attach engines fighting over <code>device_t</code>), and <em>regresses</em> goals 1 and 4. Only a hard pivot to reusing Apple kernel driver source verbatim would justify it — that's ravynOS abandoning the FreeBSD kernel for XNU, a different project.</td></tr>
+</tbody></table></div>
+
+<p><strong>Why the graphics case refutes rather than proves the need:</strong> GPUs <em>sound</em> like where IOKit earns its keep, but FreeBSD already runs modern Intel/AMD/Radeon — full KMS, <code>/dev/dri</code>, the hardest driver class — through <code>drm-kmod</code> + LinuxKPI with <strong>zero IOKit</strong>, and your <code>nextbsd-graphics-plan</code> does exactly that: <code>IOGraphics.kext</code> <em>is</em> <code>drm.ko</code> renamed. For nvidia the KMS bridge is <code>nvidia-drm</code> bound to <code>drmn</code> via <code>MODULE_DEPEND</code> — a LinuxKPI/newbus story. The hardest remaining piece (Wayland) is a userland GBM backend port, orthogonal to any kernel driver model.</p>
+
+<h2 id="reasons"><span class="n">2</span>Your four reasons, mapped honestly</h2>
+<p class="sub">You gave four motivations for the kext model. All are legitimate — here's the lightest mechanism for each, and where IOKit is load-bearing (spoiler: nowhere).</p>
+
+<div class="tbl"><table>
+<thead><tr><th>Goal</th><th>Lightest mechanism</th><th>IOKit runtime needed?</th></tr></thead>
+<tbody>
+<tr><td><strong>1. Offline firmware, no fwget/pkg</strong></td><td><code>firmware(9)</code>: blob in the image (raw <code>/boot/firmware/</code> on FreeBSD 15, or <code>.incbin</code>'d <code>.ko</code>), resolved by name at attach.</td><td><span class="pill b">No</span> Apple's <code>OSKextRequestResource</code> is <em>worse</em> here — async, daemon-served, not on the early-boot path.</td></tr>
+<tr><td><strong>2. HW→driver+firmware matching</strong></td><td><code>devmatch</code> + <code>MODULE_PNP_INFO</code>, or your flat-C matcher reading auto-derived personalities. Same match key (<code>0xDDDDVVVV</code>).</td><td><span class="pill b">No</span> Familiar vocabulary, not a better engine. Your own history proves it: the literal IOKit/<code>IOPCIMatch</code> port was ripped out for devmatch because plists "don't scale."</td></tr>
+<tr><td><strong>3. nvidia multi-version coexistence</strong></td><td>Versioned bundles inert on disk + a selector that autoloads exactly one by matched GPU.</td><td><span class="pill b">No</span> On-disk coexistence is packaging. The hard limit (one <code>nvidia</code>-named module resident) is a linker-namespace wall IOKit doesn't escape; your design makes <code>OSBundleLibraries</code> decorative and keeps <code>MODULE_DEPEND</code> authoritative.</td></tr>
+<tr><td><strong>4. On-demand load, cut wired memory</strong></td><td><code>kld</code> autoload on match; boot-critical drivers stay compiled-in/preloaded.</td><td><span class="pill a">No — runtime is a NET COST</span> An in-kernel IOKit permanently wires the class registry, per-node <code>OSDictionary</code>, the full <code>IOCatalogue</code>, and <code>IOWorkLoop</code> threads — resident regardless of load. That directly contradicts goal 4 (your K2 dodged it on purpose: "flat C struct, not an OSDictionary").</td></tr>
+</tbody></table></div>
+
+<div class="note warn"><span class="lbl">Honest correction on goal 4</span> The wired-memory payoff is real but <strong>modest — tens of MB, not hundreds</strong>. Measured: on FreeBSD 14.3 a stripped 15&nbsp;MB kernel showed the <em>same</em> 120&nbsp;MB wired as GENERIC, because the <code>vm_page</code> array (~42&nbsp;MB, scales with installed RAM) + UMA/buffer overhead dominate; driver <em>text</em> is a minority. Input+ethernet together are only a few MB. The genuinely large drivers (nvidia ~30–40&nbsp;MB, amdgpu+fw ~15–30&nbsp;MB, zfs ~7&nbsp;MB) are <strong>already loadable in stock FreeBSD</strong> — you get those savings without any new tiering. And <strong>idle drivers can't be unloaded</strong> (attached device → <code>EBUSY</code>; devmatch never unloads), so the lever is "never load the unused driver," not "unload after idle." Meaningful on 256&nbsp;MB–1&nbsp;GB embedded targets; marginal on a 16&nbsp;GB desktop. Lead the case with version-coexistence, the IOKit-shaped registry, and modularity/attack-surface instead.</div>
+
+<h2 id="tiers"><span class="n">3</span>The three-tier form policy</h2>
+<p class="sub">Your questions — everything a kext? only firmware? a mixture? drop redundant klds? — answered. The answer is a mixture with an explicit rule, and it sharpens your existing 343-vs-131 split.</p>
+
+<p>All three forms run the <em>same unmodified <code>.ko</code></em> through the <em>same <code>kld</code> linker</em>. The choice is about <strong>packaging cost</strong>, so pay a cost only when the driver has the matching need:</p>
+
+<div class="diagram">P1 boot-essential (root FS / boot console / boot bus)?  ── YES ─▶ COMPILED-IN  (or loader-preloaded)
+        │ NO
+P2 has-firmware?  OR  P3 needs-multi-version?           ── YES ─▶ KEXT  (personality + firmware + version select)
+        │ NO
+everything else                                          ─────────▶ PLAIN KLD  (devmatch autoload; NO personality)</div>
+
+<div class="tbl"><table>
+<thead><tr><th>Class</th><th>Form</th><th>Deciding property</th></tr></thead>
+<tbody>
+<tr><td>Root/boot storage (<code>ahci</code>, <code>nvme</code>, <code>virtio_blk</code>, cam), root FS (<code>ufs</code>), core buses (<code>pci</code>/<code>acpi</code>/<code>cpu</code>), console (<code>vt</code>), USB core+HCs</td><td><strong>compiled-in</strong> (root HBA + root FS may be loader-preloaded)</td><td>P1 — needed before <code>mountroot</code> / devmatch</td></tr>
+<tr><td>Ethernet (common: <code>em</code>/<code>igb</code>, <code>re</code>, <code>bge</code>, <code>virtio_net</code>)</td><td><strong>plain kld</strong></td><td>no firmware, no versioning → devmatch autoloads. <em>The cleanest "not a kext" class.</em></td></tr>
+<tr><td>Input / HID (<code>hidbus</code>, <code>hkbd</code>/<code>ukbd</code>, <code>hms</code>/<code>ums</code>, touch); small in-base HID leaves</td><td><strong>plain kld</strong> (tiny leaves already compiled-in per your input spike)</td><td>hotplug, no firmware</td></tr>
+<tr><td>Audio, bluetooth (unless fw), pseudo-devices, <code>linuxkpi</code> shim</td><td><strong>plain kld</strong></td><td>none of P1–P3 → default tier</td></tr>
+<tr><td><strong>Wi-Fi</strong> (<code>iwlwifi</code>, <code>rtw88/89</code>, <code>ath</code>, <code>mt76</code>)</td><td><strong>kext</strong></td><td>P2 — essentially every part needs a firmware blob</td></tr>
+<tr><td>Firmware ethernet (<code>ice</code>+DDP, <code>cxgbe</code>, <code>mxge</code>)</td><td><strong>kext</strong></td><td>P2 — firmware</td></tr>
+<tr><td><strong>GPU/DRM</strong> (<code>amdgpu</code>, <code>i915</code>, <code>radeonkms</code>)</td><td><strong>kext</strong></td><td>P2 firmware + P3 (drm 6.6/6.12 coexistence)</td></tr>
+<tr><td><strong>nvidia</strong> (<code>NVIDIAGraphics&lt;NNN&gt;</code> per branch)</td><td><strong>kext</strong></td><td>P3 multi-version (primary) + P2 (GSP fw on modern) — the canonical versioning case</td></tr>
+</tbody></table></div>
+
+<h3>The four sub-questions, answered</h3>
+<ul class="tight">
+  <li><strong>Everything a kext?</strong> <span class="pill a">No.</span> For a driver with no firmware and one version (all common ethernet/input/audio/pseudo — the majority), a kext forces a personality that is a <em>lossier re-encoding</em> of the <code>MODULE_PNP_INFO</code> the module already carries, an empty <code>Resources/</code>, and version logic for one version. The only gain is cosmetic uniformity — recoverable more cheaply (§4).</li>
+  <li><strong>Only firmware drivers?</strong> <span class="pill warn">Right instinct, necessary-but-not-sufficient.</span> "Has firmware" is a clean primary trigger (Wi-Fi, modern GPU, <code>ice</code>/<code>cxgbe</code>) — but it <em>under-covers nvidia</em>, whose defining need is versioning, not firmware. So the rule is the <strong>union</strong>: <code>kext ⇐ has-firmware ∨ needs-multi-version</code>.</li>
+  <li><strong>A mixture?</strong> <span class="pill b">Yes — this is the answer.</span> The two cost axes (resident-memory vs bundle-machinery) are independent, so you genuinely need three cells. Tighten tier-1 to "the transport this image actually boots on + buses + console" (a product kernel isn't GENERIC install media); make plain-kld the <em>largest</em> tier.</li>
+  <li><strong>Drop klds where a kext supersedes?</strong> <span class="pill b">Yes — one form per device.</span> If a driver graduates to a kext, its plain <code>.ko</code> must not also sit in <code>/boot/kernel</code> where devmatch could race the kext matcher for the same PCI ID. <strong>Enforce structurally:</strong> add a <code>form ∈ {builtin, kld, kext, excluded}</code> column to your catalog as the single source of truth, generate build-excludes from it, and let <code>kldxref</code> index only the loose tier-2 <code>.ko</code>s — so a kext'd driver <em>physically can't</em> be devmatch-autoloaded.</li>
+</ul>
+
+<div class="note b"><span class="lbl">The biggest refinement to your existing plan</span> Your catalog splits 474 modules into <strong>343 kext candidates vs 131 compiled-in</strong>. The analysis says <mark>only ~50–60 of the 343 should be actual kexts</mark> (the firmware ∨ multi-version subset ≈ ~35 Wi-Fi + ~13 firmware NIC/storage + GPU + nvidia). The other <strong>~250 should stay plain klds</strong> on native devmatch — no personality generation, no bundle. That confines every piece of bespoke kext machinery to the drivers that actually need it, and shrinks your open D1 (naming) decision to the ~50–60 real kexts instead of 343.</div>
+
+<h2 id="matching"><span class="n">4</span>Matching: devmatch + your in-kernel matcher are complementary</h2>
+<p class="sub">A genuine tension the research surfaced — handled by scoping, not by tearing anything out.</p>
+<p>Native <strong>devmatch</strong> (reads <code>MODULE_PNP_INFO</code> → <code>linker.hints</code>, autoloads the matching <code>.ko</code> on a newbus <code>NOMATCH</code> event) already does device→driver matching for the whole plain-kld tier — including firmware drivers like <code>iwlwifi</code>/<code>i915</code>, which ship PNP tables too. It's free, authoritative, and handles PCI/USB/ACPI subtleties. So a personality generated for a plain kld would be a <em>lossier copy fighting the real matcher</em>.</p>
+<p>Your <strong>in-kernel flat-C matcher</strong> (built, T420-verified) isn't redundant with devmatch — it serves what devmatch <em>doesn't</em>: feeding the kext autoload channel (<code>HOST_KEXTD_PORT</code>) and populating the <strong>IOKit-shaped registry</strong> that Gershwin/loginwindow read (the <code>libIOKit</code> facade, <code>HardwareMatch</code>). The clean division:</p>
+<ul class="tight">
+  <li><strong>Plain-kld tier (~250):</strong> native devmatch does the matching + autoload. <strong>Generate no personalities.</strong></li>
+  <li><strong>Kext tier (~50–60):</strong> your personalities + in-kernel matcher drive kext selection/autoload and the version arbitration devmatch can't do — plus they feed the registry facade.</li>
+</ul>
+<p>Net: keep your matcher — but point it at the ~50–60 kexts, and let devmatch carry the long tail. That's less personality-generation and less parallel-matcher surface than the current 343-wide plan, with no loss of capability.</p>
+
+<h2 id="firmware"><span class="n">5</span>Firmware without pkg</h2>
+<p class="sub">The offline/no-pkg goal is already met by <code>firmware(9)</code>; the kext bundling is curation on top.</p>
+<p>The runtime firmware path is <strong>100% local</strong>: a driver calls <code>firmware_get("iwlwifi-cc-a0-77.ucode")</code>; the kernel autoloads a firmware <code>.ko</code> that <code>firmware_register()</code>s the blob, <em>or</em> (new in <strong>FreeBSD 15.0</strong>) reads a raw file from <code>/boot/firmware/</code>. <code>fwget</code>/<code>pkg</code> are only an <em>install-time delivery</em> vehicle — never in the load path. So the no-pkg/offline goal is met simply by <strong>baking the blobs into the image</strong>.</p>
+<ul class="tight">
+  <li><strong>Preferred target (15.0):</strong> raw blobs in <code>/boot/firmware/</code> — dependency-free, no <code>.ko</code> build. Confirm NextBSD's kernel has the 15.0 raw-file fallback; it's the load-bearing feature.</li>
+  <li><strong>Your kext bundling</strong> (<code>Resources/firmware/</code>, symlinks dereferenced) is a legitimate <em>curation/version-coupling</em> layer — one self-contained unit per device, firmware version bound to driver version. But it doesn't change the load mechanism (the kext must still drop blobs where <code>firmware(9)</code> looks, or register them by name) and it's not what enables offline. Keep it for curation; don't believe it's the enabler.</li>
+  <li><strong>LinuxKPI name-mangling gotcha:</strong> Linux drivers request <code>amdgpu/navi10_*.bin</code>; module names can't contain <code>/</code>, so LinuxKPI tries ~4 name variants. Register/name each unit to match one exactly (safest: basename in <code>/boot/firmware/</code>).</li>
+  <li><strong>Bloat clarification:</strong> firmware packages are <em>dependency-free</em> — the llvm-via-mesa bloat is a separate <em>userland graphics</em> problem. Don't conflate them. (Your nvidia userland plan already keeps <code>libgbm</code> LLVM-free for exactly this.)</li>
+  <li><strong>Licensing:</strong> ship only the WHENCE-redistributable subset and bake the LICENSE/WHENCE files in — you redistribute an installable image, so this matters.</li>
+</ul>
+
+<h2 id="nvidia"><span class="n">6</span>Multi-version coexistence — the honest split</h2>
+<p class="sub">The case that made you want a kext model. It works — for the coexistence you can actually have.</p>
+<div class="tbl"><table>
+<thead><tr><th>Case</th><th>Feasible?</th><th>Mechanism</th></tr></thead>
+<tbody>
+<tr><td><strong>Sequential-per-boot</strong> — install 470/535/595 side-by-side, one loaded, auto-selected by the detected GPU</td><td><span class="pill b">Yes — straightforward, no pkg, no IOKit</span></td><td>Versioned <code>.ko</code> paths (your <code>NVIDIAGraphics&lt;NNN&gt;.kext</code>) + a PCI-ID selector reading <code>supported-gpus.json</code> <code>legacybranch</code> → <code>kldload</code> the chosen branch; version-locked userland via the sibling <code>NVIDIA&lt;NNN&gt;.bundle</code> + symlink activation (your <code>nvidia-activate.sh</code>).</td></tr>
+<tr><td><strong>Simultaneous</strong> — two branches resident at once for two different-generation GPUs</td><td><span class="pill a">No — impossible on any OS</span></td><td>All branches compile to the module name <code>nvidia</code> → the kernel linker permits one resident (<code>EEXIST</code>); one global <code>/dev/nvidiactl</code> + userland ABI. IOKit/DKMS/nvidia's own installer can't do it either. Real answers are external (one covering branch, or per-GPU VM passthrough). <strong>A documented wall, not a defect of your model.</strong></td></tr>
+</tbody></table></div>
+<p>Because <code>pkg</code> keys one version per origin and collides on shared paths, packages fundamentally can't deliver even the sequential case — which is exactly why your base-owned versioned-bundle model is the right call here. Just document the simultaneous-two-GPU limit in the selector (pick the newest branch covering the primary GPU; warn on an un-coverable secondary).</p>
+
+<h2 id="build"><span class="n">7</span>One build system — <code>make extensions</code></h2>
+<p class="sub">"Does buildkernel make klds? Do we need a make extensions target?" Yes, and yes — cleanly.</p>
+<p><strong><code>make buildkernel KERNCONF=NEXTBSD</code> already builds the klds.</strong> Its <code>all</code> target = <code>kernel-all</code> + <code>modules-all</code> (per <code>sys/conf/kern.post.mk</code>), recursing into <code>sys/modules</code>; <code>installkernel</code> stages kernel + <code>.ko</code>s into <code>/boot/kernel</code>. Tier-2 klds are already a native, meta-mode-incremental output. Nothing to add.</p>
+<p><strong>Kexts</strong> = built <code>.ko</code> + generated personalities + bundled firmware + <code>OSBundleLibraries</code> — exactly what <code>ko2kext.sh</code> + <code>gen-*-personalities.sh</code> already do as a post-build step. Formalize that into a <strong>new NextBSD-owned target</strong>:</p>
+<pre><code><span class="cmt"># nextbsd/extensions/Makefile — invoked after buildkernel, keyed off the .ko objdir</span>
+extensions: .PHONY
+.for k in ${KEXTS}                       <span class="cmt"># IntelWiFi i915 amdgpu NVIDIAGraphics595 ...</span>
+	@${MAKE} -f ${SRCTOP}/nextbsd/share/mk/bsd.kext.mk extension \
+	    KEXT_NAME=${${k}_NAME} KEXT_ID=${${k}_ID} KO=${KODIR}/${${k}_KO} \
+	    KEXT_PERSGEN=${SRCTOP}/nextbsd/tools/gen-${${k}_GEN}-personalities.sh \
+	    KEXT_FW="${${k}_FW}" KEXT_DEPS="${${k}_DEPS}"
+.endfor
+installextensions: .PHONY
+	cp -R ${KEXTDIR}/*.kext ${DESTDIR}/System/Library/Extensions/</code></pre>
+<ul class="tight">
+  <li><strong>Recommendation:</strong> a standalone <code>make extensions</code> target (+ <code>nextbsd/share/mk/bsd.kext.mk</code>) that consumes buildkernel's <code>.ko</code>s. For NextBSD-<em>original</em> drivers, an opt-in <code>.include &lt;bsd.kext.mk&gt;</code> in their own Makefile emits <code>.ko</code>+bundle in one shot. <strong>Reject</strong> folding it into <code>make packages</code> — base must not require pkg (pkgbase can wrap the staged bundles <em>later</em>, but assembly stays pkg-free).</li>
+  <li><strong>Incremental:</strong> key each <code>.kext</code> off its <code>.ko</code> mtime — rebuild the bundle whenever the <code>.ko</code> (or the personality generator / firmware set) changes. Assembly is cheap, so rebuild-on-<code>.ko</code>-change is safe.</li>
+  <li><strong>Three tiers, one pass:</strong> compiled-in (kernel image) + plain klds (<code>/boot/kernel/*.ko</code>, stock loading) + kexts (<code>/System/Library/Extensions</code>, separate namespace, no <code>/boot/kernel</code> collisions) all emit from one <code>buildkernel</code> + one <code>extensions</code> pass.</li>
+  <li><strong>Zero upstream edits:</strong> NextBSD-original klds via <code>LOCAL_MODULES</code>; the extensions target in a new <code>nextbsd/</code> dir invoked from the release/CI driver; a new <code>sys/*/conf/NEXTBSD</code> that <code>include GENERIC</code> — never edit <code>Makefile.inc1</code>, <code>kern.post.mk</code>, <code>kmod.mk</code>, or <code>GENERIC</code>. Move <code>ko2kext.sh</code> + <code>gen-*-personalities.sh</code> verbatim from <code>nextbsd-kernel-modules</code> into <code>nextbsd/tools/</code>.</li>
+</ul>
+
+<h2 id="open"><span class="n">8</span>Open items &amp; honest tensions</h2>
+<p class="sub">What the recon flags as genuinely unresolved (fair game), plus the tensions this analysis raises.</p>
+<ul class="tight">
+  <li><strong>Autoload bind is not wired end-to-end.</strong> The kernel→<code>kextd</code> Mach-send channel (K3b, <code>HOST_KEXTD_PORT</code>) is designed but unbuilt/untested on hardware; depends on <code>EVFILT_MACHPORT</code> (#168) + kernel-native Mach match-notifications (Phase 2), neither implemented. This is the critical path to "kext autoloads on match."</li>
+  <li><strong><code>ko2kext.sh</code> can't yet package a multi-<code>.ko</code> kext</strong> with per-tier <code>CFBundleExecutable</code> — net-new work needed for the nvidia modeset/core tiers (as written it would fail to load KMS on most branches).</li>
+  <li><strong>The ~250-plain-kld refinement (§3/§4)</strong> is this doc's recommendation against the current 343-wide plan — it needs your buy-in, since it changes what the generators + matcher target.</li>
+  <li><strong>Display-name style (D1):</strong> Apple CamelCase (<code>IntelE1000.kext</code>) vs FreeBSD (<code>if_em.kext</code>) vs hybrid — now scoped to only the ~50–60 kexts.</li>
+  <li><strong>Firmware runtime-discovery (D4 sub-choice):</strong> nest the firmware <code>.ko</code> so <code>firmware_get()</code> is unchanged, vs point <code>firmware(9)</code> at <code>Resources/</code> (purer, needs a loader hook). The FreeBSD-15 raw <code>/boot/firmware/</code> path may make this moot.</li>
+  <li><strong>nvidia specifics:</strong> legacy 340/304 may not compile on 15.x (likely 4–5 branches ship); <code>linker.hints</code> cross-branch contamination hazard (multiple <code>nvidia</code> providers on disk); Wayland blocked on the GBM backend.</li>
+  <li><strong>Verify the numbers on real hardware:</strong> the wired-memory figures are FreeBSD-forum-measured + estimates — run <code>kldstat -h</code> / <code>vmstat -z</code> / <code>ls -la /boot/kernel/*.ko</code> on the thinkpad-t460s to replace estimates with your actual driver set.</li>
+</ul>
+
+<h2 id="decisions"><span class="n">9</span>Decisions for you</h2>
+<div class="note b"><span class="lbl">What I'd lock (with your nod)</span>
+<ol class="tight" style="margin:6px 0 0">
+  <li><strong>Option A confirmed</strong> — keep the full kext delivery/matching/versioning model; no IOKit C++ runtime (you'd already scoped C out — this just makes it explicit as the answer to the sidebar).</li>
+  <li><strong>Adopt the three-tier policy + the <code>kext ⇐ firmware ∨ multi-version</code> rule</strong>, and add the <code>form</code> column to the catalog as single source of truth with generated build-excludes (one form per device).</li>
+  <li><strong>Refine 343 → ~50–60 real kexts</strong>; let devmatch carry the ~250 plain klds; point your in-kernel matcher + personalities at the kext tier only.</li>
+  <li><strong>Formalize <code>make extensions</code></strong> into the monorepo, ko2kext moved in, zero upstream edits.</li>
+</ol></div>
+<div class="note warn"><span class="lbl">Still genuinely open — worth a sidebar of their own</span>
+<ul class="tight" style="margin:6px 0 0">
+  <li><strong>The K3b autoload channel</strong> (Mach-send kernel→kextd) — the real "does a kext autoload on match" gate. Needs a PoC. Want this as its own breakout?</li>
+  <li><strong>Do you accept the 343→~50–60 narrowing</strong>, or is there a reason (e.g. the IOKit-registry facade wanting <em>every</em> device as a personality) to keep more drivers kext-wrapped? This is the one place my recommendation pushes against your current plan — your call.</li>
+  <li><strong>Multi-<code>.ko</code> kext packaging</strong> for nvidia tiers — a concrete <code>ko2kext.sh</code> enhancement to spec.</li>
+</ul></div>
+
+<hr class="s">
+<p class="u">Every load-bearing claim traces to a source-cited research pass (FreeBSD <code>firmware(9)</code>/<code>devmatch(8)</code>/<code>build(7)</code> + real <code>freebsd-src</code> file:line, Apple IOKit/OSKext + Darling's userspace-only IOKit, nvidia/DKMS multi-version, and your own 14 planning docs + <code>ko2kext</code> tooling read directly). Provisional sidebar to the monorepo plan — IOKit remains your explicitly open topic. No code written, no repos changed in producing this.</p>
+
+<footer>
+  NextBSD driver delivery (kld / kext / IOKit) · investigated 2026-07-17 · provisional sidebar to the <a href="nextbsd-monorepo-plan.html">monorepo plan</a>.
+</footer>
+
+</div>
+</body>
+</html>

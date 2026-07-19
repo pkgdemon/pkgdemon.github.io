@@ -87,6 +87,7 @@
       <span class="tag">UI · BDD · SYSTEM</span>
       <span class="tag">GNUSTEP / APPKIT</span>
       <span class="tag">CI + LOCAL</span>
+      <span class="tag">DISTRIBUTED OBJECTS · NO D-BUS</span>
     </div>
   </header>
 
@@ -163,7 +164,29 @@
   <p class="lead">Everything above is headless and native. The moment you want to test the <em>GUI</em>, you hit the wall that shapes the rest of this document.</p>
   <ul class="notes">
     <li class="warn"><b>GNUstep has no working accessibility layer.</b> libs-gui's <code class="inl">NSAccessibility.m</code> is a skeleton — ~200 string constants plus six <code class="inl">// FIXME</code> stub functions returning <code class="inl">nil</code> — and there is <b>no AT-SPI2/D-Bus bridge</b>. The AT-SPI ecosystem covers GTK, Java/Swing, Mozilla, OpenOffice; GNUstep is absent.</li>
-    <li class="warn"><b>Consequence:</b> accessibility-driven tools (<b>LDTP, Dogtail, Accerciser</b>) are <em>blocked</em> — nothing to introspect. And "read the screen after input" becomes a <b>pixel/OCR problem, not a semantic one</b>: you locate controls by coordinates, image template-match, or OCR, and assert the same way. This is upstream in GNUstep, not fixable in the Gershwin ISO tooling — but the in-app-agent approach (§5–§6) routes <em>around</em> it.</li>
+    <li class="warn"><b>Consequence:</b> accessibility-driven tools (<b>LDTP, Dogtail, Accerciser</b>) are <em>blocked</em> — nothing to introspect. And "read the screen after input" becomes a <b>pixel/OCR problem, not a semantic one</b>: you locate controls by coordinates, image template-match, or OCR, and assert the same way. This is upstream in GNUstep, not fixable in the Gershwin ISO tooling — but the in-app-agent approach (§5–§6) routes <em>around</em> it, and §4.1 is the proper native fix.</li>
+  </ul>
+
+  <h3>4.1 · The Gershwin-native fix: NSAccessibility over Distributed Objects (no D-Bus)</h3>
+  <p class="lead"><b>AT-SPI2 and D-Bus bridges are explicitly out of scope for Gershwin.</b> AT-SPI2 is the Linux accessibility layer, and its "2" literally means "rewritten to run over <b>D-Bus</b>" — it stands up a separate a11y bus plus a registry daemon (<code class="inl">at-spi2-registryd</code>) and marshals every widget into a language-neutral D-Bus <em>Accessible</em> struct. Unwanted here. The correct fix is the one <b>macOS itself uses</b>: <code class="inl">NSAccessibility</code> is a Cocoa <em>object</em> API and on macOS does <em>not</em> use D-Bus at all (it rides Apple's own IPC). Gershwin implements that same API and transports it over <b>Distributed Objects</b> — Cocoa-authentic, D-Bus-free, and the same object layer that powers native UI/BDD testing.</p>
+  <ul class="notes">
+    <li class="ok"><b>DO is the more natural transport, not a compromise.</b> The accessibility tree is <em>already</em> Objective-C objects — <code class="inl">NSView</code>/<code class="inl">NSCell</code>/<code class="inl">NSControl</code> already carry role, title, value, enabled, and focus. DO vends them (or a thin facade) and a client sends real ObjC messages; you skip the entire marshalling-into-a-neutral-struct step that AT-SPI2 requires.</li>
+  </ul>
+  <div class="scroll">
+  <table class="spec">
+    <tr><th>AT-SPI2 / D-Bus concept</th><th>Gershwin DO-native equivalent</th></tr>
+    <tr><td>a11y <b>bus daemon</b> (<code>at-spi2-registryd</code>)</td><td><b><code>gdomap</code></b> — GNUstep's existing DO name/port registry. No new bus.</td></tr>
+    <tr><td>well-known bus <b>names</b></td><td><code>NSConnection registerName:</code> per app (extends the delegate-vending convention apps already use)</td></tr>
+    <tr><td><b>Accessible</b> object (role/state/name, marshalled)</td><td>the real <code>NSView</code>/<code>NSCell</code>/<code>NSControl</code>, vended — role/enabled/value/title already live on it</td></tr>
+    <tr><td>D-Bus <b>method call</b> (<code>Action.doAction</code>)</td><td>an ordinary ObjC message over DO: <code>[element performAction: …]</code></td></tr>
+    <tr><td>D-Bus <b>signals</b> (focus-/value-changed)</td><td><code>NSDistributedNotificationCenter</code>, or a client callback proxy the app messages on events (DO is bidirectional); implement <code>NSAccessibilityPostNotification</code> to route here</td></tr>
+    <tr><td>D-Bus <b>XML introspection</b></td><td>the <code>@protocol</code> itself — compile-time typed, no introspection needed</td></tr>
+    <tr><td>bus <b>service activation</b></td><td><code>launchd</code> (already in the Gershwin/NextBSD stack)</td></tr>
+  </table>
+  </div>
+  <ul class="notes">
+    <li><b>One layer, two consumers:</b> a screen reader <em>and</em> a Dogtail-equivalent test/BDD harness consume the same DO-vended tree. The in-app TestAgent (§6) is a client of this — so building it delivers <b>real accessibility as a side effect</b>, the Gershwin way.</li>
+    <li class="warn"><b>Does not exist yet — a modest greenfield worth building.</b> The hard parts already exist: the data is in AppKit (walk the view tree), the transport is DO + <code class="inl">gdomap</code>, the API is <code class="inl">NSAccessibility</code> (finish the stubs). v1 = populate the element protocol from AppKit, vend over DO, register via <code class="inl">gdomap</code>, route notifications over DO. <b>No external D-Bus dependency</b> — the whole loop is Gershwin apps ↔ Gershwin tools, so there's nothing to shed.</li>
   </ul>
 
   <!-- =============== 5 =============== -->
@@ -196,7 +219,7 @@
   <h2><span class="num">6</span>Acceptance / BDD — a native Gherkin framework (proposed)</h2>
   <p class="lead">Human-readable acceptance tests are buildable natively, with direct prior art: <b>Frank</b> and <b>Calabash</b> did this for iOS — Gherkin <code class="inl">.feature</code> files on top, an in-app server that walks the view hierarchy underneath. GNUstep suits the same design, and it <b>routes around the §4 accessibility gap</b>:</p>
   <ul class="notes">
-    <li class="ok"><b>An in-app agent IS the accessibility layer, scoped to testing.</b> Running inside the app, it walks the live <code class="inl">[NSApp windows]</code>→subview tree and reads the real <code class="inl">NSControl</code>/<code class="inl">NSView</code> objects — so "click the button titled OK" and "the field should read X" are <b>native and semantic without AT-SPI</b>. That same view-walking code is the natural seed of a real <code class="inl">NSAccessibility</code> bridge later.</li>
+    <li class="ok"><b>An in-app agent IS the accessibility layer, scoped to testing.</b> Running inside the app, it walks the live <code class="inl">[NSApp windows]</code>→subview tree and reads the real <code class="inl">NSControl</code>/<code class="inl">NSView</code> objects — so "click the button titled OK" and "the field should read X" are <b>native and semantic without AT-SPI</b>. That same view-walking code is the natural seed of the <b>DO-native <code class="inl">NSAccessibility</code> layer (§4.1)</b> — no D-Bus.</li>
   </ul>
   <div class="flow">
     <span class="node">.feature (Gherkin)</span><span class="arr">──▶</span>
@@ -282,7 +305,7 @@ colors() { identify -format '%k' "$1"; }               <span class="c"># unique-
     <li class="ok"><b>Middle is native driving</b> — use DO/StepTalk for functional/integration of running apps (assert on state, not pixels).</li>
     <li class="warn"><b>Top two layers are the gaps</b> — UI, acceptance, and visual regression have no native tooling because of the missing accessibility layer. Fill them with: the <b>in-app TestAgent + Gherkin/BDD</b> (§6, the semantic route), the <b>Xvfb + xdotool + OCR</b> per-app harness (§5.2, the black-box route), and <b>golden-image <code class="inl">compare</code></b> on the ISO gate (§9).</li>
     <li><b>Everything runs in GitHub Actions and locally</b> from the same sources: <code class="inl">make check</code> anywhere; godog/Xvfb per-app in seconds (a shared composite action + a local script); the QEMU gate for whole-ISO. Home the shared suites in <code class="inl">gershwin-developer/Library/Tests/</code>.</li>
-    <li><b>The upstream unlock</b> for first-class UI testing (and assistive tech) is a real <b>NSAccessibility→AT-SPI2 bridge</b> — plausibly atop GNUstep's <code class="inl">DBusKit</code>. Until then, the in-app agent is the pragmatic substitute, and it doubles as that bridge's foundation.</li>
+    <li><b>The upstream unlock</b> for first-class UI testing (and assistive tech) is a real <code class="inl">NSAccessibility</code> implementation transported over <b>Distributed Objects</b> (§4.1) — <em>not</em> an AT-SPI2/D-Bus bridge, which is out of scope for Gershwin. It reuses <code class="inl">gdomap</code> as the registry and needs no new bus; the in-app agent is both the near-term substitute and the foundation for it.</li>
   </ul>
 
   <!-- =============== 11 =============== -->
@@ -294,7 +317,8 @@ colors() { identify -format '%k' "$1"; }               <span class="c"># unique-
     <li><a href="https://www.gnustep.org/resources/documentation/Developer/Base/Reference/NSConnection.html">NSConnection / Distributed Objects</a> · <a href="https://github.com/gnustep/libs-base/blob/master/Source/NSConnection.m">NSConnection.m</a></li>
     <li><a href="https://github.com/gnustep/libs-gui/blob/master/Source/NSEvent.m">libs-gui NSEvent.m</a> · <a href="https://github.com/gnustep/libs-gui/blob/master/Source/NSAccessibility.m">NSAccessibility.m (stubs)</a></li>
     <li><a href="https://raw.githubusercontent.com/gnustep/libs-base/master/Source/NSScriptCommand.m">NSScriptCommand.m (empty stub)</a></li>
-    <li><a href="https://directory.fsf.org/wiki/At-spi">AT-SPI supported toolkits (GNUstep absent)</a></li>
+    <li><a href="https://directory.fsf.org/wiki/At-spi">AT-SPI supported toolkits (GNUstep absent)</a> · <a href="https://www.freedesktop.org/wiki/Accessibility/AT-SPI2/">AT-SPI2 (D-Bus based)</a></li>
+    <li>DO-native substrate: <a href="https://www.gnustep.org/resources/documentation/Developer/Base/Reference/NSDistributedNotificationCenter.html">NSDistributedNotificationCenter</a> · <code>gdomap</code> (GNUstep DO name server) · macOS <a href="https://developer.apple.com/documentation/applicationservices/axuielement_h">AXUIElement</a> (accessibility without D-Bus)</li>
     <li><a href="https://github.com/calabash/calabash-ios">Calabash iOS (Gherkin + embedded server)</a> · Frank (Cucumber + in-app server + UISpec)</li>
     <li><a href="https://cucumber.github.io/godog/">godog (Cucumber for Go)</a> · <a href="https://github.com/cucumber/gherkin">cucumber/gherkin parser</a></li>
     <li><a href="https://github.com/jordansissel/xdotool">xdotool (XTEST)</a> · <a href="https://man.archlinux.org/man/xdotool.1.en">xdotool man (XTEST vs XSendEvent)</a></li>

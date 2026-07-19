@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>Gershwin screenshot gate — how nextbsd does it &amp; a universal design</title>
+<style>
+  :root{
+    --fg:#1f2328;
+    --fg-soft:#57606a;
+    --bg:#ffffff;
+    --bg-soft:#f6f8fa;
+    --border:#d0d7de;
+    --accent:#0969da;
+    --accent-dark:#0a4ea3;
+    --green:#1a7f37;
+    --red:#cf222e;
+    --code-bg:#f6f8fa;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    color:var(--fg);background:var(--bg);line-height:1.6;-webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:920px;margin:0 auto;padding:40px 24px 100px;}
+
+  header.masthead{
+    border:1px solid var(--border);border-radius:8px;padding:28px 28px;margin-bottom:36px;
+    position:relative;background:var(--bg-soft);
+  }
+  .logo{font-size:12px;letter-spacing:3px;color:var(--accent);text-transform:uppercase;margin-bottom:12px;font-weight:600;}
+  h1{font-size:30px;line-height:1.2;margin:0 0 12px;color:var(--fg);letter-spacing:-0.3px;}
+  .subtitle{color:var(--fg-soft);font-size:15px;max-width:78ch;}
+  .meta-row{margin-top:20px;display:flex;flex-wrap:wrap;gap:8px;font-size:12px;}
+  .tag{border:1px solid var(--border);border-radius:999px;padding:3px 11px;color:var(--fg-soft);letter-spacing:0.5px;background:#fff;}
+
+  h2{font-size:21px;color:var(--fg);margin:52px 0 10px;letter-spacing:-0.2px;padding-bottom:6px;border-bottom:1px solid var(--border);}
+  h2 .num{
+    display:inline-block;color:#fff;background:var(--accent);border-radius:6px;
+    padding:1px 10px;margin-right:12px;font-size:16px;font-weight:600;
+  }
+  h3{font-size:16px;color:var(--fg);margin:30px 0 6px;}
+  .lead{color:var(--fg);max-width:82ch;margin:0 0 8px;font-size:15px;}
+  .lead.dim{color:var(--fg-soft);}
+  p,li{font-size:15px;}
+  a{color:var(--accent);text-decoration:none;}
+  a:hover{text-decoration:underline;}
+  b,strong{color:var(--fg);font-weight:600;}
+  em{color:var(--fg);font-style:italic;}
+
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:18px 0 4px;font-size:12.5px;}
+  .flow .node{border:1px solid var(--border);border-radius:6px;padding:7px 12px;color:var(--fg);background:var(--bg-soft);white-space:nowrap;}
+  .flow .arr{color:var(--fg-soft);}
+  .flow .node.cond{border-style:dashed;}
+  .flow .node.vm{border-color:var(--green);color:var(--green);background:#eafbef;}
+  .flow .node.gate{border-color:var(--red);color:var(--red);background:#fff5f5;}
+  .flow .node.share{border-color:var(--accent);color:var(--accent-dark);background:#ddf0ff;}
+
+  table.spec{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px;}
+  table.spec th,table.spec td{border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top;}
+  table.spec th{color:var(--fg);background:var(--bg-soft);font-weight:600;}
+  table.spec td{color:var(--fg);}
+  table.spec tr:nth-child(even) td{background:#fbfcfd;}
+  table.spec code{color:var(--accent-dark);}
+  .scroll{overflow-x:auto;}
+  .ok-cell{color:var(--green);font-weight:600;}
+  .no-cell{color:var(--red);font-weight:600;}
+
+  ul.notes{margin:12px 0 0;padding:0;list-style:none;display:grid;gap:8px;}
+  ul.notes li{border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:4px;padding:9px 14px;font-size:14px;color:var(--fg);background:var(--bg-soft);}
+  ul.notes li b{color:var(--fg);}
+  ul.notes li.warn{border-left-color:var(--red);background:#fff5f5;}
+  ul.notes li.warn b{color:var(--red);}
+  ul.notes li.ok{border-left-color:var(--green);background:#eafbef;}
+  ul.notes li.ok b{color:var(--green);}
+
+  .code{margin:18px 0 8px;background:var(--code-bg);border:1px solid var(--border);border-radius:6px;position:relative;overflow-x:auto;}
+  .code .code-label{position:absolute;top:0;right:0;background:#eaeef2;color:var(--fg-soft);font-size:10px;letter-spacing:1px;padding:3px 9px;border-bottom-left-radius:6px;border-left:1px solid var(--border);border-bottom:1px solid var(--border);}
+  pre.code-body{margin:0;padding:26px 18px 18px;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;font-size:12.5px;line-height:1.5;color:var(--fg);white-space:pre;}
+  pre.code-body .c{color:#6e7781;}
+  pre.code-body .k{color:#0550ae;}
+  pre.code-body .s{color:var(--green);}
+  pre.code-body .u{color:var(--red);}
+  code.inl{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-size:0.88em;color:var(--accent-dark);background:#eff1f3;padding:1px 5px;border-radius:4px;}
+
+  footer{margin-top:70px;padding-top:22px;border-top:1px solid var(--border);color:var(--fg-soft);font-size:13px;}
+  hr.div{border:none;border-top:1px solid var(--border);margin:36px 0;}
+  .pill{display:inline-block;font-size:10px;letter-spacing:0.5px;padding:2px 8px;border:1px solid var(--border);border-radius:999px;color:var(--fg-soft);margin-left:6px;vertical-align:middle;background:#fff;}
+  .pill.warn{border-color:var(--red);color:var(--red);}
+  .pill.ok{border-color:var(--green);color:var(--green);}
+  .tl{list-style:none;padding-left:0;margin:14px 0;}
+  .tl li{border-left:2px solid var(--border);padding:2px 0 14px 18px;position:relative;margin:0;}
+  .tl li::before{content:"";position:absolute;left:-6px;top:6px;width:10px;height:10px;border-radius:50%;background:var(--accent);}
+  .tl li.done::before{background:var(--green);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="logo">Gershwin · Build Infrastructure</div>
+    <h1>The screenshot gate — how nextbsd does it, and a universal design for all five flavors</h1>
+    <p class="subtitle">A precise read of the <a href="https://github.com/gershwin-desktop/gershwin-on-nextbsd">gershwin-on-nextbsd</a> boot/screenshot test — its exact mechanism, pass/fail criteria, and how it's driven (spoiler: <b>QEMU monitor, not console or SSH</b>) — followed by the options for a <em>basic, universal</em> gate that works on all five flavors, and how far each option gets the richer flow you want: <em>log in → confirm System&nbsp;Disk → confirm the Workspace menu → close everything → open <b>About This Computer</b> → screenshot → publish only if every step passed.</em></p>
+    <div class="meta-row">
+      <span class="tag">DESIGN DOC</span>
+      <span class="tag">SCREENSHOT GATE</span>
+      <span class="tag">QEMU MONITOR</span>
+      <span class="tag">UITEST / XDOTOOL</span>
+      <span class="tag">5 FLAVORS</span>
+      <span class="tag">OCR ORACLE</span>
+    </div>
+  </header>
+
+  <p class="lead">Companion to the <a href="gershwin-iso-monorepo-consolidation-plan.html">ISO monorepo consolidation plan</a>. That doc argues the gate is the shared asset every flavor should inherit; this one specifies <em>what the gate actually is</em> today and how to grow it into the interactive check you asked for — sourced from a live read of all five flavor repos and <a href="https://github.com/gershwin-desktop/gershwin-workspace/tree/master/Tools/uitest">gershwin-workspace/Tools/uitest</a>.</p>
+
+  <h3 style="margin-top:26px">What is actually used today vs. what's proposed</h3>
+  <p class="lead dim">To keep the three states unambiguous — everything in §1–§3 describes the first column; §4 and §6–§7 are the third:</p>
+  <div class="scroll">
+  <table class="spec">
+    <tr><th>Aspect</th><th>TODAY — in production<br><small>(standalone <code>gershwin-on-nextbsd</code>, and it alone)</small></th><th>WRITTEN — in the monorepo PR<br><small>(committed, not yet green on a runner)</small></th><th>PROPOSED — this doc</th></tr>
+    <tr><td>Flavors gated</td><td class="no-cell">1 of 5 (nextbsd only)</td><td>1 of 5 (nextbsd, via shared action)</td><td class="ok-cell">all 5 (shared gate)</td></tr>
+    <tr><td>How it's driven</td><td>QEMU monitor: <code>screendump</code> + <code>sendkey</code>. No mouse, no SSH, nothing in-guest.</td><td>same</td><td>same + a <code>usb-tablet</code> pointer (Option A)</td></tr>
+    <tr><td>Login</td><td>typed blind; <b>not judged</b> (always exits 0)</td><td>same</td><td>same (input step)</td></tr>
+    <tr><td>Desktop pass criterion</td><td>colours&nbsp;&gt;&nbsp;1500 <b>OR</b> OCR "System Disk"</td><td class="ok-cell">OCR "System Disk" <b>AND</b> "Workspace"</td><td>+ close-all, open About This Computer, screenshot</td></tr>
+    <tr><td>Published screenshot</td><td><code>docs/desktop.png</code> committed to git</td><td>release asset <code>gershwin-on-&lt;flavor&gt;.png</code></td><td>About-This-Computer panel over the desktop</td></tr>
+    <tr><td>Terminal / About This Computer checks</td><td class="no-cell">none</td><td class="no-cell">none</td><td>added (tablet click, or in-guest uitest)</td></tr>
+  </table>
+  </div>
+  <ul class="notes">
+    <li class="warn"><b>The one-line summary of "today":</b> exactly one flavor (nextbsd) is gated; it's driven entirely from outside the guest over the QEMU monitor with <code class="inl">screendump</code> + <code class="inl">sendkey</code>; the login is performed but not verified; the desktop passes on a colour count <em>or</em> a single "System Disk" OCR hit; and the screenshot is committed to git. Everything else on this page is proposed or in-flight.</li>
+  </ul>
+
+  <!-- =================== 1 =================== -->
+  <h2><span class="num">1</span>How gershwin-on-nextbsd tests today — the exact mechanism</h2>
+  <p class="lead">The build's <code class="inl">test</code> job boots the freshly-built ISO in QEMU on the <code class="inl">ubuntu-latest</code> runner and watches it <b>entirely from outside the guest</b>. Nothing runs inside the VM to help; there is no agent, no SSH, and — critically — <b>no mouse</b>. The runner talks to QEMU through a single control channel and does all judging host-side.</p>
+
+  <div class="code"><span class="code-label">test job — how the VM is launched</span><pre class="code-body">qemu-system-x86_64 -machine q35 -m 4G -smp 2 -bios OVMF.fd \
+  -cdrom "$ISO" -boot d \
+  -vga std \                                  <span class="c"># a framebuffer we can screenshot</span>
+  -serial file:tests/serial.log \             <span class="c"># guest console, teed to the CI log</span>
+  -monitor unix:tests/mon.sock,server,nowait \<span class="c"># THE control channel</span>
+  -nic user,model=e1000 -display none -no-reboot</pre></div>
+
+  <p class="lead">Every interaction goes over <code class="inl">tests/mon.sock</code> with <code class="inl">socat</code>, and there are only <b>two</b> primitives:</p>
+  <ul class="notes">
+    <li><b><code class="inl">screendump file.ppm</code></b> — the QEMU monitor writes the current framebuffer to a PPM <em>on the host</em>. The runner then analyzes it with ImageMagick (<code class="inl">identify -format '%k'</code> = unique-colour count) and Tesseract (OCR). This is the <em>only</em> way the gate perceives the screen.</li>
+    <li><b><code class="inl">sendkey &lt;key&gt;</code></b> — injects one key press as if from the keyboard. This is how login is typed. There is no <code class="inl">sendkey</code> for the mouse in use — no pointer input at all.</li>
+  </ul>
+
+  <p class="lead">Three shell scripts compose those two primitives into a pipeline:</p>
+  <div class="flow">
+    <span class="node vm">boot ISO in QEMU</span><span class="arr">→</span>
+    <span class="node">boot-test.sh<br><small>screendump → colours</small></span><span class="arr">→</span>
+    <span class="node">loginwindow-test.sh<br><small>sendkey admin ⏎ ⏎</small></span><span class="arr">→</span>
+    <span class="node gate">workspace-test.sh<br><small>screendump → OCR</small></span><span class="arr">→</span>
+    <span class="node share">publish continuous</span>
+  </div>
+
+  <!-- =================== 2 =================== -->
+  <h2><span class="num">2</span>Pass / fail criteria — precisely</h2>
+  <div class="scroll">
+  <table class="spec">
+    <tr><th>Stage</th><th>How it decides</th><th class="ok-cell">PASS</th><th class="no-cell">FAIL</th></tr>
+    <tr>
+      <td><code>boot-test.sh</code><br><small>is the greeter up?</small></td>
+      <td>Loop <code>screendump</code> every ~9&nbsp;s; count unique colours with <code>identify&nbsp;%k</code>. A text console has very few colours; a painted GUI has many.</td>
+      <td>a frame with <b>&gt; 64 colours</b> within <b>600&nbsp;s</b> → greeter painted</td>
+      <td>no graphical frame in 600&nbsp;s → dumps last 40 serial lines, <code>exit&nbsp;1</code></td>
+    </tr>
+    <tr>
+      <td><code>loginwindow-test.sh</code><br><small>perform the login</small></td>
+      <td><code>sendkey</code> the letters <code>admin</code>, <code>ret</code>, (empty password), <code>ret</code>. Captures before/after frames.</td>
+      <td colspan="2"><b>Neither</b> — this is an <em>input</em> step. Every line ends in <code>|| true</code>, there is no <code>set -e</code>, and it always <code>exit 0</code>. It <b>cannot fail</b>; it does not judge the login.</td>
+    </tr>
+    <tr>
+      <td><code>workspace-test.sh</code><br><small>did the desktop render?</small><br>(as in the standalone repo)</td>
+      <td>Loop <code>screendump</code>; per frame check colour count and OCR.</td>
+      <td>a frame with <b>&gt; 1500 colours</b> <b>OR</b> OCR of <b>"System Disk"</b> within <b>120&nbsp;s</b></td>
+      <td>neither within 120&nbsp;s → writes <code>docs/desktop.png</code>, <code>exit&nbsp;1</code></td>
+    </tr>
+    <tr>
+      <td><code>workspace-test.sh</code><br><small>hardened, in the monorepo PR</small></td>
+      <td>Loop <code>screendump</code>; upscale each frame 2× and OCR.</td>
+      <td>one frame OCRs <b>both</b> <b>"System Disk"</b> <b>AND</b> <b>"Workspace"</b> within 120&nbsp;s</td>
+      <td>not both landmarks in any frame → logs last OCR text, <code>exit&nbsp;1</code></td>
+    </tr>
+  </table>
+  </div>
+  <ul class="notes">
+    <li class="ok"><b>The publish is gated on the whole <code class="inl">test</code> job.</b> The <code class="inl">release</code> job runs only <code class="inl">if: needs.build.result == 'success' &amp;&amp; needs.test.result == 'success'</code>. Since <code class="inl">workspace-test</code> is the one hard <code class="inl">exit 1</code> in that job, <b>the desktop-render check is what actually blocks a bad build from publishing.</b></li>
+    <li class="warn"><b>Why colour-count alone was never trustworthy.</b> A login that authenticates but whose session dies drops <em>back to the greeter</em> — which is also high-colour. So <code class="inl">colours &gt; 1500</code> can pass on a non-desktop. Requiring the two desktop landmarks (<b>System&nbsp;Disk</b> icon + <b>Workspace</b> menu) is what makes "green" mean a real desktop. That's the hardening already in the consolidation PR.</li>
+  </ul>
+
+  <!-- =================== 3 =================== -->
+  <h2><span class="num">3</span>How it's driven — not console, not SSH</h2>
+  <p class="lead">To answer the question directly: the gate is driven <b>only</b> through the <b>QEMU monitor socket</b>. It is <em>not</em> a serial-console login, and it is <em>not</em> SSH. Nothing runs inside the guest.</p>
+  <div class="flow">
+    <span class="node">CI runner (host)</span><span class="arr">— socat →</span>
+    <span class="node share">tests/mon.sock<br><small>QEMU monitor</small></span><span class="arr">⇄</span>
+    <span class="node vm">guest framebuffer<br><small>screendump out · sendkey in</small></span>
+  </div>
+  <ul class="notes">
+    <li><b>Serial is read-only telemetry.</b> <code class="inl">-serial file:tests/serial.log</code> streams the guest console into the CI log so you can watch boot progress — but the gate never <em>writes</em> to it or logs in over it. It's for humans reading a failed run.</li>
+    <li class="warn"><b>The consequence: the gate can type but cannot click.</b> With only <code class="inl">sendkey</code> + <code class="inl">screendump</code>, keyboard-reachable actions work (typing the login) and anything needing a pointer does not. This is the single fact that shapes every option below.</li>
+  </ul>
+
+  <!-- =================== 4 =================== -->
+  <h2><span class="num">4</span>The flow you want, mapped step-by-step</h2>
+  <p class="lead">Your target sequence, as a gated pipeline — each check hard-fails the publish if it doesn't pass:</p>
+  <div class="flow">
+    <span class="node gate">login</span><span class="arr">→</span>
+    <span class="node gate">System&nbsp;Disk?</span><span class="arr">→</span>
+    <span class="node gate">Workspace menu?</span><span class="arr">→</span>
+    <span class="node">close everything</span><span class="arr">→</span>
+    <span class="node">open About&nbsp;This&nbsp;Computer</span><span class="arr">→</span>
+    <span class="node share">screenshot</span><span class="arr">→</span>
+    <span class="node vm">publish</span>
+  </div>
+  <p class="lead">The important question is which of these are reachable with today's <em>keyboard-only, outside-the-guest</em> tooling, and which force a new capability. Here's the honest breakdown — the two red rows are the whole reason this is a design decision and not a one-line patch:</p>
+  <div class="scroll">
+  <table class="spec">
+    <tr><th>Step</th><th>Keyboard-only from outside the guest?</th><th>How</th></tr>
+    <tr><td>Log in as <code>admin</code></td><td class="ok-cell">YES</td><td><code>sendkey</code> — already done</td></tr>
+    <tr><td>Confirm <b>System Disk</b> icon</td><td class="ok-cell">YES</td><td><code>screendump</code> → OCR</td></tr>
+    <tr><td>Confirm <b>Workspace</b> menu</td><td class="ok-cell">YES</td><td><code>screendump</code> → OCR</td></tr>
+    <tr><td>Open a <b>File Viewer</b> window</td><td class="ok-cell">YES</td><td><b>Cmd+N</b> is a key equivalent → <code>sendkey</code>; verify by a new window appearing (OCR / colour delta)</td></tr>
+    <tr><td>Open a <b>Terminal</b> window</td><td class="no-cell">NO</td><td>Terminal is a <em>separate app</em> with no launch shortcut — needs a pointer double-click <em>or</em> an in-guest <code>openapp</code></td></tr>
+    <tr><td>Close everything</td><td class="ok-cell">YES</td><td><b>Cmd+W</b> per window → <code>sendkey</code>, repeated</td></tr>
+    <tr><td>Open <b>About This Computer</b></td><td class="no-cell">NO</td><td><code>keyEquivalent:@""</code> in <code>Workspace.m</code> — <b>no shortcut</b>. Reachable only by a menu <em>click</em> or in-guest automation</td></tr>
+    <tr><td>Screenshot the result</td><td class="ok-cell">YES</td><td><code>screendump</code></td></tr>
+    <tr><td>Publish iff all passed</td><td class="ok-cell">YES</td><td><code>needs.test.result == 'success'</code></td></tr>
+  </table>
+  </div>
+  <ul class="notes">
+    <li class="ok"><b>Most of your flow is already keyboard-reachable.</b> Login, both landmark checks, opening a viewer (Cmd+N), closing windows (Cmd+W), and the screenshot all work with <code class="inl">sendkey</code> + <code class="inl">screendump</code> — no new capability.</li>
+    <li class="warn"><b>Exactly two steps force a decision:</b> launching <b>Terminal</b> and opening <b>About This Computer</b>. Both need either a <em>pointer</em> in QEMU or automation <em>inside</em> the guest. Everything in §6–§7 is about how to get those two.</li>
+  </ul>
+
+  <!-- =================== 5 =================== -->
+  <h2><span class="num">5</span>The five flavors today — one desktop, one gate missing four times</h2>
+  <div class="scroll">
+  <table class="spec">
+    <tr><th>Flavor</th><th>Init hook that starts the greeter</th><th>Boot/screenshot gate today?</th><th>sshd in the live ISO?</th></tr>
+    <tr><td><code>nextbsd</code></td><td>launchd <code>loginwindow.plist</code></td><td class="ok-cell">YES — the full QEMU gate above</td><td class="no-cell">NO — config present, no service, key-only</td></tr>
+    <tr><td><code>freebsd</code></td><td>rc.d <code>loginwindow_enable</code></td><td class="no-cell">NO — build → publish, ungated</td><td class="no-cell">NO — the sshd edit hits the CI host, not the image</td></tr>
+    <tr><td><code>debian</code></td><td>systemd <code>loginwindow</code> unit</td><td class="no-cell">NO</td><td class="ok-cell">YES — <code>openssh-server</code>, empty-pw</td></tr>
+    <tr><td><code>devuan</code></td><td>sysvinit <code>/etc/inittab</code> respawn</td><td class="no-cell">NO</td><td class="ok-cell">YES — <code>update-rc.d ssh</code>, empty-pw</td></tr>
+    <tr><td><code>arch</code></td><td>systemd <code>loginwindow</code> unit</td><td class="no-cell">NO</td><td class="ok-cell">YES — <code>sshd.service</code> enabled, empty-pw</td></tr>
+  </table>
+  </div>
+  <ul class="notes">
+    <li class="ok"><b>One oracle fits all five.</b> Every flavor clones <a href="https://github.com/gershwin-desktop/gershwin-developer">gershwin-developer</a> and runs its <code class="inl">checkout.sh</code> + <code class="inl">make install</code>, and every flavor runs <code class="inl">dscli init</code> to make the same no-password <code class="inl">admin</code>. So the greeter, the <b>System Disk</b> icon, the <b>Workspace</b> menu, and <b>About This Computer</b> are byte-identical across flavors — <b>the same screenshot/OCR checks are valid on all five</b>, exactly as the gate observes the shared framebuffer regardless of init.</li>
+    <li class="warn"><b>SSH is not a universal transport.</b> The one flavor you'd most want to reach — <code class="inl">nextbsd</code> — has no sshd, and neither does <code class="inl">freebsd</code>. Only the three Linux flavors run it (and even there the empty-password → DirectoryServices PAM path is unverified). <b>Any "SSH into the guest and run the tests" design fails on 2 of 5 by construction.</b></li>
+    <li class="warn"><b>Four flavors publish blind today.</b> freebsd/debian/devuan/arch build and release with no boot test at all — a broken desktop ships green. Spreading <em>one</em> gate to all five is the point of consolidation.</li>
+  </ul>
+
+  <!-- =================== 6 =================== -->
+  <h2><span class="num">6</span>Options for a universal gate</h2>
+
+  <h3>Option A — Extend the external QEMU-monitor gate <span class="pill ok">recommended baseline</span></h3>
+  <p class="lead">Keep driving from outside the guest, and add the <em>one</em> missing primitive: a pointer. QEMU's <code class="inl">usb-tablet</code> gives <b>absolute</b> mouse coordinates, and the monitor already speaks <code class="inl">mouse_move</code> / <code class="inl">mouse_button</code>. That turns the two red rows green without anything inside the guest.</p>
+  <div class="code"><span class="code-label">the only launch change</span><pre class="code-body">qemu-system-x86_64 ... -device usb-tablet   <span class="c"># absolute-coordinate pointer</span>
+<span class="c"># then, over the monitor socket:</span>
+<span class="k">mouse_move</span> X Y        <span class="c"># absolute; X/Y derived from the framebuffer size</span>
+<span class="k">mouse_button</span> 1       <span class="c"># click — e.g. Workspace menu → first item = About This Computer</span></pre></div>
+  <ul class="notes">
+    <li class="ok"><b>Universal by construction.</b> No image changes, no sshd, init-agnostic — the identical harness runs on all five flavors, including nextbsd. Boot / login / System&nbsp;Disk / Workspace / open-viewer (Cmd+N) / close-all (Cmd+W) / screenshot are keyboard+OCR; About&nbsp;This&nbsp;Computer becomes a tablet click on the menu's first item.</li>
+    <li class="warn"><b>Cost: coordinate clicking is coordinate-fragile.</b> A click at <code class="inl">(x,y)</code> depends on the menu's position and the framebuffer resolution. Mitigations: <b>pin the guest resolution</b> (the uitest suite assumes 1920×1080 with the menu bar at y≈11 and the Workspace menu at x≈60), compute coordinates from the actual <code class="inl">screendump</code> dimensions, and OCR-verify the About window title after clicking. Terminal is the weakest link here — launching a separate app by blind double-click is the least reliable action; it may be better left to Option B or skipped from the "basic" gate.</li>
+  </ul>
+
+  <h3>Option B — Run gershwin-workspace's <code style="font-size:0.85em">uitest</code> inside the guest <span class="pill">highest fidelity</span></h3>
+  <p class="lead">Gershwin already ships a 48-test GUI harness — <a href="https://github.com/gershwin-desktop/gershwin-workspace/tree/master/Tools/uitest">Tools/uitest</a> — that does exactly this flow: open a viewer, click <b>About This Computer</b> (its <code class="inl">test_40_interactive_menus.py</code> literally clicks Workspace&nbsp;→&nbsp;first item and verifies a window titled "About This Computer"), and capture failures. But it is <b>strictly in-guest</b>: it reaches Workspace over <em>local</em> Distributed Objects (<code class="inl">host:@""</code>) and drives all input with <b>xdotool on the guest's X display</b>. It needs Workspace launched with <code class="inl">-d</code>, plus <code class="inl">python3 · xdotool · wmctrl · scrot</code> present in the session.</p>
+  <ul class="notes">
+    <li class="ok"><b>Real verification, not pixels.</b> It asks Workspace whether a window titled "About This Computer" exists, counts <code class="inl">GWViewerWindow</code> instances, and so on — far stronger than OCR, and it's the code the desktop team already maintains.</li>
+    <li class="warn"><b>Cost: it puts test tooling in the shipped image and needs a result channel.</b> Every flavor's rootfs would carry python3/xdotool/wmctrl/scrot, the live session must autostart <code class="inl">Workspace -d</code> and the suite, and — since nextbsd/freebsd have no sshd — results must come <em>out</em> some other way.</li>
+    <li class="ok"><b>The serial console is that channel, and it's universal.</b> The guest can <code class="inl">echo</code> structured markers (<code class="inl">GATE: about-this-computer OK</code>) to <code class="inl">/dev/console</code>; they land in <code class="inl">tests/serial.log</code>, which the runner already captures — so the external side greps pass/fail with <b>no sshd on any flavor</b>. Pair it with an external <code class="inl">screendump</code> for the published PNG (avoids exfiltrating a file from the read-only ISO).</li>
+    <li class="warn"><b>Terminal is still special.</b> uitest only sees Workspace's own windows; launching/verifying <code class="inl">gershwin-terminal</code> needs an in-session <code class="inl">openapp</code> + a <code class="inl">wmctrl</code>/<code class="inl">scrot</code> check, not uitest itself.</li>
+  </ul>
+
+  <h3>Option C — SSH into the guest and run the suite <span class="pill warn">not universal — rejected</span></h3>
+  <p class="lead">Add <code class="inl">hostfwd=tcp::2222-:22</code> to the user-mode NIC, SSH in, run uitest remotely. Clean in principle — keeps tooling out of the image — but <b>nextbsd and freebsd run no sshd</b>, so it covers at most 3 of 5. A universal gate can't depend on it. (It could still be a <em>convenience</em> path for the Linux flavors during development.)</p>
+
+  <div class="scroll">
+  <table class="spec">
+    <tr><th></th><th>A · external QEMU</th><th>B · in-guest uitest</th><th>C · SSH</th></tr>
+    <tr><td>Works on all 5 flavors</td><td class="ok-cell">Yes</td><td class="ok-cell">Yes</td><td class="no-cell">No (2/5 lack sshd)</td></tr>
+    <tr><td>Changes to the shipped image</td><td class="ok-cell">None</td><td class="no-cell">python3+xdotool+wmctrl+scrot, Workspace&nbsp;-d autostart</td><td>sshd + creds</td></tr>
+    <tr><td>Opens About This Computer</td><td>tablet click (coord)</td><td class="ok-cell">real menu click + DO verify</td><td class="ok-cell">same as B</td></tr>
+    <tr><td>Opens/verifies Terminal</td><td class="no-cell">weak (blind click)</td><td>in-session <code>openapp</code>+wmctrl</td><td>same as B</td></tr>
+    <tr><td>Verification quality</td><td>OCR / colour</td><td class="ok-cell">DO window facts</td><td class="ok-cell">DO window facts</td></tr>
+    <tr><td>Fragility</td><td>coord-dependent</td><td>display/coords + image deps</td><td>network + PAM auth</td></tr>
+    <tr><td>Result channel (no sshd)</td><td class="ok-cell">native (host-side)</td><td>serial-console markers</td><td class="no-cell">n/a</td></tr>
+  </table>
+  </div>
+
+  <!-- =================== 7 =================== -->
+  <h2><span class="num">7</span>Recommendation</h2>
+  <ul class="notes">
+    <li class="ok"><b>Ship Option A as the universal baseline now.</b> It's the "basic and universal for all five" you asked for: boot → login → <b>System Disk</b> → <b>Workspace</b> menu → screenshot, keyboard + OCR, zero image changes, works on every flavor including the no-sshd ones. Most of it is already built for nextbsd; the rest is spreading it to the other four via the shared <code class="inl">screenshot-gate</code> action.</li>
+    <li class="ok"><b>Add the two click-only steps with a QEMU <code class="inl">usb-tablet</code>.</b> Close-everything is Cmd+W (keyboard); open <b>About This Computer</b> is one absolute-coordinate click on the Workspace menu's first item; then <code class="inl">screendump</code> the panel over the desktop as the published <code class="inl">gershwin-on-&lt;flavor&gt;.png</code>. Compute the click point from the actual framebuffer size and OCR-verify the "About This Computer" title so it fails loudly if the layout shifts.</li>
+    <li><b>Reserve Option B (in-guest uitest) for what A can't do well — chiefly Terminal</b> — and adopt it if coordinate-clicking proves flaky. When you do, drive results out over the <b>serial console</b> (universal, no sshd) and keep capturing the published screenshot externally. Bake the small tooling into <code class="inl">gershwin-developer</code> so all five inherit it once, guarded to CI.</li>
+    <li class="warn"><b>Sequence it.</b> Land the external baseline and get one flavor genuinely green on a real runner <em>before</em> layering interactive automation on top — don't debug tablet-clicking and the base pipeline at the same time.</li>
+  </ul>
+  <p class="lead dim">Net: the flow you described is achievable and universal with Option A plus a <code class="inl">usb-tablet</code>; the only genuinely awkward piece is launching Terminal, which is the one part worth spending Option B's in-guest complexity on — later, and only if you want it in the gate rather than as a separate smoke test.</p>
+
+  <footer>
+    <p>Prepared for <a href="https://github.com/gershwin-desktop">gershwin-desktop</a> · sourced from a live read of all five flavor repos, <code class="inl">gershwin-on-nextbsd</code>'s <code class="inl">tests/*.sh</code>, and <code class="inl">gershwin-workspace/Tools/uitest</code> · <a href="gershwin-iso-monorepo-consolidation-plan.html">← ISO monorepo consolidation plan</a></p>
+  </footer>
+
+</div>
+</body>
+</html>

@@ -123,11 +123,11 @@
   <table class="spec">
     <tr><th>Aspect</th><th>TODAY — in production<br><small>(standalone <code>gershwin-on-nextbsd</code>, and it alone)</small></th><th>WRITTEN — in the monorepo PR<br><small>(committed, not yet green on a runner)</small></th><th>PROPOSED — this doc</th></tr>
     <tr><td>Flavors gated</td><td class="no-cell">1 of 5 (nextbsd only)</td><td>1 of 5 (nextbsd, via shared action)</td><td class="ok-cell">all 5 (shared gate)</td></tr>
-    <tr><td>How it's driven</td><td>QEMU monitor: <code>screendump</code> + <code>sendkey</code>. No mouse, no SSH, nothing in-guest.</td><td>same</td><td>same + a <code>usb-tablet</code> pointer (Option A)</td></tr>
+    <tr><td>How it's driven</td><td>QEMU monitor: <code>screendump</code> + <code>sendkey</code>. No mouse, no SSH, nothing in-guest.</td><td>same</td><td>same — still keyboard-only, no mouse (Option A)</td></tr>
     <tr><td>Login</td><td>typed blind; <b>not judged</b> (always exits 0)</td><td>same</td><td>same (input step)</td></tr>
     <tr><td>Desktop pass criterion</td><td>colours&nbsp;&gt;&nbsp;1500 <b>OR</b> OCR "System Disk"</td><td class="ok-cell">OCR "System Disk" <b>AND</b> "Workspace"</td><td>+ close-all, open About This Computer, screenshot</td></tr>
     <tr><td>Published screenshot</td><td><code>docs/desktop.png</code> committed to git</td><td>release asset <code>gershwin-on-&lt;flavor&gt;.png</code></td><td>About-This-Computer panel over the desktop</td></tr>
-    <tr><td>Terminal / About This Computer checks</td><td class="no-cell">none</td><td class="no-cell">none</td><td>added (tablet click, or in-guest uitest)</td></tr>
+    <tr><td>About This Computer step</td><td class="no-cell">none</td><td class="no-cell">none</td><td>added — Run… (Cmd+R) → <code>uitest about</code>, keyboard-only. (Terminal: dropped for now)</td></tr>
   </table>
   </div>
   <ul class="notes">
@@ -220,7 +220,7 @@
     <span class="node share">screenshot</span><span class="arr">→</span>
     <span class="node vm">publish</span>
   </div>
-  <p class="lead">The important question is which of these are reachable with today's <em>keyboard-only, outside-the-guest</em> tooling, and which force a new capability. Here's the honest breakdown — the two red rows are the whole reason this is a design decision and not a one-line patch:</p>
+  <p class="lead">The important question is which of these are reachable with <em>keyboard-only, outside-the-guest</em> tooling. It turns out <b>every step is</b> — including the one item with no shortcut, once you route it through the Run… dialog:</p>
   <div class="scroll">
   <table class="spec">
     <tr><th>Step</th><th>Keyboard-only from outside the guest?</th><th>How</th></tr>
@@ -228,16 +228,16 @@
     <tr><td>Confirm <b>System Disk</b> icon</td><td class="ok-cell">YES</td><td><code>screendump</code> → OCR</td></tr>
     <tr><td>Confirm <b>Workspace</b> menu</td><td class="ok-cell">YES</td><td><code>screendump</code> → OCR</td></tr>
     <tr><td>Open a <b>File Viewer</b> window</td><td class="ok-cell">YES</td><td><b>Cmd+N</b> is a key equivalent → <code>sendkey</code>; verify by a new window appearing (OCR / colour delta)</td></tr>
-    <tr><td>Open a <b>Terminal</b> window</td><td class="no-cell">NO</td><td>Terminal is a <em>separate app</em> with no launch shortcut — needs a pointer double-click <em>or</em> an in-guest <code>openapp</code></td></tr>
     <tr><td>Close everything</td><td class="ok-cell">YES</td><td><b>Cmd+W</b> per window → <code>sendkey</code>, repeated</td></tr>
-    <tr><td>Open <b>About This Computer</b></td><td class="no-cell">NO</td><td><code>keyEquivalent:@""</code> in <code>Workspace.m</code> — <b>no shortcut</b>. Reachable only by a menu <em>click</em> or in-guest automation</td></tr>
-    <tr><td>Screenshot the result</td><td class="ok-cell">YES</td><td><code>screendump</code></td></tr>
+    <tr><td>Open <b>About This Computer</b></td><td class="ok-cell">YES *</td><td>the item has no shortcut, but <b>Run… does (Cmd+R)</b>: open it, type <code>uitest about</code>, ⏎ — <code>uitest</code> opens the panel via <code>showAboutThisComputer:</code> over DO. <b>*</b> needs <code>uitest</code> on <code>PATH</code> (ships in all images) + Workspace vending DO (confirm whether <code>-d</code> is required)</td></tr>
+    <tr><td>Screenshot the result</td><td class="ok-cell">YES</td><td>OCR the "About This Computer" title, then <code>screendump</code></td></tr>
     <tr><td>Publish iff all passed</td><td class="ok-cell">YES</td><td><code>needs.test.result == 'success'</code></td></tr>
   </table>
   </div>
   <ul class="notes">
-    <li class="ok"><b>Most of your flow is already keyboard-reachable.</b> Login, both landmark checks, opening a viewer (Cmd+N), closing windows (Cmd+W), and the screenshot all work with <code class="inl">sendkey</code> + <code class="inl">screendump</code> — no new capability.</li>
-    <li class="warn"><b>Exactly two steps force a decision:</b> launching <b>Terminal</b> and opening <b>About This Computer</b>. Both need either a <em>pointer</em> in QEMU or automation <em>inside</em> the guest. Everything in §6–§7 is about how to get those two.</li>
+    <li class="ok"><b>The whole flow is keyboard-reachable.</b> Login, both landmark checks, open a viewer (Cmd+N), close windows (Cmd+W), open About&nbsp;This&nbsp;Computer (Cmd+R → <code class="inl">uitest about</code>), and the screenshot all work with just <code class="inl">sendkey</code> + <code class="inl">screendump</code> — no pointer, nothing in-guest to install.</li>
+    <li><b>Terminal is intentionally dropped</b> from the gate for now. It's the one step that <em>would</em> need more than the keyboard (a separate app to launch and verify), so leaving it out keeps the gate simple and universal.</li>
+    <li class="warn"><b>Two small unknowns to confirm on the first run</b> (both in §6, Option A): the QEMU <code class="inl">sendkey</code> name for GNUstep's Command modifier, and whether Workspace vends its DO connection by default or only under <code class="inl">-d</code>.</li>
   </ul>
 
   <!-- =================== 5 =================== -->
@@ -261,15 +261,20 @@
   <!-- =================== 6 =================== -->
   <h2><span class="num">6</span>Options for a universal gate</h2>
 
-  <h3>Option A — Extend the external QEMU-monitor gate <span class="pill ok">recommended baseline</span></h3>
-  <p class="lead">Keep driving from outside the guest, and add the <em>one</em> missing primitive: a pointer. QEMU's <code class="inl">usb-tablet</code> gives <b>absolute</b> mouse coordinates, and the monitor already speaks <code class="inl">mouse_move</code> / <code class="inl">mouse_button</code>. That turns the two red rows green without anything inside the guest.</p>
-  <div class="code"><span class="code-label">the only launch change</span><pre class="code-body">qemu-system-x86_64 ... -device usb-tablet   <span class="c"># absolute-coordinate pointer</span>
-<span class="c"># then, over the monitor socket:</span>
-<span class="k">mouse_move</span> X Y        <span class="c"># absolute; X/Y derived from the framebuffer size</span>
-<span class="k">mouse_button</span> 1       <span class="c"># click — e.g. Workspace menu → first item = About This Computer</span></pre></div>
+  <h3>Option A — External QEMU-monitor gate, fully keyboard-driven <span class="pill ok">recommended</span></h3>
+  <p class="lead">Keep driving from outside the guest with <em>only</em> <code class="inl">screendump</code> + <code class="inl">sendkey</code> — <b>no mouse at all</b>. The one item with no keyboard shortcut, <b>About This Computer</b>, is reached <em>indirectly</em>: the <b>Run…</b> command <em>does</em> have a shortcut (<b>Cmd+R</b> — confirmed <code class="inl">keyEquivalent:@"R"</code> in <code class="inl">Workspace.m</code>), and the Run dialog executes any command on <code class="inl">PATH</code> via <code class="inl">NSTask</code>. Since <code class="inl">uitest</code> ships in every image, we type <code class="inl">uitest about</code> and press ⏎ — <code class="inl">uitest</code> calls Workspace's own <code class="inl">showAboutThisComputer:</code> over Distributed Objects and the panel opens. Then <code class="inl">screendump</code> captures it.</p>
+  <div class="code"><span class="code-label">opening About This Computer with no pointer</span><pre class="code-body"><span class="c"># everything over the monitor socket — keys only</span>
+<span class="k">sendkey</span> meta-r                 <span class="c"># Cmd+R → Run… dialog (Command-modifier keyname TBD, see below)</span>
+<span class="c"># type the command into the dialog:</span>
+<span class="k">sendkey</span> u; sendkey i; sendkey t; sendkey e; sendkey s; sendkey t; sendkey spc
+<span class="k">sendkey</span> a; sendkey b; sendkey o; sendkey u; sendkey t
+<span class="k">sendkey</span> ret                    <span class="c"># runs `uitest about` → showAboutThisComputer: over DO</span>
+<span class="c"># then confirm + capture:</span>
+<span class="k">screendump</span> desktop.ppm         <span class="c"># OCR "About This Computer" to gate; publish this frame</span></pre></div>
   <ul class="notes">
-    <li class="ok"><b>Universal by construction.</b> No image changes, no sshd, init-agnostic — the identical harness runs on all five flavors, including nextbsd. Boot / login / System&nbsp;Disk / Workspace / open-viewer (Cmd+N) / close-all (Cmd+W) / screenshot are keyboard+OCR; About&nbsp;This&nbsp;Computer becomes a tablet click on the menu's first item.</li>
-    <li class="warn"><b>Cost: coordinate clicking is coordinate-fragile.</b> A click at <code class="inl">(x,y)</code> depends on the menu's position and the framebuffer resolution. Mitigations: <b>pin the guest resolution</b> (the uitest suite assumes 1920×1080 with the menu bar at y≈11 and the Workspace menu at x≈60), compute coordinates from the actual <code class="inl">screendump</code> dimensions, and OCR-verify the About window title after clicking. Terminal is the weakest link here — launching a separate app by blind double-click is the least reliable action; it may be better left to Option B or skipped from the "basic" gate.</li>
+    <li class="ok"><b>Universal and pointer-free.</b> Every step is keyboard + OCR + <code class="inl">screendump</code>: login, System&nbsp;Disk, Workspace menu, open-viewer (Cmd+N), close-all (Cmd+W), open About&nbsp;This&nbsp;Computer (Cmd+R → <code class="inl">uitest about</code>), screenshot. The identical harness runs on all five flavors, no <code class="inl">usb-tablet</code>, no coordinate math, no in-guest python/xdotool.</li>
+    <li class="warn"><b>Two prerequisites to confirm on the first run.</b> (1) <b>The Command-modifier keyname</b> — GNUstep's Command key maps to some physical key in the image's X modmap; we need the right <code class="inl">sendkey</code> name (<code class="inl">meta_l</code>/<code class="inl">alt</code>/…) for Cmd+R, Cmd+N, Cmd+W. (2) <b>Whether Workspace vends its DO connection by default or only under <code class="inl">-d</code></b>; if it needs <code class="inl">-d</code>, the live session's <code class="inl">LoginWindow.sh</code> must launch <code class="inl">Workspace -d</code> — a one-flag session change, not tooling bloat. <code class="inl">uitest</code> itself is already present (ships in all images).</li>
+    <li class="ok"><b>This is a strict upgrade over a pointer.</b> Typing a command into a dialog is deterministic; clicking a specific menu-item pixel is not. The Run path removes the only reason we'd have wanted a mouse.</li>
   </ul>
 
   <h3>Option B — Run gershwin-workspace's <code style="font-size:0.85em">uitest</code> inside the guest <span class="pill">highest fidelity</span></h3>
@@ -278,7 +283,7 @@
     <li class="ok"><b>Real verification, not pixels.</b> It asks Workspace whether a window titled "About This Computer" exists, counts <code class="inl">GWViewerWindow</code> instances, and so on — far stronger than OCR, and it's the code the desktop team already maintains.</li>
     <li class="warn"><b>Cost: it puts test tooling in the shipped image and needs a result channel.</b> Every flavor's rootfs would carry python3/xdotool/wmctrl/scrot, the live session must autostart <code class="inl">Workspace -d</code> and the suite, and — since nextbsd/freebsd have no sshd — results must come <em>out</em> some other way.</li>
     <li class="ok"><b>The serial console is that channel, and it's universal.</b> The guest can <code class="inl">echo</code> structured markers (<code class="inl">GATE: about-this-computer OK</code>) to <code class="inl">/dev/console</code>; they land in <code class="inl">tests/serial.log</code>, which the runner already captures — so the external side greps pass/fail with <b>no sshd on any flavor</b>. Pair it with an external <code class="inl">screendump</code> for the published PNG (avoids exfiltrating a file from the read-only ISO).</li>
-    <li class="warn"><b>Terminal is still special.</b> uitest only sees Workspace's own windows; launching/verifying <code class="inl">gershwin-terminal</code> needs an in-session <code class="inl">openapp</code> + a <code class="inl">wmctrl</code>/<code class="inl">scrot</code> check, not uitest itself.</li>
+    <li><b>When to reach for it.</b> Option&nbsp;A covers the whole flow you asked for with far less machinery. Option&nbsp;B earns its keep only if you later want <em>window-fact</em> assertions (a real <code class="inl">GWViewerWindow</code> count, DO-verified window titles) instead of OCR, or a broader interactive suite than a handful of steps.</li>
   </ul>
 
   <h3>Option C — SSH into the guest and run the suite <span class="pill warn">not universal — rejected</span></h3>
@@ -286,13 +291,13 @@
 
   <div class="scroll">
   <table class="spec">
-    <tr><th></th><th>A · external QEMU</th><th>B · in-guest uitest</th><th>C · SSH</th></tr>
+    <tr><th></th><th>A · external QEMU (keyboard)</th><th>B · in-guest uitest</th><th>C · SSH</th></tr>
     <tr><td>Works on all 5 flavors</td><td class="ok-cell">Yes</td><td class="ok-cell">Yes</td><td class="no-cell">No (2/5 lack sshd)</td></tr>
-    <tr><td>Changes to the shipped image</td><td class="ok-cell">None</td><td class="no-cell">python3+xdotool+wmctrl+scrot, Workspace&nbsp;-d autostart</td><td>sshd + creds</td></tr>
-    <tr><td>Opens About This Computer</td><td>tablet click (coord)</td><td class="ok-cell">real menu click + DO verify</td><td class="ok-cell">same as B</td></tr>
-    <tr><td>Opens/verifies Terminal</td><td class="no-cell">weak (blind click)</td><td>in-session <code>openapp</code>+wmctrl</td><td>same as B</td></tr>
-    <tr><td>Verification quality</td><td>OCR / colour</td><td class="ok-cell">DO window facts</td><td class="ok-cell">DO window facts</td></tr>
-    <tr><td>Fragility</td><td>coord-dependent</td><td>display/coords + image deps</td><td>network + PAM auth</td></tr>
+    <tr><td>Changes to the shipped image</td><td class="ok-cell">None (uitest already ships); maybe Workspace&nbsp;-d</td><td class="no-cell">python3+xdotool+wmctrl+scrot, Workspace&nbsp;-d autostart</td><td>sshd + creds</td></tr>
+    <tr><td>Pointer needed?</td><td class="ok-cell">No — all keyboard</td><td class="no-cell">Yes — xdotool clicks</td><td class="no-cell">Yes — xdotool clicks</td></tr>
+    <tr><td>Opens About This Computer</td><td class="ok-cell">Cmd+R → <code>uitest about</code></td><td class="ok-cell">real menu click + DO verify</td><td class="ok-cell">same as B</td></tr>
+    <tr><td>Verification quality</td><td>OCR of the panel + landmarks</td><td class="ok-cell">DO window facts</td><td class="ok-cell">DO window facts</td></tr>
+    <tr><td>Fragility</td><td>Command-key mapping; OCR</td><td>display/coords + image deps</td><td>network + PAM auth</td></tr>
     <tr><td>Result channel (no sshd)</td><td class="ok-cell">native (host-side)</td><td>serial-console markers</td><td class="no-cell">n/a</td></tr>
   </table>
   </div>
@@ -300,12 +305,13 @@
   <!-- =================== 7 =================== -->
   <h2><span class="num">7</span>Recommendation</h2>
   <ul class="notes">
-    <li class="ok"><b>Ship Option A as the universal baseline now.</b> It's the "basic and universal for all five" you asked for: boot → login → <b>System Disk</b> → <b>Workspace</b> menu → screenshot, keyboard + OCR, zero image changes, works on every flavor including the no-sshd ones. Most of it is already built for nextbsd; the rest is spreading it to the other four via the shared <code class="inl">screenshot-gate</code> action.</li>
-    <li class="ok"><b>Add the two click-only steps with a QEMU <code class="inl">usb-tablet</code>.</b> Close-everything is Cmd+W (keyboard); open <b>About This Computer</b> is one absolute-coordinate click on the Workspace menu's first item; then <code class="inl">screendump</code> the panel over the desktop as the published <code class="inl">gershwin-on-&lt;flavor&gt;.png</code>. Compute the click point from the actual framebuffer size and OCR-verify the "About This Computer" title so it fails loudly if the layout shifts.</li>
-    <li><b>Reserve Option B (in-guest uitest) for what A can't do well — chiefly Terminal</b> — and adopt it if coordinate-clicking proves flaky. When you do, drive results out over the <b>serial console</b> (universal, no sshd) and keep capturing the published screenshot externally. Bake the small tooling into <code class="inl">gershwin-developer</code> so all five inherit it once, guarded to CI.</li>
-    <li class="warn"><b>Sequence it.</b> Land the external baseline and get one flavor genuinely green on a real runner <em>before</em> layering interactive automation on top — don't debug tablet-clicking and the base pipeline at the same time.</li>
+    <li class="ok"><b>Ship Option A — the fully keyboard-driven external gate — for all five.</b> The whole flow you asked for fits: boot → login → <b>System Disk</b> → <b>Workspace</b> menu → close everything (Cmd+W) → open <b>About This Computer</b> (Cmd+R → <code class="inl">uitest about</code>) → <code class="inl">screendump</code> → publish only if every step passed. No mouse, no in-guest python, no sshd. Most of it is already built for nextbsd; the rest is spreading it to the other four via the shared <code class="inl">screenshot-gate</code> action.</li>
+    <li class="ok"><b>The published screenshot is the About panel over the desktop.</b> After <code class="inl">uitest about</code> opens it, OCR-verify the "About This Computer" title (fail loudly if it didn't open) and <code class="inl">screendump</code> that frame as <code class="inl">gershwin-on-&lt;flavor&gt;.png</code>.</li>
+    <li class="warn"><b>Terminal is out of the gate for now</b> — dropped by decision. If it's ever wanted, it's the one step that needs more than the keyboard (launch a separate app + verify its window), so it belongs to a later Option&nbsp;B smoke, not this baseline.</li>
+    <li><b>Reserve Option B (in-guest uitest) only for window-fact assertions</b> — a real <code class="inl">GWViewerWindow</code> count or DO-verified titles instead of OCR. If adopted, drive results out over the <b>serial console</b> (universal, no sshd) and still capture the screenshot externally.</li>
+    <li class="warn"><b>Sequence it.</b> Get one flavor genuinely green on a real runner with the boot→login→landmarks→About→screenshot path <em>before</em> spreading to the other four — confirm the two prerequisites (Command-key mapping; whether Workspace needs <code class="inl">-d</code>) on that first run.</li>
   </ul>
-  <p class="lead dim">Net: the flow you described is achievable and universal with Option A plus a <code class="inl">usb-tablet</code>; the only genuinely awkward piece is launching Terminal, which is the one part worth spending Option B's in-guest complexity on — later, and only if you want it in the gate rather than as a separate smoke test.</p>
+  <p class="lead dim">Net: the flow you described is achievable, universal, and <b>pointer-free</b> with Option A alone — the Run… dialog (Cmd+R) plus <code class="inl">uitest about</code> turns the one shortcut-less item into a deterministic keyboard action, so no <code class="inl">usb-tablet</code> and no in-guest tooling are needed. Terminal is set aside; Option B stays in reserve for stronger, window-level assertions if you ever want them.</p>
 
   <footer>
     <p>Prepared for <a href="https://github.com/gershwin-desktop">gershwin-desktop</a> · sourced from a live read of all five flavor repos, <code class="inl">gershwin-on-nextbsd</code>'s <code class="inl">tests/*.sh</code>, and <code class="inl">gershwin-workspace/Tools/uitest</code> · <a href="gershwin-iso-monorepo-consolidation-plan.html">← ISO monorepo consolidation plan</a></p>

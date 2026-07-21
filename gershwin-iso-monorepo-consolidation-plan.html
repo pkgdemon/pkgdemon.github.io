@@ -191,27 +191,25 @@ publish-continuous/action.yml   <span class="c"># preserve tag: upload new ISO+s
   </ul>
 
   <!-- =================== 4 =================== -->
-  <h2><span class="num">4</span>Shared layer 2a — the Linux template (container, no archiso/live-build)</h2>
-  <p class="lead">One reusable workflow builds <b>every</b> Linux flavor in a container on <code class="inl">ubuntu-latest</code>. The skeleton is identical; a flavor supplies only an <code class="inl">adapter.sh</code> (how to bootstrap + install packages) and an overlay.</p>
+  <h2><span class="num">4</span>Shared layer 2a — each Linux flavor builds in its own distro container</h2>
+  <p class="lead">Every Linux flavor builds its ISO <b>inside a container of its own distribution</b>, using that distro's <b>native</b> live-media tooling — not a reimplementation. The container is the per-flavor build environment; the only things shared across Linux flavors are the <b>Gershwin install</b> and the <b>gate + publish</b> tail.</p>
 
-  <div class="code"><span class="code-label">shared skeleton — one build path for all Linux</span><pre class="code-body"><span class="c"># targets/_lib/build-linux.sh  — SAME for debian, devuan, archlinux, ubuntu, …</span>
-. "targets/$FLAVOR/adapter.sh"        <span class="c"># ← the only per-flavor code</span>
-bootstrap_rootfs   "$ROOTFS"          <span class="c"># adapter: debootstrap / pacstrap / apk / dnf</span>
-install_packages   "$ROOTFS"          <span class="c"># adapter: apt / pacman / apk / dnf — incl. XLibre (never Xorg)</span>
-cp -aR "targets/$FLAVOR/overlays/." "$ROOTFS"     <span class="c"># overlay (init wiring, X drivers)</span>
-install_gershwin   "$ROOTFS"          <span class="c"># gershwin-developer checkout.sh + make install  (SHARED)</span>
-mksquashfs "$ROOTFS" rootfs.squashfs -comp zstd   <span class="c"># SHARED</span>
-stage_live_init                       <span class="c"># SHARED busybox+overlayfs /init (see below)</span>
-xorriso ... -o "out/$ISO_NAME"        <span class="c"># SHARED (UEFI + BIOS El Torito)</span></pre></div>
+  <div class="scroll">
+  <table class="spec">
+    <tr><th>Flavor</th><th>Build container</th><th>Native ISO tool</th><th>Per-flavor sources under <code>targets/&lt;flavor&gt;/</code></th></tr>
+    <tr><td>devuan</td><td><b>custom</b> — <code>ci/containers/Dockerfile</code> (Devuan repo + keyring + Devuan's debootstrap)</td><td><code>debootstrap</code> + grub + xorriso</td><td><code>build.sh</code>, <code>packages.list</code>, <code>grub.cfg</code>, <code>ci/containers/</code></td></tr>
+    <tr><td>debian</td><td><b>stock</b> <code>debian:latest</code> <code>--privileged</code></td><td><code>live-build</code> (<code>lb config</code> + <code>lb build</code>)</td><td><code>config/</code> (hooks, package-lists, includes.chroot), <code>scripts/</code></td></tr>
+    <tr><td>archlinux</td><td><b>stock</b> <code>archlinux:latest</code> <code>--privileged</code></td><td><code>mkarchiso</code></td><td><code>profiledef.sh</code>, <code>packages.x86_64</code>, <code>airootfs/</code>, <code>efiboot/</code>, <code>syslinux/</code></td></tr>
+  </table>
+  </div>
 
   <ul class="notes">
-    <li class="warn"><b>The live-boot init is the piece <code class="inl">archiso</code>/<code class="inl">live-build</code> used to own.</b> The <b>recommended</b> path is to hand-roll <em>one</em> minimal <code class="inl">busybox + overlayfs</code> <code class="inl">/init</code> used by every Linux flavor — it mounts the ISO's squashfs read-only and unions a tmpfs over it. This is <em>exactly</em> what the BSD side already does (mfsroot <code class="inl">/init</code> + <code class="inl">vfs.pivot</code>), so the two families mirror each other and no distro's native live tooling is involved at all.</li>
-    <li><b>Lower-effort alternative:</b> standardize on <code class="inl">dracut</code> + the <code class="inl">dmsquash-live</code> module (cross-distro: Fedora/Arch/Debian all ship dracut). Less code to own than a hand-rolled init, but pulls dracut into every rootfs. Pick one; the hand-rolled init is the truer realization of "everything the same."</li>
-    <li class="warn"><b>Arch is the conversion cost.</b> debian/devuan are debootstrap twins and move almost for free (devuan already builds in a container). Arch's adapter uses <code class="inl">pacstrap</code>/<code class="inl">pacman</code> — easy — but it currently leans on <code class="inl">mkinitcpio-archiso</code> for live-boot, so it's the flavor that most needs the shared init to replace what <code class="inl">mkarchiso</code> did. Prove the template on debian+devuan first, then make Arch the stress test.</li>
+    <li class="ok"><b>Native tooling, contained.</b> Each distro's own live-media path is proven upstream; running it inside that distro's container means <b>no cross-distro host workarounds</b> — Devuan's debootstrap/keyring, Arch's <code class="inl">pacman</code>/<code class="inl">mkarchiso</code> only exist cleanly on their own distro. The container <em>is</em> the flavor delta.</li>
+    <li><b>Only two things are shared across Linux flavors:</b> the <b>Gershwin install</b> (<code class="inl">git clone gershwin-developer</code> → <code class="inl">bootstrap.sh</code> → <code class="inl">checkout.sh</code> → <code class="inl">make install</code> — identical everywhere, and the dominant build cost) and the <b>gate + publish</b> tail. Everything distro-specific stays in <code class="inl">targets/&lt;flavor&gt;/</code>.</li>
+    <li><b>Stock images where possible.</b> debian and archlinux use the official <code class="inl">debian:latest</code> / <code class="inl">archlinux:latest</code> images and install the ISO tool at runtime. Only Devuan needs a <em>custom</em> image, because Devuan's debootstrap (with the <code class="inl">excalibur</code> script) + keyring aren't on any stock image. The container never comes from another flavor's repo.</li>
+    <li class="dim"><b>Speed note:</b> the container adds only the image pull/build (~seconds–minutes); it does not change build time. The wall-clock is dominated by the shared Gershwin source compile. If Linux builds need to be faster, cache or prebuild Gershwin — not swap the container.</li>
+    <li class="dim"><b>Superseded idea:</b> an earlier draft proposed replacing every distro's live tooling with one hand-rolled <code class="inl">busybox+overlayfs</code> init. Rejected — it discards each distro's battle-tested live path for a bespoke one to maintain. Native tooling in a container is simpler and more robust.</li>
   </ul>
-
-  <div class="code"><span class="code-label">targets/archlinux/adapter.sh — the entire per-flavor build delta (~3 funcs)</span><pre class="code-body">bootstrap_rootfs(){ pacstrap -c "$1" base linux; }
-install_packages(){ arch-chroot "$1" pacman -S --noconfirm "$(cat targets/archlinux/packages.list)"; }</pre></div>
 
   <!-- =================== 5 =================== -->
   <h2><span class="num">5</span>Shared layer 2b — the BSD template (vmactions)</h2>
@@ -360,21 +358,23 @@ gershwin-on-nextbsd-20260721000706-x86_64.png     sha256:…    248 KiB</pre></d
 
   <!-- =================== 10 =================== -->
   <h2><span class="num">10</span>Adding a new variant — the contributor guide</h2>
-  <p class="lead">The two family templates <em>are</em> the onboarding surface. A new distro becomes an ~8-line caller plus one target directory — no forking a repo, no new build engine.</p>
+  <p class="lead">Adding a flavor is one per-flavor <code class="inl">continuous-&lt;flavor&gt;.yml</code> that builds the ISO <b>in the flavor's own distro container</b> and then calls the shared gate + publish, plus one <code class="inl">targets/&lt;flavor&gt;/</code> dir holding that distro's <b>native</b> build. No forking a repo, no reimplementing live-boot.</p>
 
-  <div class="code"><span class="code-label">continuous-ubuntu.yml — a brand-new variant, complete</span><pre class="code-body"><span class="k">on</span>:
-  <span class="k">push</span>: { <span class="k">branches</span>: [main], <span class="k">paths</span>: [<span class="s">'targets/ubuntu/**'</span>, <span class="s">'.github/**'</span>] }
+  <div class="code"><span class="code-label">continuous-ubuntu.yml — build in the distro container, then the shared tail</span><pre class="code-body"><span class="k">on</span>:
+  <span class="k">push</span>: { <span class="k">branches</span>: [main], <span class="k">paths</span>: [<span class="s">'targets/ubuntu/**'</span>, <span class="s">'.github/actions/**'</span>, <span class="s">'.github/workflows/continuous-ubuntu.yml'</span>] }
   <span class="k">workflow_dispatch</span>:
 <span class="k">jobs</span>:
-  <span class="k">iso</span>:
-    <span class="k">uses</span>: ./.github/workflows/reusable-iso-linux.yml
-    <span class="k">with</span>: { flavor: ubuntu, arches: <span class="s">"x86_64 aarch64"</span>, release_tag: continuous-ubuntu }
-    <span class="k">secrets</span>: inherit</pre></div>
-  <p class="lead dim">Arch tokens are the release names (<code class="inl">x86_64</code>/<code class="inl">aarch64</code>) — the adapter maps them to whatever its bootstrap needs (dpkg <code class="inl">arm64</code>, etc.). Scoping the trigger to <code class="inl">targets/ubuntu/**</code> + <code class="inl">.github/**</code> means this flavor rebuilds on its own target or any shared-infra change, and never on a README-only edit — the same contract the reference flavor states with <code class="inl">paths-ignore: [README.md]</code>.</p>
+  <span class="k">build</span>:                                       <span class="c"># in the flavor's OWN distro container</span>
+    <span class="k">runs-on</span>: ubuntu-latest
+    <span class="k">container</span>: { image: ubuntu:latest, options: --privileged }
+    <span class="k">steps</span>: [ install live tooling, checkout, build ISO → out/, upload-artifact ]
+  <span class="k">test</span>:    { uses: ./.github/actions/screenshot-gate,   with: { flavor: ubuntu } }
+  <span class="k">publish</span>: { uses: ./.github/actions/publish-continuous, with: { tag: continuous-ubuntu, title: Ubuntu } }</pre></div>
+  <p class="lead dim">Trigger scoped to <code class="inl">targets/ubuntu/**</code> + shared <code class="inl">.github/actions/**</code> + the flavor's own workflow file — rebuilds on its own target or a shared-infra change, never on another flavor's edit or a README. Filenames use <code class="inl">x86_64</code>/<code class="inl">aarch64</code>; the distro's build maps them to whatever its bootstrap needs (dpkg <code class="inl">arm64</code>, etc.).</p>
 
-  <div class="code"><span class="code-label">targets/ubuntu/ — everything the author actually writes</span><pre class="code-body">adapter.sh        <span class="c"># bootstrap_rootfs() + install_packages()  (~3 funcs)</span>
-packages.list     <span class="c"># distro package set</span>
-overlays/         <span class="c"># init wiring (Ubuntu = systemd units) + X driver config</span></pre></div>
+  <div class="code"><span class="code-label">targets/ubuntu/ — the distro's native live build + its config</span><pre class="code-body">&lt;native build&gt;    <span class="c"># build.sh (debootstrap) | config/ (live-build) | profiledef.sh (mkarchiso)</span>
+ci/containers/    <span class="c"># ONLY if the distro needs a custom image (as Devuan does)</span>
+packages…         <span class="c"># the distro package set (incl. XLibre, never Xorg)</span></pre></div>
 
   <h3>The contract a variant must honor</h3>
   <div class="scroll">
@@ -383,7 +383,7 @@ overlays/         <span class="c"># init wiring (Ubuntu = systemd units) + X dri
     <tr><td>Output</td><td>write the ISO to <code>out/gershwin-on-&lt;flavor&gt;-&lt;stamp&gt;-&lt;arch&gt;.iso</code> (arch = <code>x86_64</code>/<code>aarch64</code>; no sha256 sidecar)</td></tr>
     <tr><td>Boot</td><td>ISO boots to the Gershwin desktop on <b>x86_64 UEFI</b> so the shared QEMU gate can screenshot it</td></tr>
     <tr><td>Desktop</td><td>install Gershwin via <code>gershwin-developer</code> so the gate's colour/OCR markers match</td></tr>
-    <tr><td>X server</td><td>install <b>XLibre</b> (never Xorg); the adapter supplies the package source, the config comes from the shared install</td></tr>
+    <tr><td>X server</td><td>install <b>XLibre</b> (never Xorg); the flavor's own build supplies the package source, the config comes from the shared install</td></tr>
     <tr><td>Overlay</td><td>wire the session services via the variant's own init system under <code>targets/&lt;flavor&gt;/overlays/</code></td></tr>
     <tr><td>Gate tuning</td><td>validate the colour threshold + OCR marker for the variant's greeter/wallpaper on first run</td></tr>
   </table>

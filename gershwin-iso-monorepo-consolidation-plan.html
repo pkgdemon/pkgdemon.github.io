@@ -174,7 +174,7 @@
 
   <div class="code"><span class="code-label">SHARED ACTIONS — .github/actions/</span><pre class="code-body">free-disk/action.yml            <span class="c"># reclaim ~25 GB on ubuntu-latest for a 2 GiB ISO</span>
 screenshot-gate/action.yml      <span class="c"># boot ISO in QEMU+OVMF → colour/OCR check → FAIL job if no desktop</span>
-publish-continuous/action.yml   <span class="c"># gh release delete --cleanup-tag + create; sha256; attach screenshot</span></pre></div>
+publish-continuous/action.yml   <span class="c"># preserve tag: upload new ISO+screenshot → prune old ISO+screenshot (no sha256)</span></pre></div>
 
   <p class="lead">Two maximally-different flavors, Arch and NextBSD, end in the <em>same three lines</em>:</p>
   <div class="code"><span class="code-label">continuous-archlinux.yml (left) vs continuous-nextbsd.yml (right) — build differs, tails match</span><pre class="code-body"><span class="k">steps</span>:                                   <span class="k">steps</span>:
@@ -187,6 +187,7 @@ publish-continuous/action.yml   <span class="c"># gh release delete --cleanup-ta
   <ul class="notes">
     <li><b>The build is the unique bit</b> (red) — it stays inline. <b>Disk-free, gate, publish are the shared bits</b> — literally the same file reference in both. This is the whole value; it lives in the parts that don't differ, not the build.</li>
     <li class="ok"><b>Uniform gate = "green means the same thing"</b> on every ISO, and uniform publish kills the devuan-leak / freebsd-has-no-gate drift by construction.</li>
+    <li><b>Trigger &amp; build contract:</b> a change to <code class="inl">README.md</code> alone never builds; <b>any other change builds</b> (<code class="inl">paths-ignore: [README.md]</code>). There is <b>no "reuse the last ISO" fast path</b> — the build always runs and the gate boots the ISO <em>this run just built</em>, so it can never test an image that doesn't exist. A push to <code class="inl">main</code> therefore goes build → gate → publish on its own; <code class="inl">workflow_dispatch</code> is only a manual re-trigger. <span class="dim">(With several flavors sharing one repo, each caller scopes to <code class="inl">targets/&lt;flavor&gt;/**</code> + <code class="inl">.github/**</code> so a flavor rebuilds on its own target or shared-infra change — still never on README.)</span></li>
   </ul>
 
   <!-- =================== 4 =================== -->
@@ -270,7 +271,7 @@ echo "deb [signed-by=/etc/apt/keyrings/xlibre-archive-keyring.gpg] \
   </ul>
 
   <!-- =================== 8 =================== -->
-  <h2><span class="num">8</span>Tags, ISO names &amp; screenshots — one universal scheme</h2>
+  <h2><span class="num">8</span>Tags, names, titles &amp; release presentation — one universal scheme</h2>
   <p class="lead">Today the five are inconsistent (mixed prefixes, arch tokens <code class="inl">x86_64/amd64/aarch64/arm64</code>, and timestamp formats). One template fixes all of it.</p>
 
   <h3>Tags — one rolling tag per flavor</h3>
@@ -283,39 +284,67 @@ echo "deb [signed-by=/etc/apt/keyrings/xlibre-archive-keyring.gpg] \
   </table>
   </div>
   <ul class="notes">
-    <li class="warn"><b>Use <code class="inl">archlinux</code>, not <code class="inl">arch</code>, as the flavor token</b> — "arch" collides with the CPU-architecture token (<code class="inl">amd64</code>/<code class="inl">arm64</code>). <code class="inl">continuous-archlinux</code> is unambiguous.</li>
+    <li class="warn"><b>Use <code class="inl">archlinux</code>, not <code class="inl">arch</code>, as the flavor token</b> — "arch" collides with the CPU-architecture token (<code class="inl">x86_64</code>/<code class="inl">aarch64</code>). <code class="inl">continuous-archlinux</code> is unambiguous.</li>
+    <li><b>Release title is just the flavor's display name:</b> <code class="inl">NextBSD</code>, <code class="inl">Devuan</code>, <code class="inl">Debian</code>, <code class="inl">FreeBSD</code>, <code class="inl">Arch Linux</code> — proper-cased, distinct from the lowercase filename/tag token. Kept short deliberately: GitHub ellipsis-truncates release names in its narrow "Releases" sidebar and tag dropdown, and a one-word distro name never clips. "Continuous" is already conveyed by the tag (<code class="inl">continuous-&lt;flavor&gt;</code>), so it isn't repeated in the title. Each caller passes the name via <code class="inl">publish-continuous</code>'s <code class="inl">title:</code> input.</li>
   </ul>
 
   <h3>ISO / asset names — one template</h3>
-  <div class="code"><span class="code-label">universal filename</span><pre class="code-body">Gershwin-&lt;flavor&gt;-&lt;arch&gt;-&lt;YYYYMMDD-HHMMSS&gt;.iso
+  <div class="code"><span class="code-label">universal filename</span><pre class="code-body">gershwin-on-&lt;flavor&gt;-&lt;YYYYMMDDhhmmss&gt;-&lt;arch&gt;.&lt;ext&gt;
 
 <span class="c">flavor  = debian | devuan | archlinux | freebsd | nextbsd</span>
-<span class="c">arch    = amd64 | arm64    (normalized for EVERY OS — decoupled from the build's</span>
-<span class="c">                            internal triple; Arch x86_64 / FreeBSD aarch64 map here)</span>
-<span class="c">stamp   = UTC, sortable, matches NextBSD's existing format</span>
+<span class="c">stamp   = UTC, 14 digits, NO separators (sortable, cache-busting)</span>
+<span class="c">arch    = x86_64 | aarch64  (release token, normalized for EVERY OS — decoupled</span>
+<span class="c">                            from the build's internal triple: FreeBSD amd64 →</span>
+<span class="c">                            x86_64, dpkg arm64 → aarch64. NEVER amd64/arm64 here)</span>
+<span class="c">ext     = iso | img.zip     (img.zip = the RPi / raw disk-image variant)</span>
 
-Gershwin-nextbsd-amd64-20260719-101500.iso
-Gershwin-debian-arm64-20260719-101500.iso
-Gershwin-archlinux-amd64-20260719-101500.iso</pre></div>
+gershwin-on-nextbsd-20260719101500-x86_64.iso
+gershwin-on-debian-20260719101500-aarch64.iso
+gershwin-on-debian-20260719101500-aarch64.img.zip</pre></div>
 
   <h3>Screenshots publish <em>in the tag</em>, not the README</h3>
   <ul class="notes">
-    <li class="ok"><b>Stop committing <code class="inl">docs/desktop.png</code> to git.</b> The README holds one image and five flavors would churn binaries into history on every build. Instead, <code class="inl">publish-continuous</code> attaches the gate's screenshot to the release: <code class="inl">Gershwin-&lt;flavor&gt;-desktop.png</code>. It's versioned with the exact ISO it depicts and adds zero git churn.</li>
-    <li><b>The README becomes a gallery</b> that references each release-asset URL (<code class="inl">…/releases/download/continuous-&lt;flavor&gt;/Gershwin-&lt;flavor&gt;-desktop.png</code>) and links to the tag. One README, five live screenshots. (Minor: GitHub's camo image cache can show a refreshed shot as stale briefly — fine for a preview.)</li>
+    <li class="ok"><b>Stop committing <code class="inl">docs/desktop.png</code> to git.</b> The README holds one image and five flavors would churn binaries into history on every build. Instead, <code class="inl">publish-continuous</code> attaches the gate's screenshot to the release <b>named to match the ISO</b> — same stem, <code class="inl">.png</code> extension: <code class="inl">gershwin-on-&lt;flavor&gt;-&lt;stamp&gt;-&lt;arch&gt;.png</code> — and <b>embeds it inline in the release body</b>. It rotates with the ISO (new one uploaded first, old one pruned after) and adds zero git churn.</li>
+    <li class="warn"><b>The screenshot URL changes every build,</b> exactly like the ISO's — the two always share a stem, so nothing in the release has a fixed "latest" URL. A README gallery therefore links to each <b>tag page</b> (<code class="inl">…/releases/tag/continuous-&lt;flavor&gt;</code>), which always shows the current shot inline in the body, rather than hotlinking a fixed asset URL.</li>
   </ul>
 
   <h3>Each <code style="font-size:0.85em">continuous-&lt;flavor&gt;</code> release contains</h3>
   <div class="scroll">
   <table class="spec">
     <tr><th>Asset</th><th>On which flavors</th></tr>
-    <tr><td><code>Gershwin-&lt;flavor&gt;-amd64-&lt;stamp&gt;.iso</code> + <code>.iso.sha256</code></td><td>all</td></tr>
-    <tr><td><code>Gershwin-&lt;flavor&gt;-arm64-&lt;stamp&gt;.iso</code> + <code>.iso.sha256</code></td><td>debian, devuan (dual-arch)</td></tr>
-    <tr><td><code>Gershwin-&lt;flavor&gt;-desktop.png</code></td><td>all (gated amd64 boot)</td></tr>
-    <tr><td><code>Gershwin-debian-rpi-arm64-&lt;stamp&gt;.img.zip</code> + <code>.sha256</code></td><td>debian only (RPi variant)</td></tr>
+    <tr><td><code>gershwin-on-&lt;flavor&gt;-&lt;stamp&gt;-x86_64.iso</code></td><td>all</td></tr>
+    <tr><td><code>gershwin-on-&lt;flavor&gt;-&lt;stamp&gt;-aarch64.iso</code></td><td>debian, devuan (dual-arch)</td></tr>
+    <tr><td><code>gershwin-on-&lt;flavor&gt;-&lt;stamp&gt;-x86_64.png</code> <span class="dim">(matches the ISO)</span></td><td>all (gated x86_64 boot)</td></tr>
+    <tr><td><code>gershwin-on-debian-&lt;stamp&gt;-aarch64.img.zip</code></td><td>debian only (RPi / disk-image variant)</td></tr>
   </table>
   </div>
   <ul class="notes">
-    <li><b>Trade-off to know:</b> timestamped filenames are deliberately cache-busting (dodge CDN staleness), so the download URL changes each build — there's no fixed "latest ISO" link. Point users at the <b>tag page</b> (<code class="inl">…/releases/tag/continuous-debian</code>), which always lists the current asset.</li>
+    <li class="ok"><b>No <code class="inl">.sha256</code> sidecars.</b> GitHub shows each release asset's SHA-256 digest natively, so the extra files are dropped — one ISO, one screenshot, nothing else.</li>
+    <li><b>Every continuous release is a <code class="inl">--prerelease</code></b> — the project is early-stage, so no flavor's rolling build carries GitHub's "Latest" badge. This is a deliberate quality signal; keep it uniform across all flavors.</li>
+    <li class="ok"><b>Tag preserved, ISO + screenshot rotated in place.</b> <code class="inl">publish-continuous</code> uploads the new (timestamped) ISO and its matching-named screenshot first, then deletes the previous build's ISO and screenshot — the release always holds exactly one current image and is never left empty. The git tag is created once and never re-cut (no <code class="inl">--cleanup-tag</code>).</li>
+    <li><b>Trade-off to know:</b> both filenames are timestamped (cache-busting), so their download URLs change each build — there's no fixed "latest" link for either. Point users at the <b>tag page</b> (<code class="inl">…/releases/tag/continuous-debian</code>), which always lists the current asset and shows the screenshot inline.</li>
+  </ul>
+
+  <h3>What a published release looks like</h3>
+  <p class="lead"><code class="inl">publish-continuous</code> renders each <code class="inl">continuous-&lt;flavor&gt;</code> tag as one self-describing release: a proper-cased <b>title</b>, a <b>body</b> that leads with the desktop screenshot inline and nothing else but a build-log link, and exactly <b>two assets</b> whose stems match. Title, body and assets are <em>regenerated on every publish</em>, so the release never shows a stale or half-updated state. For nextbsd it renders as:</p>
+  <div class="code"><span class="code-label">releases/tag/continuous-nextbsd — as GitHub renders it</span><pre class="code-body"><span class="c"># ── title (releases list + tag page) ─────────────────────────────</span>
+<b>NextBSD</b>      <span class="c">Pre-release · tag: continuous-nextbsd</span>
+
+<span class="c"># ── body (Markdown) ──────────────────────────────────────────────</span>
+┌───────────────────────────────────────────────┐
+│                                               │
+│      [ About This Computer + desktop ]        │   <span class="c">inline image, embedded from</span>
+│                                               │   <span class="c">the matching .png asset below</span>
+└───────────────────────────────────────────────┘
+Build log: …/actions/runs/&lt;run-id&gt;
+
+<span class="c"># ── assets — exactly two, matching stems; GitHub shows the digest ─</span>
+gershwin-on-nextbsd-20260721000706-x86_64.iso     sha256:…   1.66 GiB
+gershwin-on-nextbsd-20260721000706-x86_64.png     sha256:…    248 KiB</pre></div>
+  <ul class="notes">
+    <li class="ok"><b>The body is just image + build log</b> — no "ISO:" or "commit:" lines, because the ISO's full name is already carried by the screenshot's matching filename, and the run is one click away via the log link.</li>
+    <li class="ok"><b>The digest column is GitHub's own,</b> so there are no <code class="inl">.sha256</code> sidecars to attach or prune — the release is literally <em>one ISO + one screenshot</em>.</li>
+    <li><b>Dual-arch flavors</b> (debian, devuan) add a second <code class="inl">…-aarch64.iso</code>, published <em>ungated</em>; only the gated <b>x86_64</b> boot produces a screenshot, so the inline body image always depicts the x86_64 build. See the asset table above.</li>
   </ul>
 
   <!-- =================== 9 =================== -->
@@ -334,13 +363,14 @@ Gershwin-archlinux-amd64-20260719-101500.iso</pre></div>
   <p class="lead">The two family templates <em>are</em> the onboarding surface. A new distro becomes an ~8-line caller plus one target directory — no forking a repo, no new build engine.</p>
 
   <div class="code"><span class="code-label">continuous-ubuntu.yml — a brand-new variant, complete</span><pre class="code-body"><span class="k">on</span>:
-  <span class="k">push</span>: { <span class="k">branches</span>: [main], <span class="k">paths</span>: [<span class="s">'targets/ubuntu/**'</span>] }
+  <span class="k">push</span>: { <span class="k">branches</span>: [main], <span class="k">paths</span>: [<span class="s">'targets/ubuntu/**'</span>, <span class="s">'.github/**'</span>] }
   <span class="k">workflow_dispatch</span>:
 <span class="k">jobs</span>:
   <span class="k">iso</span>:
     <span class="k">uses</span>: ./.github/workflows/reusable-iso-linux.yml
-    <span class="k">with</span>: { flavor: ubuntu, arches: <span class="s">"amd64 arm64"</span>, release_tag: continuous-ubuntu }
+    <span class="k">with</span>: { flavor: ubuntu, arches: <span class="s">"x86_64 aarch64"</span>, release_tag: continuous-ubuntu }
     <span class="k">secrets</span>: inherit</pre></div>
+  <p class="lead dim">Arch tokens are the release names (<code class="inl">x86_64</code>/<code class="inl">aarch64</code>) — the adapter maps them to whatever its bootstrap needs (dpkg <code class="inl">arm64</code>, etc.). Scoping the trigger to <code class="inl">targets/ubuntu/**</code> + <code class="inl">.github/**</code> means this flavor rebuilds on its own target or any shared-infra change, and never on a README-only edit — the same contract the reference flavor states with <code class="inl">paths-ignore: [README.md]</code>.</p>
 
   <div class="code"><span class="code-label">targets/ubuntu/ — everything the author actually writes</span><pre class="code-body">adapter.sh        <span class="c"># bootstrap_rootfs() + install_packages()  (~3 funcs)</span>
 packages.list     <span class="c"># distro package set</span>
@@ -350,7 +380,7 @@ overlays/         <span class="c"># init wiring (Ubuntu = systemd units) + X dri
   <div class="scroll">
   <table class="spec">
     <tr><th>Contract</th><th>Requirement</th></tr>
-    <tr><td>Output</td><td>write the ISO to <code>out/Gershwin-&lt;flavor&gt;-&lt;arch&gt;-&lt;stamp&gt;.iso</code> (+ <code>.iso.sha256</code>)</td></tr>
+    <tr><td>Output</td><td>write the ISO to <code>out/gershwin-on-&lt;flavor&gt;-&lt;stamp&gt;-&lt;arch&gt;.iso</code> (arch = <code>x86_64</code>/<code>aarch64</code>; no sha256 sidecar)</td></tr>
     <tr><td>Boot</td><td>ISO boots to the Gershwin desktop on <b>x86_64 UEFI</b> so the shared QEMU gate can screenshot it</td></tr>
     <tr><td>Desktop</td><td>install Gershwin via <code>gershwin-developer</code> so the gate's colour/OCR markers match</td></tr>
     <tr><td>X server</td><td>install <b>XLibre</b> (never Xorg); the adapter supplies the package source, the config comes from the shared install</td></tr>
@@ -365,7 +395,7 @@ overlays/         <span class="c"># init wiring (Ubuntu = systemd units) + X dri
     <li><b>2.</b> Copy <code class="inl">targets/_template-&lt;family&gt;/</code> → <code class="inl">targets/&lt;flavor&gt;/</code>; fill <code class="inl">adapter.sh</code>, package list, overlay.</li>
     <li><b>3.</b> Copy the caller → <code class="inl">continuous-&lt;flavor&gt;.yml</code>; set flavor / arches / tag.</li>
     <li><b>4.</b> Add <code class="inl">&lt;flavor&gt;</code> to the <code class="inl">build-all</code> matrix and a README gallery cell.</li>
-    <li><b>5.</b> First run: tune the gate markers → once green, it auto-publishes <code class="inl">continuous-&lt;flavor&gt;</code> with ISO + sha256 + screenshot.</li>
+    <li><b>5.</b> First run: tune the gate markers → once green, it auto-publishes <code class="inl">continuous-&lt;flavor&gt;</code> with the ISO + inline screenshot (no sha256).</li>
   </ul>
   <ul class="notes">
     <li class="ok"><b>Free for the author:</b> the screenshot gate, rolling-tag publish with delete+recreate hygiene, sha256, screenshot-as-asset, README gallery entry, universal naming — all inherited from the template.</li>

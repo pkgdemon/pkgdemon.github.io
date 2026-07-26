@@ -80,7 +80,7 @@
   <a href="#gap-analysis">Gap analysis</a>
   <a href="#feature-disable">Feature disable map</a>
   <a href="#new-libs">New libs</a>
-  <a href="#cmake-config">CMake flags</a>
+  <a href="#build-system">Build system</a>
   <a href="#freebsd-deps">FreeBSD deps</a>
   <a href="#phases">Phases</a>
   <a href="#open-questions">Open questions</a>
@@ -716,83 +716,68 @@ WebCore → CGContext (libs-opal/Cairo)        → CGBitmapContext backing store
 <p>All of these libs should be hosted alongside the existing GNUstep core libs (<code>libs-opal</code>, <code>libs-quartzcore</code>, <code>libs-corebase</code>, <code>libs-av</code>) in the GNUstep GitHub organization and follow the same CMake/GNUstep-make dual build system pattern.</p>
 </section>
 
-<!-- ═══════════════════════════════════════════════════ CMAKE CONFIG -->
-<section id="cmake-config">
-<h2>Minimal CMake configuration</h2>
-<p>The following command configures WebKit for the minimal initial build — HTML, CSS, JavaScript (with JIT), DOM, CSSOM, layout, and painting. No media, no GPU process, no platform-specific extras. This is enough to render real web content.</p>
+<!-- ═══════════════════════════════════════════════════ BUILD SYSTEM -->
+<section id="build-system">
+<h2>Build system — buildtool (libs-xcode), not CMake+Ninja</h2>
 
-<pre class="shell">cmake -B Build -G Ninja \
-  -DPORT=Mac \
-  -DCMAKE_C_COMPILER=clang \
-  -DCMAKE_CXX_COMPILER=clang++ \
-  -DCMAKE_OBJC_COMPILER=clang \
-  -DCMAKE_OBJCXX_COMPILER=clang++ \
-  -DUSE_SYSTEM_UNIFDEF=OFF \
-  -DENABLE_MINIBROWSER=ON \
-  \
-  -DENABLE_GPU_PROCESS=OFF \
-  -DENABLE_WEBGL=OFF \
-  -DENABLE_WEBGPU=OFF \
-  \
-  -DENABLE_VIDEO=OFF \
-  -DENABLE_WEB_AUDIO=OFF \
-  -DENABLE_SPEECH_SYNTHESIS=OFF \
-  -DENABLE_AV1=OFF \
-  \
-  -DENABLE_APPLE_PAY=OFF \
-  -DENABLE_GAMEPAD=OFF \
-  -DENABLE_WEB_RTC=OFF \
-  -DENABLE_WEB_AUTHN=OFF \
-  -DENABLE_WEBXR=OFF \
-  -DENABLE_PDF_PLUGIN=OFF \
-  -DENABLE_PDFKIT_PLUGIN=OFF \
-  -DENABLE_UNIFIED_PDF=OFF \
-  -DENABLE_MODEL_ELEMENT=OFF \
-  -DENABLE_WRITING_TOOLS=OFF \
-  -DENABLE_TELEPHONE_NUMBER_DETECTION=OFF \
-  -DENABLE_CONTENT_FILTERING=OFF \
-  -DENABLE_SERVICE_CONTROLS=OFF \
-  -DENABLE_WK_WEB_EXTENSIONS=OFF \
-  -DENABLE_INSPECTOR_ALTERNATE_DISPATCHERS=OFF \
-  -DENABLE_INSPECTOR_EXTENSIONS=OFF \
-  -DENABLE_WEBDRIVER=OFF \
-  -DENABLE_ACCESSIBILITY_ISOLATED_TREE=OFF \
-  -DENABLE_SANDBOX_EXTENSIONS=OFF \
-  -DENABLE_WEB_CODECS=OFF \
-  -DENABLE_WEBASSEMBLY=OFF \
-  -DENABLE_MEDIA_STREAM=OFF \
-  -DENABLE_MEDIA_SOURCE=OFF \
-  -DENABLE_MEDIA_RECORDER=OFF \
-  -DENABLE_MEDIA_SESSION=OFF \
-  -DENABLE_ENCRYPTED_MEDIA=OFF \
-  -DENABLE_PICTURE_IN_PICTURE_API=OFF \
-  -DENABLE_OFFSCREEN_CANVAS=OFF \
-  -DENABLE_OFFSCREEN_CANVAS_IN_WORKERS=OFF \
-  -DUSE_AVIF=OFF \
-  -DUSE_JPEGXL=OFF \
-  -DENABLE_API_TESTS=OFF \
-  -DENABLE_LAYOUT_TESTS=OFF</pre>
+<div class="tldr">
+  <h3>Hard rule: model macOS</h3>
+  <p>On macOS, WebKit is built with <strong>Xcode</strong> via <code>.xcodeproj</code> files — not CMake, not Ninja, not Make. The CMake+Ninja path exists only for the GTK/WPE/Windows/PlayStation ports. Since we are modeling the macOS port exclusively, we use <strong><code>buildtool</code></strong> from <code>libs-xcode</code> — GNUstep's tool for building from <code>.xcodeproj</code> files.</p>
+</div>
 
-<h3>Port selection and cmake file structure</h3>
-<p>We set <code>-DPORT=Mac</code> to start from the Mac port's <code>OptionsMac.cmake</code> and <code>OptionsCocoa.cmake</code>. These set the right defaults for a Cocoa-based browser. There are two approaches to GNUstep-specific configuration:</p>
+<h3>Why buildtool, not CMake</h3>
+<ul>
+  <li><strong>macOS doesn't ship Ninja.</strong> If macOS doesn't need it, we don't need it. Hard rule.</li>
+  <li><strong>The <code>.xcodeproj</code> files ARE the macOS build system.</strong> They define every source file, every framework dependency, every build setting, every conditional compilation flag. The CMake files are a parallel build system maintained for non-Mac ports.</li>
+  <li><strong><code>buildtool</code> reads <code>.xcodeproj</code> natively.</strong> It parses the PBX format and drives builds using GNUstep-make or generates GNUmakefiles/CMake files. This means we build from the same project files Apple uses.</li>
+  <li><strong>Feature flags live in <code>.xcodeproj</code> build settings.</strong> On macOS, <code>ENABLE_VIDEO</code>, <code>ENABLE_WEBGL</code>, etc. are Xcode build settings in <code>XCBuildConfiguration</code> objects — not CMake variables. <code>buildtool</code> reads these directly.</li>
+</ul>
 
-<p><strong>Approach (a) — Recommended:</strong> Create <code>Source/cmake/OptionsGNUstep.cmake</code> that includes <code>OptionsMac.cmake</code> and then overrides GNUstep-specific settings (library paths from <code>gnustep-config</code>, platform detection, GNUstep-specific feature flags). Then add <code>GNUSTEP</code> as a recognized port option in <code>Source/cmake/WebKitFeatures.cmake</code>. This is clean, upstream-friendly, and easy to rebase.</p>
+<h3>WebKit's <code>.xcodeproj</code> structure</h3>
+<pre>WebKit.xcworkspace                    ← master workspace
+  Source/WTF/WTF.xcodeproj            ← Web Template Framework (platform abstractions)
+  Source/bmalloc/bmalloc.xcodeproj    ← memory allocator
+  Source/JavaScriptCore/JavaScriptCore.xcodeproj  ← JS engine
+  Source/WebCore/WebCore.xcodeproj    ← rendering engine
+  Source/WebKit/WebKit.xcodeproj      ← multi-process layer (UIProcess/WebProcess/NetworkProcess)
+  Tools/MiniBrowser/MiniBrowser.xcodeproj  ← browser shell</pre>
 
-<p><strong>Approach (b) — Alternative:</strong> Add <code>if(PORT STREQUAL "Mac" AND GNUSTEP)</code> guards within <code>OptionsMac.cmake</code>. This keeps a single options file but makes it messier and harder to upstream.</p>
+<h3>Build approach</h3>
+<pre class="shell">. /System/Library/Makefiles/GNUstep.sh
 
-<p>The cmake file hierarchy to create:</p>
-<pre>Source/cmake/
-  OptionsGNUstep.cmake        ← new: includes OptionsMac.cmake, overrides for GNUstep
-  FindGNUstep.cmake           ← new: runs gnustep-config, sets GNUSTEP_INCLUDE_DIRS etc.
-  PlatformGNUstep.cmake       ← new: GNUstep-specific compiler flags (-fobjc-runtime=gnustep-2.0 etc.)
+# Build order (matching Xcode workspace dependency graph):
+buildtool build -project Source/WTF/WTF.xcodeproj
+buildtool build -project Source/bmalloc/bmalloc.xcodeproj
+buildtool build -project Source/JavaScriptCore/JavaScriptCore.xcodeproj
+buildtool build -project Source/WebCore/WebCore.xcodeproj
+buildtool build -project Source/WebKit/WebKit.xcodeproj
+buildtool build -project Tools/MiniBrowser/MiniBrowser.xcodeproj</pre>
 
-Source/WTF/wtf/
-  PlatformHaveGNUstep.h       ← new: HAVE() macros for GNUstep capabilities
-  PlatformUseGNUstep.h        ← new: USE() macros for GNUstep choices
-  PlatformEnableGNUstep.h     ← new: ENABLE() overrides for disabled features
+<h3>Feature disable — via build settings, not CMake flags</h3>
+<p>On macOS, features are controlled by <code>GCC_PREPROCESSOR_DEFINITIONS</code> in the Xcode build configuration. To disable features for the minimal build, override build settings:</p>
+<pre class="shell">buildtool build -project Source/WebCore/WebCore.xcodeproj \
+  GCC_PREPROCESSOR_DEFINITIONS='$(inherited) ENABLE_VIDEO=0 ENABLE_WEB_AUDIO=0 \
+  ENABLE_WEBGL=0 ENABLE_WEBGPU=0 ENABLE_GPU_PROCESS=0 ENABLE_APPLE_PAY=0 \
+  ENABLE_GAMEPAD=0 ENABLE_WEB_RTC=0 ENABLE_WEB_AUTHN=0 ENABLE_WEBXR=0 \
+  ENABLE_PDF_PLUGIN=0 ENABLE_WEBASSEMBLY=0 ENABLE_SPEECH_SYNTHESIS=0'</pre>
 
-Source/WTF/wtf/PlatformLegacy.h
-  ← modify: add PLATFORM(GNUSTEP) detection</pre>
+<div class="open-q">
+  <strong>Open question:</strong> <code>buildtool</code> needs to be validated against WebKit's <code>.xcodeproj</code> files, which are large and complex (WebCore.xcodeproj alone has thousands of file references). If <code>buildtool</code> cannot handle the full project initially, a fallback is to use <code>buildtool generate</code> to produce GNUmakefiles from the <code>.xcodeproj</code> and then build with <code>gmake</code>. This is still modeling macOS (same source file list, same build settings) but using GNUstep-make as the driver instead of <code>xcodebuild</code>.
+</div>
+
+<h3>Platform detection</h3>
+<p>WebKit's <code>.xcodeproj</code> build settings assume macOS/Xcode. We need to add GNUstep detection so the correct platform headers and libraries are found:</p>
+<pre>Source/WTF/wtf/PlatformLegacy.h
+  ← modify: add PLATFORM(GNUSTEP) detection (same as v3/v4 approach)
+
+Source/WTF/wtf/PlatformHave.h
+  ← modify: set HAVE() macros for GNUstep capabilities
+
+Source/WTF/wtf/PlatformUse.h
+  ← modify: set USE() macros for GNUstep choices
+
+Source/WTF/wtf/PlatformEnable.h
+  ← modify: set ENABLE() overrides for disabled features</pre>
 
 <h3>What this minimal build gives you</h3>
 <ul>
@@ -815,9 +800,9 @@ Source/WTF/wtf/PlatformLegacy.h
 <p>Only what macOS WebKit equivalent needs — no Linux desktop stack.</p>
 
 <h3>Build tools — must install</h3>
-<p>On macOS, Ruby and gperf ship with Xcode Command Line Tools. Ninja is typically installed via Homebrew. On NextBSD/FreeBSD, install from pkg:</p>
-<pre class="shell">pkg install -y ruby33 gperf ninja woff2</pre>
-<p><strong>Not needed:</strong> <del>bison</del> <del>flex</del> — macOS WebKit does not use bison or flex. JSC's parser is hand-written (recursive descent). These are GTK/WPE port build tools only. <code>cmake</code> is already installed on this system.</p>
+<p>On macOS, Ruby and gperf ship with Xcode Command Line Tools. WebKit is built by Xcode (<code>xcodebuild</code>), not CMake+Ninja. On GNUstep, <code>buildtool</code> (from <code>libs-xcode</code>, already installed) replaces <code>xcodebuild</code>. Install from pkg:</p>
+<pre class="shell">pkg install -y ruby33 gperf woff2</pre>
+<p><strong>Not needed:</strong> <del>bison</del> <del>flex</del> — macOS WebKit does not use them (JSC's parser is hand-written). <del>ninja</del> — macOS does not ship Ninja; WebKit uses Xcode, we use <code>buildtool</code>. <del>cmake</del> — the <code>.xcodeproj</code> files are the build system, not CMake (CMake is only for the GTK/WPE Linux ports).</p>
 
 <h3>Required libraries — already installed on NextBSD</h3>
 <p>These are already present on this NextBSD system (verified via <code>pkg-config</code>). On a fresh FreeBSD system they would need installing:</p>

@@ -1,0 +1,1024 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD WebKit v5 — Cocoa-native GNUstep porting plan</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.objc { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  table.compact td, table.compact th { padding: .35rem .55rem; font-size: .88rem; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .gap { background: #fff5f5; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .gap strong { color: var(--bad); }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .yesno { font-weight: 600; }
+  .yesno.yes { color: var(--ok); }
+  .yesno.no  { color: var(--bad); }
+  .yesno.partial { color: var(--warn); }
+  .src { color: var(--muted); font-size: .85em; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#philosophy">Philosophy</a>
+  <a href="#prior-art">Prior art</a>
+  <a href="#architecture">Architecture</a>
+  <a href="#gap-analysis">Gap analysis</a>
+  <a href="#new-libs">New libs</a>
+  <a href="#cmake-config">CMake flags</a>
+  <a href="#freebsd-deps">FreeBSD deps</a>
+  <a href="#phases">Phases</a>
+  <a href="#open-questions">Open questions</a>
+</nav>
+
+<h1>NextBSD WebKit v5 — Cocoa-native GNUstep porting plan
+  <span class="pill info">Plan</span>
+  <span class="pill warn">v5</span>
+</h1>
+<p class="subtitle">Grounded in a source-level audit of WebKit trunk (July 2026), the GNUstep core library stack installed on NextBSD (libs-opal, libs-quartzcore, libs-corebase, libs-av, gnustep-base, gnustep-gui), and lessons from four prior porting attempts (v1–v4). This plan ports the macOS/Cocoa WebKit — not the GTK or Linux port — using native GNUstep framework implementations with zero GTK, GLib, GStreamer, Skia, Mesa, or Wayland dependencies.</p>
+
+<!-- ═══════════════════════════════════════════════════ TL;DR -->
+<section id="tldr">
+<h2>TL;DR</h2>
+<div class="tldr">
+  <h3>What this plan is</h3>
+  <ul>
+    <li>This is <strong>v5</strong>: port the <strong>macOS Cocoa WebKit</strong> to GNUstep. Not the GTK port, not the Windows port. The real Cocoa port.</li>
+    <li><strong>No Skia, no GTK, no GLib, no GStreamer, no libsoup, no Mesa, no Wayland</strong> as direct WebKit dependencies. If macOS doesn't use it, we don't use it.</li>
+    <li>Use GNUstep's implementations of Apple frameworks: CoreGraphics (<code>libs-opal</code>/Cairo), CoreText (<code>libs-opal</code>/FreeType), CoreFoundation (<code>libs-corebase</code>), QuartzCore (<code>libs-quartzcore</code>), AVFoundation (<code>libs-av</code>/FFmpeg), Foundation (<code>gnustep-base</code>), AppKit (<code>gnustep-gui</code>).</li>
+    <li>Start from <code>OptionsMac.cmake</code>/<code>OptionsCocoa.cmake</code>. Create <code>OptionsGNUstep.cmake</code> that mirrors the Mac port's choices, not the GTK port's.</li>
+    <li>Every missing Apple API is documented as a gap. Gaps become either: (a) new GNUstep core libs (<code>libs-security</code>, <code>libs-iosurface</code>, <code>libs-corevideo</code>, <code>libs-coremedia</code>), (b) API additions to existing libs, or (c) minimal compile-time stubs for features disabled in the initial build.</li>
+    <li>Minimal build: disable WebGL, GPU Process, Video, WebAudio, WebRTC, Apple Pay, PDF, GamePad, WebAuthn, WASM — just HTML+CSS+JS in a <code>MiniBrowser.app</code> window.</li>
+    <li><strong>Target:</strong> first pixels on screen (<code>data:text/html</code> colored background) then iterate.</li>
+  </ul>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHILOSOPHY -->
+<section id="philosophy">
+<h2>Philosophy</h2>
+
+<h3>Hard rules</h3>
+
+<h4>Model macOS exclusively</h4>
+<p>We are porting the Cocoa WebKit. Every architectural decision follows what Apple's port does. When in doubt about how to structure something — a process, a rendering pipeline step, a threading model — look at <code>Source/WebKit/Platform/mac/</code>, <code>Source/WebCore/platform/cocoa/</code>, and <code>Source/WebKit/UIProcess/Cocoa/</code>. Those are the references.</p>
+
+<h4>No Linux desktop stack</h4>
+<p>Zero GTK, GLib, GStreamer, Skia, libsoup, Mesa, Wayland as WebKit dependencies. GNUstep's backends may use X11/Cairo internally — that's behind the framework boundary, not WebKit's concern. WebKit calls <code>CGContextFillRect()</code>, not <code>cairo_fill()</code>. What Cairo does internally inside libs-opal is irrelevant to WebKit.</p>
+
+<h4>Framework parity over workarounds</h4>
+<p>Where GNUstep is missing an API that macOS provides, the correct fix is to add that API to the appropriate GNUstep core lib (or create a new one) — not to substitute a Linux library. Substituting a Linux library is what v1 through v4 attempted in various ways, and it always led to architectural rot. The GNUstep framework stack exists precisely to avoid this. Use it. Extend it where necessary.</p>
+
+<h4>Gaps are the roadmap</h4>
+<p>Every missing API is documented (see §5 below). The gap list IS the work plan for GNUstep framework development. Gaps have three resolution paths:</p>
+<ol>
+  <li><strong>Implement in the appropriate GNUstep lib</strong> — the correct long-term answer for public Apple APIs.</li>
+  <li><strong>Stub for compile-time</strong> — acceptable for Apple SPI (private API) that we initially don't exercise.</li>
+  <li><strong>Guard with <code>#if PLATFORM(GNUSTEP)</code></strong> — acceptable for code paths we explicitly disable (no Metal, no GPU process, etc.).</li>
+</ol>
+
+<h4>Minimal dependencies</h4>
+<p>If macOS WebKit doesn't link against it, neither do we. The dependency list should be: GNUstep core libs + <code>libcurl</code> (inside NSURLSession) + <code>libxml2</code> + <code>libxslt</code> + <code>sqlite3</code> + ICU + image libs (png, jpeg, webp) + font libs (freetype, harfbuzz, fontconfig) + woff2. That's it. Any build script that adds <code>glib</code>, <code>gtk</code>, <code>gstreamer</code>, or <code>libsoup</code> to the dependency list has gone off-track.</p>
+
+<h4>Start with the smallest possible feature set</h4>
+<p>Disable everything optional. Get <code>data:text/html,&lt;body style="background:red"&gt;</code> rendering in MiniBrowser.app. Then iterate. Each phase adds one category of capability and verifies it before moving on. A browser that shows a red window is infinitely more valuable than a browser that almost compiles with video support.</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PRIOR ART -->
+<section id="prior-art">
+<h2>Prior art — lessons from v1–v4</h2>
+
+<table>
+  <thead>
+    <tr><th>Version</th><th>Base Port</th><th>Graphics</th><th>Result</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>v1</td>
+      <td>GTK (strip GLib)</td>
+      <td>Skia</td>
+      <td><span class="yesno no">Abandoned</span> — ~565 files to replace; GLib is woven through every GTK WebKit source file at the include level</td>
+    </tr>
+    <tr>
+      <td>v2</td>
+      <td>Windows port (no GLib)</td>
+      <td>Skia</td>
+      <td><span class="yesno partial">Better</span> — ~279 files, but still building a from-scratch browser on top of a non-Cocoa base</td>
+    </tr>
+    <tr>
+      <td>v3</td>
+      <td>Windows + Mac MiniBrowser shell</td>
+      <td>Skia</td>
+      <td><span class="yesno partial">Build succeeded</span> — window opens, no pixels rendered; <code>AcceleratedSurface::create()</code> was <code>RELEASE_ASSERT_NOT_REACHED()</code></td>
+    </tr>
+    <tr>
+      <td>v4</td>
+      <td>v3 + PageClient bridge</td>
+      <td>Skia</td>
+      <td><span class="yesno partial">Bridge designed</span> — <code>WKViewGNUstepPaint → NSBitmapImageRep → drawInRect:</code> path architected; pixels never appeared because Skia's surface creation was unimplemented</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Key lessons carried forward</h3>
+<ul>
+  <li><strong>v1</strong> proved the GTK base is wrong. GLib is everywhere — it can't be removed surgically. Abandoning the GTK port was correct.</li>
+  <li><strong>v2</strong> proved the Windows port is cleaner than GTK but still not the right model. The Windows port uses Direct2D/DirectWrite; replacing those with GNUstep APIs requires reimplementing the entire rendering tier.</li>
+  <li><strong>v3</strong> proved the Mac MiniBrowser copy approach works for the browser shell. The Mac <code>MiniBrowser/</code> compiles under GNUstep with relatively few changes — it uses standard AppKit.</li>
+  <li><strong>v4</strong> proved the <code>WKViewGNUstepPaint → NSBitmapImageRep → drawInRect:</code> pixel blit path is architecturally sound. The problem was never the NSView side — it was the upstream rendering surface.</li>
+  <li><strong>ALL of v1–v4 used Skia</strong> and never got pixels on screen. Skia's <code>AcceleratedSurface::create()</code> was <code>RELEASE_ASSERT_NOT_REACHED()</code> on every platform attempted.</li>
+  <li><strong>v5's key insight:</strong> instead of taking a non-Mac port and trying to make it work like Mac, <strong>start from the Mac port and replace Apple framework calls with GNUstep framework calls</strong>. Same APIs, different implementations. WebKit doesn't need to know whether <code>CGContextFillRect()</code> is using Apple's CG or libs-opal's Cairo under the hood.</li>
+</ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ ARCHITECTURE -->
+<section id="architecture">
+<h2>Architecture</h2>
+
+<h3>The macOS WebKit rendering pipeline</h3>
+<div class="ascii-diagram">macOS WebKit:
+
+WebCore → CGContext (CoreGraphics/Apple)     → CGBitmapContext backing store
+       → CTFont/CTLine/CTRun (CoreText)      for text shaping and layout
+       → CGImage/CGImageSource (ImageIO)     for image decoding
+       → CALayer tree (QuartzCore)           for compositing
+       → NSView drawRect:                    displays to screen via WindowServer
+</div>
+
+<h3>GNUstep equivalent (same API, different backend)</h3>
+<div class="ascii-diagram">GNUstep WebKit (v5):
+
+WebCore → CGContext (libs-opal/Cairo)        → CGBitmapContext backing store
+       → CTFont/CTLine/CTRun (libs-opal)     for text via FreeType + HarfBuzz
+       → CGImage/CGImageSource (libs-opal)   for image decoding
+       → CALayer tree (libs-quartzcore)      for compositing via OpenGL
+       → NSView drawRect: (gnustep-gui)      displays to screen via X11/gnustep-back
+</div>
+
+<p>The critical point: <strong>WebKit code doesn't change.</strong> It calls <code>CGContextFillRect()</code>, <code>CTFontGetGlyphsForCharacters()</code>, <code>[CALayer addSublayer:]</code>, <code>[NSView setNeedsDisplay:]</code> — identical calls on macOS and GNUstep. The framework implementations differ internally. The call sites in WebKit source remain the same.</p>
+
+<h3>Multi-process architecture</h3>
+<div class="ascii-diagram">MiniBrowser.app  (UIProcess)
+  │
+  ├── WebKitWebProcess      (WebProcess)    — renders pages via CGContext → CGBitmapContext
+  │     └── IPC ──────────────────────────── Unix domain socket (not Mach ports)
+  ├── WebKitNetworkProcess  (NetworkProcess) — handles network via NSURLSession/libcurl
+  │     └── IPC ──────────────────────────── Unix domain socket
+  └── Shared memory (POSIX shm_open / memfd_create) for pixel buffer transfer
+</div>
+
+<h4>A note on IPC transport</h4>
+<p>macOS WebKit uses Mach ports for IPC and XPC for process launching. GNUstep uses Unix domain sockets — this was proven viable in v3/v4 using the PlayStation port's <code>Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp</code>. We do <strong>not</strong> use GLib's <code>GSocket</code> or any GLib construct. <code>MachSendRight</code> wrapper types get POSIX file-descriptor equivalents. NSXPCConnection in gnustep-base provides basic XPC-style IPC; process launching uses <code>fork(2)</code>/<code>execve(2)</code> directly.</p>
+
+<p>For the initial single-process build (Phase 1–3), none of this IPC machinery is exercised — everything runs in a single process. Multi-process comes in Phase 3.</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ GAP ANALYSIS -->
+<section id="gap-analysis">
+<h2>Framework gap analysis <span class="pill info">Core of the plan</span></h2>
+<p>For each Apple framework that macOS WebKit depends on, this section documents what GNUstep currently provides and what is missing. This gap table is the definitive work plan.</p>
+
+<!-- ─── 5a CoreGraphics ─── -->
+<h3>5a. CoreGraphics (CGContext, CGImage, CGPath, …)</h3>
+<p><strong>GNUstep implementation:</strong> <code>libs-opal</code> — 35 public headers, Cairo rendering backend, LCMS2 color management.</p>
+
+<table>
+  <thead><tr><th>API</th><th>GNUstep Status</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>CGContext (full drawing API)</td><td><span class="yesno yes">Yes</span></td><td>All blend modes, paths, gradients, clipping, transforms, text drawing</td></tr>
+    <tr><td>CGBitmapContext</td><td><span class="yesno yes">Yes</span></td><td><code>CGBitmapContextCreate</code>, <code>CGBitmapContextCreateImage</code>, data access</td></tr>
+    <tr><td>CGPath (mutable/immutable)</td><td><span class="yesno yes">Yes</span></td><td>Full path construction, arcs, curves, ellipses, rounded rects</td></tr>
+    <tr><td>CGImage</td><td><span class="yesno yes">Yes</span></td><td>All pixel formats, alpha modes, premultiplied/non-premultiplied</td></tr>
+    <tr><td>CGImageSource / CGImageDestination</td><td><span class="yesno yes">Yes</span></td><td>PNG, JPEG, TIFF, GIF decoding and encoding</td></tr>
+    <tr><td>CGColor / CGColorSpace</td><td><span class="yesno yes">Yes</span></td><td>LCMS2 backend for color management; sRGB, DisplayP3, generic CMYK</td></tr>
+    <tr><td>CGFont</td><td><span class="yesno yes">Yes</span></td><td>FreeType/Fontconfig backend; glyph metrics, advances, bounding boxes</td></tr>
+    <tr><td>CGGradient / CGShading</td><td><span class="yesno yes">Yes</span></td><td>Linear, radial gradients; axial and radial shadings</td></tr>
+    <tr><td>CGPattern</td><td><span class="yesno yes">Yes</span></td><td>Pattern fills, colored and stencil patterns</td></tr>
+    <tr><td>CGLayer</td><td><span class="yesno yes">Yes</span></td><td>Offscreen drawing surfaces, reusable across contexts</td></tr>
+    <tr><td>CGPDFDocument / CGPDFPage / CGPDFContext</td><td><span class="yesno yes">Yes</span></td><td>Full PDF read/write support via Cairo PDF backend</td></tr>
+    <tr><td>CGAffineTransform</td><td><span class="yesno yes">Yes</span></td><td>All transform construction and application functions</td></tr>
+    <tr><td>CGDataProvider / CGDataConsumer</td><td><span class="yesno yes">Yes</span></td><td>Callback-based and direct-pointer data access</td></tr>
+  </tbody>
+</table>
+
+<h4>CoreGraphics gaps</h4>
+<div class="gap">
+  <strong>Gap:</strong> <code>CGContextDrawConicGradient</code> — not in libs-opal. Needed for CSS <code>conic-gradient()</code>. Cairo supports conic gradients since 1.17; needs to be wrapped.
+</div>
+<div class="gap">
+  <strong>Gap:</strong> <code>CGPathAddUnevenCornersRoundedRect</code>, <code>CGPathAddContinuousRoundedRect</code> — not in libs-opal. Required for CSS <code>border-radius</code> with per-corner radii and iOS-style "squircle" rounding. Must add to libs-opal.
+</div>
+<div class="gap">
+  <strong>Gap (SPI — stub):</strong> <code>CGColorSpaceUsesExtendedRange</code>, <code>CGColorSpaceCopyICCProfileDescription</code> — color management SPI. Stub as no-op / return nil initially; add LCMS2 implementation later.
+</div>
+<div class="gap">
+  <strong>Gap (SPI — stub):</strong> <code>CGImageSetCachingFlags</code>, <code>CGImageSetProperty</code> — image cache control SPI. Safe to stub as no-ops.
+</div>
+<div class="gap">
+  <strong>Gap (SPI — stub):</strong> <code>CGContextSetBaseCTM</code> — SPI. Map to <code>CGContextSetCTM</code> or stub; verify impact on text rendering.
+</div>
+<div class="gap">
+  <strong>Gap (SPI — implement over time):</strong> <code>CGStyleRef</code> family — <code>CGStyleCreateFocusRingWithColor</code>, <code>CGStyleCreateShadow2</code>, <code>CGStyleCreateGaussianBlur</code>, <code>CGStyleCreateColorMatrix</code>. Used for CSS filters (blur, drop-shadow, color-matrix). Stub initially; implement using Cairo's filter/surface API or a software pass.
+</div>
+<div class="gap">
+  <strong>Gap (requires new lib):</strong> <code>CGIOSurfaceContextCreate</code> and all IOSurface-backed CG APIs. Requires <code>libs-iosurface</code> (see §6). <strong>Not needed for Phase 1–4 software rendering path.</strong>
+</div>
+<div class="gap">
+  <strong>Gap (platform):</strong> <code>CGDisplayScreenSize</code>, <code>CGDisplayModeGetPixelsWide</code>, <code>CGDisplayModeGetPixelsHigh</code> — display management. Implement behind the API using X11/RandR queries or XGetGeometry.
+</div>
+<div class="gap">
+  <strong>Gap (not applicable):</strong> <code>CGS*</code> Window Server SPI — <code>CGSConnectionID</code>, <code>CGSSetWindowAlpha</code>, <code>CGSSetWindowLevel</code>, etc. Mach/WindowServer-specific. Guard with <code>#if PLATFORM(GNUSTEP)</code> and stub; not applicable under X11.
+</div>
+
+<div class="resolved">
+  <strong>Verdict:</strong> CoreGraphics is <strong>90%+ covered by libs-opal.</strong> The gaps are almost entirely Apple SPI (private API) that can be safely stubbed for an initial build, plus a handful of missing public functions (<code>CGContextDrawConicGradient</code>, <code>CGPathAddUnevenCornersRoundedRect</code>) that need to be added to libs-opal.
+</div>
+
+<!-- ─── 5b CoreText ─── -->
+<h3>5b. CoreText (CTFont, CTLine, CTRun, …)</h3>
+<p><strong>GNUstep implementation:</strong> <code>libs-opal</code> — 15 CoreText headers, FreeType/Fontconfig backend with HarfBuzz for shaping.</p>
+
+<table>
+  <thead><tr><th>API</th><th>GNUstep Status</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>CTFont (create, metrics, glyphs)</td><td><span class="yesno yes">Yes</span></td><td>Full font creation, size, weight, slant, metric accessors</td></tr>
+    <tr><td>CTFontDescriptor</td><td><span class="yesno yes">Yes</span></td><td>Attribute-based font matching via Fontconfig</td></tr>
+    <tr><td>CTFontCollection</td><td><span class="yesno yes">Yes</span></td><td>System font enumeration via Fontconfig</td></tr>
+    <tr><td>CTFontManager</td><td><span class="yesno yes">Yes</span></td><td>Font registration, dynamic font loading from file</td></tr>
+    <tr><td>CTLine (create, draw, metrics)</td><td><span class="yesno yes">Yes</span></td><td>Line layout, line metrics (ascent/descent/leading/width)</td></tr>
+    <tr><td>CTRun (glyphs, advances, positions)</td><td><span class="yesno yes">Yes</span></td><td>Per-run glyph access, advance widths, origins</td></tr>
+    <tr><td>CTFrame / CTFramesetter</td><td><span class="yesno yes">Yes</span></td><td>Frame-based multi-line layout in an arbitrary path</td></tr>
+    <tr><td>CTTypesetter</td><td><span class="yesno yes">Yes</span></td><td>Line breaking, soft hyphenation</td></tr>
+    <tr><td>CTParagraphStyle</td><td><span class="yesno yes">Yes</span></td><td>Paragraph alignment, line spacing, writing direction</td></tr>
+  </tbody>
+</table>
+
+<h4>CoreText gaps</h4>
+<div class="gap">
+  <strong>Gap (SPI — important):</strong> <code>CTFontCreateForCharactersWithLanguageAndOption</code> — SPI for font fallback with language hint. Critical for correct international text rendering (CJK, Arabic, Indic scripts). Needs implementation in libs-opal using Fontconfig's language matching and HarfBuzz font selection.
+</div>
+<div class="gap">
+  <strong>Gap (verify):</strong> <code>CTFontDrawGlyphs</code> — public API for drawing an array of glyphs to a CGContext. May need verification that libs-opal's implementation handles all edge cases (vertical text, color emoji).
+</div>
+<div class="gap">
+  <strong>Gap (SPI — complex shaping):</strong> <code>CTFontShapeGlyphs</code> — SPI for complex script glyph shaping (Arabic ligatures, Indic conjuncts). HarfBuzz performs this internally; the SPI exposes it as a CT call. Needs a CT-API wrapper around HarfBuzz's <code>hb_shape()</code>.
+</div>
+<div class="gap">
+  <strong>Gap (SPI — stub initially):</strong> <code>CTFontCopyColorGlyphCoverage</code> — SPI for detecting which codepoints have color (emoji) glyphs. Stub as returning NULL; implement by inspecting font CBDT/COLR tables later.
+</div>
+<div class="gap">
+  <strong>Gap (SPI — stub initially):</strong> <code>CTFontIsAppleColorEmoji</code> — SPI. Stub to always return false. Web content degrades gracefully (text emoji instead of color).
+</div>
+<div class="gap">
+  <strong>Gap (SPI — optimization):</strong> <code>CTLineCreateWithUniCharProvider</code> — SPI for efficient line layout avoiding NSAttributedString allocation per line. Implement later as a performance optimization; not needed for correctness.
+</div>
+<div class="gap">
+  <strong>Gap (SPI — vertical text):</strong> <code>CTRunGetBaseAdvancesAndOrigins</code> — SPI for vertical text metrics. Stub initially; implement when adding vertical writing mode support.
+</div>
+<div class="gap">
+  <strong>Gap (important for CSS):</strong> <code>CTFontDescriptorCreateForCSSFamily</code> — SPI mapping CSS generic font families (<code>serif</code>, <code>sans-serif</code>, <code>monospace</code>, <code>cursive</code>, <code>fantasy</code>) to actual system fonts. Essential for web content to render with appropriate fonts. Implement using Fontconfig's generic alias system.
+</div>
+<div class="gap">
+  <strong>Gap (important for fallback):</strong> <code>CTFontCopyDefaultCascadeListForLanguages</code> — public API returning the font fallback cascade list for a set of BCP 47 language tags. Needed for correct rendering of multilingual pages. Implement using Fontconfig's font substitution database.
+</div>
+<div class="gap">
+  <strong>Gap (SPI — stub):</strong> OTSVG color vector font rendering — Apple SPI for rendering SVG-in-OpenType fonts (color vector emoji). Stub; not critical for initial web content.
+</div>
+
+<div class="resolved">
+  <strong>Verdict:</strong> CoreText is <strong>~80% covered.</strong> The base text layout pipeline works. Font fallback cascade (<code>CTFontCopyDefaultCascadeListForLanguages</code>) and CSS family mapping (<code>CTFontDescriptorCreateForCSSFamily</code>) are the most critical missing pieces for correct web content rendering — these must be implemented before Phase 6 (real web content).
+</div>
+
+<!-- ─── 5c CoreFoundation ─── -->
+<h3>5c. CoreFoundation (CFString, CFRunLoop, CFURL, …)</h3>
+<p><strong>GNUstep implementation:</strong> <code>libs-corebase</code> — 36 public headers.</p>
+
+<table>
+  <thead><tr><th>API</th><th>GNUstep Status</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>CFString / CFMutableString</td><td><span class="yesno yes">Yes</span></td><td>Full Unicode string API, encoding conversion, string comparison</td></tr>
+    <tr><td>CFArray / CFMutableArray</td><td><span class="yesno yes">Yes</span></td><td>Typed collections with custom callbacks</td></tr>
+    <tr><td>CFDictionary / CFMutableDictionary</td><td><span class="yesno yes">Yes</span></td><td>Hash table collections</td></tr>
+    <tr><td>CFSet / CFMutableSet</td><td><span class="yesno yes">Yes</span></td><td>Set collections</td></tr>
+    <tr><td>CFData / CFMutableData</td><td><span class="yesno yes">Yes</span></td><td>Byte buffer type</td></tr>
+    <tr><td>CFNumber / CFBoolean</td><td><span class="yesno yes">Yes</span></td><td>Numeric boxing</td></tr>
+    <tr><td>CFRunLoop / CFRunLoopSource / CFRunLoopTimer / CFRunLoopObserver</td><td><span class="yesno yes">Yes</span></td><td>Event loop primitives</td></tr>
+    <tr><td>CFURL / CFURLComponents</td><td><span class="yesno yes">Yes</span></td><td>URL creation, resolution, component access</td></tr>
+    <tr><td>CFBundle</td><td><span class="yesno yes">Yes</span></td><td>Bundle resource loading, Info.plist access</td></tr>
+    <tr><td>CFPropertyList</td><td><span class="yesno yes">Yes</span></td><td>Plist serialization (XML and binary formats)</td></tr>
+    <tr><td>CFDate / CFCalendar / CFTimeZone / CFLocale</td><td><span class="yesno yes">Yes</span></td><td>Date, time, locale primitives</td></tr>
+    <tr><td>CFError</td><td><span class="yesno yes">Yes</span></td><td>Error domain/code/userInfo model</td></tr>
+    <tr><td>CFSocket / CFStream / CFReadStream / CFWriteStream</td><td><span class="yesno yes">Yes</span></td><td>Socket and stream I/O</td></tr>
+    <tr><td>CFUUID</td><td><span class="yesno yes">Yes</span></td><td>UUID generation and string conversion</td></tr>
+  </tbody>
+</table>
+
+<h4>CoreFoundation gaps</h4>
+<div class="gap">
+  <strong>Gap (critical — must implement):</strong> <code>CFNotificationCenter</code> — <strong>MISSING</strong> from libs-corebase. WebKit uses <code>CFNotificationCenterGetLocalCenter()</code> and <code>CFNotificationCenterGetDistributedCenter()</code> extensively for inter-component notifications (preference changes, cache invalidation, font change broadcasts). Must add to libs-corebase. Implementation strategy: bridge to <code>NSNotificationCenter</code> — they share semantics.
+</div>
+<div class="gap">
+  <strong>Gap (critical — must implement):</strong> <code>CFPreferences</code> — <strong>MISSING</strong> from libs-corebase. <code>CFPreferencesGetAppBooleanValue</code>, <code>CFPreferencesCopyAppValue</code>, <code>CFPreferencesSetAppValue</code> are used for feature flags and user settings. Must add to libs-corebase. Implementation strategy: map to <code>NSUserDefaults</code>.
+</div>
+<div class="gap">
+  <strong>Gap (important — must implement):</strong> <code>CFStringTokenizer</code> — <strong>MISSING</strong> from libs-corebase. Used for text boundary detection (word breaks, sentence breaks) for text selection, double-click word selection, spell checking. Implementation: wrap ICU's <code>BreakIterator</code> API.
+</div>
+<div class="gap">
+  <strong>Gap (stub initially):</strong> <code>CFHTTPCookieRef</code>, <code>CFHTTPCookieStorageRef</code>, <code>CFURLStorageSessionRef</code> — CFNetwork-layer types. Not in libs-corebase. Create stubs that delegate cookie management to <code>NSHTTPCookieStorage</code>.
+</div>
+<div class="gap">
+  <strong>Gap (stub initially):</strong> <code>CFMessagePort</code> — <strong>MISSING.</strong> Used for lightweight in-process IPC. Stub with Unix domain socket or POSIX shared memory backing; implement fully later.
+</div>
+<div class="gap">
+  <strong>Gap (implement):</strong> <code>CFFileDescriptor</code> — <strong>MISSING.</strong> A CFRunLoop source wrapping a file descriptor. Needed for integrating Unix sockets into the run loop. Implement using kqueue (NextBSD) via <code>EVFILT_READ</code>/<code>EVFILT_WRITE</code>.
+</div>
+
+<div class="resolved">
+  <strong>Verdict:</strong> CoreFoundation is <strong>~75% covered.</strong> <code>CFNotificationCenter</code> and <code>CFPreferences</code> are the most critical missing pieces — they must be added to libs-corebase before WebCore will compile cleanly. <code>CFStringTokenizer</code> is important for correct text interaction. The remaining gaps are CFNetwork types that can be delegated to NSURLSession/NSHTTPCookieStorage at a higher level.
+</div>
+
+<!-- ─── 5d QuartzCore ─── -->
+<h3>5d. QuartzCore / CoreAnimation (CALayer, CAAnimation, …)</h3>
+<p><strong>GNUstep implementation:</strong> <code>libs-quartzcore</code> — 24 public headers, OpenGL compositor.</p>
+
+<table>
+  <thead><tr><th>API</th><th>GNUstep Status</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>CALayer (core properties, sublayers, display)</td><td><span class="yesno partial">Partial</span></td><td>backgroundColor, opacity, transform, sublayers, zPosition work; mask, frame, geometry conversion missing</td></tr>
+    <tr><td>CABasicAnimation</td><td><span class="yesno yes">Yes</span></td><td>from/to/by value interpolation</td></tr>
+    <tr><td>CAKeyframeAnimation</td><td><span class="yesno yes">Yes</span></td><td>values array, path, calculationMode, keyTimes</td></tr>
+    <tr><td>CASpringAnimation</td><td><span class="yesno yes">Yes</span></td><td>mass, stiffness, damping, initialVelocity</td></tr>
+    <tr><td>CATransaction</td><td><span class="yesno partial">Partial</span></td><td>begin/commit, disableActions, animationDuration work; completionBlock is TODO in source</td></tr>
+    <tr><td>CAMediaTimingFunction</td><td><span class="yesno yes">Yes</span></td><td>Named functions (ease, linear, etc.) + cubic bezier control points</td></tr>
+    <tr><td>CATransform3D</td><td><span class="yesno yes">Yes</span></td><td>Full 4×4 matrix math, perspective, rotation, scale, translate</td></tr>
+    <tr><td>CAShapeLayer</td><td><span class="yesno yes">Yes</span></td><td>Full CGPath-based vector layer with stroke/fill control</td></tr>
+    <tr><td>CARenderer</td><td><span class="yesno yes">Yes</span></td><td>OpenGL-backed compositor for rendering layer trees</td></tr>
+    <tr><td>CAFilter</td><td><span class="yesno partial">Partial</span></td><td>Filter name constants defined; CAFilter class is a stub</td></tr>
+  </tbody>
+</table>
+
+<h4>QuartzCore gaps</h4>
+<div class="gap">
+  <strong>Gap (SPI — critical for GPU process):</strong> <code>CAContext</code> — <strong>MISSING.</strong> SPI class critical for multi-process layer-tree compositing. On macOS, <code>CAContext</code> allows a WebProcess CALayer tree to be hosted in the UIProcess window via Mach port-based layer hosting. Without Mach ports, we need an alternative. <strong>For Phase 1–4 (ENABLE_GPU_PROCESS=OFF), not needed</strong> — we use software rendering via <code>CGBitmapContext</code> + POSIX shared memory blit. Long-term: implement <code>CAContext</code> in libs-quartzcore using Unix domain socket signaling + shared memory pixel buffers.
+</div>
+<div class="gap">
+  <strong>Gap (must implement):</strong> <code>CADisplayLink</code> — header exists as stub only. Needed for animation frame timing synchronized to display refresh. Implement using a timer thread that approximates 60Hz, or using X11's <code>XSync</code> extension, or DRM's vblank wait. Must implement before smooth CSS animations work.
+</div>
+<div class="gap">
+  <strong>Gap (must implement):</strong> <code>CATiledLayer</code> — stub. Used by WebKit for large-canvas tile-based page rendering (scrolling). Without it, very long pages won't render correctly. Must implement: a CALayer subclass that draws content in tiles across multiple threads.
+</div>
+<div class="gap">
+  <strong>Gap (must implement):</strong> <code>CATextLayer</code> — stub. Used for direct text compositing into the layer tree. Implement using CTLine/CGContext drawing to a CALayer backing store.
+</div>
+<div class="gap">
+  <strong>Gap (must implement):</strong> <code>CAGradientLayer</code> — stub. Used for gradient compositing. Implement using CGGradient drawing to a CALayer backing bitmap.
+</div>
+<div class="gap">
+  <strong>Gap (must implement for CSS masking):</strong> <code>CALayer.mask</code> — property not implemented. Needed for CSS <code>mask</code>, <code>clip-path</code>. Must add to CALayer in libs-quartzcore.
+</div>
+<div class="gap">
+  <strong>Gap (must implement):</strong> <code>CALayer.frame</code> — not implemented (only <code>bounds</code>+<code>position</code> are). Frame is derived but WebKit sets it directly. Must implement the setter (sets bounds + position) and getter (computes from bounds + position + anchorPoint).
+</div>
+<div class="gap">
+  <strong>Gap (must implement):</strong> <code>CALayer</code> geometry conversion: <code>convertPoint:fromLayer:</code>, <code>convertPoint:toLayer:</code>, <code>convertRect:fromLayer:</code>, <code>convertRect:toLayer:</code>. Used by WebKit hit testing and event routing. Must implement by walking the layer tree and composing transforms.
+</div>
+<div class="gap">
+  <strong>Gap (must implement):</strong> <code>CATransaction completionBlock</code> — marked TODO in libs-quartzcore source. Used to chain animation completions. Must implement.
+</div>
+<div class="gap">
+  <strong>Gap (SPI — stub):</strong> <code>CATransaction addCommitHandler:forPhase:</code> — SPI for commit-phase callbacks. Stub initially.
+</div>
+<div class="gap">
+  <strong>Gap (SPI — stub):</strong> <code>CABackdropLayer</code> — SPI for backdrop blur (CSS <code>backdrop-filter</code>). Stub; implement software blur pass later.
+</div>
+<div class="gap">
+  <strong>Gap (SPI — stub):</strong> <code>CAPresentationModifier</code>, <code>CAMachPort</code> — Mach-specific SPI. Guard with <code>#if PLATFORM(GNUSTEP)</code>; replace CAMachPort with POSIX file descriptor equivalent.
+</div>
+
+<div class="resolved">
+  <strong>Verdict:</strong> QuartzCore is <strong>~50% covered.</strong> CALayer basics work, and the animation system is solid. For the initial software-rendering build (<code>ENABLE_GPU_PROCESS=OFF</code>), the biggest gaps to address first are: <code>CALayer.frame</code>, geometry conversion methods, <code>CATransaction completionBlock</code>, <code>CADisplayLink</code>, and <code>CATextLayer</code>/<code>CAGradientLayer</code>. <code>CAContext</code> and multi-process compositing are Phase 3+ concerns.
+</div>
+
+<!-- ─── 5e Foundation ─── -->
+<h3>5e. Foundation (NSObject, NSString, NSRunLoop, NSURLSession, …)</h3>
+<p><strong>GNUstep implementation:</strong> <code>gnustep-base</code> — 167 public headers. The most mature component in the GNUstep stack.</p>
+
+<div class="resolved">
+  <strong>Verdict: Foundation is 95%+ covered.</strong> GNUstep Foundation is the most battle-tested part of the stack. The following APIs are all present and working: <code>NSURLSession</code> (libcurl backend), <code>NSRunLoop</code>, <code>NSFileManager</code>, <code>NSJSONSerialization</code>, <code>NSXMLParser</code>, <code>NSOperationQueue</code>, <code>NSThread</code>, <code>NSNotificationCenter</code>, <code>NSUserDefaults</code>, <code>NSURL</code>, <code>NSData</code>, <code>NSString</code>, <code>NSAttributedString</code>, <code>NSRegularExpression</code>, <code>NSPredicate</code>, <code>NSKeyValueObserving</code>, <code>NSKeyedArchiver</code>, <code>NSDateFormatter</code>, <code>NSNumberFormatter</code>, <code>NSHashTable</code>, <code>NSMapTable</code>, <code>NSPointerArray</code>, <code>NSProgress</code>, <code>NSUndoManager</code>, <code>NSTask</code>, <code>NSPipe</code>, <code>dispatch_*</code> (libdispatch). Minor gaps:
+  <ul>
+    <li><code>NSDataDetector</code> — absent. Disable data detection features via <code>ENABLE_TELEPHONE_NUMBER_DETECTION=OFF</code>.</li>
+    <li><code>NSLinguisticTagger</code> — partial. Stub remaining methods; language tagging is non-critical for initial build.</li>
+    <li><code>NSXPCConnection</code> — basic implementation present. Sufficient for Phase 3 multi-process IPC bridging.</li>
+    <li><code>NSBackgroundActivityScheduler</code> — not present. Not needed for browser core.</li>
+  </ul>
+</div>
+
+<!-- ─── 5f AppKit ─── -->
+<h3>5f. AppKit (NSApplication, NSWindow, NSView, NSEvent, …)</h3>
+<p><strong>GNUstep implementation:</strong> <code>gnustep-gui</code> — 303 public headers (256 implemented in source), rendered by <code>gnustep-back</code> X11 backend.</p>
+
+<div class="resolved">
+  <strong>Verdict: AppKit is 90%+ covered for MiniBrowser needs.</strong> Everything required to build and display a browser window is present: <code>NSApplication</code>, <code>NSWindow</code>, <code>NSView</code>, <code>NSTextField</code>, <code>NSButton</code>, <code>NSToolbar</code>, <code>NSMenu</code>, <code>NSMenuItem</code>, <code>NSEvent</code> (mouse, keyboard, scroll), <code>NSCursor</code>, <code>NSPasteboard</code>, <code>NSColor</code>, <code>NSFont</code>, <code>NSImage</code>, <code>NSBezierPath</code>, <code>NSGraphicsContext</code>, <code>NSScrollView</code>, <code>NSClipView</code>, <code>NSAlert</code>, <code>NSOpenPanel</code>, <code>NSSavePanel</code>, <code>NSSplitView</code>, <code>NSStackView</code>, <code>NSOpenGLView</code>, <code>NSScreen</code>, <code>NSWorkspace</code>, <code>NSTextInputClient</code> (protocol), <code>NSSpellChecker</code>, <code>NSPrintOperation</code>. Notable status:
+  <ul>
+    <li><code>NSView wantsLayer</code> — present; partial QuartzCore integration (sufficient for initial build)</li>
+    <li><code>NSTextInputClient</code> protocol — present; handles IME composition for international text input</li>
+    <li>Native widget rendering (NSButtonCell, NSSliderCell, NSTableView) — present, rendered by gnustep-gui's Eau theme</li>
+    <li><code>NSScrollerImp</code> / overlay scroller SPI — not applicable; use GNUstep's native scroll bar rendering</li>
+    <li><code>NSSharingService</code> — stub initially; not critical for browser core</li>
+    <li><code>NSAccessibility</code> — partial; sufficient for basic VoiceOver later, but not needed initially</li>
+  </ul>
+</div>
+
+<!-- ─── 5g Security ─── -->
+<h3>5g. Security Framework (SecCertificate, SecTrust, CommonCrypto)</h3>
+<p><strong>GNUstep implementation: MISSING — no <code>libs-security</code> exists.</strong></p>
+
+<div class="gap">
+  <strong>Gap (critical for HTTPS):</strong> The entire Security framework is absent. WebKit needs:
+  <ul>
+    <li><code>SecCertificateRef</code>, <code>SecTrustRef</code>, <code>SecPolicyRef</code> — TLS certificate types</li>
+    <li><code>SecTrustCreateWithCertificates</code>, <code>SecTrustEvaluateWithError</code> — certificate chain verification</li>
+    <li><code>SecCertificateCopySubjectSummary</code>, <code>SecCertificateCopyData</code> — certificate display info</li>
+    <li><code>SecTrustCopyResult</code>, <code>SecTrustGetCertificateCount</code> — trust result inspection</li>
+  </ul>
+  <strong>Needs new <code>libs-security</code> core lib.</strong> For the initial build, TLS is handled by <code>libcurl</code> inside <code>NSURLSession</code> (using OpenSSL or GnuTLS). Security framework APIs can be stubbed initially and implemented later wrapping OpenSSL's X.509 API. Certificate errors will not display detailed information, but HTTPS connections will work through libcurl.
+</div>
+<div class="gap">
+  <strong>Gap (crypto primitives):</strong> <code>CommonCrypto</code> — <strong>MISSING.</strong> <code>CC_SHA1</code>, <code>CC_SHA256</code>, <code>CCHmac</code>, <code>CCCryptorGCM</code> used in WebKit for SubtleCrypto, authentication tokens, and session key derivation. Implement as thin wrappers around OpenSSL's EVP API or libgcrypt. Low complexity — about 20 functions to wrap. Create <code>libs-commoncrypto</code> or incorporate into <code>libs-security</code>.
+</div>
+
+<!-- ─── 5h IOSurface ─── -->
+<h3>5h. IOSurface</h3>
+<p><strong>GNUstep implementation: MISSING — no <code>libs-iosurface</code> exists.</strong></p>
+
+<div class="gap">
+  <strong>Gap (Phase 3+ / GPU compositing):</strong> IOSurface is the macOS shared-memory buffer for zero-copy GPU texture sharing between processes. macOS WebKit uses IOSurface to pass rendered frames from WebProcess to UIProcess without copying pixels. <strong>For the initial software-rendering build (<code>ENABLE_GPU_PROCESS=OFF</code>), IOSurface is NOT needed.</strong> We use <code>CGBitmapContext</code> + POSIX shared memory (<code>shm_open</code>/<code>memfd_create</code>) for cross-process pixel transfer — exactly the approach proven in v3/v4. Long-term: create <code>libs-iosurface</code> wrapping DMA-BUF (Linux/BSD kernel) or POSIX shared memory with the full IOSurface C API (<code>IOSurfaceCreate</code>, <code>IOSurfaceLock</code>, <code>IOSurfaceGetBaseAddress</code>, <code>IOSurfaceGetBytesPerRow</code>).
+</div>
+
+<!-- ─── 5i CoreVideo ─── -->
+<h3>5i. CoreVideo (CVDisplayLink, CVPixelBuffer)</h3>
+<p><strong>GNUstep implementation: MISSING — no <code>libs-corevideo</code> exists.</strong></p>
+
+<div class="gap">
+  <strong>Gap (Phase 3+ / display sync):</strong> CoreVideo is used for: <code>CVDisplayLink</code> (display refresh synchronization for smooth animation), <code>CVPixelBuffer</code> (video frame buffer management), <code>CVImageBuffer</code>, <code>CVMetalTextureCacheRef</code>. <strong>For initial build with <code>ENABLE_VIDEO=OFF</code> and <code>ENABLE_GPU_PROCESS=OFF</code>: not needed.</strong> Stub the headers. Long-term: create <code>libs-corevideo</code>. <code>CVDisplayLink</code> can be implemented using X11's <code>XSync</code> extension, DRM's <code>DRM_IOCTL_WAIT_VBLANK</code>, or a high-resolution timer thread targeting 60Hz. <code>CVPixelBuffer</code> is a tagged pixel buffer with plane descriptors — straightforward to implement wrapping a <code>malloc</code>'d buffer or DMA-BUF.
+</div>
+
+<!-- ─── 5j CoreMedia/CoreAudio ─── -->
+<h3>5j. CoreMedia / CoreAudio / AudioToolbox / VideoToolbox</h3>
+<p><strong>GNUstep implementation:</strong> <code>libs-av</code> contains <code>CMTime</code> and <code>CMTimeRange</code> in <code>AVTime.h</code>. Everything else is missing.</p>
+
+<div class="gap">
+  <strong>Gap (Phase 3+ / media):</strong> For initial build with <code>ENABLE_VIDEO=OFF</code> and <code>ENABLE_WEB_AUDIO=OFF</code>: <strong>these entire frameworks can be stubbed.</strong> Long-term roadmap:
+  <ul>
+    <li><strong>CoreMedia:</strong> Expand libs-av to cover <code>CMSampleBuffer</code>, <code>CMBlockBuffer</code>, <code>CMFormatDescription</code>, <code>CMBufferQueue</code>. These are the pipeline types for decoded audio/video frames.</li>
+    <li><strong>CoreAudio:</strong> Create <code>libs-coreaudio</code> wrapping PulseAudio or ALSA. <code>AudioComponentFindNext</code>, <code>AudioUnitInitialize</code>, <code>AudioOutputUnitStart</code> are the key entry points.</li>
+    <li><strong>AudioToolbox:</strong> <code>AudioConverter</code> wraps FFmpeg's audio conversion pipeline. <code>ExtAudioFile</code> wraps libsndfile or FFmpeg demuxer.</li>
+    <li><strong>VideoToolbox:</strong> H.264/H.265 hardware decode via VA-API or software via FFmpeg's avcodec. <code>VTDecompressionSession</code> is the key API.</li>
+  </ul>
+</div>
+
+<!-- ─── 5k AVFoundation ─── -->
+<h3>5k. AVFoundation (AVPlayer, AVAudioPlayer)</h3>
+<p><strong>GNUstep implementation:</strong> <code>libs-av</code> — 11 public headers, FFmpeg backend for basic playback.</p>
+
+<div class="gap">
+  <strong>Gap (Phase 3+ / media):</strong> For initial build with <code>ENABLE_VIDEO=OFF</code>: <strong>not needed.</strong> libs-av covers basic <code>AVPlayer</code>/<code>AVAudioPlayer</code> for future video support. Gaps for eventual video support:
+  <ul>
+    <li><code>AVCaptureSession</code>/<code>AVCaptureDevice</code> — camera access via V4L2 or libv4l</li>
+    <li><code>AVSpeechSynthesizer</code> — speech synthesis via espeak-ng or Festival</li>
+    <li><code>AVSampleBufferDisplayLayer</code> — video rendering directly into a CALayer</li>
+    <li><code>AVPlayerLayer</code> — video rendering via CALayer compositing</li>
+    <li><code>AVAssetReader</code>/<code>AVAssetWriter</code> — media file I/O via FFmpeg's avformat</li>
+    <li><code>AVMutableComposition</code> — timeline editing (low priority for a browser)</li>
+  </ul>
+</div>
+
+<!-- ─── 5l Metal ─── -->
+<h3>5l. Metal (GPU rendering)</h3>
+<p><strong>GNUstep implementation: MISSING — not applicable on X11/OpenGL platforms.</strong></p>
+
+<div class="gap">
+  <strong>Gap (disabled for initial build):</strong> macOS WebKit uses Metal for WebGL, WebGPU, and GPU-accelerated compositing. <strong>For initial build with <code>ENABLE_WEBGL=OFF</code>, <code>ENABLE_WEBGPU=OFF</code>, and <code>ENABLE_GPU_PROCESS=OFF</code>: not needed at all.</strong> Zero Metal code will be compiled. Long-term: consider Vulkan as a Metal-compatible GPU API (MoltenVK proves the semantic equivalence), or implement WebGL directly via OpenGL through libs-quartzcore's existing OpenGL infrastructure. This is the lowest priority item in the entire porting plan.
+</div>
+
+<!-- ─── 5m Accelerate ─── -->
+<h3>5m. Accelerate (vDSP, vImage)</h3>
+<p><strong>GNUstep implementation: MISSING.</strong></p>
+
+<div class="gap">
+  <strong>Gap (Phase 3+):</strong> Accelerate framework is used for:
+  <ul>
+    <li><strong>vDSP:</strong> Web Audio DSP (FFT, convolution, FIR/IIR filters, vector arithmetic)</li>
+    <li><strong>vImage:</strong> CSS filter software application (Gaussian blur, color matrix, pixel format conversion)</li>
+  </ul>
+  <strong>For initial build with <code>ENABLE_WEB_AUDIO=OFF</code>:</strong> vDSP not needed. CSS filters without <code>vImage</code> can use fallback software paths in WebCore (WebKit has software fallbacks for all CSS filters). Long-term: implement the specific vDSP functions used (about 10–15: <code>vDSP_fft_zrip</code>, <code>vDSP_vmul</code>, <code>vDSP_vadd</code>, etc.) using FFTW or direct SIMD intrinsics. Implement vImage pixel conversion and convolution using optimized C loops or libswscale.
+</div>
+
+<!-- ─── 5n CoreImage ─── -->
+<h3>5n. CoreImage (CIFilter, CIContext)</h3>
+<p><strong>GNUstep implementation: MISSING.</strong></p>
+
+<div class="gap">
+  <strong>Gap (disabled for initial build):</strong> CoreImage is used only for video frame processing in the AVFoundation pipeline (applying color correction filters to decoded video frames). <strong>For initial build with <code>ENABLE_VIDEO=OFF</code>: not needed at all.</strong> No stubs required — just guard the code paths with <code>#if ENABLE(VIDEO)</code> which is already how WebKit structures these calls.
+</div>
+
+<!-- ─── 5o Mach/XPC ─── -->
+<h3>5o. Mach IPC / XPC (process communication)</h3>
+<p><strong>GNUstep: Unix domain sockets + POSIX shared memory.</strong></p>
+
+<div class="resolved">
+  <strong>This is not a gap — it is a proven alternative.</strong> macOS WebKit uses Mach ports for low-latency IPC and XPC for process lifecycle management. GNUstep uses Unix domain sockets — this was proven viable in v3/v4 using the PlayStation port's <code>Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp</code>. The PlayStation port ships this file as production code. We use it directly. Key implementation notes:
+  <ul>
+    <li><code>MachSendRight</code>, <code>MachReceiveRight</code> wrapper types get POSIX file-descriptor equivalents (a thin wrapper around <code>int fd</code> with <code>sendmsg</code>/<code>recvmsg</code>)</li>
+    <li>Process launching: <code>fork(2)</code> + <code>execve(2)</code> instead of <code>xpc_connection_create_mach_service</code></li>
+    <li><code>NSXPCConnection</code> in gnustep-base provides higher-level bridging</li>
+    <li>Shared memory: <code>shm_open</code>/<code>mmap</code> (POSIX) or <code>memfd_create</code> (Linux-compat) instead of <code>mach_vm_map</code></li>
+  </ul>
+</div>
+
+<!-- ─── 5p Other frameworks ─── -->
+<h3>5p. Other Apple frameworks (all disabled or stubbed for initial build)</h3>
+
+<table>
+  <thead><tr><th>Framework</th><th>WebKit Feature</th><th>Initial Build Status</th></tr></thead>
+  <tbody>
+    <tr><td>PassKit</td><td>Apple Pay</td><td>Disable: <code>ENABLE_APPLE_PAY=OFF</code></td></tr>
+    <tr><td>GameController</td><td>Gamepad API</td><td>Disable: <code>ENABLE_GAMEPAD=OFF</code></td></tr>
+    <tr><td>CoreLocation</td><td>Geolocation</td><td>Disable: <code>ENABLE_GEOLOCATION=OFF</code></td></tr>
+    <tr><td>Speech</td><td>Speech recognition / synthesis</td><td>Stub; disabled by feature flags</td></tr>
+    <tr><td>NaturalLanguage</td><td>Text analysis, language detection</td><td>Stub</td></tr>
+    <tr><td>DataDetectors</td><td>Link/phone number detection</td><td>Disable: <code>ENABLE_TELEPHONE_NUMBER_DETECTION=OFF</code></td></tr>
+    <tr><td>VisionKit</td><td>Live Text in images</td><td>Stub</td></tr>
+    <tr><td>LinkPresentation</td><td>Rich link previews</td><td>Stub</td></tr>
+    <tr><td>Contacts</td><td>Contact autofill</td><td>Stub</td></tr>
+    <tr><td>ScreenTime</td><td>Screen time enforcement</td><td>Stub</td></tr>
+    <tr><td>WritingTools</td><td>Apple Intelligence writing assistance</td><td>Disable: <code>ENABLE_WRITING_TOOLS=OFF</code></td></tr>
+    <tr><td>ARKit</td><td>WebXR AR content</td><td>Stub; <code>ENABLE_WEBXR=OFF</code></td></tr>
+    <tr><td>BrowserEngineKit</td><td>Process hosting (iOS-new API)</td><td>Replace with Unix socket + shared memory</td></tr>
+    <tr><td>CoreUI</td><td>Native widget rendering (SPI)</td><td>Not needed — gnustep-gui/Eau renders native widgets via AppKit</td></tr>
+    <tr><td>ColorSync</td><td>ICC color profile application</td><td>Stub — use LCMS2 via libs-opal's existing color management</td></tr>
+    <tr><td>IOKit / IOPMLib</td><td>Sleep prevention, battery status</td><td>Stub — not critical; use kqueue power events if needed later</td></tr>
+    <tr><td>MediaRemote</td><td>AirPlay, Now Playing info</td><td>Stub</td></tr>
+    <tr><td>Network.framework</td><td>Low-level networking (NW path monitor)</td><td>Not needed — use NSURLSession; stub NWPathMonitor</td></tr>
+    <tr><td>UniformTypeIdentifiers</td><td>File type system (UTType)</td><td>Implement basic UTType → MIME mapping or stub common types</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ NEW LIBS -->
+<section id="new-libs">
+<h2>New GNUstep core libs needed</h2>
+<p>These libraries follow the GNUstep pattern: same Apple public header API, different internal implementation. Each is a new pkg in the GNUstep ecosystem.</p>
+
+<table>
+  <thead>
+    <tr><th>Library</th><th>Priority</th><th>What it provides</th><th>Complexity</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>libs-security</code></td>
+      <td><span class="pill warn">Phase 2</span></td>
+      <td>Security framework: <code>SecCertificateRef</code>, <code>SecTrustRef</code>, <code>SecKeyRef</code>, <code>SecPolicyRef</code>, <code>SecTrustEvaluateWithError</code>, <code>SecCertificateCopySubjectSummary</code> — wrapping OpenSSL's X.509 API. Also includes CommonCrypto: <code>CC_SHA1/256/512</code>, <code>CCHmac</code>, <code>CCCryptor</code>, <code>CCCryptorGCM</code>.</td>
+      <td>Medium — ~50 functions to wrap; OpenSSL API is straightforward but Security framework semantics require careful mapping</td>
+    </tr>
+    <tr>
+      <td><code>libs-commoncrypto</code></td>
+      <td><span class="pill warn">Phase 2</span></td>
+      <td>CommonCrypto standalone: hash functions (SHA1, SHA256, SHA512, MD5), HMAC, symmetric ciphers (AES-CBC, AES-GCM, 3DES), PBKDF2, random bytes. May be folded into libs-security.</td>
+      <td>Low — ~20 thin wrappers around OpenSSL EVP or libgcrypt</td>
+    </tr>
+    <tr>
+      <td><code>libs-iosurface</code></td>
+      <td><span class="pill info">Phase 3+</span></td>
+      <td>IOSurface C API: <code>IOSurfaceCreate</code>, <code>IOSurfaceLock</code>/<code>Unlock</code>, <code>IOSurfaceGetBaseAddress</code>, <code>IOSurfaceGetBytesPerRow</code>, <code>IOSurfaceGetWidth</code>/<code>Height</code>, <code>IOSurfaceGetPixelFormat</code>, cross-process surface passing via file descriptor. Backend: DMA-BUF (preferred for GPU sharing) or POSIX shared memory (simpler, no GPU sharing).</td>
+      <td>Medium — DMA-BUF integration requires kernel knowledge; POSIX shm backend is straightforward</td>
+    </tr>
+    <tr>
+      <td><code>libs-corevideo</code></td>
+      <td><span class="pill info">Phase 3+</span></td>
+      <td>CoreVideo: <code>CVDisplayLink</code> (display-sync timer), <code>CVPixelBuffer</code> (pixel plane management), <code>CVPixelBufferPool</code>, <code>CVOpenGLTextureCacheRef</code>. Backend: DRM vblank for CVDisplayLink; malloc/mmap for CVPixelBuffer.</td>
+      <td>Medium — CVDisplayLink synchronization requires platform-specific vblank source</td>
+    </tr>
+    <tr>
+      <td><code>libs-coremedia</code></td>
+      <td><span class="pill info">Phase 3+</span></td>
+      <td>CoreMedia: <code>CMSampleBuffer</code>, <code>CMBlockBuffer</code>, <code>CMFormatDescription</code>, <code>CMBufferQueue</code>, <code>CMTime</code>/<code>CMTimeRange</code> (already in libs-av). These are the pipeline types passed between decoder, compositor, and renderer.</td>
+      <td>Medium — data structure design is straightforward; integration with FFmpeg decoder output requires care</td>
+    </tr>
+    <tr>
+      <td><code>libs-accelerate</code></td>
+      <td><span class="pill info">Phase 3+</span></td>
+      <td>Accelerate framework subset: vDSP FFT (<code>vDSP_fft_zrip</code>, <code>vDSP_fft_zop</code>), vector arithmetic (<code>vDSP_vadd</code>, <code>vDSP_vmul</code>, <code>vDSP_vsmul</code>, <code>vDSP_vdiv</code>), vImage pixel format conversion and convolution (Gaussian blur, color matrix). Backend: FFTW for FFT; SIMD intrinsics or libswscale for vImage.</td>
+      <td>Low-Medium — the ~15 vDSP functions WebKit uses are well-documented; vImage needs SIMD optimization work</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>All of these libs should be hosted alongside the existing GNUstep core libs (<code>libs-opal</code>, <code>libs-quartzcore</code>, <code>libs-corebase</code>, <code>libs-av</code>) in the GNUstep GitHub organization and follow the same CMake/GNUstep-make dual build system pattern.</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ CMAKE CONFIG -->
+<section id="cmake-config">
+<h2>Minimal CMake configuration</h2>
+<p>The following command configures WebKit for the minimal initial build — HTML, CSS, JavaScript (with JIT), DOM, CSSOM, layout, and painting. No media, no GPU process, no platform-specific extras. This is enough to render real web content.</p>
+
+<pre class="shell">cmake -B Build -G Ninja \
+  -DPORT=Mac \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_OBJC_COMPILER=clang \
+  -DCMAKE_OBJCXX_COMPILER=clang++ \
+  -DUSE_SYSTEM_UNIFDEF=OFF \
+  -DENABLE_MINIBROWSER=ON \
+  \
+  -DENABLE_GPU_PROCESS=OFF \
+  -DENABLE_WEBGL=OFF \
+  -DENABLE_WEBGPU=OFF \
+  \
+  -DENABLE_VIDEO=OFF \
+  -DENABLE_WEB_AUDIO=OFF \
+  -DENABLE_SPEECH_SYNTHESIS=OFF \
+  -DENABLE_AV1=OFF \
+  \
+  -DENABLE_APPLE_PAY=OFF \
+  -DENABLE_GAMEPAD=OFF \
+  -DENABLE_WEB_RTC=OFF \
+  -DENABLE_WEB_AUTHN=OFF \
+  -DENABLE_WEBXR=OFF \
+  -DENABLE_PDF_PLUGIN=OFF \
+  -DENABLE_PDFKIT_PLUGIN=OFF \
+  -DENABLE_UNIFIED_PDF=OFF \
+  -DENABLE_MODEL_ELEMENT=OFF \
+  -DENABLE_WRITING_TOOLS=OFF \
+  -DENABLE_TELEPHONE_NUMBER_DETECTION=OFF \
+  -DENABLE_CONTENT_FILTERING=OFF \
+  -DENABLE_SERVICE_CONTROLS=OFF \
+  -DENABLE_WK_WEB_EXTENSIONS=OFF \
+  -DENABLE_INSPECTOR_ALTERNATE_DISPATCHERS=OFF \
+  -DENABLE_INSPECTOR_EXTENSIONS=OFF \
+  -DENABLE_WEBDRIVER=OFF \
+  -DENABLE_ACCESSIBILITY_ISOLATED_TREE=OFF \
+  -DENABLE_SANDBOX_EXTENSIONS=OFF \
+  -DENABLE_WEB_CODECS=OFF \
+  -DENABLE_WEBASSEMBLY=OFF \
+  -DENABLE_MEDIA_STREAM=OFF \
+  -DENABLE_MEDIA_SOURCE=OFF \
+  -DENABLE_MEDIA_RECORDER=OFF \
+  -DENABLE_MEDIA_SESSION=OFF \
+  -DENABLE_ENCRYPTED_MEDIA=OFF \
+  -DENABLE_PICTURE_IN_PICTURE_API=OFF \
+  -DENABLE_OFFSCREEN_CANVAS=OFF \
+  -DENABLE_OFFSCREEN_CANVAS_IN_WORKERS=OFF \
+  -DUSE_AVIF=OFF \
+  -DUSE_JPEGXL=OFF \
+  -DENABLE_API_TESTS=OFF \
+  -DENABLE_LAYOUT_TESTS=OFF</pre>
+
+<h3>Port selection and cmake file structure</h3>
+<p>We set <code>-DPORT=Mac</code> to start from the Mac port's <code>OptionsMac.cmake</code> and <code>OptionsCocoa.cmake</code>. These set the right defaults for a Cocoa-based browser. There are two approaches to GNUstep-specific configuration:</p>
+
+<p><strong>Approach (a) — Recommended:</strong> Create <code>Source/cmake/OptionsGNUstep.cmake</code> that includes <code>OptionsMac.cmake</code> and then overrides GNUstep-specific settings (library paths from <code>gnustep-config</code>, platform detection, GNUstep-specific feature flags). Then add <code>GNUSTEP</code> as a recognized port option in <code>Source/cmake/WebKitFeatures.cmake</code>. This is clean, upstream-friendly, and easy to rebase.</p>
+
+<p><strong>Approach (b) — Alternative:</strong> Add <code>if(PORT STREQUAL "Mac" AND GNUSTEP)</code> guards within <code>OptionsMac.cmake</code>. This keeps a single options file but makes it messier and harder to upstream.</p>
+
+<p>The cmake file hierarchy to create:</p>
+<pre>Source/cmake/
+  OptionsGNUstep.cmake        ← new: includes OptionsMac.cmake, overrides for GNUstep
+  FindGNUstep.cmake           ← new: runs gnustep-config, sets GNUSTEP_INCLUDE_DIRS etc.
+  PlatformGNUstep.cmake       ← new: GNUstep-specific compiler flags (-fobjc-runtime=gnustep-2.0 etc.)
+
+Source/WTF/wtf/
+  PlatformHaveGNUstep.h       ← new: HAVE() macros for GNUstep capabilities
+  PlatformUseGNUstep.h        ← new: USE() macros for GNUstep choices
+  PlatformEnableGNUstep.h     ← new: ENABLE() overrides for disabled features
+
+Source/WTF/wtf/PlatformLegacy.h
+  ← modify: add PLATFORM(GNUSTEP) detection</pre>
+
+<h3>What this minimal build gives you</h3>
+<ul>
+  <li><strong>HTML parser</strong> — full HTML5 parsing via WebCore's tree builder</li>
+  <li><strong>CSS engine</strong> — full CSS3 cascade, selector matching, computed style, layout (flexbox, grid, block)</li>
+  <li><strong>JavaScript engine</strong> — JavaScriptCore with LLVM-based JIT (B3 backend)</li>
+  <li><strong>DOM + CSSOM</strong> — full DOM manipulation, MutationObserver, ResizeObserver</li>
+  <li><strong>Layout engine</strong> — LayoutNG successor, block, flex, grid, table, multi-column</li>
+  <li><strong>Paint and compositing</strong> — software compositing via CGBitmapContext → NSView</li>
+  <li><strong>Network</strong> — HTTP/HTTPS via NSURLSession/libcurl, cookies, cache</li>
+  <li><strong>Images</strong> — PNG, JPEG, JPEG XL (if enabled), WebP, GIF via CGImageSource/libs-opal</li>
+  <li><strong>Fonts</strong> — system fonts via CTFont/FreeType, web fonts via woff/woff2</li>
+  <li><strong>MiniBrowser.app</strong> — address bar, back/forward, basic toolbar</li>
+</ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ FREEBSD DEPS -->
+<section id="freebsd-deps">
+<h2>FreeBSD/NextBSD pkg dependencies</h2>
+<p>Only what macOS WebKit equivalent needs — no Linux desktop stack.</p>
+
+<h3>Build tools</h3>
+<pre class="shell">pkg install -y ruby33 bison flex gperf ninja cmake ccache</pre>
+
+<h3>Required libraries</h3>
+<p>Matching what macOS provides via system frameworks (CoreGraphics → freetype2, CoreText → harfbuzz, etc.):</p>
+<pre class="shell">pkg install -y \
+  libxml2 libxslt sqlite3 \
+  icu \
+  png jpeg-turbo webp \
+  harfbuzz freetype2 fontconfig \
+  woff2 lcms2 \
+  curl</pre>
+
+<h3>Already on NextBSD (GNUstep stack — not from pkg)</h3>
+<table class="compact">
+  <thead><tr><th>Package / Library</th><th>Provides</th></tr></thead>
+  <tbody>
+    <tr><td><code>gnustep-base</code></td><td>Foundation (NSString, NSURLSession, NSRunLoop, NSThread, NSNotificationCenter, …)</td></tr>
+    <tr><td><code>gnustep-gui</code></td><td>AppKit (NSApplication, NSWindow, NSView, NSEvent, NSFont, NSImage, …)</td></tr>
+    <tr><td><code>gnustep-back</code></td><td>X11 backend for gnustep-gui (event loop, window creation, OpenGL surface)</td></tr>
+    <tr><td><code>libs-opal</code></td><td>CoreGraphics + CoreText + ImageIO (CGContext, CGPath, CTFont, CTLine, CGImageSource)</td></tr>
+    <tr><td><code>libs-quartzcore</code></td><td>QuartzCore / CoreAnimation (CALayer, CABasicAnimation, CATransform3D)</td></tr>
+    <tr><td><code>libs-corebase</code></td><td>CoreFoundation (CFString, CFArray, CFRunLoop, CFURL)</td></tr>
+    <tr><td><code>libs-av</code></td><td>AVFoundation (AVPlayer, AVAudioPlayer, CMTime) via FFmpeg</td></tr>
+    <tr><td><code>libobjc2</code></td><td>Objective-C 2.0 runtime (GNUstep-maintained, LLVM-compatible)</td></tr>
+    <tr><td><code>libdispatch</code></td><td>Grand Central Dispatch (libpthread backend)</td></tr>
+    <tr><td><code>libBlocksRuntime</code></td><td>Blocks closure support (from LLVM compiler-rt)</td></tr>
+  </tbody>
+</table>
+
+<h3>Explicitly NOT needed</h3>
+<p>If these appear in any build script, something has gone wrong:</p>
+<p>
+  <del>glib2</del> &nbsp;
+  <del>gtk3</del> &nbsp;
+  <del>gtk4</del> &nbsp;
+  <del>gstreamer1</del> &nbsp;
+  <del>gstreamer1-plugins-base</del> &nbsp;
+  <del>libsoup3</del> &nbsp;
+  <del>skia</del> &nbsp;
+  <del>mesa-libs</del> &nbsp;
+  <del>wayland</del> &nbsp;
+  <del>libepoxy</del> &nbsp;
+  <del>enchant2</del> &nbsp;
+  <del>at-spi2-core</del> &nbsp;
+  <del>libmanette</del> &nbsp;
+  <del>libsecret</del> &nbsp;
+  <del>libbacktrace</del> &nbsp;
+  <del>sysprof</del> &nbsp;
+  <del>bubblewrap</del> &nbsp;
+  <del>xdg-dbus-proxy</del>
+</p>
+
+<h3>Optional — for later phases</h3>
+<pre class="shell"># Phase 2: TLS certificate validation and crypto
+pkg install -y openssl gnutls libgcrypt
+
+# Performance
+pkg install -y ccache
+
+# Phase 3+: video support via libs-av/FFmpeg
+pkg install -y ffmpeg
+
+# Phase 3+: OpenGL compositing (may already be present)
+pkg install -y mesa-libGL mesa-libEGL</pre>
+
+<p class="src">Note: Mesa GL/EGL are needed only by <code>libs-quartzcore</code>'s OpenGL compositor — they are a dependency of <em>libs-quartzcore</em>, not of WebKit directly. WebKit calls CALayer/CARenderer APIs; the OpenGL calls are behind the libs-quartzcore boundary.</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASES -->
+<section id="phases">
+<h2>Implementation phases</h2>
+
+<h3>Phase 0: Platform registration <span class="pill info">Setup</span></h3>
+<p><strong>Goal:</strong> CMake configures without errors. No source files compiled yet.</p>
+<ul>
+  <li>Create <code>Source/cmake/OptionsGNUstep.cmake</code> mirroring <code>OptionsMac.cmake</code> with GNUstep framework detection via <code>gnustep-config --objc-flags</code> and <code>gnustep-config --base-libs</code></li>
+  <li>Create <code>Source/cmake/FindGNUstep.cmake</code> — detect <code>gnustep-config</code>, query header/library paths, set <code>GNUSTEP_INCLUDE_DIRS</code>, <code>GNUSTEP_LIBRARIES</code>, <code>GNUSTEP_DEFINITIONS</code></li>
+  <li>Add <code>PLATFORM(GNUSTEP)</code> to <code>Source/WTF/wtf/PlatformLegacy.h</code> (reuse proven v3/v4 approach: detect via <code>__GNUSTEP__</code> preprocessor define)</li>
+  <li>Add <code>PlatformHaveGNUstep.h</code>, <code>PlatformUseGNUstep.h</code>, <code>PlatformEnableGNUstep.h</code> — mirror the Mac equivalents, set GNUstep-specific HAVE/USE/ENABLE macros</li>
+  <li>Create <code>Platform{WTF,JavaScriptCore,WebCore,PAL,WebKit}GNUstep.cmake</code> — file lists including the <code>gnustep/</code> subdirectories and excluding Mac-only files that won't apply</li>
+  <li>Create stub headers for Apple SPI that won't be implemented in Phase 0: IOSurface, CoreVideo, Security, Metal, CoreImage, Mach-specific types</li>
+</ul>
+<p><strong>Success criterion:</strong> <code>cmake -B Build -G Ninja -DPORT=GNUstep [flags]</code> completes without errors and generates a valid Ninja build graph.</p>
+
+<h3>Phase 1: Build WTF + JavaScriptCore <span class="pill warn">Core</span></h3>
+<p><strong>Goal:</strong> <code>jsc</code> (JavaScript shell) binary runs and executes JavaScript.</p>
+<ul>
+  <li><strong>WTF:</strong> Use Cocoa paths where possible (<code>CFRunLoop</code>, <code>CFString</code> bridging, <code>dispatch_*</code>). Create <code>Source/WTF/wtf/gnustep/</code> only for things that truly differ — Mach port wrappers → POSIX fd wrappers, <code>MachSendRight.cpp</code> → <code>PosixFdRight.cpp</code></li>
+  <li>WTF's <code>Threading</code>, <code>RunLoop</code>, <code>WorkQueue</code> use libdispatch — already works on NextBSD</li>
+  <li><strong>JavaScriptCore:</strong> Should build largely unchanged — it is mostly platform-independent C++/Objective-C with only minor platform shims. The B3 JIT backend uses LLVM IR and is fully portable.</li>
+  <li>Handle any <code>mach/mach.h</code> includes in WTF that are guarded by <code>PLATFORM(MAC)</code> — add <code>|| PLATFORM(GNUSTEP)</code> where appropriate or provide POSIX alternatives</li>
+  <li>Stub Apple SPI headers where <code>#include &lt;SomePrivateHeader_priv.h&gt;</code> fails — create empty stub files in a <code>WebKitAdditions/</code> include directory</li>
+</ul>
+<p><strong>Success criterion:</strong> <code>Build/bin/jsc -e "print(1+1)"</code> outputs <code>2</code>.</p>
+
+<h3>Phase 2: Build WebCore <span class="pill warn">Core</span></h3>
+<p><strong>Goal:</strong> <code>libWebCore.so</code> links successfully.</p>
+<ul>
+  <li>Use <code>platform/cocoa/</code> and <code>platform/mac/</code> sources directly — they call CG/CT/CF/CA APIs that GNUstep implements via libs-opal, libs-quartzcore, libs-corebase</li>
+  <li>Create <code>Source/WebCore/platform/gnustep/</code> only for things with no Cocoa equivalent:
+    <ul>
+      <li><code>PlatformScreenGNUstep.mm</code> — X11/RandR screen size, resolution, color depth queries</li>
+      <li><code>PlatformPasteboardGNUstep.mm</code> — X11 clipboard (PRIMARY/CLIPBOARD selections via NSPasteboard/GNUstep)</li>
+      <li><code>RunLoopGNUstep.mm</code> — any run loop integration differences</li>
+    </ul>
+  </li>
+  <li>Stub all Apple SPI calls that can't be implemented yet — create wrapper functions that log a warning and return a safe default</li>
+  <li>Add <code>#if PLATFORM(GNUSTEP)</code> guards around Mach-specific code (<code>task_policy_set</code>, <code>vm_allocate</code>, <code>mach_port_*</code>)</li>
+  <li>Stub IOSurface header — include an empty <code>&lt;IOSurface/IOSurface.h&gt;</code> that defines the types as opaque structs</li>
+  <li>Stub CoreVideo, Metal, CoreImage, Security headers similarly</li>
+  <li>Add <code>CFNotificationCenter</code> and <code>CFPreferences</code> to libs-corebase (Phase 2 prerequisite)</li>
+</ul>
+<p><strong>Success criterion:</strong> <code>ninja -C Build WebCore</code> completes. <code>Build/lib/libWebCore.so</code> exists and is a valid shared library.</p>
+
+<h3>Phase 3: Build WebKit (UIProcess/WebProcess/NetworkProcess) <span class="pill warn">Core</span></h3>
+<p><strong>Goal:</strong> All three process executables build. MiniBrowser.app builds.</p>
+<ul>
+  <li>Use <code>UIProcess/Cocoa/</code>, <code>WebProcess/cocoa/</code>, <code>Shared/cocoa/</code> sources directly where possible</li>
+  <li><strong>IPC:</strong> Use <code>Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp</code> (PlayStation port — proven in v3/v4). Guard out <code>ConnectionMach.mm</code> with <code>#if !PLATFORM(GNUSTEP)</code></li>
+  <li><strong>Process launching:</strong> Create <code>ProcessLauncherGNUstep.mm</code> using <code>fork(2)</code>/<code>execve(2)</code> to launch WebProcess and NetworkProcess. Guard out <code>ProcessLauncherMac.mm</code>.</li>
+  <li>Create <code>Source/WebKit/UIProcess/gnustep/WebViewGNUstep.mm</code>: NSView subclass implementing <code>-drawRect:</code> that blits the <code>CGBitmapContext</code> pixel buffer to the window</li>
+  <li>Create <code>Source/WebKit/UIProcess/gnustep/PageClientImplGNUstep.mm</code>: Implement the ~5–10 critical virtual methods of the <code>PageClient</code> protocol (drawing callback, scroll notification, cursor change, focus change); stub all ~200 others</li>
+  <li>Create <code>Source/WebKit/UIProcess/gnustep/WKWebViewGNUstep.mm</code>: <code>WKWebView</code> subclass or extension connecting to <code>WebViewGNUstep</code></li>
+  <li>Guard <code>XPCService*</code>, <code>SandboxExtension*</code>, <code>SecItem*</code> calls with <code>#if !PLATFORM(GNUSTEP)</code></li>
+</ul>
+<p><strong>Success criterion:</strong> <code>ninja -C Build MiniBrowser</code> completes. <code>MiniBrowser.app/Contents/MacOS/MiniBrowser</code> is a valid executable. <code>Build/WebKitWebProcess</code> and <code>Build/WebKitNetworkProcess</code> executables exist.</p>
+
+<h3>Phase 4: MiniBrowser.app — first pixels <span class="pill ok">Milestone</span></h3>
+<p><strong>Goal: A red window. Any pixel on screen.</strong></p>
+<ul>
+  <li>Strip Apple-private framework imports from MiniBrowser (<code>Safari*</code>, <code>BrowserEngineKit</code>, etc.)</li>
+  <li>Wire <code>WKWebView</code> → <code>WebViewGNUstep</code> so the painting path reaches <code>-drawRect:</code></li>
+  <li>Ensure <code>CGBitmapContextCreate</code> produces valid pixel buffers (test with a direct CG fill before wiring to WebKit)</li>
+  <li>Test case: <code>[webView loadHTMLString:@"&lt;body style='background:red'&gt;" baseURL:nil]</code></li>
+  <li>Debug the rendering pipeline step by step:
+    <ol>
+      <li>Does <code>WebCore::GraphicsContext</code> get a <code>CGBitmapContext</code>?</li>
+      <li>Does <code>WebCore::RenderView::paintDocumentMarkers</code> fire?</li>
+      <li>Does <code>WebCore::RenderBlock::paintBackground</code> fill red?</li>
+      <li>Does the pixel buffer reach <code>drawInRect:</code> in the NSView?</li>
+    </ol>
+  </li>
+</ul>
+<p><strong>Success criterion:</strong> A window appears on screen showing a solid red (or any non-black, non-white) background. This is the inflection point — once there are pixels, everything else is incremental improvement.</p>
+
+<h3>Phase 5: Interactivity <span class="pill info">Iterate</span></h3>
+<p><strong>Goal:</strong> User can navigate pages by typing URLs and clicking links.</p>
+<ul>
+  <li>Wire <code>NSEvent</code> → WebKit event translation: mouse moved, mouse down/up, key down/up, scroll wheel</li>
+  <li>Implement <code>WKNavigationDelegate</code> in MiniBrowser for page load callbacks</li>
+  <li>Wire <code>NSTextField</code> URL bar → <code>[webView loadRequest:]</code></li>
+  <li>Implement back/forward buttons via <code>WKWebView</code> navigation APIs</li>
+  <li>Wire <code>NSPasteboard</code> for copy/paste (<code>NSPasteboard generalPasteboard</code> → X11 CLIPBOARD)</li>
+  <li>Wire <code>NSCursor</code> → X11 cursor changes for links, text, resize handles</li>
+  <li>Handle text input via <code>NSTextInputClient</code> for correct IME support</li>
+  <li>Handle context menus via <code>NSMenu</code></li>
+</ul>
+<p><strong>Success criterion:</strong> Type a URL in the address bar, press Enter, page loads and is visible. Can click links. Can select text and copy it.</p>
+
+<h3>Phase 6: Real web content <span class="pill info">Iterate</span></h3>
+<p><strong>Goal:</strong> <code>example.com</code>, <code>wikipedia.org</code>, and typical websites render correctly.</p>
+<ul>
+  <li>Fix font fallback: implement <code>CTFontCopyDefaultCascadeListForLanguages</code> and <code>CTFontDescriptorCreateForCSSFamily</code> in libs-opal</li>
+  <li>Fix text rendering: verify <code>CTFontShapeGlyphs</code> / HarfBuzz integration for correct glyph shaping</li>
+  <li>Fix CSS border-radius: implement <code>CGPathAddUnevenCornersRoundedRect</code> in libs-opal</li>
+  <li>Fix CSS gradients: implement <code>CGContextDrawConicGradient</code> in libs-opal</li>
+  <li>Fix image rendering: verify <code>CGImageSource</code> handles WebP, JPEG XL (if enabled), animated GIF/WebP</li>
+  <li>Fix scrolling: verify scroll events reach WebCore and <code>NSScrollView</code> works correctly</li>
+  <li>Fix CSS animations: implement <code>CADisplayLink</code> in libs-quartzcore for smooth animation timing</li>
+  <li>Fix CSS transforms: verify <code>CATransform3D</code> compositing works for 3D transforms</li>
+  <li>Fix hit testing: implement <code>CALayer</code> geometry conversion methods</li>
+  <li>Add Web Inspector support (<code>ENABLE_REMOTE_INSPECTOR=ON</code>) for debugging</li>
+</ul>
+<p><strong>Success criterion:</strong> <code>example.com</code> and <code>wikipedia.org</code> render legibly and interactively.</p>
+
+<h3>Phase 7+: Features <span class="pill info">Future</span></h3>
+<p>Enable features one at a time, each as a self-contained sub-project:</p>
+<table class="compact">
+  <thead><tr><th>Feature</th><th>CMake flag</th><th>Dependencies</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Web Inspector</td><td><code>ENABLE_REMOTE_INSPECTOR=ON</code></td><td>None extra</td><td>Full DevTools UI via WebKit's own inspector frontend</td></tr>
+    <tr><td>Video</td><td><code>ENABLE_VIDEO=ON</code></td><td>libs-av / FFmpeg, libs-coremedia</td><td>H.264, VP8/VP9 via FFmpeg decode pipeline</td></tr>
+    <tr><td>Web Audio</td><td><code>ENABLE_WEB_AUDIO=ON</code></td><td>libs-accelerate (vDSP), audio output</td><td>AudioContext, GainNode, ConvolverNode</td></tr>
+    <tr><td>WebGL</td><td><code>ENABLE_WEBGL=ON</code></td><td>Mesa OpenGL, libs-quartzcore</td><td>OpenGL ES 2.0 / 3.0 via EGL</td></tr>
+    <tr><td>WebRTC</td><td><code>ENABLE_WEB_RTC=ON</code></td><td>libwebrtc, audio/video</td><td>Complex — requires full media stack first</td></tr>
+    <tr><td>HTTPS certificates</td><td>N/A (always on)</td><td>libs-security (OpenSSL)</td><td>Implement SecTrust for certificate error UI</td></tr>
+    <tr><td>GPU Process</td><td><code>ENABLE_GPU_PROCESS=ON</code></td><td>libs-iosurface, CAContext</td><td>Requires Phase 3+ libs; enables GPU compositing</td></tr>
+    <tr><td>WebAssembly</td><td><code>ENABLE_WEBASSEMBLY=ON</code></td><td>None extra (JIT-based)</td><td>JSC's WASM interpreter and B3 JIT — largely works on any platform</td></tr>
+    <tr><td>Accessibility</td><td><code>ENABLE_ACCESSIBILITY=ON</code></td><td>ATK/AT-SPI via gnustep-gui</td><td>Screen reader support</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ OPEN QUESTIONS -->
+<section id="open-questions">
+<h2>Open questions</h2>
+
+<div class="open-q">
+  <strong>Q1: <code>OptionsGNUstep.cmake</code> as new file vs. guards in <code>OptionsMac.cmake</code>?</strong><br><br>
+  Should we fork <code>OptionsMac.cmake</code> into a new <code>OptionsGNUstep.cmake</code> that includes it and overrides as needed, or add <code>if(GNUSTEP)</code> / <code>#if PLATFORM(GNUSTEP)</code> guards throughout the existing Mac cmake files?<br><br>
+  <strong>Analysis:</strong> A separate <code>OptionsGNUstep.cmake</code> is cleaner — it's a first-class port alongside Mac, GTK, Win. Guards in Mac files make the Mac port harder to read and harder to upstream. The separate file approach also makes it easy to track what differs from the Mac baseline. <strong>Recommendation: separate file, include OptionsMac.cmake at the top, override below it.</strong>
+</div>
+
+<div class="open-q">
+  <strong>Q2: Multi-process or single-process first?</strong><br><br>
+  macOS WebKit is always multi-process. Should we start with single-process mode (everything in MiniBrowser.app, no separate WebProcess/NetworkProcess) for Phase 3/4 simplicity, then graduate to multi-process? Or go multi-process from the start since v3/v4 proved Unix socket IPC works?<br><br>
+  <strong>Analysis:</strong> Single-process first is simpler for debugging (one process, one address space, one log stream). The risk is that the single-process → multi-process transition requires significant architectural changes later. v3/v4's IPC is proven. <strong>Recommendation: go multi-process from Phase 3, but start with <code>--single-web-process</code> launch flag for debugging. WebKit already has this flag.</strong>
+</div>
+
+<div class="open-q">
+  <strong>Q3: <code>CAContext</code> replacement for multi-process GPU compositing?</strong><br><br>
+  On macOS, <code>CAContext</code> hosts a layer tree across process boundaries via Mach ports and WindowServer. Without Mach ports, what's the alternative for GPU-accelerated cross-process compositing?<br><br>
+  Options:
+  <ul>
+    <li>(a) <strong>Software blit via POSIX shared memory</strong> — simple, proven in v4, works for Phase 4. WebProcess renders to a CGBitmapContext in shared memory; UIProcess blits it to the NSView in drawRect:. No GPU sharing.</li>
+    <li>(b) <strong>DMA-BUF sharing</strong> — GPU-accelerated zero-copy texture sharing via Linux DMA-BUF / drm_prime. High performance but requires kernel support and libs-iosurface implementation. Phase 3+ only.</li>
+    <li>(c) <strong>CAContext on Unix sockets + shared memory in libs-quartzcore</strong> — implement the CAContext API as a GNUstep class that uses Unix domain sockets for render tree synchronization and POSIX shared memory for pixel data. The cleanest long-term answer.</li>
+  </ul>
+  <strong>Recommendation: (a) for Phase 4 to get first pixels; (c) for Phase 7+ as the proper long-term implementation.</strong>
+</div>
+
+<div class="open-q">
+  <strong>Q4: Upstream or fork?</strong><br><br>
+  Do we maintain patches against upstream WebKit (rebase on each release) or maintain a long-lived fork?<br><br>
+  <strong>Analysis:</strong> A long-lived fork diverges rapidly — WebKit moves fast (~100 commits/day). Maintaining patches as a patchset and rebasing periodically is more sustainable. The GNUstep-specific code lives in <code>gnustep/</code> subdirectories (per the v3 convention) — this minimizes conflicts with upstream changes that don't touch those directories. <strong>Recommendation: upstream patchset approach. Maintain a <code>gnustep/</code> subdirectory convention. Attempt to upstream generic improvements (platform registration cmake, CFNotificationCenter stubs) to the WebKit project.</strong>
+</div>
+
+<div class="open-q">
+  <strong>Q5: How to handle Apple SPI (hundreds of private API calls)?</strong><br><br>
+  WebKit uses hundreds of private/SPI calls from Apple frameworks. Options:
+  <ul>
+    <li>(a) <strong>Stub headers</strong> — create header files that typedef/define all SPI symbols as stubs. Compile-time clean, runtime no-ops.</li>
+    <li>(b) <strong><code>#if PLATFORM(GNUSTEP)</code> guards</strong> — skip SPI call sites entirely. Changes WebKit source, harder to rebase.</li>
+    <li>(c) <strong>Implement in GNUstep libs</strong> — the correct long-term answer for frequently-used SPI.</li>
+  </ul>
+  <strong>Recommendation: combination approach. Stub headers for compile-time (quick, non-invasive). <code>#if PLATFORM(GNUSTEP)</code> guards for SPI that has semantically different behavior (Mach-specific, WindowServer-specific). Implement in GNUstep libs for SPI that's actually important for rendering quality (CTFontShapeGlyphs, CTFontCopyDefaultCascadeListForLanguages, CGStyleRef filters).</strong>
+</div>
+
+<div class="open-q">
+  <strong>Q6: CFNetwork vs NSURLSession — which layer to target?</strong><br><br>
+  macOS WebKit has two network stack layers: CFNetwork (lower-level, used by WebCore's ResourceHandle) and NSURLSession (higher-level, used by WebKit's NetworkSession). GNUstep's NSURLSession is backed by libcurl and is the more complete implementation.<br><br>
+  <strong>Recommendation: NSURLSession exclusively.</strong> It's the modern Apple API (Apple deprecated CFNetwork-direct usage), GNUstep implements it fully with libcurl as the backend, and WebKit already has complete NSURLSession code paths in <code>NetworkProcess/cocoa/NetworkSessionCocoa.mm</code>. Using NSURLSession also means HTTP/2, HTTP/3 (via curl's QUIC support), and cookie management work with minimal platform-specific code.
+</div>
+</section>
+
+<hr style="margin-top: 3rem; border: none; border-top: 1px solid var(--rule);">
+<footer style="color: var(--muted); font-size: .9rem; margin-top: 1.5rem;">
+  <a href="nextbsd-research.html">&larr; NextBSD Research</a>
+</footer>
+
+</body>
+</html>

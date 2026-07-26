@@ -83,6 +83,7 @@
 
 <nav class="nav">
   <a href="#tldr">TL;DR</a>
+  <a href="#post-merge">Post-merge audit</a>
   <a href="#cg-coverage">CG coverage</a>
   <a href="#cg-gaps">CG gaps</a>
   <a href="#ct-coverage">CT coverage</a>
@@ -127,6 +128,144 @@
     <tr><td>(inline)</td><td>ImageIO</td><td>libpng, libjpeg, libtiff, giflib</td><td>2 public headers</td><td><code>platform/image-decoders/</code> indirectly via <code>CGImageSource</code></td></tr>
   </tbody>
 </table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ POST-MERGE AUDIT -->
+<section id="post-merge">
+<h2>Post-merge audit — 31 DTW-Thalion PRs merged <span class="pill ok">Done</span></h2>
+<p>31 PRs from DTW-Thalion were merged into pkgdemon/libs-opal (including PR #48 CGPattern which required manual conflict resolution). These added 5 major new feature implementations and fixed 12+ bugs with direct WebKit impact.</p>
+
+<h3>New features implemented by DTW PRs</h3>
+<table>
+  <thead>
+    <tr>
+      <th>PR</th>
+      <th>Feature</th>
+      <th>WebKit Impact</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>#52</td>
+      <td>CGContextSetBlendMode — all 27 Apple blend modes mapped to Cairo operators</td>
+      <td>Direct — CSS mix-blend-mode, compositing</td>
+    </tr>
+    <tr>
+      <td>#57 + #51</td>
+      <td>CGContextClipToMask — A8 mask pattern for fills, strokes, images, gradients, text</td>
+      <td>Direct — CSS masking, image masking</td>
+    </tr>
+    <tr>
+      <td>#56</td>
+      <td>CGContextDrawTiledImage — tile loop with correct anchoring</td>
+      <td>Direct — CSS background-repeat</td>
+    </tr>
+    <tr>
+      <td>#37</td>
+      <td>CGShading / CGFunction — axial and radial shading with 64-sample function approximation</td>
+      <td>Direct — gradient rendering</td>
+    </tr>
+    <tr>
+      <td>#48</td>
+      <td>CGPattern fills (colored and uncolored) — was returning nil, now implemented</td>
+      <td>Direct — CSS repeating patterns, SVG pattern fills</td>
+    </tr>
+    <tr>
+      <td>#53</td>
+      <td>CGGeometry dictionary representations (CGPoint/CGSize/CGRect to/from NSDictionary)</td>
+      <td>Property serialization</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Critical bug fixes</h3>
+<table>
+  <thead>
+    <tr>
+      <th>PR</th>
+      <th>Fix</th>
+      <th>WebKit Impact</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>#39</td>
+      <td>Font ascent/descent — was using bbox.yMax (too large), now uses ft_face-&gt;ascender</td>
+      <td><strong>Critical</strong> — all text line heights and baselines were wrong</td>
+    </tr>
+    <tr>
+      <td>#47</td>
+      <td>CGBitmapContext bytesPerRow=0 — was storing 0 causing zero-length buffer</td>
+      <td><strong>Critical</strong> — WebKit creates contexts with bytesPerRow=0</td>
+    </tr>
+    <tr>
+      <td>#31</td>
+      <td>CGImageCreateWithImageInRect crop size — was reporting original dimensions</td>
+      <td>Direct — sprite sheets, CSS object-fit, canvas drawImage</td>
+    </tr>
+    <tr>
+      <td>#45</td>
+      <td>CGDataProvider releaseData callback never called — memory leak</td>
+      <td>Direct — every buffer passed through CGDataProviderCreateWithData leaked</td>
+    </tr>
+    <tr>
+      <td>#28</td>
+      <td>CGPathGetCurrentPoint after close — was returning close point, not move point</td>
+      <td>Path construction correctness</td>
+    </tr>
+    <tr>
+      <td>#36</td>
+      <td>JPEG encoder was embedding garbage alpha channel</td>
+      <td>Image output correctness</td>
+    </tr>
+    <tr>
+      <td>#50</td>
+      <td>Fill/stroke color reset on color space change</td>
+      <td>Color correctness</td>
+    </tr>
+    <tr>
+      <td>#19</td>
+      <td>Dash array allocated as bytes not doubles — stack corruption</td>
+      <td>Crash fix</td>
+    </tr>
+    <tr>
+      <td>#22</td>
+      <td>CGAffineTransformIsIdentity was treating any diagonal as identity</td>
+      <td>Transform correctness</td>
+    </tr>
+    <tr>
+      <td>#26</td>
+      <td>CGColor component count didn't include alpha; equality broken</td>
+      <td>Color correctness</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Coverage update</h3>
+<div class="resolved">
+  CoreGraphics coverage: <strong>~75%</strong> (up from ~62% pre-merge). The 5 new feature implementations (blend modes, clip-to-mask, tiled image, shading/function, pattern) close major rendering gaps.
+  <br><br>
+  CoreText coverage: <strong>~45%</strong> (up from ~40%). The ascent/descent fix is the main gain — no new CT functions were added.
+</div>
+
+<h3>Remaining gaps</h3>
+<div class="gap">
+  <strong>CoreGraphics remaining:</strong>
+  <ul>
+    <li>CGContextDrawConicGradient — not present (CSS conic-gradient)</li>
+    <li>CGPathAddContinuousRoundedRect / CGPathAddUnevenCornersRoundedRect — not present</li>
+    <li>CGContextSetBaseCTM — Apple SPI, not present</li>
+    <li>CGColorSpaceUsesExtendedRange — not present (stub returning false is sufficient)</li>
+  </ul>
+  <strong>CoreText remaining (these are the biggest blockers):</strong>
+  <ul>
+    <li>CTTypesetter shaping — EMPTY FIXME, returns empty runs. <strong>#1 blocker — no text renders without this</strong></li>
+    <li>CTFontDrawGlyphs — stub that returns immediately (fallback via CGContextShowGlyphsAtPositions works)</li>
+    <li>CTFontCopyDefaultCascadeListForLanguages — not present (font fallback)</li>
+    <li>CTFontDescriptorCreateForCSSFamily — not present (CSS font families)</li>
+    <li>CTFontCreateForCharactersWithLanguageAndOption — not present (per-character font selection)</li>
+  </ul>
+</div>
 </section>
 
 <!-- ═══════════════════════════════════════════════════ CG COVERAGE -->

@@ -88,6 +88,7 @@
   <a href="#ct-coverage">CT coverage</a>
   <a href="#ct-gaps">CT gaps</a>
   <a href="#imageio">ImageIO</a>
+  <a href="#harfbuzz">HarfBuzz</a>
   <a href="#build-notes">Build notes</a>
 </nav>
 
@@ -1174,6 +1175,87 @@ target_include_directories(WebCore PRIVATE
     </tr>
   </tbody>
 </table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ HARFBUZZ -->
+<section id="harfbuzz">
+<h2>8. HarfBuzz integration — optional text shaping backend</h2>
+
+<p>libs-opal's <code>CTTypesetter</code> currently has <strong>no text shaping implementation</strong> — the <code>createLineWithRange:</code> method returns an empty runs array with a <code>FIXME</code> comment. This must be implemented for WebKit to render any text at all.</p>
+
+<p>On macOS, Apple's CoreText uses a proprietary internal shaper (AAT engine + OpenType). There is no open-source equivalent. Every non-Apple project that does complex text shaping uses <strong>HarfBuzz</strong> (MIT license). It is the only serious open-source option for full OpenType shaping (ligatures, reordering, joining, GSUB/GPOS).</p>
+
+<h3>Design: optional dependency via pkg-config auto-detection</h3>
+
+<p>HarfBuzz should be an <strong>optional</strong> dependency, not a hard requirement. Regular GNUstep desktop apps (NSTextView, etc.) work fine with basic FreeType glyph mapping for Latin text. Only WebKit and apps rendering complex scripts (Arabic, Devanagari, Thai, etc.) need the full shaper.</p>
+
+<p>libs-opal uses GNUstep-make with no <code>configure</code> script. It already auto-detects dependencies via <code>pkg-config</code> (cairo, freetype2, lcms2, libpng). HarfBuzz follows the same pattern:</p>
+
+<pre class="shell"><code># In Source/GNUmakefile or Source/OpalText/GNUmakefile:
+
+ifndef NO_HARFBUZZ
+HARFBUZZ_CFLAGS := $(shell pkg-config --cflags harfbuzz 2>/dev/null)
+HARFBUZZ_LIBS := $(shell pkg-config --libs harfbuzz 2>/dev/null)
+ifneq ($(HARFBUZZ_LIBS),)
+  ADDITIONAL_OBJCFLAGS += $(HARFBUZZ_CFLAGS) -DHAVE_HARFBUZZ=1
+  LIBRARIES_DEPEND_UPON += $(HARFBUZZ_LIBS)
+endif
+endif</code></pre>
+
+<h3>Three behaviors, zero configure step</h3>
+<table>
+  <thead>
+    <tr><th>Scenario</th><th>What happens</th><th>Text shaping</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>HarfBuzz installed (default)</td>
+      <td><code>pkg-config</code> finds it, sets <code>-DHAVE_HARFBUZZ=1</code>, links <code>-lharfbuzz</code></td>
+      <td>Full OpenType shaping — Arabic, Devanagari, Thai, CJK, ligatures, kerning</td>
+    </tr>
+    <tr>
+      <td>HarfBuzz not installed</td>
+      <td><code>pkg-config</code> returns empty, no flag set</td>
+      <td>FreeType basic: <code>FT_Get_Char_Index</code> + <code>FT_Get_Kerning</code> — Latin/Cyrillic/Greek only</td>
+    </tr>
+    <tr>
+      <td>Explicitly disabled</td>
+      <td><code>gmake NO_HARFBUZZ=yes</code></td>
+      <td>FreeType basic (even if HarfBuzz is installed)</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Implementation in CTTypesetter.m</h3>
+<pre class="objc"><code>- (CTLineRef)createLineWithRange:(CFRange)range
+{
+#ifdef HAVE_HARFBUZZ
+  // Full OpenType shaping via hb_buffer_create(), hb_shape()
+  // 1. Create hb_buffer, add Unicode codepoints from attributed string
+  // 2. Set script, language, direction from string attributes
+  // 3. Create hb_font from CTFont's underlying FT_Face
+  // 4. Call hb_shape() — produces reordered, ligated glyph array
+  // 5. Extract glyph IDs, advances, offsets into CTRun objects
+  // 6. Split into runs by attribute changes
+#else
+  // Simple FreeType glyph mapping + pair kerning
+  // 1. For each character: FT_Get_Char_Index() → glyph ID
+  // 2. For each glyph pair: FT_Get_Kerning() → advance adjustment
+  // 3. One CTRun per attribute run
+  // Works for Latin/Cyrillic/Greek; breaks on complex scripts
+#endif
+
+  CTLineRef line = [[CTLine alloc] initWithRuns: runs];
+  return line;
+}</code></pre>
+
+<div class="resolved">
+  <strong>Note:</strong> This follows the same pattern as <code>NO_OPALTEXT</code> (which disables the entire CoreText subproject). WebKit builds will always have HarfBuzz installed, so it auto-detects. Basic GNUstep desktop users who don't need complex scripts get the simpler fallback path automatically if HarfBuzz isn't on their system.
+</div>
+
+<div class="open-q">
+  <strong>Open question:</strong> HarfBuzz is already an indirect dependency on most systems — Pango, libraqm, libass, and FFmpeg all depend on it. On NextBSD it's installed as <code>harfbuzz-14.2.1</code>. Should we document this as a "soft dependency" (auto-detected) or a "recommended dependency" in the README?
+</div>
 </section>
 
 <footer>

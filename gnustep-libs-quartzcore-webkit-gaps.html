@@ -1,0 +1,785 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>libs-quartzcore — QuartzCore/CoreAnimation gaps for WebKit</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.objc  { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  table.compact td, table.compact th { padding: .35rem .55rem; font-size: .88rem; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .gap { background: #fff5f5; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .gap strong { color: var(--bad); }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .yesno { font-weight: 600; }
+  .yesno.yes     { color: var(--ok); }
+  .yesno.no      { color: var(--bad); }
+  .yesno.partial { color: var(--warn); }
+  .src { color: var(--muted); font-size: .85em; }
+  footer { margin-top: 4rem; padding-top: 1rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#open-prs">Open PRs</a>
+  <a href="#coverage">Coverage</a>
+  <a href="#phase2-gaps">Phase 2 gaps</a>
+  <a href="#phase5-gaps">Phase 5+ gaps</a>
+  <a href="#phase7-gaps">Phase 7+ gaps</a>
+  <a href="#testing">Testing</a>
+</nav>
+
+<h1>libs-quartzcore &mdash; QuartzCore/CoreAnimation gaps for WebKit
+  <span class="pill warn">Sub-plan</span>
+</h1>
+<p class="subtitle">
+  What must be added to gnustep/libs-quartzcore for WebKit v5. Includes 6 open PRs from DTW-Thalion that should be merged first. For the minimal build (<code>ENABLE_GPU_PROCESS=OFF</code>), most gaps are bypassed by software rendering. Parent plan: <a href="gnustep-webkit-v5-porting-plan.html">WebKit v5 Cocoa-native porting plan</a>.
+</p>
+
+<!-- ═══════════════════════════════════════════════════ TL;DR -->
+<section id="tldr">
+<h2>1. TL;DR</h2>
+<div class="tldr">
+  <h3>Where things stand</h3>
+  <ul>
+    <li>libs-quartzcore has <strong>working CALayer basics</strong>: sublayers, opacity, backgroundColor, transform, sublayerTransform, zPosition, contents, delegate, shouldRasterize, contentsScale, border/shadow properties, animations (Basic/Keyframe/Spring), and CATransaction begin/commit/flush machinery.</li>
+    <li><strong>CATransform3D</strong> math is implemented — but PR #13 (DTW-Thalion) fixes a critical bug where <code>CATransform3DInvert</code> was computing the adjugate matrix instead of the true inverse (missing divide by determinant). This corrupts hit-testing and projection math. Merge immediately.</li>
+    <li><strong>CAMediaTimingFunction</strong>, <strong>CAShapeLayer</strong>, and <strong>CARenderer</strong> (OpenGL compositor) are working.</li>
+    <li>For the <strong>minimal WebKit build</strong> (<code>ENABLE_GPU_PROCESS=OFF</code>), the rendering path is <code>CGBitmapContext &rarr; NSBitmapImageRep &rarr; NSView drawRect:</code>. This bypasses CALayer compositing entirely. Most QuartzCore gaps therefore don't block Phase 1&ndash;4.</li>
+    <li><strong>Critical items</strong> in priority order:
+      <ol>
+        <li>Merge all 6 DTW-Thalion PRs — especially #13 (CATransform3DInvert) and #16 (affine bridge).</li>
+        <li>Implement <code>CALayer.frame</code> — WebKit reads and writes this property constantly; without it layer geometry is broken.</li>
+        <li>Implement <code>CALayer</code> geometry conversion methods (<code>convertPoint:fromLayer:</code>, etc.) — needed for hit testing.</li>
+        <li>Implement <code>CATransaction.completionBlock</code> — currently a TODO; WebKit uses this for animation teardown callbacks.</li>
+        <li>Implement <code>CADisplayLink</code> — needed for animation frame timing in Phase 5+.</li>
+        <li>Implement <code>CATiledLayer</code>, <code>CATextLayer</code>, <code>CAGradientLayer</code>, <code>CALayer.mask</code> — Phase 6+.</li>
+        <li>Implement <code>CAContext</code> (multi-process layer hosting) — Phase 7+ only if GPU compositing across processes is required.</li>
+      </ol>
+    </li>
+  </ul>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ OPEN PRs -->
+<section id="open-prs">
+<h2>2. Open PRs to merge first</h2>
+
+<p>Seven PRs are open against <code>gnustep/libs-quartzcore</code> as of July 2026. Six are from DTW-Thalion and are in good shape. One (#6, ethanc8) has stalled and needs rework before merging. The pkgdemon fork should cherry-pick or merge all DTW-Thalion PRs immediately — they fix real bugs and improve build quality with no known regressions.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>PR</th>
+      <th>Author</th>
+      <th>What it does</th>
+      <th>WebKit impact</th>
+      <th>Priority</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>#16</strong></td>
+      <td>DTW-Thalion</td>
+      <td>Add <code>CATransform3DMakeAffineTransform</code>, <code>CATransform3DIsAffine</code>, <code>CATransform3DGetAffineTransform</code> — the bridge between 2D <code>CGAffineTransform</code> and the 4&times;4 <code>CATransform3D</code> matrix</td>
+      <td><span class="yesno yes">Direct.</span> WebKit frequently bridges CG and CA transforms, e.g. when mapping a layer's geometry into a <code>CGAffineTransform</code> for hit-testing or when setting <code>layer.affineTransform</code>. Without this bridge, any code path involving <code>CATransform3DIsAffine</code> will crash or produce garbage.</td>
+      <td><span class="pill ok">Merge now</span></td>
+    </tr>
+    <tr>
+      <td><strong>#15</strong></td>
+      <td>DTW-Thalion</td>
+      <td>Make <code>CAMediaTimingFunction.h</code> self-contained — removes a hidden transitive include dependency so the header can be included in isolation</td>
+      <td><span class="yesno partial">Build quality.</span> WebKit includes QuartzCore headers in piecemeal order; an include cycle or missing transitive header causes hard-to-diagnose build failures. Makes the header safe to include from any translation unit.</td>
+      <td><span class="pill ok">Merge now</span></td>
+    </tr>
+    <tr>
+      <td><strong>#14</strong></td>
+      <td>DTW-Thalion</td>
+      <td><code>CAMediaTimingFunction</code> tests — unit tests for the timing function interpolation logic (linear, ease, ease-in, ease-out, ease-in-out, custom cubic B&eacute;zier control points)</td>
+      <td><span class="yesno partial">Test coverage.</span> Catches regressions in animation timing interpolation, which affects CSS transitions and <code>animation-timing-function</code> behavior in WebKit.</td>
+      <td><span class="pill ok">Merge now</span></td>
+    </tr>
+    <tr>
+      <td><strong>#13</strong></td>
+      <td>DTW-Thalion</td>
+      <td><strong>Fix <code>CATransform3DInvert</code></strong> — the existing implementation computed the adjugate (cofactor transpose) matrix but omitted the final division by the determinant. The result is a matrix scaled by det(M), not the true inverse M<sup>&minus;1</sup>.</td>
+      <td><span class="yesno no">Critical bug.</span> Any code using <code>CATransform3DInvert</code> gets a wrong matrix. In WebKit this corrupts: (1) hit-testing when layers have non-identity transforms (the point-in-layer conversion uses the inverse of the layer's accumulated transform), (2) animation keyframe interpolation, (3) <code>convertPoint:toLayer:</code>/<code>convertPoint:fromLayer:</code> which walk the transform tree in both directions. Every transformed layer on-screen has broken input handling until this is fixed.</td>
+      <td><span class="pill bad">Merge now — critical</span></td>
+    </tr>
+    <tr>
+      <td><strong>#12</strong></td>
+      <td>DTW-Thalion</td>
+      <td><code>CATransform3D</code> tests — comprehensive test coverage for all <code>CATransform3D</code> math functions (concatenation, inversion, rotation, scale, translation, affine conversion)</td>
+      <td><span class="yesno partial">Test coverage.</span> Guards against future regressions in transform math. Also serves as executable documentation of expected behavior.</td>
+      <td><span class="pill ok">Merge now</span></td>
+    </tr>
+    <tr>
+      <td><strong>#11</strong></td>
+      <td>DTW-Thalion</td>
+      <td>Heap-allocate the pixel buffer in <code>_writeToPNG</code> — previously the buffer was stack-allocated with a fixed size, causing a stack overflow for large textures (e.g. a retina-density web page tile)</td>
+      <td><span class="yesno yes">Crash fix.</span> WebKit renders at <code>contentsScale</code> 2.0 on HiDPI displays. A 1024&times;1024 tile at 2&times; scale = 2048&times;2048 RGBA = 16 MB — far beyond any reasonable stack limit. Without this fix, any PNG-capture code path (used for debugging, screenshots, and potentially for software compositing transfer) will stack-overflow silently.</td>
+      <td><span class="pill ok">Merge now</span></td>
+    </tr>
+    <tr>
+      <td><strong>#6</strong></td>
+      <td>ethanc8</td>
+      <td>Build fixes — corrects various compile errors found when building libs-quartzcore on non-macOS systems</td>
+      <td><span class="yesno partial">Build quality.</span> Stalled — the PR has unresolved review comments and may conflict with the DTW-Thalion changes. Needs a rebase and a fresh review pass before merging.</td>
+      <td><span class="pill warn">Review — needs rework</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="open-q">
+  <strong>Fork strategy:</strong> Create <code>pkgdemon/libs-quartzcore</code> forked from <code>gnustep/libs-quartzcore</code>. Apply PR #11, #12, #13, #14, #15, #16 as a merge or cherry-pick series (in that order, so tests run against the fixed code). Hold #6 until rebased. Build against the WebKit source tree and run the new test suite before tagging a release.
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ COVERAGE -->
+<section id="coverage">
+<h2>3. Current coverage</h2>
+
+<p>libs-quartzcore is approximately <strong>50% of the full QuartzCore surface area</strong> that macOS exposes to WebKit. For the minimal build the effective gap is much smaller because <code>ENABLE_GPU_PROCESS=OFF</code> routes rendering through <code>CGBitmapContext</code>, bypassing most CALayer compositing. The table below reflects the state after merging all DTW-Thalion PRs.</p>
+
+<table class="compact">
+  <thead>
+    <tr>
+      <th>Class / API</th>
+      <th>Status</th>
+      <th>Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>CALayer</code> — basic properties</td>
+      <td><span class="yesno yes">Working</span></td>
+      <td><code>bounds</code>, <code>position</code>, <code>anchorPoint</code>, <code>opacity</code>, <code>backgroundColor</code>, <code>hidden</code>, <code>sublayers</code>, <code>superlayer</code>, <code>zPosition</code>, <code>transform</code>, <code>sublayerTransform</code>, <code>contents</code>, <code>contentsRect</code>, <code>delegate</code>, <code>shouldRasterize</code>, <code>contentsScale</code>, <code>masksToBounds</code>, <code>cornerRadius</code>, <code>borderWidth</code>, <code>borderColor</code>, <code>shadowColor</code>, <code>shadowOffset</code>, <code>shadowOpacity</code>, <code>shadowRadius</code></td>
+    </tr>
+    <tr>
+      <td><code>CALayer.frame</code></td>
+      <td><span class="yesno no">Missing</span></td>
+      <td>Derived property (computed from bounds/position/anchorPoint/transform). WebKit uses this constantly. See §4a.</td>
+    </tr>
+    <tr>
+      <td><code>CALayer.mask</code></td>
+      <td><span class="yesno no">Missing</span></td>
+      <td>Alpha-channel masking. Used in CSS clip-path and mask compositing.</td>
+    </tr>
+    <tr>
+      <td><code>CALayer</code> — geometry conversion</td>
+      <td><span class="yesno no">Missing</span></td>
+      <td><code>convertPoint:fromLayer:</code>, <code>convertPoint:toLayer:</code>, <code>convertRect:fromLayer:</code>, <code>convertRect:toLayer:</code>, <code>convertTime:fromLayer:</code>, <code>convertTime:toLayer:</code>. See §4b.</td>
+    </tr>
+    <tr>
+      <td><code>CALayer</code> — animations dict</td>
+      <td><span class="yesno yes">Working</span></td>
+      <td><code>addAnimation:forKey:</code>, <code>removeAnimationForKey:</code>, <code>removeAllAnimations</code>, <code>animationForKey:</code>, <code>animationKeys</code></td>
+    </tr>
+    <tr>
+      <td><code>CALayer</code> — presentation/model</td>
+      <td><span class="yesno yes">Working</span></td>
+      <td><code>presentationLayer</code>, <code>modelLayer</code></td>
+    </tr>
+    <tr>
+      <td><code>CALayer</code> — hit testing</td>
+      <td><span class="yesno partial">Partial</span></td>
+      <td><code>hitTest:</code> exists but depends on <code>CATransform3DInvert</code> (broken until PR #13 merges) and missing geometry conversion methods.</td>
+    </tr>
+    <tr>
+      <td><code>CABasicAnimation</code></td>
+      <td><span class="yesno yes">Working</span></td>
+      <td>Full: <code>fromValue</code>, <code>toValue</code>, <code>byValue</code>, interpolation</td>
+    </tr>
+    <tr>
+      <td><code>CAKeyframeAnimation</code></td>
+      <td><span class="yesno yes">Working</span></td>
+      <td>Full: <code>values</code>, <code>keyTimes</code>, <code>timingFunctions</code>, <code>calculationMode</code> (linear/discrete/paced)</td>
+    </tr>
+    <tr>
+      <td><code>CASpringAnimation</code></td>
+      <td><span class="yesno yes">Working</span></td>
+      <td>Full: <code>mass</code>, <code>stiffness</code>, <code>damping</code>, <code>initialVelocity</code>, <code>settlingDuration</code></td>
+    </tr>
+    <tr>
+      <td><code>CATransition</code></td>
+      <td><span class="yesno partial">Partial</span></td>
+      <td>MoveIn type implemented; Push, Reveal, Fade not implemented. WebKit uses fade transitions.</td>
+    </tr>
+    <tr>
+      <td><code>CAPropertyAnimation</code></td>
+      <td><span class="yesno yes">Working</span></td>
+      <td>Base class for Basic/Keyframe; <code>keyPath</code>, <code>additive</code>, <code>cumulative</code></td>
+    </tr>
+    <tr>
+      <td><code>CAMediaTiming</code> protocol</td>
+      <td><span class="yesno yes">Working</span></td>
+      <td><code>beginTime</code>, <code>duration</code>, <code>speed</code>, <code>timeOffset</code>, <code>repeatCount</code>, <code>repeatDuration</code>, <code>autoreverses</code>, <code>fillMode</code></td>
+    </tr>
+    <tr>
+      <td><code>CAMediaTimingFunction</code></td>
+      <td><span class="yesno yes">Working</span></td>
+      <td>After PR #15: self-contained header. Cubic B&eacute;zier interpolation, named presets (linear, easeIn, easeOut, easeInEaseOut, default). PR #14 adds tests.</td>
+    </tr>
+    <tr>
+      <td><code>CATransaction</code></td>
+      <td><span class="yesno partial">Partial</span></td>
+      <td><code>begin</code>, <code>commit</code>, <code>flush</code>, <code>lock</code>, <code>unlock</code>, <code>animationDuration</code>, <code>setAnimationDuration:</code>, <code>disableActions</code>, <code>setDisableActions:</code>, <code>animationTimingFunction</code>. Missing: <code>completionBlock</code> (see §4c).</td>
+    </tr>
+    <tr>
+      <td><code>CATransform3D</code> — math</td>
+      <td><span class="yesno yes">Working</span></td>
+      <td>After PR #13: all functions correct. Concatenation, rotation, scale, translation, inversion, equality, identity check. After PR #16: <code>CATransform3DMakeAffineTransform</code>, <code>CATransform3DIsAffine</code>, <code>CATransform3DGetAffineTransform</code>. PR #12 adds tests.</td>
+    </tr>
+    <tr>
+      <td><code>CAShapeLayer</code></td>
+      <td><span class="yesno yes">Working</span></td>
+      <td>Full: <code>path</code>, <code>fillColor</code>, <code>strokeColor</code>, <code>lineWidth</code>, <code>lineDashPattern</code>, <code>strokeStart</code>, <code>strokeEnd</code>, <code>fillRule</code>, <code>lineCap</code>, <code>lineJoin</code></td>
+    </tr>
+    <tr>
+      <td><code>CARenderer</code></td>
+      <td><span class="yesno yes">Working</span></td>
+      <td>OpenGL-backed compositor. <code>rendererWithCGLContext:options:</code>, <code>setLayer:</code>, <code>beginFrameAtTime:timeStamp:</code>, <code>render</code>, <code>endFrame</code>. Only used when <code>ENABLE_GPU_PROCESS=ON</code>.</td>
+    </tr>
+    <tr>
+      <td><code>CAAction</code> protocol</td>
+      <td><span class="yesno yes">Working</span></td>
+      <td><code>runActionForKey:object:arguments:</code></td>
+    </tr>
+    <tr>
+      <td><code>CAFilter</code></td>
+      <td><span class="yesno partial">Constants only</span></td>
+      <td>Filter name constants declared; no actual image-filter processing. Used by WebKit for blur/saturate filters on layers.</td>
+    </tr>
+    <tr>
+      <td><code>CAValueFunction</code></td>
+      <td><span class="yesno partial">Constants only</span></td>
+      <td>Function name constants declared; no evaluation logic. Used for animating transform components individually (rotate.x, scale.y, etc.).</td>
+    </tr>
+    <tr>
+      <td><code>CAGradientLayer</code></td>
+      <td><span class="yesno no">Header only</span></td>
+      <td>Declares <code>colors</code>, <code>locations</code>, <code>startPoint</code>, <code>endPoint</code>, <code>type</code>. No <code>drawInContext:</code> implementation.</td>
+    </tr>
+    <tr>
+      <td><code>CATextLayer</code></td>
+      <td><span class="yesno no">Header only</span></td>
+      <td>Declares <code>string</code>, <code>font</code>, <code>fontSize</code>, <code>foregroundColor</code>, <code>alignmentMode</code>, <code>wrapped</code>. No rendering.</td>
+    </tr>
+    <tr>
+      <td><code>CADisplayLink</code></td>
+      <td><span class="yesno no">Header only</span></td>
+      <td>Class declared; no implementation. See §5a.</td>
+    </tr>
+    <tr>
+      <td><code>CAScrollLayer</code></td>
+      <td><span class="yesno no">Header only</span></td>
+      <td>Declares <code>scrollToPoint:</code>, <code>scrollToRect:</code>, <code>scrollMode</code>. No implementation.</td>
+    </tr>
+    <tr>
+      <td><code>CAReplicatorLayer</code></td>
+      <td><span class="yesno no">Header only</span></td>
+      <td>Declares <code>instanceCount</code>, <code>instanceDelay</code>, <code>instanceTransform</code>, <code>instanceColor</code>. No implementation.</td>
+    </tr>
+    <tr>
+      <td><code>CATiledLayer</code></td>
+      <td><span class="yesno no">Header only</span></td>
+      <td>Declares <code>tileSize</code>, <code>levelsOfDetail</code>, <code>levelsOfDetailBias</code>. No implementation. See §5b.</td>
+    </tr>
+    <tr>
+      <td><code>CATransformLayer</code></td>
+      <td><span class="yesno no">24-line stub</span></td>
+      <td>Subclasses <code>CALayer</code>; no 3D-pass-through compositing.</td>
+    </tr>
+    <tr>
+      <td><code>CAOpenGLLayer</code></td>
+      <td><span class="yesno no">Minimal stub</span></td>
+      <td>Not required for <code>ENABLE_GPU_PROCESS=OFF</code>.</td>
+    </tr>
+    <tr>
+      <td><code>CAContext</code></td>
+      <td><span class="yesno no">Not present</span></td>
+      <td>Apple SPI for cross-process layer hosting. See §6a.</td>
+    </tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASE 2 GAPS -->
+<section id="phase2-gaps">
+<h2>4. Gaps &mdash; Phase 2 (needed for initial rendering)</h2>
+
+<p>These are the QuartzCore gaps that must be resolved before WebKit can use <code>CALayer</code> at all, even in the software-rendering path. They are not blocked on GPU compositing — they are fundamental layer-tree operations that WebKit's layout and rendering engines call unconditionally.</p>
+
+<!-- 4a -->
+<h3 id="gap-frame">4a. <code>CALayer.frame</code> property</h3>
+
+<div class="gap">
+  <strong>Missing.</strong> <code>CALayer</code> currently exposes only <code>bounds</code> and <code>position</code>. WebKit reads and writes <code>layer.frame</code> in dozens of places — e.g. <code>RenderLayerBacking::updateGeometry()</code>, <code>GraphicsLayerCA::setPosition()</code>, <code>GraphicsLayerCA::setSize()</code>.
+</div>
+
+<p><code>frame</code> is a derived property. On macOS it is defined as:</p>
+
+<ul>
+  <li><strong>Getter:</strong> the axis-aligned bounding box of the layer's <code>bounds</code> rectangle after applying <code>transform</code> and repositioning around <code>position</code>/<code>anchorPoint</code>. When <code>transform</code> is the identity matrix, <code>frame.origin = position &minus; anchorPoint &times; bounds.size</code> and <code>frame.size = bounds.size</code>. When the transform is non-identity the getter must compute the four corners of the transformed bounds and return their bounding box.</li>
+  <li><strong>Setter:</strong> reverse-computes <code>bounds.size</code> from the frame size (no transform applied — setting frame with a non-identity transform is undefined behavior on macOS too) and <code>position</code> from <code>frame.origin + anchorPoint &times; frame.size</code>.</li>
+</ul>
+
+<p>Implementation location: <code>Source/CALayer.m</code></p>
+
+<pre class="objc">/* Getter — simplified (identity transform fast path) */
+- (CGRect)frame
+{
+    CGRect bounds   = self.bounds;
+    CGPoint anchor  = self.anchorPoint;   /* default {0.5, 0.5} */
+    CGPoint pos     = self.position;
+    CATransform3D t = self.transform;
+
+    if (CATransform3DIsIdentity(t)) {
+        return CGRectMake(pos.x - anchor.x * bounds.size.width,
+                          pos.y - anchor.y * bounds.size.height,
+                          bounds.size.width,
+                          bounds.size.height);
+    }
+    /* Non-identity: transform all four corners, return AABB */
+    CGFloat x[4], y[4];
+    CGFloat w = bounds.size.width, h = bounds.size.height;
+    CGFloat ox = anchor.x * w, oy = anchor.y * h;
+    /* ... apply 3D transform to each corner, collect min/max ... */
+    return CGRectMake(/* min x */, /* min y */, /* max-min x */, /* max-min y */);
+}
+
+/* Setter */
+- (void)setFrame:(CGRect)frame
+{
+    self.bounds   = CGRectMake(0, 0, frame.size.width, frame.size.height);
+    CGPoint anchor = self.anchorPoint;
+    self.position  = CGPointMake(frame.origin.x + anchor.x * frame.size.width,
+                                 frame.origin.y + anchor.y * frame.size.height);
+}</pre>
+
+<p><strong>Estimated LOC:</strong> 40&ndash;60 in <code>CALayer.m</code>. The non-identity-transform corner case adds ~20 lines.<br>
+<strong>Blocking:</strong> Phase 2. WebKit cannot use <code>CALayer</code> without this.</p>
+
+<!-- 4b -->
+<h3 id="gap-geom">4b. <code>CALayer</code> geometry conversion methods</h3>
+
+<div class="gap">
+  <strong>Missing.</strong> The six geometry/time conversion methods are not implemented: <code>convertPoint:fromLayer:</code>, <code>convertPoint:toLayer:</code>, <code>convertRect:fromLayer:</code>, <code>convertRect:toLayer:</code>, <code>convertTime:fromLayer:</code>, <code>convertTime:toLayer:</code>.
+</div>
+
+<p>These are used extensively in WebKit for hit testing (<code>GraphicsLayerCA::pointInLayerRect</code>) and for mapping coordinates between the web-layer hierarchy and the native view hierarchy.</p>
+
+<p><strong>Algorithm:</strong> To convert a point from layer A to layer B:</p>
+<ol>
+  <li>Walk from A to the common ancestor, accumulating the product of each layer's <code>transform</code> scaled by <code>contentsScale</code> and offset by <code>position</code>/<code>anchorPoint</code>. This gives transform T<sub>A&rarr;root</sub>.</li>
+  <li>Walk from B to the same common ancestor, accumulating transforms to get T<sub>B&rarr;root</sub>.</li>
+  <li>Result transform = T<sub>B&rarr;root</sub><sup>&minus;1</sup> &times; T<sub>A&rarr;root</sub>. Apply to the point. (This is why PR #13's fix is required — the inversion must be correct.)</li>
+</ol>
+
+<p>Finding the common ancestor: standard lowest-common-ancestor walk using the <code>superlayer</code> chain. If there is no common ancestor (different layer trees), return an undefined value — macOS documents this as undefined behavior.</p>
+
+<p><strong>Estimated LOC:</strong> 100&ndash;150 in <code>CALayer.m</code>. The LCA walk is ~40 lines; the transform accumulation is ~40 lines; the point/rect variants share most code.<br>
+<strong>Blocking:</strong> Phase 5 (hit testing), but implementing now avoids a second edit pass.</p>
+
+<!-- 4c -->
+<h3 id="gap-completion">4c. <code>CATransaction.completionBlock</code></h3>
+
+<div class="gap">
+  <strong>Stub / TODO.</strong> <code>CATransaction</code> has a <code>completionBlock</code> property marked TODO in the implementation. WebKit uses this in <code>GraphicsLayerCA::flushCompositingState</code> and in animation completion teardown paths.
+</div>
+
+<p>On macOS, <code>completionBlock</code> is called on the main thread after all animations in the transaction have finished (i.e., after the last animation's <code>CAAnimationDelegate animationDidStop:finished:</code> has been called and the layer tree has been committed to the render server).</p>
+
+<p><strong>Implementation plan:</strong></p>
+<ol>
+  <li>Add a <code>_completionBlock</code> ivar (<code>dispatch_block_t</code> / <code>void (^)(void)</code>) to the <code>CATransaction</code> stack frame.</li>
+  <li>Expose <code>+completionBlock</code> and <code>+setCompletionBlock:</code> class methods that get/set the block on the current transaction stack frame (same pattern as <code>animationDuration</code>).</li>
+  <li>In <code>+commit</code>, after all animations for this transaction have been applied and the layer tree has been flushed, invoke the completion block on the main thread.</li>
+  <li>For the software rendering path (<code>ENABLE_GPU_PROCESS=OFF</code>), animations resolve synchronously during <code>commit</code>, so the completion block can be called immediately after <code>commit</code> returns.</li>
+</ol>
+
+<p><strong>Estimated LOC:</strong> 30&ndash;50 in <code>CATransaction.m</code>.<br>
+<strong>Blocking:</strong> Phase 2 if any WebKit code path unconditionally sets a completion block before committing. Phase 5 otherwise.</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASE 5+ GAPS -->
+<section id="phase5-gaps">
+<h2>5. Gaps &mdash; Phase 5+ (accelerated compositing)</h2>
+
+<p>These gaps are not blocking for the minimal software-rendering build but are required for Phase 5 (interactive compositing, smooth animations, 60 Hz rendering) and Phase 6 (full CSS visual effects).</p>
+
+<!-- 5a -->
+<h3 id="gap-displaylink">5a. <code>CADisplayLink</code></h3>
+
+<div class="gap">
+  <strong>Header only — no implementation.</strong> WebKit uses <code>CADisplayLink</code> for vsync-aligned animation frame scheduling in <code>DisplayRefreshMonitorCocoa</code> and <code>WKDisplayLinkRunLoopSource</code>. macOS added <code>CADisplayLink</code> as a public API in macOS 14 (Sonoma); it was previously iOS-only. WebKit on macOS 14+ uses it for main-thread animation timing.
+</div>
+
+<p>On macOS, <code>CADisplayLink</code> calls its target/selector once per display refresh, at the hardware vsync interval, delivered on a specified <code>NSRunLoop</code>. It exposes <code>timestamp</code> (time of the last frame), <code>targetTimestamp</code> (time of the next frame), <code>duration</code> (frame interval), and <code>preferredFramesPerSecond</code>.</p>
+
+<p><strong>Implementation plan for GNUstep (X11 environment):</strong></p>
+<ol>
+  <li><strong>Query refresh rate from X11/RandR:</strong> Call <code>XRRGetScreenInfo()</code> to get the current monitor's <code>SizeID</code> and then <code>XRRConfigCurrentRate()</code>. Fall back to 60 Hz if RandR is unavailable or returns 0. Cache the result at <code>CADisplayLink</code> creation time; re-query on display configuration change notifications.</li>
+  <li><strong>Timer source:</strong> Use <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue())</code> with <code>dispatch_source_set_timer(source, DISPATCH_TIME_NOW, interval_ns, leeway_ns)</code> where <code>interval_ns = 1,000,000,000 / refresh_rate</code> and <code>leeway_ns = interval_ns / 10</code>.</li>
+  <li><strong>Run loop integration:</strong> To match the macOS behavior of delivering callbacks on a specific <code>NSRunLoop</code>, schedule the GCD source on a queue associated with that run loop. For the main run loop this is <code>dispatch_get_main_queue()</code>.</li>
+  <li><strong>Timestamp:</strong> In the timer handler, query <code>CACurrentMediaTime()</code> (which calls <code>mach_absolute_time()</code> or <code>clock_gettime(CLOCK_MONOTONIC)</code> on GNUstep) to fill <code>timestamp</code> and <code>targetTimestamp = timestamp + duration</code>.</li>
+  <li><strong>CVDisplayLink fallback:</strong> WebKit also accepts a <code>CVDisplayLink</code> (from <code>libs-corevideo</code>). If <code>libs-corevideo</code> implements <code>CVDisplayLinkSetOutputCallback</code>, <code>CADisplayLink</code> can be a thin wrapper. For now, implement <code>CADisplayLink</code> standalone and leave the CVDisplayLink path for later.</li>
+</ol>
+
+<pre class="objc">@implementation CADisplayLink {
+    dispatch_source_t _timer;
+    id                _target;
+    SEL               _selector;
+    CFTimeInterval    _duration;
+    CFTimeInterval    _timestamp;
+    CFTimeInterval    _targetTimestamp;
+    BOOL              _paused;
+}
+
++ (CADisplayLink *)displayLinkWithTarget:(id)target selector:(SEL)sel
+{
+    CADisplayLink *dl = [[self alloc] init];
+    dl->_target   = target;
+    dl->_selector = sel;
+    dl->_duration = 1.0 / [self _queryRefreshRate];
+    return dl;
+}
+
+- (void)addToRunLoop:(NSRunLoop *)rl forMode:(NSRunLoopMode)mode
+{
+    NSTimeInterval iv = _duration;
+    uint64_t ns = (uint64_t)(iv * 1e9);
+    _timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                    dispatch_get_main_queue());
+    dispatch_source_set_timer(_timer, DISPATCH_TIME_NOW, ns, ns / 10);
+    __weak CADisplayLink *weakSelf = self;
+    dispatch_source_set_event_handler(_timer, ^{
+        [weakSelf _fire];
+    });
+    dispatch_resume(_timer);
+}
+
+- (void)_fire
+{
+    _timestamp       = CACurrentMediaTime();
+    _targetTimestamp = _timestamp + _duration;
+    [_target performSelector:_selector withObject:self];
+}
+@end</pre>
+
+<p><strong>Estimated LOC:</strong> 150&ndash;200 in <code>Source/CADisplayLink.m</code> + header updates.<br>
+<strong>Blocking:</strong> Phase 5. Without this, animation frame timing falls back to a fixed timer in WebKit, which is imprecise and not vsync-aligned.</p>
+
+<!-- 5b -->
+<h3 id="gap-tiledlayer">5b. <code>CATiledLayer</code></h3>
+
+<div class="gap">
+  <strong>Header only — no implementation.</strong> Used for tile-based web page rendering. WebKit splits large web pages into a grid of tiles, each rendered independently at the appropriate zoom level. <code>CATiledLayer</code> manages this tile grid and calls the delegate or <code>drawInContext:</code> override for each tile as it becomes visible.
+</div>
+
+<p>macOS <code>CATiledLayer</code> behavior:</p>
+<ul>
+  <li>Maintains a tile grid parameterized by <code>tileSize</code> (default 256&times;256 points).</li>
+  <li><code>levelsOfDetail</code> controls how many zoom levels are maintained in the tile cache.</li>
+  <li><code>levelsOfDetailBias</code> controls asymmetry (more detail levels above vs. below the current scale).</li>
+  <li>Tiles are rendered asynchronously in a background thread pool. The render call happens on a <code>CGContext</code> set up by <code>CATiledLayer</code>; the caller draws into it via <code>drawInContext:</code> or the layer delegate.</li>
+  <li>Rendered tiles are composited into the layer's display; stale tiles are shown until fresh ones arrive (hence the "tiled" rendering avoids blank white flashes during scroll).</li>
+</ul>
+
+<p><strong>Implementation plan:</strong></p>
+<ol>
+  <li>Subclass <code>CALayer</code> in <code>Source/CATiledLayer.m</code>.</li>
+  <li>In <code>display</code> or a custom render hook, determine which tiles intersect the current <code>visibleRect</code> (derived from the superlayer hierarchy).</li>
+  <li>For each needed tile, dispatch a <code>CGBitmapContext</code> creation + <code>drawInContext:</code> call to a background queue (use <code>dispatch_async</code> with a concurrent queue). Set the CTM to position the context over the tile's rect before calling <code>drawInContext:</code>.</li>
+  <li>When the tile's context is complete, set it as <code>contents</code> on a sublayer tile (or composite it into the parent layer's backing store) on the main queue.</li>
+  <li>Manage a tile cache with LRU eviction — keep at most <code>levelsOfDetail * (visible_tiles + margin)</code> tiles in memory.</li>
+</ol>
+
+<p><strong>Estimated LOC:</strong> 300&ndash;500 in <code>Source/CATiledLayer.m</code>.<br>
+<strong>Blocking:</strong> Phase 6+ (performance optimization for large pages).</p>
+
+<!-- 5c -->
+<h3 id="gap-textlayer">5c. <code>CATextLayer</code></h3>
+
+<div class="gap">
+  <strong>Header only — no implementation.</strong> Text rendering in a composited layer. WebKit uses <code>CATextLayer</code> for certain text overlays and in some subframe rendering paths.
+</div>
+
+<p><strong>Implementation plan:</strong></p>
+<ol>
+  <li>Subclass <code>CALayer</code>; override <code>drawInContext:</code>.</li>
+  <li>The <code>string</code> property accepts either an <code>NSString</code> or an <code>NSAttributedString</code>. If plain string, construct an <code>NSAttributedString</code> applying <code>font</code>, <code>fontSize</code>, <code>foregroundColor</code>, <code>alignmentMode</code> as paragraph/character attributes.</li>
+  <li>Lay out using CoreText: create a <code>CTFramesetter</code> from the attributed string, create a <code>CGPath</code> from <code>bounds</code>, create a <code>CTFrame</code>, call <code>CTFrameDraw(frame, ctx)</code>.</li>
+  <li>If <code>wrapped = NO</code>, truncate at the layer width using a <code>CTLine</code> with <code>kCTLineTruncationEnd</code>.</li>
+  <li>Handle <code>truncationMode</code>: none, start, middle, end.</li>
+</ol>
+
+<p><strong>Estimated LOC:</strong> 200&ndash;300 in <code>Source/CATextLayer.m</code>.<br>
+<strong>Blocking:</strong> Phase 6+.</p>
+
+<!-- 5d -->
+<h3 id="gap-gradientlayer">5d. <code>CAGradientLayer</code></h3>
+
+<div class="gap">
+  <strong>Header only — no implementation.</strong> Gradient rendering in a composited layer. Used for CSS <code>background: linear-gradient()</code> and <code>radial-gradient()</code> in composited rendering paths.
+</div>
+
+<p><strong>Implementation plan:</strong></p>
+<ol>
+  <li>Subclass <code>CALayer</code>; override <code>drawInContext:</code>.</li>
+  <li>Build a <code>CGGradient</code> from the <code>colors</code> array (array of <code>CGColorRef</code>) and <code>locations</code> array (array of <code>CGFloat</code>). If <code>locations</code> is nil, distribute stops evenly.</li>
+  <li>For <code>type = kCAGradientLayerAxial</code> (linear, the default): call <code>CGContextDrawLinearGradient(ctx, gradient, startPt, endPt, kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation)</code>. <code>startPoint</code> and <code>endPoint</code> are in unit coordinate space (0,0 = bottom-left, 1,1 = top-right — note: CA uses flipped Y for gradient unit space on macOS). Map to pixel coordinates by multiplying by <code>bounds.size</code>.</li>
+  <li>For <code>type = kCAGradientLayerRadial</code>: call <code>CGContextDrawRadialGradient</code> with the center derived from <code>startPoint</code>.</li>
+  <li>For <code>type = kCAGradientLayerConic</code> (macOS 12+): not in WebKit's minimal path; stub with linear fallback.</li>
+</ol>
+
+<p><strong>Estimated LOC:</strong> 100&ndash;150 in <code>Source/CAGradientLayer.m</code>.<br>
+<strong>Blocking:</strong> Phase 6+.</p>
+
+<!-- 5e -->
+<h3 id="gap-mask">5e. <code>CALayer.mask</code></h3>
+
+<div class="gap">
+  <strong>Missing.</strong> The <code>mask</code> property sets another <code>CALayer</code> as the alpha-channel mask for the receiver. Used in CSS <code>clip-path</code>, <code>mask</code>, and <code>-webkit-mask</code> properties in composited rendering paths.
+</div>
+
+<p><strong>Implementation plan:</strong></p>
+<ol>
+  <li>Add a <code>_mask</code> ivar (<code>CALayer *</code>) to <code>CALayer</code>. Implement <code>-mask</code> / <code>-setMask:</code> accessors.</li>
+  <li>In the compositor's render path (in <code>CARenderer</code> or <code>CALayer</code>'s <code>renderInContext:</code>), after rendering the receiver's subtree into an off-screen buffer:
+    <ol type="a">
+      <li>Render the mask layer into a separate single-channel (alpha-only) bitmap context.</li>
+      <li>Apply the alpha channel of the mask as a clip mask to the main context using <code>CGContextClipToMask(ctx, bounds, maskImage)</code>.</li>
+      <li>Composite the masked result into the parent context.</li>
+    </ol>
+  </li>
+  <li>The mask layer's <code>position</code>, <code>bounds</code>, and <code>transform</code> are applied relative to the masked layer's coordinate space.</li>
+  <li>The mask layer is not rendered into the parent layer tree as a visible sublayer — it is invisible except through its effect on the masked layer's alpha.</li>
+</ol>
+
+<p><strong>Estimated LOC:</strong> 100&ndash;200 across <code>CALayer.m</code> and the render path.<br>
+<strong>Blocking:</strong> Phase 6+.</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASE 7+ GAPS -->
+<section id="phase7-gaps">
+<h2>6. Gaps &mdash; Phase 7+ (multi-process compositing)</h2>
+
+<!-- 6a -->
+<h3 id="gap-cacontext">6a. <code>CAContext</code> (Apple SPI)</h3>
+
+<div class="gap">
+  <strong>Not present.</strong> The most architecturally complex missing piece in all of libs-quartzcore. <code>CAContext</code> is private Apple SPI that hosts a <code>CALayer</code> tree across process boundaries using Mach ports. The UIProcess holds a context ID; the WebProcess renders into the matching context; the display compositor merges them without a shared-memory pixel copy.
+</div>
+
+<p><strong>Why it matters for WebKit:</strong> When <code>ENABLE_GPU_PROCESS=ON</code>, the GPU Process renders layer trees and the UIProcess displays them. On macOS this handoff is via <code>CAContext</code> + Mach ports + IOSurface. Without <code>CAContext</code>, the GPU Process path cannot work.</p>
+
+<p><strong>Alternative approaches for GNUstep (in ascending complexity):</strong></p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Approach</th>
+      <th>Mechanism</th>
+      <th>GPU needed?</th>
+      <th>Phase</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Software pixel blit</strong></td>
+      <td>WebProcess renders into a <code>CGBitmapContext</code> backed by a POSIX shared memory region (<code>shm_open</code> / <code>memfd_create</code>). UIProcess maps the same region and blits it to the screen via <code>NSBitmapImageRep</code> + <code>drawInRect:</code>. This is v4's architecture — proven correct in principle.</td>
+      <td>No</td>
+      <td>Phase 3&ndash;4 (current target)</td>
+    </tr>
+    <tr>
+      <td><strong>DMA-BUF sharing</strong></td>
+      <td>WebProcess renders into a DRM/KMS DMA-BUF surface (Linux kernel primitve). UIProcess imports the same DMA-BUF as an OpenGL texture and composites it. Zero pixel copy. Requires a DRM device and EGL.</td>
+      <td>Yes (EGL)</td>
+      <td>Phase 7+</td>
+    </tr>
+    <tr>
+      <td><strong>CAContext over Unix sockets + shm</strong></td>
+      <td>Implement <code>CAContext</code> as a GNUstep extension using a Unix domain socket for control messages and POSIX shm for layer-tree serialization. The compositor in the UIProcess deserializes the tree and renders it. Closest to the macOS architecture; highest implementation cost.</td>
+      <td>Optional</td>
+      <td>Phase 8+</td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>Recommended approach:</strong> For Phase 1&ndash;6, keep <code>ENABLE_GPU_PROCESS=OFF</code> and use the software pixel blit path. This entirely sidesteps <code>CAContext</code>. Implement <code>CAContext</code> stubs (enough to compile, panic at runtime) to allow the source tree to build with <code>ENABLE_GPU_PROCESS=ON</code> for future work.</p>
+
+<p><strong>Stub implementation:</strong></p>
+<pre class="objc">@interface CAContext : NSObject
++ (CAContext *)contextWithCGSConnection:(uint32_t)cid options:(NSDictionary *)opts;
+@property (readonly) uint32_t contextId;
+@property (retain) CALayer *layer;
+@end
+
+@implementation CAContext
++ (CAContext *)contextWithCGSConnection:(uint32_t)cid options:(NSDictionary *)opts
+{
+    [NSException raise:NSInternalInconsistencyException
+                format:@"CAContext: multi-process compositing not implemented on GNUstep"];
+    return nil;
+}
+@end</pre>
+
+<!-- 6b -->
+<h3 id="gap-spi">6b. <code>CABackdropLayer</code>, <code>CAPresentationModifier</code>, <code>CARenderServer</code> (Apple SPI)</h3>
+
+<div class="gap">
+  <strong>Not present.</strong> All three are private Apple SPI used by WebKit's visual effects layer path (<code>CABackdropLayer</code> for backdrop-filter blur, <code>CAPresentationModifier</code> for in-flight animation modification, <code>CARenderServer</code> for direct render server communication).
+</div>
+
+<p>These are guarded by <code>#if HAVE(CA_BACKDROP_LAYER)</code>, <code>#if HAVE(CA_PRESENTATION_MODIFIER)</code>, and similar feature-detection macros in WebKit. <code>OptionsGNUstep.cmake</code> should define these as <code>OFF</code>:</p>
+
+<pre class="shell">set(HAVE_CA_BACKDROP_LAYER    OFF CACHE BOOL "" FORCE)
+set(HAVE_CA_PRESENTATION_MODIFIER OFF CACHE BOOL "" FORCE)
+set(HAVE_CA_RENDER_SERVER     OFF CACHE BOOL "" FORCE)</pre>
+
+<p>With these flags off, WebKit's preprocessor guards will exclude all code that references these SPI classes. No stub implementations are needed — the feature-disable path is the right approach. <strong>Priority: Phase 7+</strong> (and even then, only if backdrop-filter CSS is needed).</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ TESTING -->
+<section id="testing">
+<h2>7. Testing</h2>
+
+<p>libs-quartzcore has an existing test infrastructure in the <code>Tests/</code> directory. The test programs are visual X11 applications that open windows and render animations — useful for interactive verification but not directly CI-runnable without a display.</p>
+
+<h3>DTW-Thalion's new test coverage (from PRs #12 and #14)</h3>
+<ul>
+  <li><strong>PR #12 — <code>CATransform3D</code> tests:</strong> Non-visual unit tests covering all math functions: identity, concatenation (left vs. right multiply), rotation around each axis, scale, translation, inversion (validates that <code>M &times; M<sup>&minus;1</sup> = I</code> — the test that exposed the PR #13 bug), equality comparison, <code>CATransform3DIsIdentity</code>, <code>CATransform3DIsAffine</code> (after PR #16 lands).</li>
+  <li><strong>PR #14 — <code>CAMediaTimingFunction</code> tests:</strong> Tests for all six named presets (linear, easeIn, easeOut, easeInOut, default, and custom control points). Validates that interpolation at <em>t</em> = 0 returns 0 and at <em>t</em> = 1 returns 1. Tests the cubic B&eacute;zier solver (Newton-Raphson iteration) for accuracy at mid-points.</li>
+</ul>
+
+<h3>Headless testing via EGL (extending PR #11's approach)</h3>
+<p>PR #11 switches the pixel buffer from stack to heap — a side effect is that the PNG capture path becomes usable for automated image comparison tests. The strategy:</p>
+<ol>
+  <li>Create an EGL/GLES2 offscreen context using <code>EGL_EXT_platform_surfaceless</code> (no X11 required). Mesa's software renderer (<code>llvmpipe</code> or <code>softpipe</code>) supports this on any Linux CI host.</li>
+  <li>Initialize a <code>CARenderer</code> against the EGL context.</li>
+  <li>Render a known layer tree via <code>CARenderer</code>.</li>
+  <li>Read back the pixels with <code>glReadPixels</code>.</li>
+  <li>Write to PNG via the (now heap-safe) <code>_writeToPNG</code> path and compare against a reference image using a pixel-diff threshold.</li>
+</ol>
+<p>This pattern gives visual regression tests that run on CI without a real GPU or X11 server. Extend the existing <code>CARendererTest</code> program to support a <code>--headless</code> flag that activates this path.</p>
+
+<h3>Test coverage targets after all PRs merged</h3>
+<table class="compact">
+  <thead>
+    <tr><th>Component</th><th>Test type</th><th>Coverage after PRs</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>CATransform3D</code> math</td>
+      <td>Unit (non-visual)</td>
+      <td><span class="yesno yes">Full</span> — PR #12</td>
+    </tr>
+    <tr>
+      <td><code>CATransform3DInvert</code></td>
+      <td>Unit (algebraic identity check)</td>
+      <td><span class="yesno yes">Full</span> — PR #12 + PR #13</td>
+    </tr>
+    <tr>
+      <td><code>CATransform3D</code> affine bridge</td>
+      <td>Unit (round-trip CGAffineTransform)</td>
+      <td><span class="yesno yes">Full</span> — PR #12 + PR #16</td>
+    </tr>
+    <tr>
+      <td><code>CAMediaTimingFunction</code></td>
+      <td>Unit (interpolation accuracy)</td>
+      <td><span class="yesno yes">Full</span> — PR #14</td>
+    </tr>
+    <tr>
+      <td><code>CALayer</code> compositing</td>
+      <td>Visual (X11 / EGL headless)</td>
+      <td><span class="yesno partial">Partial</span> — existing visual tests</td>
+    </tr>
+    <tr>
+      <td><code>CALayer.frame</code></td>
+      <td>Unit (geometry)</td>
+      <td><span class="yesno no">Not yet</span> — must add with implementation</td>
+    </tr>
+    <tr>
+      <td>Geometry conversion methods</td>
+      <td>Unit (coordinate mapping)</td>
+      <td><span class="yesno no">Not yet</span> — must add with implementation</td>
+    </tr>
+    <tr>
+      <td><code>CATransaction.completionBlock</code></td>
+      <td>Unit (callback fires)</td>
+      <td><span class="yesno no">Not yet</span> — must add with implementation</td>
+    </tr>
+    <tr>
+      <td><code>CADisplayLink</code></td>
+      <td>Integration (timer fires at ~60 Hz)</td>
+      <td><span class="yesno no">Not yet</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="open-q">
+  <strong>CI recommendation:</strong> Add a <code>make check</code> target to libs-quartzcore that runs the non-visual unit tests (CATransform3D, CAMediaTimingFunction, CALayer geometry) and the EGL headless visual tests as a single command. These should pass on any Linux host with Mesa installed (<code>pkg install mesa-dri</code> on NextBSD). Visual X11 tests remain opt-in via <code>make check-visual</code>.
+</div>
+</section>
+
+<footer>
+  <p><a href="gnustep-research.html">&larr; GNUstep Research</a></p>
+</footer>
+
+</body>
+</html>

@@ -78,6 +78,7 @@
   <a href="#prior-art">Prior art</a>
   <a href="#architecture">Architecture</a>
   <a href="#gap-analysis">Gap analysis</a>
+  <a href="#feature-disable">Feature disable map</a>
   <a href="#new-libs">New libs</a>
   <a href="#cmake-config">CMake flags</a>
   <a href="#freebsd-deps">FreeBSD deps</a>
@@ -289,8 +290,8 @@ WebCore → CGContext (libs-opal/Cairo)        → CGBitmapContext backing store
 </div>
 
 <!-- ─── 5b CoreText ─── -->
-<h3>5b. CoreText (CTFont, CTLine, CTRun, …)</h3>
-<p><strong>GNUstep implementation:</strong> <code>libs-opal</code> — 15 CoreText headers, FreeType/Fontconfig backend with HarfBuzz for shaping.</p>
+<h3>5b. CoreText (CTFont, CTLine, CTRun, …) — part of libs-opal</h3>
+<p><strong>GNUstep implementation:</strong> CoreText is provided by <code>libs-opal</code> (the same library that provides CoreGraphics and ImageIO). Opal bundles CoreText as the <code>OpalText</code> subproject with 15 public headers under <code>CoreText/</code>, backed by FreeType/Fontconfig for font access and HarfBuzz for complex script shaping. This mirrors Apple's architecture where CoreText and CoreGraphics are both part of the same low-level graphics stack.</p>
 
 <table>
   <thead><tr><th>API</th><th>GNUstep Status</th><th>Notes</th></tr></thead>
@@ -619,9 +620,53 @@ WebCore → CGContext (libs-opal/Cairo)        → CGBitmapContext backing store
 </table>
 </section>
 
+<!-- ═══════════════════════════════════════════════════ FEATURE DISABLE MAP -->
+<section id="feature-disable">
+<h2>Feature flags that eliminate missing framework dependencies</h2>
+<p>Nearly every missing Apple framework can be sidestepped for the initial build by disabling the WebKit feature that requires it. This table maps each missing framework to the CMake flag that removes the dependency entirely:</p>
+
+<table>
+  <thead>
+    <tr><th>Missing Framework</th><th>CMake Flag to Disable</th><th>Effect</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>AVFoundation / CoreMedia / AudioToolbox / VideoToolbox</td><td><code>ENABLE_VIDEO=OFF</code></td><td>Cascades to disable MediaSource, MediaStream, WebRTC, MediaRecorder, MediaSession, EncryptedMedia, PictureInPicture, AVF captions — removes entire media pipeline</td></tr>
+    <tr><td>CoreAudio / Accelerate (vDSP)</td><td><code>ENABLE_WEB_AUDIO=OFF</code></td><td>No Web Audio API, no audio DSP, no FFT — eliminates all Accelerate/vDSP usage</td></tr>
+    <tr><td>Metal</td><td><code>ENABLE_WEBGL=OFF</code>, <code>ENABLE_WEBGPU=OFF</code>, <code>ENABLE_GPU_PROCESS=OFF</code></td><td>No GPU rendering path needed at all</td></tr>
+    <tr><td>IOSurface</td><td><code>ENABLE_GPU_PROCESS=OFF</code></td><td>No cross-process GPU surface sharing — software blit via shared memory instead</td></tr>
+    <tr><td>CoreVideo (CVDisplayLink)</td><td><code>ENABLE_GPU_PROCESS=OFF</code></td><td>No display-sync needed for software rendering path</td></tr>
+    <tr><td>CoreImage (CIFilter, CIContext)</td><td><code>ENABLE_VIDEO=OFF</code></td><td>Only used in video frame processing — disabled with video</td></tr>
+    <tr><td>Security framework</td><td><em>No flag needed</em></td><td>TLS handled internally by libcurl inside NSURLSession; disable <code>ENABLE_WEB_AUTHN=OFF</code> to remove SecKey/FIDO2 dependency</td></tr>
+    <tr><td>GameController</td><td><code>ENABLE_GAMEPAD=OFF</code></td><td>No Gamepad API</td></tr>
+    <tr><td>CoreLocation</td><td><code>ENABLE_GEOLOCATION=OFF</code></td><td>No geolocation</td></tr>
+    <tr><td>PassKit</td><td><code>ENABLE_APPLE_PAY=OFF</code></td><td>No Apple Pay / Payment Request API</td></tr>
+    <tr><td>Speech framework</td><td><code>ENABLE_SPEECH_SYNTHESIS=OFF</code></td><td>No speech synthesis or recognition</td></tr>
+    <tr><td>WritingTools</td><td><code>ENABLE_WRITING_TOOLS=OFF</code></td><td>No Apple Intelligence writing features</td></tr>
+    <tr><td>DataDetectors</td><td><code>ENABLE_TELEPHONE_NUMBER_DETECTION=OFF</code></td><td>No phone number / link detection</td></tr>
+    <tr><td>PDFKit</td><td><code>ENABLE_PDF_PLUGIN=OFF</code>, <code>ENABLE_PDFKIT_PLUGIN=OFF</code>, <code>ENABLE_UNIFIED_PDF=OFF</code></td><td>No inline PDF viewing</td></tr>
+    <tr><td>ARKit / WebXR</td><td><code>ENABLE_WEBXR=OFF</code></td><td>No AR/VR/XR content</td></tr>
+    <tr><td>Contacts</td><td><em>Stub only</em></td><td>Contact picker not critical — empty stub</td></tr>
+    <tr><td>ScreenTime</td><td><em>Stub only</em></td><td>Screen time enforcement not applicable — empty stub</td></tr>
+  </tbody>
+</table>
+
+<div class="resolved">
+  <strong>Result:</strong> With all the above flags set to OFF, the <strong>only frameworks that must actually work</strong> for the initial build are:
+  <ul>
+    <li><strong>CoreGraphics + CoreText + ImageIO</strong> — all provided by <code>libs-opal</code> <span class="yesno yes">(~85% covered)</span></li>
+    <li><strong>CoreFoundation</strong> — provided by <code>libs-corebase</code> <span class="yesno partial">(~75% — add CFNotificationCenter, CFPreferences)</span></li>
+    <li><strong>QuartzCore</strong> — provided by <code>libs-quartzcore</code> <span class="yesno partial">(~50% — but software rendering bypasses most CA)</span></li>
+    <li><strong>Foundation</strong> — provided by <code>gnustep-base</code> <span class="yesno yes">(95%+ covered)</span></li>
+    <li><strong>AppKit</strong> — provided by <code>gnustep-gui</code> <span class="yesno yes">(90%+ covered)</span></li>
+    <li><strong>libdispatch</strong> — provided by <code>swift-corelibs-libdispatch</code> <span class="yesno yes">(100% covered)</span></li>
+  </ul>
+  <p>Every other missing framework is either disabled by a feature flag or covered by an empty stub header. <strong>Zero new GNUstep core libs are needed for the initial build.</strong> The new libs (libs-security, libs-iosurface, libs-corevideo, etc.) become needed only as features are re-enabled in later phases.</p>
+</div>
+</section>
+
 <!-- ═══════════════════════════════════════════════════ NEW LIBS -->
 <section id="new-libs">
-<h2>New GNUstep core libs needed</h2>
+<h2>New GNUstep core libs needed <span class="pill info">Phase 2+</span></h2>
 <p>These libraries follow the GNUstep pattern: same Apple public header API, different internal implementation. Each is a new pkg in the GNUstep ecosystem.</p>
 
 <table>

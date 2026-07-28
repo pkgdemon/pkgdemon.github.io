@@ -175,15 +175,23 @@ footer a{color:#fff}
     <p class="eyebrow">Code review findings &middot; 27 July 2026</p>
     <h1>A GNUstep front end for Executor</h1>
     <p class="verdict">Give ARDI's Macintosh Toolbox reimplementation a native AppKit front end, so classic Mac
-    applications run as first-class windows on Gershwin. <b>This is a ~700-line new component, not a port of the
-    8,453-line 1993 NeXTSTEP front end.</b> That old code is worth reading for its hard-won Mac semantics and worth
-    almost nothing as source.</p>
+    applications run as first-class windows on Gershwin. <b>This is a new component of roughly 1,000&ndash;2,000 lines,
+    not a port of the 8,453-line 1993 NeXTSTEP front end.</b> That old code is worth reading for its hard-won Mac
+    semantics and worth almost nothing as source.</p>
 
     <div class="stats">
       <div class="stat"><b>4</b><span>pure virtuals to implement</span></div>
-      <div class="stat"><b>~700</b><span>lines of new Obj-C++</span></div>
-      <div class="stat"><b>6 d</b><span>to milestone one</span></div>
-      <div class="stat"><b>16 d</b><span>to full parity</span></div>
+      <div class="stat"><b>~700</b><span>lines for the driver</span></div>
+      <div class="stat"><b>+300&ndash;600</b><span>lines of UI, built in code</span></div>
+      <div class="stat"><b>8 d</b><span>to milestone one</span></div>
+    </div>
+
+    <div class="note note--warn">
+      <h3>Read this before scoping anything</h3>
+      <p>One question in this plan is genuinely unanswered, and it is not a detail: <b>no emulator of any kind has ever
+      used GNUstep AppKit for framebuffer display.</b> Previous, Basilisk&nbsp;II and SheepShaver all use SDL, Cocoa, Qt
+      or GTK. The blit path is unproven, GNUstep's backend has no shared-memory X extension anywhere in it, and the only
+      published drawing benchmark dates from 2015. <b>Spike that before writing anything else</b> &mdash; see step 0.</p>
     </div>
 
     <p>Fork: <a href="https://github.com/pkgdemon/executor">github.com/pkgdemon/executor</a> (Cliff Matthews' 2008
@@ -412,6 +420,7 @@ requestQuit();</pre>
         <tbody>
           <tr><td><code>gnustep.mm</code></td><td class="n">380&ndash;450</td><td>The driver. <code>ExecutorView : NSView</code>, a borderless <code>ExecutorWindow : NSWindow</code>, the app delegate, and every <code>VideoDriver</code> override.</td></tr>
           <tr><td><code>gnustepkeycodes.mm</code></td><td class="n">120&ndash;160</td><td>Fallback unichar&rarr;MKV map, plus modifier decoding for <code>-flagsChanged:</code>. AppKit does not deliver modifiers as key events; Qt sidestepped this and you cannot.</td></tr>
+          <tr><td><code>gnustep_ui.mm</code></td><td class="n">300&ndash;600</td><td><b>The menu and windows, built in code.</b> There is no nib &mdash; see below. Qt needs none of this, so it is pure delta against the reference implementation.</td></tr>
           <tr><td><code>gnustep_mainthread.mm</code></td><td class="n">50&ndash;70</td><td><code>runOnMainThread(fn, wait)</code> over <code>-performSelectorOnMainThread:</code>. The one file with no Qt counterpart &mdash; Qt got this free from its framework.</td></tr>
           <tr><td><code>available_geometry.mm</code></td><td class="n">40&ndash;55</td><td>Screen rects from <code>[NSScreen screens]</code>, bottom-left to top-left. Simpler than Qt's, which carries X11 multi-monitor workarounds.</td></tr>
           <tr><td><code>gnustep.h</code></td><td class="n">40&ndash;55</td><td><b>Pure C++, no Objective-C.</b> Objective-C types hidden behind <code>#ifdef __OBJC__ @class &hellip; #else typedef struct objc_object &hellip;</code></td></tr>
@@ -422,13 +431,72 @@ requestQuit();</pre>
       </table>
     </div>
 
+    <div class="note note--stop">
+      <h3>There is no nib, and there cannot be one</h3>
+      <p>Every interface file in the 1993 tree is <b>NeXT <code>typedstream</code> version 4</b> &mdash; the
+      pre-keyed-archiving format. Gorm cannot open them. GNUstep's model loader dispatches by signature to Gorm, keyed
+      <code>.nib</code>, <code>.xib</code> and <code>.gmodel</code> handlers; there is no typedstream path anywhere, so
+      loading them at runtime fails too. The conversion tools are dead ends: <code>nib2gmodel</code> was last touched in
+      2008 and requires Apple or NeXT libraries; <code>nib2xib</code> is maintained but runs only on OPENSTEP&nbsp;4.2.</p>
+      <p><b>It costs almost nothing, because there is almost nothing in them.</b> The live UI is one menu, one window with
+      the framebuffer view, one info panel, and four implemented actions. Of seventeen actions the nibs declare, thirteen
+      are dead. <code>MacViewClass</code> declares <em>no instance variables at all</em>, so all seven outlets its
+      metadata references are stale. One declared class has no source file anywhere in the tree. The rest is ARDI-era
+      registration and serial-number UI whose backing code is gone &mdash; you would be converting dead weight in order to
+      delete it.</p>
+      <p>Build the UI programmatically. That is the 300&ndash;600 line file above, and it also lets you delete the entire
+      outlet layer &mdash; roughly 25 globals the old code copied out of the nib so plain C could reach them.</p>
+    </div>
+
     <h2>Build wiring</h2>
     <p>Three edits to existing files: add <code>gnustep</code> to the <code>FRONT_ENDS</code> cache list, add one
     <code>add_subdirectory</code>, and ship the new <code>CMakeLists.txt</code>. Everything downstream &mdash; the
     per-front-end executable, the target naming, the include path &mdash; is picked up automatically.</p>
 
-    <p>Note there is no <code>enable_language(OBJCXX)</code> anywhere in this project, and the minimum CMake version makes
-    adding it borderline. Follow the existing pattern instead: set the language explicitly per source file.</p>
+    <h2 style="border-bottom-width:2px">Three toolchain rules that are not optional</h2>
+    <p>Each of these produces a failure that looks like something else &mdash; heap corruption, a mystery segfault, a
+    link error about a symbol you never wrote. Getting them right up front costs nothing; getting them wrong costs days.</p>
+
+    <div class="two">
+      <div class="card card--drop">
+        <h3>Clang for the whole project</h3>
+        <p>GNUstep's runtime is libobjc2, and <b>GCC has no <code>-fobjc-runtime=</code> flag at all</b>. gnustep-make's
+        own configure forces <code>CC=clang</code>. Since the <code>.mm</code> files ride
+        <code>CMAKE_CXX_COMPILER</code>, that means the entire project must be clang &mdash; not just the shim.</p>
+      </div>
+      <div class="card card--drop">
+        <h3>Never <code>enable_language(OBJCXX)</code></h3>
+        <p>CMake's OBJCXX detection prefers <code>clang++</code>, while its CXX detection resolves to <code>g++</code>.
+        On a box with both, you get clang++ for one <code>.mm</code> and g++ for four hundred <code>.cpp</code> files
+        &mdash; <b>a split C++ ABI across exactly the boundary the front end straddles</b>, since that translation unit
+        consumes <code>vdriver.h</code> with <code>shared_ptr</code>, <code>function</code> and <code>string</code> in it.
+        Let <code>.mm</code> ride the CXX compiler and set the language per source file.</p>
+      </div>
+      <div class="card card--drop">
+        <h3><code>-fuse-ld=lld</code></h3>
+        <p>The v2 Objective-C ABI depends on section-boundary symbols that GNU&nbsp;ld mishandles; the classic symptom is
+        <code>cannot locate symbol __start___objc_selectors</code>. gnustep-make warns about this itself and admits it
+        has no accurate test. gold is deprecated upstream, so lld is the answer.</p>
+      </div>
+    </div>
+
+    <div class="note note--trap">
+      <h3>The footgun that will actually get you</h3>
+      <p>Clang's default Objective-C runtime on Linux is <b>not</b> GNUstep 2.x &mdash; a bare
+      <code>-fobjc-runtime=gnustep</code> means <b>1.6</b>. Compile a <code>.mm</code> without pinning the version and
+      clang emits the wrong personality function, after which <b>catching a <code>std::exception</code> segfaults</b>.
+      It was filed against LLVM and closed as invalid, the answer being "specify the runtime." CMake will cheerfully
+      compile Objective-C++ with no Objective-C flags whatsoever and hand you crashes that read as heap corruption.</p>
+      <p>Pin <code>-fobjc-runtime=gnustep-2.2</code> per source file. Not 2.0 &mdash; they are ABI-identical, but 2.2
+      unlocks compiler fast paths, and it is what gnustep-make defaults to. Requires clang&nbsp;18 or newer.</p>
+      <p>Two related corrections to widely-repeated advice: <b>there is no <code>-lobjcxx</code> any more</b> &mdash; it
+      was folded into <code>libobjc.so</code> in 2017, though libobjc2's own <code>INSTALL</code> file still describes it.
+      And Objective-C++ exception interop is genuinely regression-tested in both directions across libstdc++ and libc++,
+      so it works &mdash; provided the runtime flag is right.</p>
+    </div>
+
+    <p>The mechanics below follow the existing pattern in the tree: set the language explicitly per source file rather
+    than enabling it project-wide.</p>
 
     <pre>find_program(GNUSTEP_CONFIG gnustep-config)
 if(GNUSTEP_CONFIG)
@@ -447,12 +515,29 @@ if(GNUSTEP_CONFIG)
       available_geometry.mm PROPERTIES COMPILE_OPTIONS "-x;objective-c++")
 
   target_compile_options(front-end-gnustep PRIVATE ${GS_OBJC_FLAGS_LIST})
+  <i># The version pin is the whole ballgame. See above.</i>
+  set_property(SOURCE gnustep.mm gnustepkeycodes.mm gnustep_ui.mm
+    APPEND PROPERTY COMPILE_OPTIONS
+      ${GS_OBJC_FLAGS_LIST}
+      <b>-fobjc-runtime=gnustep-2.2</b>
+      -fblocks -fexceptions -fobjc-exceptions -D_NATIVE_OBJC_EXCEPTIONS)
+
   target_include_directories(front-end-gnustep PUBLIC .)
   target_link_libraries(front-end-gnustep syn68k romlib ${GS_GUI_LIBS_LIST})
-endif()</pre>
+endif()
 
-    <p><code>gnustep-config --objc-flags</code> emits some flags intended for C; strip anything that fights
-    <code>CMAKE_CXX_STANDARD 17</code>. Do not enable ARC &mdash; this codebase is manual retain/release throughout.</p>
+<i># Configure the whole project with:</i>
+<i>#   cmake .. -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \</i>
+<i>#            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld"</i></pre>
+
+    <p><code>--objc-flags</code> carries <code>-MMD -MP</code>, which fight CMake's own depfile handling &mdash; filter
+    those two out and keep the rest. <code>--gui-libs</code> is a superset of the base and objc link flags, so one call
+    covers the link side. Do not enable ARC; this codebase is manual retain/release throughout, though ARC is per-file
+    so mixing would be legal if you ever wanted it.</p>
+
+    <p>Worth adding a hard failure in CMake if the discovered flags mention <code>-fobjc-runtime=</code> while the C++
+    compiler is not clang. That single check converts the most likely misconfiguration from a runtime segfault into a
+    configure-time error message.</p>
   </div>
 </section>
 
@@ -499,12 +584,55 @@ endif()</pre>
       <figcaption>Fig. 3 &mdash; What rootless actually means</figcaption>
     </figure>
 
+    <div class="note note--stop">
+      <h3>Executor's own documentation is wrong about this</h3>
+      <p>The README advertises "emulated windows are part of your desktop," and the subsystem docs state that in rootless
+      mode "windows are not drawn onto the emulator framebuffer" but are instead "delegated to the host compositor."
+      <b>The code flatly contradicts both.</b> The rootless path unions every visible window's structure region, plus the
+      menu bar, into <em>one</em> region and makes <em>one</em> call. Windows are still drawn into the framebuffer; the
+      region only selects which spans get copied and which are left transparent.</p>
+      <p>This matters beyond pedantry. Anyone scoping this project from the documentation would believe per-window host
+      integration is already half-built. <b>Settle the expectation in writing before any code is committed</b> &mdash;
+      and consider correcting those two doc files as a first, trivially reviewable pull request.</p>
+    </div>
+
+    <h2>Why per-window is a core rewrite, not a front end</h2>
+    <p>The single-framebuffer assumption is load-bearing at four independent levels. Two of them cannot be removed
+    without breaking guest applications.</p>
+
+    <div class="tw">
+      <table>
+        <thead><tr><th style="width:26%">Level</th><th>What it means</th></tr></thead>
+        <tbody>
+          <tr><td><b>Every port shares one bitmap</b></td><td>Each window's <code>GrafPort</code> points at the same screen bitmap. Windows draw at absolute screen coordinates, clipped by a visible region. They have no independent backing surface &mdash; which is faithful, because the real Macintosh worked this way too.</td></tr>
+          <tr><td><b>The framebuffer lives in the guest's address space</b></td><td>It is mapped into the 68k memory map and published as low-memory globals. <b>Guest code writes to screen memory directly</b>, and there is an entire subsystem &mdash; a periodic per-strip checksummer &mdash; that exists solely to notice when applications bypass QuickDraw and do exactly this. Those writes address screen coordinates. There is no general way to route them into per-window surfaces.</td></tr>
+          <tr><td><b>Window chrome can be guest code</b></td><td>Frames are drawn by the Window Definition Procedure, which is a <em>resource</em> &mdash; and it can come from the application's own resource fork and run as 68k code. An app with a custom WDEF draws arbitrary chrome that no native titlebar can reproduce.</td></tr>
+          <tr><td><b>The guest manages its own windows</b></td><td>Hit-testing walks Executor's window list in its own Z-order; dragging is implemented by XOR-ing a grey outline into the shared framebuffer and polling to mouse-up. The host window manager has zero involvement, and occlusion is computed by Executor. Hand stacking to the host and its order can disagree with the visible region QuickDraw clips against.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The historical evidence agrees. ARDI wrote the NeXTSTEP front end with full AppKit available and complete control
+    of their own source, and used <b>one window</b>. Their wishlist file got as far as "give some thought to rootless
+    windows during the code restructuring." What shipped thirty years later is the shape mask.</p>
+
     <div class="note note--warn">
-      <h3>Ship v1 without it</h3>
-      <p>Leave <code>framebuffer_.rootless</code> at its default <code>false</code> and Executor simply draws a normal
-      Mac desktop in a normal window &mdash; the rootless code paths all short-circuit cleanly. This drops the region
-      mask and per-pixel window transparency, which are the shakiest parts of GNUstep's backends and exactly where you
-      least want to be debugging on day three. Add it behind a flag once the basics are solid.</p>
+      <h3>And GNUstep could not do it today regardless</h3>
+      <p>Five of the window features per-window integration would need are missing or inert: <code>-setStyleMask:</code>
+      has no implementation in libs-gui at all, so a window's style cannot change after creation;
+      <code>-setOpaque:</code> is a stub with a <code>FIXME</code> and no backend call behind it; window creation always
+      uses the shared screen visual, so there is no per-pixel ARGB transparency; shaped windows exist only as private
+      API used internally by drag views; and <code>-addChildWindow:</code> records children but never makes them follow
+      the parent. Window <em>levels</em> do map to real EWMH hints, but the always-above hint is never set &mdash;
+      "floating" relies on the window manager inferring it, which KWin and Mutter generally do not.</p>
+    </div>
+
+    <div class="note note--ok">
+      <h3>Ship v1 without rootless at all</h3>
+      <p>Leave the rootless flag at its default and Executor draws a normal Mac desktop in a normal window &mdash; every
+      rootless path short-circuits cleanly. That drops the region mask and window transparency, which are the shakiest
+      parts of GNUstep's backends and exactly where you least want to be on day three. Turn it on behind a flag once the
+      basics hold.</p>
     </div>
   </div>
 </section>
@@ -543,6 +671,20 @@ endif()</pre>
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div class="note note--ok">
+      <h3>Correction: GNUstep does still have the PostScript operators</h3>
+      <p>The obvious assumption &mdash; Display PostScript is dead, so all of it must be rewritten &mdash; is wrong.
+      GNUstep ships live <code>PS*</code> and <code>DPS*</code> operators as a real C function-pointer dispatch table on
+      the graphics context, the same path AppKit uses internally. Colour, gstate, matrix, path, text and even the NeXT
+      compositing extensions are all present, and <code>DPSPrintf</code> is a genuine variadic implementation.</p>
+      <p>The total Display PostScript surface in the old front end is about ten call sites, and most compile unchanged
+      &mdash; only two need substituting, plus two header renames. The <code>NSView</code> printing callback protocol is
+      fully implemented too, none of it stubbed. And the <code>pswrap</code> input file that looked like a problem
+      contains exactly one line: <code>% no longer needed</code>.</p>
+      <p>The recommendation is still to leave printing alone, because the Linux path already works without any of this.
+      But the cost of touching it later is much lower than it appears.</p>
     </div>
 
     <h2>Sound</h2>
@@ -601,7 +743,18 @@ endif()</pre>
       <li><b>The bitmap format flag.</b> The exact equivalent of what <code>updateBuffer()</code> emits is
       <code>NSAlphaFirstBitmapFormat | NSBitmapFormatThirtyTwoBitLittleEndian</code>. That second constant arrived in
       gnustep-gui 0.25. Verify it exists in your tree before writing anything else &mdash; if it doesn't, the fallback is
-      a swizzle loop costing a full-frame pass. This is the one finding that can force an architecture change.</li>
+      a swizzle loop costing a full-frame pass.</li>
+
+      <li><b>A wrong pixel format silently costs you 307,200 iterations per frame.</b> GNUstep's context checks whether a
+      bitmap rep is "compatible" and, for anything that isn't canonical 8-bits-per-channel interleaved, falls into a
+      nested per-pixel loop calling accessor methods once per pixel. At 640&times;480 that is three hundred thousand
+      iterations of near-Objective-C work every single frame, and nothing warns you. The 1993 code's 16-bit 4:4:4 format
+      would land squarely in it. <b>Use 8 bits per channel, 32 bits per pixel, device RGB.</b> Executor's colour spec is
+      fully parameterised, so this is a constants change.</li>
+
+      <li><b>The 2-bit grayscale path draws nothing at all.</b> Cairo's backend rejects any bitmap whose colour space
+      isn't device or calibrated RGB &mdash; it logs a line and returns. A silent no-op. That path exists only for
+      1990s NeXT mono hardware; delete it rather than porting it.</li>
 
       <li><b>Call <code>[view allocateGState]</code>.</b> The old code does this with the comment "since we will be
       repeatedly focused on." Without it, per-frame <code>lockFocus</code> is ruinous and you will misdiagnose it as the
@@ -708,13 +861,14 @@ endif()</pre>
       <table>
         <thead><tr><th style="width:6%">#</th><th style="width:26%">Step</th><th style="width:9%">Days</th><th>Done when</th></tr></thead>
         <tbody>
-          <tr><td class="n">0</td><td>Verify the bitmap format</td><td class="n">0.5</td><td>A trivial test program draws a known <code>0xAARRGGBB</code> buffer through <code>NSBitmapImageRep</code> with the right colours. Do this before anything else.</td></tr>
+          <tr><td class="n">0</td><td><b>Spike the blit</b></td><td class="n">2</td><td>An <code>NSView</code> blitting a 640&times;480 32-bit <code>NSBitmapImageRep</code> at 60&nbsp;fps against back-cairo on X11, with the format verified correct. <b>This is the only genuinely unknown question in the plan and nobody has answered it before. If it fails and the raw-Xlib escape hatch doesn't pan out, stop here</b> &mdash; everything after it would be wasted.</td></tr>
           <tr><td class="n">1</td><td>Build skeleton</td><td class="n">1</td><td><code>front-end-gnustep</code> compiles and links, <code>executor-gnustep</code> runs headless-equivalent and exits cleanly.</td></tr>
           <tr><td class="n">2</td><td>Window and framebuffer</td><td class="n">2</td><td>Event loop, <code>setMode</code>, <code>requestUpdate</code> and the draw path work against a solid grey framebuffer. No input yet. Non-rootless.</td></tr>
           <tr><td class="n">3</td><td>Mouse</td><td class="n">1.5</td><td>The guest tracks the pointer and clicks land. Cursor shape and visibility follow.</td></tr>
           <tr><td class="n">4</td><td>Keyboard</td><td class="n">4</td><td>Typing works in a real application, modifiers included, and &#8984;-equivalents reach the guest rather than the host menu.</td></tr>
           <tr><td class="n">5</td><td>Clipboard, TEXT only</td><td class="n">1</td><td>Copy and paste between a classic application and a GNUstep one. Parity with the current X11 front end.</td></tr>
-          <tr><td class="n">&mdash;</td><td><b>Milestone one</b></td><td class="n"><b>~6</b></td><td><b>A usable native front end.</b> Sound faked, printing via the existing path, single window.</td></tr>
+          <tr><td class="n">5b</td><td>App shell</td><td class="n">2</td><td>Menu bar, about panel and window construction, all in code. Qt ships none of this; a native-feeling GNUstep app needs it.</td></tr>
+          <tr><td class="n">&mdash;</td><td><b>Milestone one</b></td><td class="n"><b>~8</b></td><td><b>A usable native front end.</b> Sound faked, printing via the existing path, single window.</td></tr>
           <tr><td class="n">6</td><td>Rootless</td><td class="n">3</td><td>Mac windows float over the Gershwin desktop with no surrounding grey.</td></tr>
           <tr><td class="n">7</td><td>Clipboard flavours</td><td class="n">3</td><td>PICT, TIFF and RTF, with the font-table synthesis. Exceeds every current front end.</td></tr>
           <tr><td class="n">8</td><td>Sound</td><td class="n">6</td><td>A <code>SoundDriver</code> subclass against whichever backend won.</td></tr>
@@ -724,9 +878,26 @@ endif()</pre>
 
     <div class="note note--ok">
       <h3>Start with step 0, not step 1</h3>
-      <p>Everything else in this plan is ordinary work with known shapes. The bitmap format is the only item that can
-      invalidate the design, and it costs half a day to settle. Settle it first.</p>
+      <p>Everything after it is ordinary work with a known shape. Step 0 is the only item that can invalidate the whole
+      design, and it costs two days to settle. If the cairo path can't sustain the blit, the mechanical escape hatch is
+      real &mdash; <code>-[NSWindow windowRef]</code> is implemented and on X11 hands back a structure exposing the
+      <code>Display *</code> and drawable, from which <code>XShmPutImage</code> is reachable. But no one has ever done
+      that either, and it may require an internal header that distributions don't ship. Find out on day one.</p>
     </div>
+
+    <h2>What nobody could determine</h2>
+    <p>Stated plainly, because a plan that hides its unknowns is worse than one that names them. None of the following
+    was verified, and no code in this review was compiled or executed:</p>
+    <ul>
+      <li>The literal output of <code>gnustep-config --objc-flags</code> on a current install. The flags above are
+      derived from gnustep-make's own makefiles, not observed.</li>
+      <li>Whether distribution <code>-dev</code> packages install the internal header that gates the raw-Xlib escape
+      hatch.</li>
+      <li>Any GNUstep drawing benchmark newer than 2015.</li>
+      <li>Whether recent binutils fixed the GNU&nbsp;ld problem, or whether lld remains mandatory.</li>
+      <li>First-hand reports for window levels under KWin, Mutter or i3 &mdash; the always-above gap is inferred from
+      source only.</li>
+    </ul>
   </div>
 </section>
 

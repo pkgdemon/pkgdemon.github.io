@@ -1,0 +1,1162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Executor Code Review — Findings and Citations</title>
+<style>
+:root{
+  --k:#000000; --dk:#555555; --gy:#aaaaaa; --wh:#ffffff;
+  --paper:#f4f4f2; --paper2:#e9e9e6; --desk:#5f6062;
+  --ok:#2c6141;   --ok-bg:#dae8de;
+  --warn:#7d6118; --warn-bg:#ece5cf;
+  --stop:#8a2f2f; --stop-bg:#eddcdc;
+  --sans:Helvetica,"Helvetica Neue","Nimbus Sans","Liberation Sans",Arial,sans-serif;
+  --mono:"DejaVu Sans Mono","Nimbus Mono PS","Liberation Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0; padding:34px 20px 90px; background:var(--desk); color:var(--k); font:13.5px/1.6 var(--sans)}
+
+.wrap{max-width:1040px; margin:0 auto; display:flex; flex-direction:column; gap:20px}
+.panel{background:var(--gy); border:1px solid var(--k); box-shadow:3px 3px 0 rgba(0,0,0,.4)}
+.panel__bar{display:flex; align-items:center; gap:9px; padding:5px 7px; background:var(--gy);
+  border-bottom:1px solid var(--k); box-shadow:inset 1px 1px 0 var(--wh), inset -1px -1px 0 var(--dk)}
+.panel__btn{width:16px; height:16px; flex:none; background:var(--gy); border:1px solid var(--k);
+  box-shadow:inset 1px 1px 0 var(--wh), inset -1px -1px 0 var(--dk); display:grid; place-items:center;
+  font:10px/1 var(--sans); color:var(--dk)}
+.panel__title{flex:1 1 auto; text-align:center; font:700 13px/1.2 var(--sans); letter-spacing:.02em;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.panel__body{background:var(--paper); border-top:1px solid var(--wh); padding:20px 22px 24px}
+
+h1{font:700 27px/1.15 var(--sans); letter-spacing:-.02em; margin:0 0 8px; text-wrap:balance}
+.eyebrow{font:700 10.5px/1 var(--sans); letter-spacing:.2em; text-transform:uppercase; color:var(--dk); margin:0 0 14px}
+h2{font:700 12px/1 var(--sans); letter-spacing:.15em; text-transform:uppercase; margin:28px 0 11px;
+   padding-bottom:6px; border-bottom:2px solid var(--k)}
+h2:first-child{margin-top:0}
+h3{font:700 14px/1.3 var(--sans); margin:20px 0 6px}
+h4{font:700 12.5px/1.3 var(--sans); margin:16px 0 5px}
+p{margin:0 0 11px; max-width:76ch}
+ul,ol{margin:0 0 12px; padding-left:20px; max-width:76ch}
+li{margin:0 0 5px}
+code{font-family:var(--mono); font-size:.87em; background:var(--paper2); padding:1px 4px; border:1px solid #ccccc6}
+a{color:var(--k)}
+.lede{font-size:14.5px; max-width:70ch}
+
+/* citation */
+.cite{font-family:var(--mono); font-size:11px; color:var(--dk); white-space:nowrap}
+td .cite{display:block; margin-top:2px}
+
+/* toc */
+.toc{columns:2; column-gap:32px; list-style:none; padding:0; margin:0; max-width:none}
+.toc li{break-inside:avoid; margin:0 0 5px; display:grid; grid-template-columns:26px 1fr; gap:8px; font-size:13px}
+.toc b{font:700 11px/1.5 var(--mono); color:var(--dk)}
+.toc a{text-decoration:none; border-bottom:1px solid #bbbbb4}
+.toc a:hover,.toc a:focus-visible{background:var(--k); color:var(--wh); border-color:var(--k)}
+
+/* tables */
+.tw{overflow-x:auto; border:1px solid var(--k); margin:0 0 15px; background:var(--wh)}
+table{border-collapse:collapse; width:100%; min-width:600px; font-size:12.5px}
+th,td{border:1px solid #c4c4bd; padding:7px 9px; text-align:left; vertical-align:top}
+thead th{background:var(--gy); border-color:var(--k); font:700 10px/1.3 var(--sans);
+  letter-spacing:.09em; text-transform:uppercase; box-shadow:inset 1px 1px 0 var(--wh)}
+tbody tr:nth-child(even) td{background:var(--paper2)}
+td.n{font-family:var(--mono); font-size:11px; text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
+td code{background:transparent; border:0; padding:0}
+.yes{color:var(--ok); font-weight:700}
+.no{color:var(--stop); font-weight:700}
+.part{color:var(--warn); font-weight:700}
+
+/* chips */
+.chip{display:inline-block; border:1px solid var(--k); padding:1px 6px; background:var(--gy);
+  font:700 9.5px/1.7 var(--sans); letter-spacing:.07em; text-transform:uppercase; white-space:nowrap;
+  box-shadow:inset 1px 1px 0 var(--wh), inset -1px -1px 0 var(--dk)}
+.chip--ok{background:var(--ok-bg); color:var(--ok)}
+.chip--warn{background:var(--warn-bg); color:var(--warn)}
+.chip--stop{background:var(--stop-bg); color:var(--stop)}
+
+/* notes */
+.note{border:1px solid var(--k); background:var(--wh); padding:13px 15px; margin:0 0 15px}
+.note h3{margin:0 0 5px; font-size:13.5px}
+.note p:last-child,.note ul:last-child{margin-bottom:0}
+.note--ok{background:var(--ok-bg)}
+.note--warn{background:var(--warn-bg)}
+.note--stop{background:var(--stop-bg)}
+
+pre{margin:0 0 15px; padding:12px 14px; background:#1c1c1c; color:#e8e8e4; overflow-x:auto;
+  font:11.5px/1.6 var(--mono); border:1px solid var(--k)}
+pre b{color:#ffd479; font-weight:400}
+pre i{color:#9a9a92; font-style:normal}
+
+.two{display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:15px; margin-bottom:15px}
+.card{border:1px solid var(--k); background:var(--wh); padding:13px 15px}
+.card h3{margin-top:0}
+.card p:last-child,.card ul:last-child{margin-bottom:0}
+
+footer{max-width:1040px; margin:24px auto 0; padding:0 4px; color:#d8d8d4; font:11px/1.7 var(--sans); letter-spacing:.04em}
+footer a{color:#fff}
+
+@media (max-width:700px){ .toc{columns:1} body{padding:14px 10px 60px} .panel__body{padding:15px 14px 18px} h1{font-size:21px} }
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+@media print{body{background:#fff;padding:0}.panel{box-shadow:none;break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ===================== MASTHEAD ===================== -->
+<section class="panel">
+  <div class="panel__bar">
+    <span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">Code Review &mdash; Findings and Citations</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span>
+  </div>
+  <div class="panel__body">
+    <p class="eyebrow">Companion to the porting plan &middot; 27 July 2026</p>
+    <h1>Executor, read twice</h1>
+    <p class="lede">The evidence behind <a href="gnustep-executor-port-plan.html">A GNUstep Front End for Executor</a>.
+    The plan says what to do; this says what was found and where. Everything here is source reading with file and line
+    citations. Where something could not be verified, it says so.</p>
+
+    <h2>Method and honesty</h2>
+    <p>Two trees were read in full: Cliff Matthews' 2008 MIT source release, which contains the 1993&ndash;97 NeXTSTEP
+    front end, and autc04's modern C++17 fork, which is the build target. Five parallel reviews covered the old front
+    end's architecture, the modern front-end contract, the input and output subsystems, the toolchain and GNUstep API
+    surface, and the bundled <code>HFS_XFer</code> utility.</p>
+    <div class="note note--warn">
+      <h3>Nothing here was compiled or executed</h3>
+      <p>No GNUstep toolchain was present on the review machine. Every GNUstep claim is static reading of
+      <code>libs-gui</code> and <code>libs-back</code> at HEAD on 27 July 2026, plus project documentation. Claims about
+      Executor itself are read from the two source trees. Section&nbsp;12 lists what could not be settled either way.</p>
+    </div>
+
+    <h2>Contents</h2>
+    <ol class="toc">
+      <li><b>01</b><a href="#contract">The front-end contract</a></li>
+      <li><b>02</b><a href="#threads">Threading and synchronisation</a></li>
+      <li><b>03</b><a href="#pixels">Pixel formats</a></li>
+      <li><b>04</b><a href="#toolchain">Toolchain and runtime</a></li>
+      <li><b>05</b><a href="#old">The 1993 front end</a></li>
+      <li><b>06</b><a href="#input">Input, sound, printing, scrap</a></li>
+      <li><b>07</b><a href="#gaps">GNUstep API gaps</a></li>
+      <li><b>08</b><a href="#nibs">Interface files</a></li>
+      <li><b>09</b><a href="#rootless">Rootless, in depth</a></li>
+      <li><b>10</b><a href="#hfsxfer">HFS_XFer</a></li>
+      <li><b>11</b><a href="#salvage">Salvage register</a></li>
+      <li><b>12</b><a href="#unknowns">Unknowns</a></li>
+    </ol>
+  </div>
+</section>
+
+<!-- ===================== 01 CONTRACT ===================== -->
+<section class="panel" id="contract">
+  <div class="panel__bar"><span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">01 &mdash; The front-end contract</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span></div>
+  <div class="panel__body">
+    <p>Exactly one abstract base class, <code>Executor::VideoDriver</code> <span class="cite">vdriver.h:103-174</span>.
+    No required free functions. The global <code>Executor::vdriver</code> <span class="cite">vdriver.h:176</span> is
+    defined by the core at <span class="cite">vdriver.cpp:10</span>, not by the front end.</p>
+
+    <h3>Pure virtual</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:34%">Signature</th><th style="width:12%">Line</th><th>Constraint</th></tr></thead>
+      <tbody>
+        <tr><td><code>void runEventLoop()</code></td><td class="cite">:111</td><td>Called on the main thread from <code>main()</code>. Must block until <code>endEventLoop()</code>.</td></tr>
+        <tr><td><code>void endEventLoop()</code></td><td class="cite">:112</td><td>Called from the emulator thread <span class="cite">main.cpp:503</span>. Must be async and thread-safe.</td></tr>
+        <tr><td><code>bool setMode(int w, int h, int bpp, bool grayscale)</code></td><td class="cite">:117</td><td>Emulator thread. Allocates <code>framebuffer_</code>, returns true.</td></tr>
+        <tr><td><code>void requestUpdate()</code> <i>(protected)</i></td><td class="cite">:168</td><td><b>Invoked with <code>mutex_</code> already held.</b> Must not block.</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>Also required</h3>
+    <ul>
+      <li>A constructor <code>(IEventListener*, int&amp; argc, char* argv[])</code> &mdash; <code>argc</code> by
+      non-const reference. Required by <span class="cite">main.cpp:416</span>.</li>
+      <li>A <code>default_vdriver.h</code> supplying <code>using DefaultVDriver = &hellip;</code>, found via
+      <code>target_include_directories(&hellip; PUBLIC .)</code>. Included by <span class="cite">main.cpp:62</span>.</li>
+    </ul>
+
+    <div class="note note--stop">
+      <h3><code>main.cpp</code> is compiled as plain C++</h3>
+      <p>So <code>default_vdriver.h</code> and everything it includes must be free of Objective-C. Qt solves this with
+      bare forward declarations <span class="cite">qt/qt.h:5-9</span>. The GNUstep equivalent is
+      <code>#ifdef __OBJC__ @class Foo; #else typedef struct objc_object Foo; #endif</code>.</p>
+    </div>
+
+    <h3>Optional &mdash; all have working defaults</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:30%">Method</th><th style="width:11%">Decl</th><th style="width:23%">Caller</th><th>Qt overrides?</th></tr></thead>
+      <tbody>
+        <tr><td><code>updateScreen(t,l,b,r)</code></td><td class="cite">:114</td><td class="cite">dirtyrect.cpp:216</td><td>no</td></tr>
+        <tr><td><code>isAcceptableMode(&hellip;)</code></td><td class="cite">:115</td><td class="cite">qGDevice.cpp:396</td><td>no (SDL2 does)</td></tr>
+        <tr><td><code>setColors(int, const vdriver_color_t*)</code></td><td class="cite">:116</td><td class="cite">qGDevice.cpp:234</td><td>no</td></tr>
+        <tr><td><code>putScrap / getScrap / weOwnScrap</code></td><td class="cite">:119-121</td><td class="cite">scrap.cpp:150, :260</td><td><b>no &mdash; Qt has no clipboard</b></td></tr>
+        <tr><td><code>setTitle(const std::string&amp;)</code></td><td class="cite">:123</td><td class="cite">prefs.cpp:89</td><td>no</td></tr>
+        <tr><td><code>setCursor / setCursorVisible</code></td><td class="cite">:125-128</td><td class="cite">qCursor.cpp</td><td><b>yes</b> <span class="cite">qt.cpp:301, :326</span></td></tr>
+        <tr><td><code>setRootlessRegion(RgnHandle)</code></td><td class="cite">:131</td><td class="cite">windRootless.cpp:42</td><td>base + <code>commitRootlessRegion</code></td></tr>
+        <tr><td><code>beepAtUser()</code></td><td class="cite">:134</td><td class="cite">osutil.cpp:849</td><td>no</td></tr>
+        <tr><td><code>noteUpdatesDone / updateMode / handleMenuBarDrag</code></td><td class="cite">:136-139</td><td class="cite">toolevent.cpp, menu.cpp:1068</td><td>no</td></tr>
+      </tbody>
+    </table></div>
+
+    <p>The true minimum is proven by <code>headless.h</code> &mdash; sixteen lines implementing <code>setMode</code> and
+    three empty methods.</p>
+
+    <h3>The callback interface</h3>
+    <p><code>IEventListener</code> <span class="cite">vdriver.h:62-78</span>, reachable as the protected member
+    <code>callbacks_</code> <span class="cite">vdriver.h:152</span>. The concrete instance is <code>EventSink</code>
+    <span class="cite">vdriver.h:80-101</span>. All methods are safe to call from the GUI thread.</p>
+    <pre>mouseButtonEvent(bool down, int h, int v)   <i>// convenience, :65</i>
+mouseButtonEvent(bool down)                <i>// :71</i>
+mouseMoved(int h, int v)                   <i>// :72</i>
+keyboardEvent(bool down, unsigned char mkvkey)  <i>// :73</i>
+suspendEvent()                             <i>// :74  focus lost</i>
+resumeEvent(bool updateClipboard)          <i>// :75  focus gained</i>
+requestQuit()                              <i>// :76</i>
+wake()                                     <i>// :77  only Wayland uses it</i></pre>
+  </div>
+</section>
+
+<!-- ===================== 02 THREADS ===================== -->
+<section class="panel" id="threads">
+  <div class="panel__bar"><span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">02 &mdash; Threading and synchronisation</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span></div>
+  <div class="panel__body">
+    <p><span class="cite">main.cpp:424-509</span> is unambiguous about ownership:</p>
+    <pre>auto executorThread = std::thread([&amp;] {
+    ROMlib_InitGDevices(...);   <i>// :441 → vdriver->setMode</i>
+    executor_main();            <i>// :496</i>
+    vdriver-&gt;endEventLoop();    <i>// :503</i>
+});
+vdriver-&gt;runEventLoop();        <i>// :506  MAIN THREAD, blocks all session</i>
+executorThread.join();          <i>// :507</i></pre>
+
+    <p>The toolkit's loop owns the main thread and calls into Executor through <code>callbacks_</code>. Executor never
+    calls the front end to pump events &mdash; there is no <code>pumpEvents()</code>. This matches
+    <code>[NSApp run]</code> directly.</p>
+
+    <h3>GUI thread to emulator</h3>
+    <p>Front-end calls are queued and delivered via a synthetic interrupt <span class="cite">eventsink.cpp:90-95</span>:</p>
+    <pre>void EventSink::runOnEmulatorThread(std::function&lt;void()&gt; f) {
+    std::lock_guard lk(mutex_);
+    todo_.push_back(f);
+    eventInterrupt.trigger();
+}</pre>
+    <p>where <code>eventInterrupt</code> <span class="cite">eventsink.cpp:15-19</span> is serviced on the emulator
+    thread and drains the queue in <code>pumpEvents()</code> <span class="cite">:97-106</span>. The front end never
+    touches Toolbox state.</p>
+
+    <h3>Emulator thread to GUI &mdash; your problem, three existing idioms</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:16%">Front end</th><th>Mechanism</th></tr></thead>
+      <tbody>
+        <tr><td>Qt</td><td><code>QMetaObject::invokeMethod</code> queued, plus a hand-rolled mutex/condvar when it must block <span class="cite">qt.cpp:179, 193-235, 298</span></td></tr>
+        <tr><td>SDL2</td><td><code>onMainThread()</code> pushes to <code>todos_</code>, wakes with a custom event, blocks on <code>done_</code> <span class="cite">sdl2.cpp:45-52, 219-226</span></td></tr>
+        <tr><td>Wayland</td><td>eventfd + poll <span class="cite">wayland.cpp:60, 186-200</span></td></tr>
+        <tr><td><i>GNUstep</i></td><td><code>-performSelectorOnMainThread:withObject:waitUntilDone:</code></td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="note note--stop">
+      <h3>The deadlock, with its three call sites</h3>
+      <p><code>requestUpdate()</code> is invoked with <code>mutex_</code> held at every site:</p>
+      <ul>
+        <li><span class="cite">vdriver.cpp:143</span> lock &rarr; <span class="cite">:152</span> in <code>setColors</code></li>
+        <li><span class="cite">vdriver.cpp:158</span> lock &rarr; <span class="cite">:171</span> in <code>setRootlessRegion</code></li>
+        <li><span class="cite">vdriver.cpp:176</span> lock &rarr; <span class="cite">:178</span> in <code>updateScreen</code></li>
+      </ul>
+      <p>And the draw path takes the same mutex <span class="cite">qt.cpp:242</span>. Therefore
+      <code>waitUntilDone:NO</code> is mandatory. Conversely <code>setMode</code>, <code>setCursor</code> and
+      <code>setCursorVisible</code> are called <em>without</em> the mutex and may block &mdash; Qt's
+      <code>setMode</code> does.</p>
+    </div>
+
+    <div class="note note--warn">
+      <h3>Two more ordering rules</h3>
+      <p><b>Release the mutex before <code>updateBuffer()</code>.</b> Qt unlocks at <span class="cite">qt.cpp:263</span>
+      before calling it at <span class="cite">:268</span>, because it fans out to a thread pool of
+      <code>hardware_concurrency()-2</code> workers <span class="cite">vdriver.cpp:20-86, :35</span> and runs long.</p>
+      <p><b>There is a startup race.</b> The emulator thread can reach <code>setMode</code>
+      <span class="cite">main.cpp:441</span> before the main thread reaches <code>runEventLoop</code>
+      <span class="cite">:506</span>. Qt survives because queued invocations wait in the queue.
+      <code>performSelectorOnMainThread:waitUntilDone:YES</code> also survives. Do not design <code>setMode</code>
+      around a run loop that is already spinning.</p>
+    </div>
+
+    <p>Under GNUstep, also enable multithreading early &mdash; the runtime must know it is multithreaded before
+    <code>performSelectorOnMainThread:</code> behaves &mdash; and wrap every secondary-thread entry point touching
+    Objective-C in an autorelease pool. Executor already had to do this on macOS
+    <span class="cite">macosx.mm:83</span>.</p>
+  </div>
+</section>
+
+<!-- ===================== 03 PIXELS ===================== -->
+<section class="panel" id="pixels">
+  <div class="panel__bar"><span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">03 &mdash; Pixel formats</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span></div>
+  <div class="panel__body">
+    <h3>What the guest writes</h3>
+    <p><code>Executor::Framebuffer</code> <span class="cite">vdriver.h:43-60</span>, constructed at
+    <span class="cite">vdriver.cpp:12-17</span>:</p>
+    <pre>rowBytes = ((width * bpp + 31) &amp; ~31) / 8;   <i>// rows padded to 4-byte multiples</i></pre>
+    <div class="tw"><table>
+      <thead><tr><th style="width:14%">Depth</th><th>Layout</th></tr></thead>
+      <tbody>
+        <tr><td>1, 2, 4, 8</td><td>Palette-indexed, <b>MSB-first within each byte</b> &mdash; <code>IndexedPixelGetter</code> <span class="cite">vdriver.cpp:242-269</span> computes <code>shift = 8 - (x*depth%8) - depth</code>, decrementing.</td></tr>
+        <tr><td>16</td><td>Mac RGB555, <b>big-endian</b>, read through <code>GUEST&lt;uint16_t&gt;</code> <span class="cite">vdriver.cpp:364</span>, unpacked with 5&rarr;8 bit expansion <span class="cite">:366-375</span>.</td></tr>
+        <tr><td>32</td><td>Mac xRGB8888, <b>big-endian</b>, <code>GUEST&lt;uint32_t&gt;</code> <span class="cite">vdriver.cpp:381</span>, then <code>| 0xFF000000</code>.</td></tr>
+      </tbody>
+    </table></div>
+    <p>Accepted modes are powers of two up to 32 <span class="cite">vdriver.cpp:98-109</span>; minimum size 512&times;342
+    <span class="cite">vdriver.h:31-32</span>. <b>The framebuffer is big-endian Mac format. It must never be handed to
+    AppKit directly.</b></p>
+
+    <h3>What <code>updateBuffer()</code> produces</h3>
+    <p><span class="cite">vdriver.cpp:271-405</span>. Output is packed 32-bit <code>0xAARRGGBB</code> in host byte order,
+    no padding, stride <code>bufferWidth * 4</code> <span class="cite">:332, :341</span>. On a little-endian host the
+    memory order is B, G, R, A. Alpha is <code>0xFF</code> except where a pixel lies outside the rootless region and
+    equals opaque white, which is written as fully transparent <span class="cite">:332</span>. Work is chunked at 100
+    rows when a rect exceeds 160 rows <span class="cite">:303-309</span>.</p>
+
+    <p><b>Qt performs no conversion of its own.</b> <code>QImage::Format_RGB32</code> is bit-identical, so it passes
+    <code>qimage-&gt;bits()</code> straight in <span class="cite">qt.cpp:215, :268</span>.</p>
+
+    <p>The AppKit equivalent:</p>
+    <pre>NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
+    initWithBitmapDataPlanes:&amp;buf
+                  pixelsWide:w pixelsHigh:h
+               bitsPerSample:8 samplesPerPixel:4
+                    hasAlpha:YES isPlanar:NO
+              colorSpaceName:NSDeviceRGBColorSpace
+                bitmapFormat:(NSAlphaFirstBitmapFormat
+                            | <b>NSBitmapFormatThirtyTwoBitLittleEndian</b>)
+                 bytesPerRow:w*4 bitsPerPixel:32];</pre>
+    <p>That highlighted constant arrived in gnustep-gui 0.25. Verify before building around it.</p>
+
+    <h3>Palette</h3>
+    <p><code>setColors</code> <span class="cite">vdriver.cpp:141-153</span> receives 16-bits-per-channel
+    <code>vdriver_color_t</code> <span class="cite">vdriver.h:38-41</span> from <code>gd_update_colors()</code>
+    <span class="cite">qGDevice.cpp:216-234</span> and stores host-native <code>0xAARRGGBB</code> into
+    <code>colors_[256]</code>. It then dirties the whole screen and calls <code>requestUpdate()</code>
+    <span class="cite">:151-152</span> &mdash; correct, since a CLUT change alters every pixel's meaning. <b>If you do
+    not override it, palette handling is free.</b> Qt does not override it.</p>
+
+    <h3>Dirty rects</h3>
+    <p><code>DirtyRects</code> <span class="cite">dirtyrect.h:10-31</span>. Maximum <b>five</b>
+    <span class="cite">:13</span>, auto-merged into unions when they overlap <span class="cite">dirtyrect.cpp:150-196</span>.
+    Half-open, top-left origin. <code>getAndClear()</code> at <span class="cite">:199-204</span>.</p>
+
+    <p><code>Framebuffer::rgbSpec</code> <span class="cite">vdriver.h:56</span> is consulted only by
+    <span class="cite">qPixMapConv.cpp:265-268</span>. Qt, SDL2, Wayland and headless all leave it null, which selects
+    the correct Mac defaults. <b>Leave it null.</b></p>
+  </div>
+</section>
+
+<!-- ===================== 04 TOOLCHAIN ===================== -->
+<section class="panel" id="toolchain">
+  <div class="panel__bar"><span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">04 &mdash; Toolchain and runtime</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span></div>
+  <div class="panel__body">
+    <h3>How front ends are selected</h3>
+    <ul>
+      <li><span class="cite">src/CMakeLists.txt:1</span> &mdash; <code>set(FRONT_ENDS qt x sdl sdl2 wayland CACHE STRING &hellip;)</code>. A cache list; override with <code>-DFRONT_ENDS="qt;gnustep"</code>.</li>
+      <li><span class="cite">:102-107</span> &mdash; every directory is unconditionally added; each decides for itself whether to create its target, guarded on its dependency being found <span class="cite">qt/CMakeLists.txt:4</span>.</li>
+      <li><span class="cite">:605-610</span> &mdash; requested list intersected with what actually built.</li>
+      <li><span class="cite">:612-637</span> &mdash; one executable per front end, <code>executor-&lt;name&gt;</code>, all from the same <code>main.cpp</code>; <code>front-end-headless</code> links into every one.</li>
+      <li><span class="cite">:641-647</span> &mdash; the first surviving entry wins the plain <code>executor</code> name.</li>
+    </ul>
+    <p>Naming contract: library target <code>front-end-&lt;name&gt;</code>, directory
+    <code>src/config/front-ends/&lt;name&gt;/</code>, and <code>PUBLIC .</code> on the include directories. Adding one is
+    three edits plus a new <code>CMakeLists.txt</code>.</p>
+
+    <h3>Runtime and compiler</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:22%">Item</th><th style="width:20%">Value</th><th>Evidence</th></tr></thead>
+      <tbody>
+        <tr><td>Runtime</td><td>libobjc2 v2.3</td><td>Released 2025-09-16; master active. MIT.</td></tr>
+        <tr><td>ABI flag</td><td><code>gnustep-2.2</code></td><td>gnustep-make 2.9.3 sets this as the <code>ng</code> default. ABI-identical to 2.0; 2.2 unlocks compiler fast paths gated in clang. <b>Needs clang 18+.</b></td></tr>
+        <tr><td>Compiler</td><td><b>clang only</b></td><td>GCC has no <code>-fobjc-runtime=</code> option at all. gnustep-make's configure forces <code>CC=clang</code>: "The ng runtime library setting requires clang rather than gcc."</td></tr>
+        <tr><td>Library combo</td><td><code>ng-gnu-gnu</code></td><td>libobjc2 + gnustep-base + gnustep-gui.</td></tr>
+        <tr><td>Linker</td><td><b>lld</b></td><td>gnustep-make warns GNU ld "might not produce working Objective-C binaries using the gnustep-2.0 ABI." The v2 ABI needs section-boundary symbols; symptom is <code>cannot locate symbol __start___objc_selectors</code>. gold is deprecated upstream.</td></tr>
+        <tr><td>C++ stdlib</td><td>libstdc++</td><td>Both work &mdash; libobjc2 CI covers libc++ and libstdc++ across LLVM 13&ndash;18. Keep one across the whole link; do not pass <code>-stdlib=libc++</code>.</td></tr>
+      </tbody>
+    </table></div>
+
+    <p>Flags emitted by the <code>ng</code> combo, derived from gnustep-make's <code>library-combo.make</code> and
+    <code>common.make</code>:</p>
+    <pre>-fobjc-runtime=gnustep-2.2 -fblocks -DGNUSTEP_RUNTIME=1 -D_NONFRAGILE_ABI=1
+-fexceptions -fobjc-exceptions -D_NATIVE_OBJC_EXCEPTIONS
+link: -fexceptions -lobjc -lgnustep-base -lgnustep-gui</pre>
+
+    <div class="note note--stop">
+      <h3>Do not call <code>enable_language(OBJCXX)</code></h3>
+      <p>CMake's <code>CMakeDetermineOBJCXXCompiler</code> sets <code>clang++</code> ahead of the compiler list, so the
+      effective Linux order is <code>clang++, c++, g++</code> &mdash; while CXX detection has no clang preference and
+      resolves <code>c++</code>&rarr;<code>g++</code>. On a box with both, you get <b>clang++ for the one <code>.mm</code>
+      and g++ for ~400 <code>.cpp</code> files</b>, splitting the C++ ABI across the <code>vdriver.h</code> boundary,
+      which carries <code>shared_ptr</code>, <code>function</code> and <code>string</code>.</p>
+      <p>Additionally, CMake ships only <code>Apple-*-OBJCXX.cmake</code> platform modules &mdash; no Linux ones &mdash;
+      so OBJCXX targets get no <code>-rdynamic</code> handling. And OBJCXX needs CMake 3.16 while this project's floor is
+      3.12. Let <code>.mm</code> ride <code>CMAKE_CXX_COMPILER</code> and set the language per source file.</p>
+    </div>
+
+    <div class="note note--stop">
+      <h3>The personality-function trap</h3>
+      <p>Clang's default Objective-C runtime on Linux is GNUstep with an <em>empty</em> version tuple, and bare
+      <code>-fobjc-runtime=gnustep</code> means <b>1.6</b>. Without an explicit version, clang emits
+      <code>__gnu_objc_personality_v0</code> instead of <code>__gnustep_objcxx_personality_v0</code> &mdash; and
+      <b>catching a <code>std::exception</code> then segfaults</b>. Filed as LLVM issue 33904, closed invalid, the answer
+      being "specify the runtime." CMake will compile <code>.mm</code> with no Objective-C flags at all and hand you
+      crashes that read as heap corruption.</p>
+      <p>Two corrections to widely-repeated advice: <b><code>libobjcxx</code> no longer exists</b> &mdash; removed in
+      commit <code>fefb333b0</code> (2017-12-25), folded into <code>libobjc.so</code>, though libobjc2's
+      <code>INSTALL</code> file still describes it. And exception interop <em>is</em> regression-tested in both
+      directions &mdash; <code>Test/CXXException.m</code> and <code>ObjCXXEHInterop.mm</code>, at <code>-O0</code> and
+      <code>-O3</code>, both ABIs, both stdlibs.</p>
+    </div>
+
+    <p>Objective-C++ mixing is fully supported: gnustep-make has a dedicated <code>.mm</code> rule, and libobjc2 has
+    <code>ENABLE_OBJCXX</code> on by default. libobjc2 itself needs C++20 to build, but it is a separate shared object,
+    so a C++17 consumer is fine. ARC works on Linux and is per-file, so ARC and manual-retain translation units mix
+    freely &mdash; though this codebase is manual throughout.</p>
+
+    <h3>Precedent</h3>
+    <p>GNUstep's own <code>android-examples</code> compiles a <code>.mm</code> from CMake via
+    <code>gnustep-config</code> with no <code>enable_language</code>. libobjc2 is itself a CMake project with Ubuntu CI.
+    No Gershwin-specific build convention was located.</p>
+  </div>
+</section>
+
+<!-- ===================== 05 OLD FRONT END ===================== -->
+<section class="panel" id="old">
+  <div class="panel__bar"><span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">05 &mdash; The 1993 front end</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span></div>
+  <div class="panel__body">
+    <p class="lede">8,453 lines excluding <code>HFS_XFer</code>. Every file is dual-compiled
+    <code>#ifndef OPENSTEP</code>. The NEXTSTEP branch is finished, shipped code; the OpenStep branch is an abandoned
+    1997 port.</p>
+
+    <h3>The framebuffer bridge</h3>
+    <p>Two buffers. The guest one <span class="cite">MacViewClass.m:103-105</span>, allocated
+    <span class="cite">:470-473</span>; the host one <span class="cite">:89-95</span>, page-aligned
+    <span class="cite">:465</span>, in 16-bit RGB 4:4:4 declared once at <span class="cite">:408-414</span>.</p>
+    <p><b>The aliasing trick</b> &mdash; the image rep is built <em>around</em> the client-owned buffer, so plain C
+    stores are visible to it with zero copy <span class="cite">MacViewClass.m:483-499</span>. There is no shared memory,
+    no framebuffer device, and no Display PostScript pixmap.</p>
+    <p><b>The blit</b> <span class="cite">:612-712</span> does not use <code>setNeedsDisplay:</code>. It grabs the
+    drawing context from arbitrary emulator code, sets a multi-rect clip, and redraws the whole bitmap
+    <span class="cite">:696-709</span>:</p>
+    <pre>[self_view lockFocus];
+NSRectClipList (nxr, num_rects);
+[current_screen_bitmap draw];
+[self_view unlockFocus];</pre>
+    <p>Two supporting details that matter: <code>[self allocateGState]</code>
+    <span class="cite">:168, :243</span> &mdash; "since we will be repeatedly focused on" &mdash; without which per-frame
+    <code>lockFocus</code> is ruinous; and the Y-flip per rect <span class="cite">:693</span>.
+    <code>drawRect:</code> <span class="cite">:340-393</span> exists only for genuine expose events and does the same
+    twenty-line redraw.</p>
+
+    <h3>Event loop</h3>
+    <p>AppKit owns it. The emulator is a coroutine on a hand-built second stack, on the same thread.
+    <code>contextswitch()</code> <span class="cite">NEXTmain.m:110-168</span> is inline assembly &mdash; m68k at
+    <span class="cite">:127-138</span>, i386 at <span class="cite">:139-164</span> &mdash; pushing callee-saved
+    registers, 108 bytes of FPU state and segment registers, then swapping stack pointers and returning into the other
+    side.</p>
+    <p>The pump is <code>- step</code> <span class="cite">MacViewClass.m:1059-1112</span>: run guest code continuously
+    until the host has an event waiting, then yield. Driven by a timer &mdash; on OpenStep, an <code>NSTimer</code> at
+    <code>.00000001</code> seconds <span class="cite">:135-149</span>, i.e. as fast as the run loop permits.</p>
+    <p>Re-entrancy is ugly. <code>drawRect:</code> can itself context-switch during printing
+    <span class="cite">:376-382</span>. Clipboard services drive the guest synchronously by posting a synthetic Mac event
+    and burning <em>exactly three</em> context switches <span class="cite">:2626-2647, :2667-2679</span> &mdash; three,
+    because that empirically worked.</p>
+
+    <div class="note note--stop">
+      <h3><code>blockinterrupts.m</code> is declared dead by its own author</h3>
+      <p>Line 76 is <code>#error "This stuff has succumbed to bitrot; see new virtual interrupt stuff"</code>, and it is
+      not in either makefile's source list. For the record, the disabled block at <span class="cite">:16-72</span>
+      implemented Mac sound completion routines by <b>suspending the emulator thread, reading its registers, rewriting
+      the program counter, resuming it, then restoring all three register banks</b>. It carries a
+      <code>/* TODO set up stack with args&hellip; */</code> at <span class="cite">:52</span>.</p>
+    </div>
+
+    <h3>Window model</h3>
+    <p>One window for the entire Mac screen. <code>grep -rni rootless</code> over the whole 2008 tree returns zero hits.
+    The class comments apologise <span class="cite">MacViewClass.m:39-45</span>:</p>
+    <pre><i>/* NOTE: This isn't a very good NEXTSTEP object, because much of its
+ * data is stored in static variables, instead of in instance
+ * variables.  That means we can only have one instantiation. */</i></pre>
+    <p>Backed by <code>static MacViewClass *self_view;</code> <span class="cite">:77</span>, which every C entry point
+    reaches through. <code>vdriver_init()</code> <span class="cite">:431-463</span> resizes the host window to the whole
+    Mac screen. The nib confirms it: one <code>WindowTemplate</code> containing one <code>CustomView</code>.</p>
+
+    <h3>Colour and depth</h3>
+    <p>Guest depths 1, 2, 4, 8 only &mdash; no direct colour ever <span class="cite">:784</span>. Two host classes,
+    detected once: colour, or 2-bit grayscale <span class="cite">:170-171, :246-247</span>, which forces
+    <code>vdriver_fixed_clut_p</code> &mdash; the Mac is told it has a CLUT it cannot change
+    <span class="cite">:173-181</span>. Conversion tables are built lazily
+    <span class="cite">:635-660</span>. The entire "conversion" for the native NeXT display is
+    <code>*d++ = ~*s++</code> <span class="cite">:553-608</span> &mdash; polarity inversion, unrolled four times.</p>
+
+    <div class="note note--warn">
+      <h3>The OpenStep branch was written but seemingly never compiled</h3>
+      <ul>
+        <li><span class="cite">MacViewClass.m:2606-2607</span> &mdash; <code>validRequestorForSendType:(NSString)</code>, taking <code>NSString</code> <b>by value</b>. Cannot compile.</li>
+        <li><span class="cite">:2616</span> &mdash; <code>-readSelectionFromPasteboard:</code> declared <code>void</code> where the protocol wants <code>BOOL</code>.</li>
+        <li><span class="cite">:459</span>, <span class="cite">:2383</span>, <span class="cite">MacAppClass.m:202</span> &mdash; tracking rects unfinished, three separate <code>#warning</code>s.</li>
+        <li><span class="cite">:313-314</span> &mdash; "no longer disabling dead keys".</li>
+        <li><span class="cite">NEXT.c:659, :698</span> &mdash; keyboard translation gutted.</li>
+        <li><span class="cite">:2760</span> &mdash; print scaling hardcoded to 1.0.</li>
+      </ul>
+      <p>Expect a first-compile bug tail beyond the catalogued API gaps.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 06 SUBSYSTEMS ===================== -->
+<section class="panel" id="input">
+  <div class="panel__bar"><span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">06 &mdash; Input, sound, printing, scrap</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span></div>
+  <div class="panel__body">
+
+    <h2>Keyboard</h2>
+    <p>The front end's entire job is: produce a Mac virtual key code and call
+    <code>callbacks_-&gt;keyboardEvent(down, mkv)</code>. KCHR lookup, <code>KeyTranslate</code>, dead keys, autokey and
+    the key map all live in the core <span class="cite">eventsink.cpp:42-68</span>.</p>
+
+    <div class="note note--ok">
+      <h3>The mapping table is reusable verbatim</h3>
+      <p>GNUstep's X11 backend sets <code>keyCode</code> from the raw X keycode &mdash;
+      <code>keyCode = ((XKeyEvent *)xEvent)-&gt;keycode;</code> in <code>XGServerEvent.m</code>. The Wayland backend uses
+      <code>code = key + 8</code>, which is the same numbering. So:</p>
+      <pre>-[NSEvent keyCode]  →  x_keycode_to_mac_virt[]  →  MKV_*  →  keyboardEvent()</pre>
+      <p><code>x/x_keycodes.cpp:11-148</code>, 136 entries. Qt already compiles this file into its own target
+      <span class="cite">qt/CMakeLists.txt:12</span> and falls back to it when its symbolic lookup misses
+      <span class="cite">qt.cpp:114-119</span>.</p>
+    </div>
+
+    <p><b>Ignore <code>-[NSEvent characters]</code> entirely.</b> The classic code used charcodes because ROMlib wanted
+    them; the modern core runs the guest's own KCHR, so host-translated characters would double-translate.</p>
+
+    <p><b>Modifiers are keys, not flags.</b> <code>ROMlib_GetModifiers()</code>
+    <span class="cite">osevent.cpp:223-239</span> derives everything by testing the key map &mdash;
+    <code>ROMlib_GetKey(MKV_CLOVER)</code> and friends. There is no flags path. The front end must deliver explicit
+    down/up events for <code>MKV_LEFTSHIFT</code> 0x38, <code>MKV_CLOVER</code> 0x37, <code>MKV_LEFTOPTION</code> 0x3a,
+    <code>MKV_LEFTCNTL</code> 0x3b, <code>MKV_CAPS</code> 0x39 and the right-hand variants 0x3c&ndash;0x3e. Constants at
+    <span class="cite">rsys/keyboard.h:94-211</span>.</p>
+
+    <p>Tables available across the tree, should you need another space:</p>
+    <div class="tw"><table>
+      <thead><tr><th style="width:32%">Table</th><th style="width:26%">Indexed by</th><th>Size</th></tr></thead>
+      <tbody>
+        <tr><td><code>x/x_keycodes.cpp:11-148</code></td><td>raw X11 keycode</td><td class="n">136</td></tr>
+        <tr><td><code>x/x_keysym.cpp</code></td><td>X11 keysym</td><td>2 pages</td></tr>
+        <tr><td><code>sdl2/keycode_map.cpp:15-133</code></td><td>SDL2 keycode</td><td class="n">~110</td></tr>
+        <tr><td><code>qt/qtkeycodes.cpp:7-122</code></td><td><code>Qt::Key</code></td><td class="n">~100</td></tr>
+        <tr><td><code>win32/vk_to_mkv.h</code></td><td>Win32 VK</td><td class="n">265</td></tr>
+        <tr><td><code>osevent/ibm_keycodes.cpp</code></td><td>PC scancode set 1</td><td>&mdash;</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="note note--stop">
+      <h3>Wayland is not a viable target</h3>
+      <p><code>keyboard_handle_modifiers</code> accumulates flags into the config struct but <b>generates no
+      <code>NSFlagsChanged</code> events at all</b> &mdash; command, shift and option would be dead. It also forces
+      <code>code = 0</code> for Enter and Delete. X11/cairo is the target.</p>
+    </div>
+
+    <h2>Mouse</h2>
+    <p>Trivially thin in the modern tree <span class="cite">qt.cpp:84-103</span>: forward view coordinates to
+    <code>mouseButtonEvent</code> / <code>mouseMoved</code>. No Y-flip, no clamping &mdash; the core expects top-left
+    origin. <b>Override <code>-isFlipped</code> to return <code>YES</code></b> and all of the 1993 code's
+    <code>vdriver_height - y</code> arithmetic <span class="cite">NEXT.c:576, :597</span> disappears.</p>
+    <p>Required: <code>[window setAcceptsMouseMovedEvents:YES]</code>, <code>-acceptsFirstMouse:</code> &rarr;
+    <code>YES</code>, and folding right-button into left for one-button Mac semantics
+    <span class="cite">NEXT.c:635-636, :644-645</span>. GNUstep's X11 backend generates <code>NSMouseMoved</code>
+    unconditionally when no button is down and has full scroll-wheel support; classic Mac has no wheel, and
+    <code>IEventListener</code> has no scroll callback, so drop those.</p>
+
+    <h2>Sound</h2>
+    <p>Interface is <code>SoundDriver</code> <span class="cite">sound/sounddriver.h:20-34</span> &mdash; a pull/hunger
+    model where <code>HungerStart()</code> returns a buffer plus a time window, the core fills it, the driver plays it.
+    Default is <code>SoundFake</code> <span class="cite">sounddriver.cpp:18-24</span>.</p>
+
+    <div class="note note--warn">
+      <h3>Executor is currently silent everywhere</h3>
+      <p>The only real driver in the tree is <code>config/front-ends/sdl/sdlsound.cpp</code>, 171 lines, belonging to the
+      legacy SDL1 front end that builds only when SDL1, X11 and Xext are all found. Grepping <code>qt/ sdl2/ x/
+      wayland/ headless/</code> for sound or audio returns zero hits. The 1993 NeXTSTEP implementation was never written
+      either &mdash; both functions in <code>NEXTsound.m:35-41</code> are empty bodies.</p>
+    </div>
+
+    <p><b><code>NSSound</code> cannot serve this.</b> GNUstep's implementation loads only complete files
+    (<code>-initWithContentsOfFile:</code>, <code>-initWithData:</code>) and streams them through
+    <code>GSSoundSource</code>&rarr;<code>GSSoundSink</code> plugin bundles with a fixed 4096-byte buffer. There is no
+    application-supplied PCM callback and no streaming API &mdash; no equivalent of <code>SDL_AudioCallback</code> or
+    <code>HungerStart</code>. Only two sinks exist, libao and OSS. The code carries a <code>FIXME</code> admitting it
+    grabs "the first available sink/device for now," and gnustep-dev described it in 2012 as "a bit of a mess" they'd
+    like to revisit but which "doesn't seem likely in the foreseeable future." The architecture is unchanged on master.</p>
+
+    <div class="two">
+      <div class="card"><h3>SDL2 audio</h3><p>Port the existing 171-line SDL1 driver. Mechanical:
+      <code>SDL_OpenAudio</code>&rarr;<code>SDL_OpenAudioDevice</code>. No new project dependency.</p></div>
+      <div class="card"><h3>SoundKit</h3><p>NEXTSPACE's <code>Frameworks/SoundKit</code>, PulseAudio-backed with a
+      NeXT-style API. <code>SNDPlayStream</code> exposes <code>-playBuffer:size:tag:</code> plus write and empty
+      callbacks &mdash; the hunger model, already built. <b>GPL v2+.</b></p></div>
+      <div class="card"><h3>Streaming <code>NSSound</code></h3><p>Would need a new <code>GSSoundSink</code> with an
+      app-supplied buffer source. libs-gui's recent <code>NSSound.m</code> activity is a Feb 2026 thread-leak fix and a
+      May 2025 video-playback commit; no open PRs mention sound.</p></div>
+    </div>
+    <p><code>NSBeep</code> is fine for <code>beepAtUser()</code> &mdash; compare the X front end using
+    <code>XBell</code> <span class="cite">x.cpp:792-797</span>.</p>
+
+    <h2>Printing</h2>
+    <p>Do nothing. <code>print/prPrinting.cpp:452-516</code> already generates PostScript and <code>popen</code>s it to
+    a program read from the INI file's <code>[Printer]</code> section <span class="cite">:461-467</span>, falling back to
+    a spool file. <code>print/PSprint.cpp</code> is 1,200+ lines of QuickDraw-to-PostScript, entirely independent of any
+    front end. <b>Printing is not part of the <code>VideoDriver</code> interface at all.</b></p>
+    <p><code>NEXTprint.m</code>'s <code>ROMlib_availableFonts</code> exists only in the NEXTSTEP branch and its only
+    modern call site is guarded by a macOS macro <span class="cite">PSprint.cpp:1169</span>. On Linux these are dead
+    declarations. <code>MacPrintClass.h</code> declares a class with <b>no <code>.m</code> anywhere in the tree</b> and
+    zero references.</p>
+
+    <div class="note note--ok">
+      <h3>Correction: GNUstep still has working PS/DPS operators</h3>
+      <p><code>PSOperators.h</code> provides <code>static inline</code> C functions calling matching <code>DPS*</code>
+      on the default context; <code>DPSOperators.h</code> expands each into a real C function-pointer dispatch through
+      <code>ctxt-&gt;methods-&gt;&hellip;</code> &mdash; the same path AppKit uses internally. Colour, gstate, matrix,
+      path, text, the NeXT compositing extensions, and a real variadic <code>DPSPrintf</code> are all present.
+      <code>PSWait()</code> is a documented no-op.</p>
+      <p>Total DPS surface in the old front end is about ten call sites. Four <code>DPSPrintf</code> and four
+      <code>PS*</code> calls compile unchanged; only <code>DPSGetCurrentContext()</code>&rarr;<code>GSCurrentContext()</code>
+      and <code>[[NSDPSContext currentContext] flush]</code>&rarr;<code>[[NSGraphicsContext currentContext]
+      flushGraphics]</code> need substituting, plus two header renames. <code>psfns.psw</code> contains one line:
+      <code>% no longer needed</code>, so <code>pswrap</code> effort is zero.</p>
+      <p>And the <code>NSView</code> printing callbacks &mdash; <code>-rectForPage:</code>,
+      <code>-beginPageSetupRect:placement:</code>, <code>-endPrologue</code>, <code>-beginTrailer</code>,
+      <code>-endPage</code>, <code>-dataWithEPSInsideRect:</code> &mdash; are all implemented in
+      <code>NSView.m</code>, none stubbed. Only Fax is a stub.</p>
+    </div>
+
+    <h2>Clipboard</h2>
+    <p>This is where the 1990s code exceeds the modern tree. <code>PutScrapX</code>
+    <span class="cite">MacViewClass.m:1874-2038</span> handles five Mac types &mdash; <code>TEXT</code>,
+    <code>EPS&nbsp;</code>, <code>RTF&nbsp;</code>, <code>TIFF</code>, <code>PICT</code> &mdash; each cached with its own
+    generation counter so a multi-flavour copy declares all flavours atomically <span class="cite">:1906-1970</span>.
+    Text and RTF get CR&harr;LF conversion and charset transcoding <span class="cite">:1915-1916, :1942-1943</span>.
+    RTF additionally gets a synthesised <code>\fonttbl</code> spliced in by <code>insertfonttbl()</code>
+    <span class="cite">NEXT.c:720-760</span>, walking the guest's own <code>FONT</code>/<code>FOND</code> resources.</p>
+    <p><code>GetScrapX</code> <span class="cite">:2042-2193</span> reads <b>only if</b>
+    <code>[pasteboard changeCount] &gt; ROMlib_ourchangecount</code> <span class="cite">:2105-2106</span> &mdash; the
+    guard that stops it clobbering the guest's own scrap.</p>
+
+    <div class="tw"><table>
+      <thead><tr><th style="width:22%">Front end</th><th>Clipboard support</th></tr></thead>
+      <tbody>
+        <tr><td>1995 NeXTSTEP</td><td>Five flavours, charset conversion, RTF font tables</td></tr>
+        <tr><td><code>x</code></td><td><b>TEXT only</b> <span class="cite">x.cpp:799-881</span>, raw <code>XA_PRIMARY</code>/<code>XA_STRING</code>, spin-wait polling for <code>SelectionNotify</code> with 10 retries <span class="cite">:853-857</span>. No <code>CLIPBOARD</code> atom.</td></tr>
+        <tr><td><code>qt</code>, <code>sdl2</code>, <code>wayland</code>, <code>headless</code></td><td><b>Nothing.</b> SDL2's is commented out <span class="cite">sdl2.cpp:200-206</span>.</td></tr>
+      </tbody>
+    </table></div>
+
+    <p><code>NSPasteboard</code> maps onto the old code almost line for line. Two risks: it is a client of the external
+    <code>gpbs</code> daemon, auto-launched via <code>NSTask</code> <span class="cite">NSPasteboard.m:1985-2036</span>
+    but a packaging concern; and cross-application interop is documented as weak &mdash; gnustep-dev in 2011: "Copy/paste
+    from X11 apps to GNUstep doesn't work well (only plain text was working)," with the root cause being exactly the
+    type-list update that <code>getScrap</code>'s probe depends on. Keep the raw X11 path as a fallback.</p>
+
+    <div class="note note--warn">
+      <h3>Two bugs to fix in passing</h3>
+      <p>Qt hardcodes <code>resumeEvent(true)</code> <span class="cite">qt.cpp:147</span>; SDL2 hardcodes
+      <code>false</code> <span class="cite">sdl2.cpp:201</span>. Both are wrong. The 1995 code computed it from the
+      pasteboard change count <span class="cite">MacAppClass.m:209-215</span>, which is what decides whether the guest
+      needlessly reconverts the clipboard on every focus change.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 07 GAPS ===================== -->
+<section class="panel" id="gaps">
+  <div class="panel__bar"><span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">07 &mdash; GNUstep API gaps</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span></div>
+  <div class="panel__body">
+
+    <h2>Bitmap drawing &mdash; the performance landmines</h2>
+    <p><code>NSDrawBitmap()</code> is real <span class="cite">Functions.m:346</span> but allocates and releases a
+    temporary <code>NSBitmapImageRep</code> on <em>every call</em>, then enters the same path as
+    <code>-[NSBitmapImageRep draw]</code>. <b>Strictly worse.</b> Keep the aliasing-rep approach.</p>
+
+    <div class="note note--stop">
+      <h3>A non-canonical format costs 307,200 iterations per frame</h3>
+      <p><code>GSContext.m:906-943</code> checks <code>-isCompatibleBitmap:</code> and, for anything that is not
+      canonical 8-bits-per-channel interleaved, calls <code>-_convertToFormatBitsPerSample:&hellip;</code>
+      <span class="cite">NSBitmapImageRep.m:2427-2560</span> &mdash; a doubly-nested loop calling cached IMPs of
+      <code>getPixel:atX:y:</code> and <code>setPixel:atX:y:</code> <b>once per pixel</b>. At 640&times;480 that is
+      307,200 iterations every frame, silently. The 1993 code's <code>bitsPerSample:4 bitsPerPixel:16</code>
+      <span class="cite">MacViewClass.m:490-499</span> lands squarely in it.</p>
+      <p><b>And the 2-bit grayscale path draws nothing at all.</b> Cairo bails unless the space is Device or Calibrated
+      RGB, logging "Image format not support in cairo backend" and returning
+      <span class="cite">CairoGState.m:1042-1048</span>. A silent no-op.</p>
+      <p>Both fixes are cheap: Executor's <code>make_rgb_spec()</code> is fully parameterised, so moving to 8:8:8:8 /
+      32bpp / device RGB is a constants change plus row-stride arithmetic <span class="cite">MacViewClass.m:408-414,
+      :423-425</span>. Delete the grayscale path entirely.</p>
+    </div>
+
+    <p>Indexed/CLUT bitmaps are genuinely absent &mdash; <code>NSCustomColorSpace</code> and
+    <code>NSNamedColorSpace</code> are declared <span class="cite">NSGraphics.h:56, 60</span> with zero branches in
+    <code>NSBitmapImageRep.m</code>. <b>Irrelevant here</b>, because Executor converts indexed to RGB before AppKit ever
+    sees it.</p>
+    <p><b>CoreGraphics is not available.</b> <code>-[NSImage CGImageForProposedRect:context:hints:]</code> is declared
+    in a category <span class="cite">NSImage.h:489-494</span> with <b>no implementation anywhere</b> &mdash; calling it
+    raises "does not recognize selector."</p>
+
+    <h2>Drawing performance</h2>
+    <p>Invalidation is real dirty-rect accumulation: <code>NSView</code> maintains <code>_invalidRect</code> and
+    propagates up the superview chain. All three backing-store types are genuinely distinguished by X11 &mdash;
+    buffered and retained get an offscreen pixmap <span class="cite">XGServerWindow.m:~1732</span>.</p>
+
+    <div class="note note--stop">
+      <h3>No XShm anywhere in libs-back</h3>
+      <p>A repo-wide search for <code>XShm</code> or <code>MIT-SHM</code> returns <b>zero results</b>. The default
+      surface uses plain <code>cairo_xlib_surface_create</code> onto a server-side pixmap, so <b>every framebuffer blit
+      round-trips through the X protocol</b>. There is also no surface cache for direct rep draws &mdash; each
+      <code>-draw</code> does malloc &rarr; <code>cairo_image_surface_create_for_data</code> &rarr; paint &rarr; destroy
+      &rarr; free <span class="cite">CairoGState.m:1066-1210</span>. The one upload-once-blit-many path is
+      <code>NSCachedImageRep</code>, useless here since the bitmap changes every frame.</p>
+      <p><b>The only quantified data point is from 2015</b> &mdash; Savannah patch #8781, "Faster bitmap drawing on
+      Cairo": 512&times;512 &times; 500 iterations, 0.880s &rarr; 0.810s, implying roughly 600 draws per second on that
+      hardware. That suggests the raw cairo primitive is not the bottleneck for one 640&times;480 surface at 60fps. The
+      risk is the surrounding pipeline. <b>No 2020s-era benchmark exists.</b></p>
+    </div>
+
+    <p><b>Escape hatch.</b> <code>-[NSWindow windowRef]</code> is implemented
+    <span class="cite">NSWindow.m:5955</span> and on X11 returns a <code>gswindow_device_t *</code> exposing
+    <code>Display *display; Window ident; Drawable buffer;</code>
+    <span class="cite">x11/XGServerWindow.h:83-104</span>, from which <code>XShmPutImage</code> is mechanically
+    reachable. Two caveats: it is unverified whether distribution <code>-dev</code> packages install that internal
+    header, and <b>no evidence was found that anyone has ever done this</b> &mdash; no blog post, list thread or issue.
+    The one demonstrated GPU path is <code>NSOpenGLView</code> with a real GLX backend.</p>
+
+    <div class="note note--warn">
+      <h3>No prior art of any kind</h3>
+      <p>No emulator was found using GNUstep AppKit for framebuffer display. Previous, Basilisk&nbsp;II and SheepShaver
+      all use SDL, Cocoa, Qt or GTK. Searches for "gnustep emulator" surface only <em>terminal</em> emulators. Absence
+      of evidence rather than evidence of absence &mdash; but you would be first.</p>
+    </div>
+
+    <h2>Window level and style &mdash; the constraint on rootless</h2>
+    <div class="tw"><table>
+      <thead><tr><th style="width:30%">API</th><th style="width:9%">gui</th><th>Reality</th></tr></thead>
+      <tbody>
+        <tr><td>Borderless / Titled / Closable / Miniaturizable / Resizable</td><td class="yes">yes</td><td>The only masks with effect <span class="cite">GSStandardWindowDecorationView.m:139-167</span>. X11's <code>_checkStyle:</code> uses <code>style &amp; 15</code> <span class="cite">XGServerWindow.m:794</span> &mdash; low four bits only.</td></tr>
+        <tr><td>Textured / HUD / FullSizeContentView / NonactivatingPanel</td><td class="part">parsed</td><td>Read from XIB only <span class="cite">GSXib5KeyedUnarchiver.m:1124-1132</span>; no other consumer.</td></tr>
+        <tr><td><code>-setStyleMask:</code></td><td class="no">absent</td><td><b>Zero hits in libs-gui.</b> No public API to change style after creation. The backend machinery exists <span class="cite">XGServerWindow.m:2374</span> but nothing ever calls it.</td></tr>
+        <tr><td><code>-setLevel:</code> and all ten constants</td><td class="yes">yes</td><td>Real EWMH mapping <span class="cite">XGServerWindow.m:3419-3577</span> &mdash; MainMenu&rarr;DOCK, Floating&rarr;UTILITY. <b>But <code>_NET_WM_STATE_ABOVE</code> is never set</b>, so always-on-top relies on the WM inferring it from UTILITY, which KWin and Mutter generally do not.</td></tr>
+        <tr><td><code>-setOpaque:</code></td><td class="part">stub</td><td>Literally <code>{ /* FIXME */ _f.is_opaque = isOpaque; }</code> <span class="cite">NSWindow.m:1426-1429</span>. No backend API behind it.</td></tr>
+        <tr><td>Per-pixel alpha / <code>clearColor</code> background</td><td class="no">no</td><td>Window creation always uses the shared screen visual <span class="cite">XGServerWindow.m:1863-1935</span>. No per-window 32-bit ARGB visual selection.</td></tr>
+        <tr><td><code>-setAlphaValue:</code></td><td class="yes">yes</td><td>Via <code>_NET_WM_WINDOW_OPACITY</code>; needs a compositor; whole-window only.</td></tr>
+        <tr><td>Shaped windows</td><td class="no">no public API</td><td><code>XShapeCombineMask</code> exists <span class="cite">XWindowBuffer.m:587</span> but is private, called only from drag and slide views. Hard-edged only.</td></tr>
+        <tr><td><code>-setHasShadow:</code></td><td class="part">inert</td><td>Sets a non-standard atom read by no known compositor. Carries <code>// FIXME: What size?</code></td></tr>
+        <tr><td><code>-setIgnoresMouseEvents:</code></td><td class="yes">yes</td><td><b>Genuine click-through</b> via <code>XFixesSetWindowShapeRegion</code> <span class="cite">XGServerWindow.m:5199-5232</span>, gated on <code>HAVE_XFIXES</code>.</td></tr>
+        <tr><td><code>-addChildWindow:ordered:</code></td><td class="part">partial</td><td><code>_children</code> is maintained <span class="cite">NSWindow.m:5507-5540</span> but read only by <code>-childWindows</code>. <b>Children do not follow the parent.</b></td></tr>
+        <tr><td>Tracking rects, cursor rects, custom cursors</td><td class="yes">yes</td><td>Real X11 delivery, builds a genuine <code>XcursorImage</code> <span class="cite">XGServerWindow.m:4340</span>.</td></tr>
+      </tbody>
+    </table></div>
+
+    <p>Window-manager dependency is generic rather than WindowMaker-specific &mdash; <code>_checkWindowManager</code>
+    <span class="cite">XGServerWindow.m:1186-1234</span> probes three different supporting-WM properties. But per-WM
+    workarounds persist, e.g. <span class="cite">:2421</span>: "Without this, iceWM does not let you move the window!"</p>
+
+    <p><b>Wayland: do not plan on it.</b> <code>stylewindow:</code>, <code>setalpha:</code>, <code>setShadow:</code>,
+    <code>restrictWindow:toImage:</code> and shaped windows are all empty stubs
+    <span class="cite">WaylandServer.m:602-605, :917-924, :319-322</span>. Levels are consulted once at surface creation
+    via <code>zwlr_layer_shell</code> &mdash; wlroots only, unsupported by Mutter and KWin. Only click-through is real.</p>
+
+    <h2>Backends</h2>
+    <p><code>libs-back/Source/</code>: art, cairo, fontconfig, gsc, headless, opal, wayland, win32, winlib, x11, xdps.
+    Server &isin; {x11, win32, wayland}; graphics &isin; {<b>cairo (default)</b>, art, xlib, opal, headless}.
+    <b><code>art</code> is not removed</b> &mdash; still the fallback when cairo or freetype are missing, still
+    CI-tested, and still being fixed: issue #176, "read back flipped views in the art backend," merged
+    2026-07-26/27. <code>NSDPSContext</code> exists only under <code>xdps</code>, which requires the dead X11 DPS
+    extension and is unbuildable today &mdash; so <span class="cite">MacViewClass.m:920</span> will not compile as
+    written.</p>
+    <p><code>libs-opal</code> has <code>OPColorSpaceIndexed.m</code> but it was last touched in 2010, and Opal's backend
+    was non-functional for years until libs-back PR #77 landed 2026-04-30.</p>
+
+    <h2>NX* to NS* C functions</h2>
+    <p>Mostly clean: <code>NXBeep</code>, <code>NXRunAlertPanel</code>, <code>NXRectFill</code>,
+    <code>NXRectClip</code>, <code>NXRectClipList</code>, <code>NXHighlightRect</code>, <code>NXEraseRect</code>,
+    <code>NXIntersectionRect</code> and <code>NXCopyBits</code> all have direct equivalents. Gone:
+    <code>NXSetRect</code> (use <code>NSMakeRect</code>), and <code>NXConvertRGBToColor</code>/<code>ColorToRGB</code>,
+    since the packed <code>NXColor</code> integer died at the OpenStep transition.</p>
+    <p>One behavioural gap worth knowing: <b><code>NXPing</code> has no equivalent.</b>
+    <code>flushGraphics</code> pushes buffered operations but does not block for a server round-trip, and
+    <code>PSWait()</code> is an explicit no-op. Anything depending on <code>NXPing</code>'s synchronous semantics is an
+    architectural rewrite, not a substitution.</p>
+  </div>
+</section>
+
+<!-- ===================== 08 NIBS ===================== -->
+<section class="panel" id="nibs">
+  <div class="panel__bar"><span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">08 &mdash; Interface files</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span></div>
+  <div class="panel__body">
+    <p class="lede">Gorm cannot open these. Not "with effort" &mdash; at all.</p>
+
+    <p>All fourteen nib entries are <b>NeXT <code>typedstream</code> version 4</b>, the pre-keyed-archiving format,
+    verified with <code>file(1)</code>. <code>English.lproj/Executor.nib/data.nib</code> is <i>typedstream, big endian,
+    v4, system 930</i>; the OpenStep variant's <code>objects.nib</code> is <i>typedstream, little endian, v4, system
+    1000</i>. The <code>data.classes</code> files are readable ASCII property lists; the archives are not.</p>
+
+    <p>The GNUstep wiki is explicit: NIB compatibility covers 10.2 and later; older typed-stream nibs must be converted
+    first. Newer nibs contain <code>keyedobjects.nib</code>; ours contain <code>data.nib</code> and
+    <code>objects.nib</code>. Runtime loading is equally blocked &mdash; <code>GSModelLoaderFactory.m</code> dispatches
+    by signature to Gorm, keyed-nib, XIB and gmodel loaders, and <b>there is no typedstream path anywhere</b>. So
+    <code>[NSBundle loadNibFile:]</code> <span class="cite">MacAppClass.m:264</span> fails at runtime, and
+    <code>[NXApp loadNibSection:]</code> <span class="cite">Executor_main.m:65</span> does not compile.</p>
+
+    <div class="tw"><table>
+      <thead><tr><th style="width:24%">Tool</th><th style="width:16%">Status</th><th>Verdict</th></tr></thead>
+      <tbody>
+        <tr><td><code>nib2gmodel</code></td><td>dead</td><td>Last commit 2008-04-22. Self-documents as "does NOT compile on Linux, FreeBSD, or any other OS that doesn't have Apple or NeXT libraries installed."</td></tr>
+        <tr><td><code>nib2xib</code></td><td>alive</td><td>Commits through 2025-06-29 and does target typedstream &mdash; but "runs only on OPENSTEP 4.2 currently" and is self-labelled experimental.</td></tr>
+        <tr><td>Gorm</td><td>healthy</td><td>1.5.0 released 2025-02-15, commits through 2026-07-18. The gate is the format, not the tool.</td></tr>
+      </tbody>
+    </table></div>
+
+    <p>The only import path is: stand up OPENSTEP 4.2 on real hardware or the Previous emulator, run experimental
+    <code>nib2xib</code>, then Gorm. Multi-day archaeology, approximate fidelity, untested against big-endian archives.</p>
+
+    <h3>How little is actually in them</h3>
+    <p>Extracted via <code>strings</code> plus the readable <code>data.classes</code>. The historical high-water mark
+    (26 KB) held a main menu and eight windows: the game window, splash screen, preferences, a "Death Certificate" crash
+    panel, a bug-report mailer, two registration windows and a serial-number window. <b>The shipped nib is 7 KB</b> and
+    the preferences and splash strings are already absent from it.</p>
+    <p>The code has rotted away from the nibs badly:</p>
+    <ul>
+      <li><b><code>MacViewClass</code> declares no instance variables at all</b> &mdash;
+      <code>@interface MacViewClass:NSView { }</code> <span class="cite">MacViewClass.h:326</span>, empty braces. All
+      seven outlets its metadata declares are stale.</li>
+      <li><b>Four of seventeen declared actions are implemented</b> &mdash; <code>pause:</code>
+      <span class="cite">:2526</span>, <code>abort:</code> <span class="cite">:2573</span>, <code>printGame:</code>
+      <span class="cite">MacAppClass.m:243</span>, <code>showInfo:</code> <span class="cite">:257</span>. The other
+      thirteen are dead.</li>
+      <li><b><code>SoundGenerator</code></b> declares eight actions and ten outlets and <b>has no source file
+      anywhere in the tree</b>.</li>
+      <li><code>Executor.project.nib</code> is untouched Project Builder boilerplate &mdash; its strings are "My Window"
+      and "UNTITLED". One <code>data.nib</code> is a 76-byte broken build artifact with a 0-byte
+      <code>data.classes</code>.</li>
+    </ul>
+    <p>There is <b>zero menu construction in code</b> &mdash; no <code>NSMenu</code>, <code>addItem:</code> or
+    <code>setMainMenu:</code> anywhere. Structure is 100% nib-driven, and <code>MacAppClass.m:118-150</code> does nothing
+    but copy roughly 25 outlets into <code>global_*</code> C variables so the plain-C core can reach them.</p>
+
+    <p><b>Live UI surface today: one menu, one window plus framebuffer view, one info panel, four actions.</b></p>
+
+    <div class="note note--ok">
+      <h3>Recommendation: build it in code</h3>
+      <p>Import is impossible at reasonable cost, and there is almost nothing to import. The extra panels are ARDI-era
+      licensing UI whose backing code is gone &mdash; conversion would faithfully reproduce the rot. The nibs are more
+      valuable read via <code>strings</code> as a design reference, which is already done above. And nibs would not help
+      with the hard part regardless: the framebuffer view's draw path and event routing are not expressible in one.</p>
+      <p>Concretely: a <code>-buildMainMenu</code> of roughly 60 lines, programmatic window and view creation in
+      <code>-applicationDidFinishLaunching:</code>, and deletion of the entire outlet layer &mdash; the ~25
+      <code>global_*</code> copies become direct members. Keep the old <code>English.lproj</code> in-tree, read-only, as
+      reference.</p>
+      <p>One further argument: <code>.gorm</code> is a bundle of archived objects &mdash; undiffable, unmergeable,
+      unreviewable. This project is <em>currently living</em> the thirty-year cost of that choice, since nobody can read
+      these nibs today without <code>strings</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 09 ROOTLESS ===================== -->
+<section class="panel" id="rootless">
+  <div class="panel__bar"><span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">09 &mdash; Rootless, in depth</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span></div>
+  <div class="panel__body">
+    <div class="note note--stop">
+      <h3>The repository's own documentation is wrong</h3>
+      <p><code>README.md:18</code> advertises "Rootless &mdash; emulated windows are part of your desktop."
+      <code>docs/subsystems/window-dialog-menu.md:27-30</code> states that when the rootless flag is true, "windows are
+      not drawn onto the emulator framebuffer" and are instead "delegated to the host compositor."
+      <code>docs/subsystems/video-driver.md:49-51</code> repeats it. <b>Both statements are contradicted by the
+      code.</b></p>
+    </div>
+
+    <p><code>windRootless.cpp:14-46</code> unions every visible window's structure region, plus the menu bar, plus any
+    open menus, into <b>one</b> region and makes <b>one</b> call:</p>
+    <pre>RgnHandle rgn = NewRgn();
+SetRectRgn(rgn, 0,0, qdGlobals().screenBits.bounds.right, LM(MBarHeight));
+for(WindowPeek wp = LM(WindowList); wp; wp = WINDOW_NEXT_WINDOW(wp))
+    if(WINDOW_VISIBLE(wp))
+        UnionRgn(rgn, WINDOW_STRUCT_REGION(wp), rgn);
+vdriver-&gt;setRootlessRegion(rgn);</pre>
+    <p>Qt consumes it as a shape mask on a single fullscreen window <span class="cite">qt.cpp:244-256</span> &mdash;
+    <code>window-&gt;setMask(qtRgn)</code> on the one window created at <span class="cite">:216</span> and maximised at
+    <span class="cite">:217</span>. Wayland does the same via <code>set_input_region</code>
+    <span class="cite">wayland.cpp:452</span>. Windows <em>are</em> still drawn into the framebuffer;
+    <code>updateBuffer</code> reads it in both modes and the region only selects which spans are copied versus left
+    transparent <span class="cite">vdriver.cpp:332</span>.</p>
+
+    <h2>The four load-bearing levels</h2>
+
+    <h3>1 &middot; Every port shares one bitmap</h3>
+    <p><code>qGrafport.cpp:91</code> &mdash; every port opened, including each window's:</p>
+    <pre>PORT_BITS(p) = qdGlobals().screenBits;</pre>
+    <p>and <code>screenBits.baseAddr</code> is the main GDevice's PixMap base <span class="cite">:33</span>, which is the
+    vdriver framebuffer <span class="cite">qGDevice.cpp:77</span>. Windows draw at absolute screen coordinates, clipped
+    by <code>visRgn</code>. No independent backing surface. This is faithful &mdash; the real Macintosh worked this
+    way.</p>
+
+    <h3>2 &middot; The framebuffer is in the guest's address space</h3>
+    <p><code>qGDevice.cpp:76</code> calls <code>SetupVideoMemoryMapping(...)</code>; <code>mman.cpp:383-390</code>
+    installs it in the guest offset table; <code>qGrafport.cpp:59, 72</code> publish <code>LM(ScrnBase)</code> and
+    <code>LM(ScreenRow)</code>. <b>Guest 68k code can and does write directly to screen memory.</b></p>
+    <p>Not theoretical &mdash; <code>autorefresh.cpp:12-19</code> exists solely to cope with it:</p>
+    <blockquote style="margin:0 0 12px; padding-left:14px; border-left:3px solid var(--dk); color:var(--dk)">
+      "This file provides a mechanism to detect when applications are bypassing QuickDraw and writing directly to screen
+      memory. It works by partitioning the screen into NUM_AUTOREFRESH_STRIPS horizontal strips&hellip; Each strip is
+      periodically checksummed."
+    </blockquote>
+    <p>Per-window surfaces are fundamentally incompatible with this. An app poking <code>ScrnBase</code> writes to
+    screen coordinates, not to any window's surface.</p>
+
+    <h3>3 &middot; Window chrome can be guest code</h3>
+    <p>Frames come from the Window Definition Procedure, invoked as <code>WINDCALL(w, wDraw, 0)</code>
+    <span class="cite">windDisplay.cpp:127</span>. Built-in WDEFs blit embedded bitmaps
+    <span class="cite">windDocdef.cpp:21-25</span>. But <code>ROMlib_windcall</code>
+    <span class="cite">windMisc.cpp:511-533</span> does <code>LoadResource(defproc)</code> &mdash; <b>the WDEF is a
+    resource, which can come from the application's own resource fork and execute as guest 68k code</b>. No host
+    titlebar can reproduce arbitrary custom chrome.</p>
+
+    <h3>4 &middot; The guest manages its own windows</h3>
+    <p><code>C_FindWindow</code> <span class="cite">windMouse.cpp:27-60</span> walks Executor's
+    <code>LM(WindowList)</code> in Z-order and hit-tests in global coordinates. <code>DragTheRgn</code>
+    <span class="cite">windMisc.cpp:120-215</span> implements dragging by <b>XOR-ing a grey outline into the shared
+    framebuffer</b> and polling to mouse-up. Occlusion is computed by Executor via
+    <code>CalcVis</code>/<code>CalcVisBehind</code>/<code>PaintBehind</code>
+    <span class="cite">windMisc.cpp:369-434</span>, called from about ten sites. Hand stacking to the host WM and its
+    z-order can disagree with <code>visRgn</code> &mdash; which is what QuickDraw clips against.</p>
+
+    <div class="note note--warn">
+      <h3>ARDI already answered this</h3>
+      <p>They wrote the NeXTSTEP front end with full AppKit available and complete control of their own source, and used
+      <b>one window</b>. Every other outlet in <code>MacAppClass.h:16-43</code> is Executor's own chrome, not a Mac
+      window. <code>docs/outdated/wishlist:20</code> &mdash; "Give some thought to rootless windows during the code
+      restructuring" &mdash; is as far as it got.</p>
+    </div>
+
+    <h3>What per-window would actually require</h3>
+    <ul>
+      <li>Redirect every window's <code>PORT_BITS</code> to a per-window offscreen buffer &mdash; the GWorld machinery
+      exists <span class="cite">qGWorld.cpp</span>.</li>
+      <li>Rewrite <code>CalcVis</code>/<code>PaintBehind</code> to stop computing occlusion.</li>
+      <li>Suppress or reimplement the WDEF, synthesising Mac part-codes from host events.</li>
+      <li>Intercept <code>DragWindow</code>/<code>GrowWindow</code>/<code>ZoomWindow</code>, defer to the host WM, and
+      reflect results back into <code>WindowList</code>.</li>
+      <li><b>Accept that any app writing to <code>ScrnBase</code> breaks</b> &mdash; precisely the population
+      <code>autorefresh.cpp</code> exists to serve.</li>
+      <li>Plus the five missing GNUstep window features from &sect;7.</li>
+    </ul>
+    <p>Multi-month change to the most compatibility-sensitive subsystem, with a guaranteed tail of app-specific
+    breakage. Not a front-end feature, and emphatically not free.</p>
+  </div>
+</section>
+
+<!-- ===================== 10 HFS_XFER ===================== -->
+<section class="panel" id="hfsxfer">
+  <div class="panel__bar"><span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">10 &mdash; HFS_XFer</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span></div>
+  <div class="panel__body">
+    <p class="lede">9,194 lines that look like exactly what a Mac-oriented desktop needs, and are not.</p>
+
+    <p>HFS_XFer v2.2, &copy; 1991&ndash;92 ARDI. <b>It is not a NeXTSTEP application.</b> It is a classic Mac Toolbox
+    program written in C against ROMlib and linked as a NeXTSTEP binary. The only Objective-C is
+    <code>HFS_XFer_main.m</code> &mdash; fourteen lines of boilerplate instantiating Executor's own
+    <code>NSApplication</code> subclass. The UI is MenuMgr, DialogMgr, StandardFile and TextEdit.</p>
+
+    <p>Operations, from <code>file_funcs[]</code> <span class="cite">HFS_XFer.c:20</span>: Copy Disk, Move Files, Copy
+    Files, Rename, Delete, New Folder, Quit. <b>The transfer is HFS to HFS</b>, using Mac File Manager calls on both
+    sides &mdash; no host-filesystem path, no AppleDouble, MacBinary or BinHex conversion. Host access happens only
+    because ROMlib maps a Unix directory into a fake Mac volume. The Info panel concedes: "No System 7 floppies / No
+    fancy file conversions."</p>
+
+    <h3>The HFS engine</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:22%">HFS_XFer</th><th style="width:14%">Lines</th><th style="width:22%">Mainline</th><th>Lines</th></tr></thead>
+      <tbody>
+        <tr><td><code>btree.c</code></td><td class="n">1,990</td><td><code>src/hfsBtree.c</code></td><td class="n">2,515</td></tr>
+        <tr><td><code>file.c</code></td><td class="n">1,193</td><td><code>src/hfsFile.c</code></td><td class="n">1,655</td></tr>
+        <tr><td><code>volume.c</code></td><td class="n">685</td><td><code>src/hfsVolume.c</code></td><td class="n">1,066</td></tr>
+        <tr><td><code>helper.c</code></td><td class="n">332</td><td><code>src/hfsHelper.c</code></td><td class="n">809</td></tr>
+        <tr><td><code>xbar.c</code></td><td class="n">267</td><td><code>src/hfsXbar.c</code></td><td class="n">1,032</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="note note--stop">
+      <h3>All of it is dead code, and a superseded fork besides</h3>
+      <p><b>Every one of those <code>.c</code> files is wrapped, first line to last, in
+      <code>#if defined(OUTDATEDCODE)</code>.</b> <code>xbar.c</code>, the dispatcher, has all twenty branches under the
+      same guard and degrades to unconditional forwarding to the real File Manager. The directory is referenced nowhere
+      in the build system.</p>
+      <p>The maintained descendants are in mainline and <em>are</em> in the build. Decisively:
+      <code>grep -c 'CW(\|CL('</code> returns <b>0</b> across HFS_XFer's <code>btree.c</code>, <code>volume.c</code>,
+      <code>file.c</code> and <code>hier.c</code>, against <b>168</b> in mainline <code>hfsBtree.c</code> and <b>68</b>
+      in <code>hfsVolume.c</code>. ARDI did the endian work later, in the other copy. <b>This one works only on a
+      big-endian machine.</b></p>
+    </div>
+
+    <p>Limits, even setting endianness aside: 512-byte physical blocks hardcoded; allocation block numbers are
+    <code>unsigned short</code> throughout, giving the classic 65,535-block ceiling; byte offsets are signed
+    <code>long</code>, so 2 GB on 32-bit. And in practice far tighter &mdash; <code>helper.c</code> backs the entire
+    volume with <code>static char buf[NBIGBLOCKS * BIGBLOCK]</code>, 144 &times; 20 KB = <b>2.88 MB</b>, with
+    <code>TransPhysBlk</code> doing <code>memcpy</code> into it. <b>It only ever worked on floppies.</b></p>
+
+    <h3>Defects found in passing</h3>
+    <ol>
+      <li><b>Inverted bounds check</b> &mdash; <code>helper.c:238</code> reads
+      <code>if (firstbigblock &gt;= 0 || lastbigblock &lt; NBIGBLOCKS)</code>. That must be <code>&amp;&amp;</code>. As
+      written, an out-of-range block passes the guard and the following <code>memcpy</code> runs past the static
+      array.</li>
+      <li><b>Uninitialised reads</b> &mdash; <code>transferer.c:397-400</code> reads <code>hpb</code> and
+      <code>vrn</code> on a path where neither is populated.</li>
+      <li><b>Unbounded <code>sprintf</code></b> &mdash; <code>HFS_XFer.util.c:135, 168</code> formats from
+      <code>argv</code> into fixed 50- and 100-byte buffers.</li>
+    </ol>
+
+    <h3>The <code>%</code>-prefixed files</h3>
+    <p>Not backups and not editor artifacts &mdash; <b>AppleDouble sidecars</b>, the convention A/UX and ARDI's tools
+    used to store Mac forks on a Unix filesystem. <code>file(1)</code> confirms every one. Most are the 198-byte
+    no-resource-fork case carrying only type and creator. Two carry real payload:
+    <code>%HFS_XFer.%B9</code> is 8,910 bytes, type <code>PROJ</code> creator <code>KAHL</code> &mdash; a THINK C
+    project file, where <code>%B9</code> is hex-escaped 0xB9, which is &pi; in MacRoman, so the file is
+    <code>HFS_XFer.&pi;</code>. And <code>%HFS_XFer_DA</code> is 23,387 bytes, type <code>DFIL</code> creator
+    <code>DMOV</code> &mdash; a Font/DA Mover suitcase holding the compiled Desk Accessory. Their paired data forks are
+    0 bytes.</p>
+
+    <h3>The Desk Accessory</h3>
+    <p>A genuine 68k <code>DRVR</code> code resource, not a NeXTSTEP component. Entry point is
+    <code>int main(cntrlParam *pb, DCtlPtr dctlp, int n)</code> dispatching on open/control/status/close
+    <span class="cite">HFS_XFer_DA/HFS_XFer.c:670</span>, with <code>SetUpA4.h</code> and
+    <code>RememberA4()</code>/<code>SetUpA4()</code> bracketing every callback &mdash; the THINK C idiom for a code
+    resource with no A5 world. Its context in practice is <b>Executor itself</b>: as a DA it appears under the Apple
+    menu of whatever Mac application is running, so files could be moved without quitting. Functionally identical to the
+    main app &mdash; <code>xbar2.h</code> is seventeen one-line macros hard-wiring every call to the real trap.</p>
+
+    <div class="note note--stop">
+      <h3>Verdict: ignore it. Don't port it, don't mine it.</h3>
+      <p><b>Nothing to port</b> &mdash; the presentation layer is 100% Mac Toolbox. <b>Nothing to mine</b> &mdash; the
+      HFS engine is <code>#if 0</code>'d dead code superseded by an endian-corrected mainline copy. <b>And even the good
+      version loses</b> to hfsutils and hfsfuse, which are endian-clean, 64-bit clean, maintained, handle HFS+ and HFSX,
+      handle volumes over 2 GB and non-512-byte sectors, and expose forks properly.</p>
+      <p>Estimated cost of the alternatives, for the record: porting the UX to GNUstep is 2&ndash;4 weeks and takes
+      roughly zero lines from here &mdash; a rewrite, not a port. Mining the HFS code is 4&ndash;8 weeks minimum and
+      yields something strictly worse than hfsfuse. Licensing is not the obstacle; there is simply no technical
+      benefit.</p>
+    </div>
+
+    <div class="note note--ok">
+      <h3>Two things worth ten minutes each</h3>
+      <p><code>transferer.c</code>'s <code>copy1file</code>/<code>CopyFork</code>, about 120 lines, is a compact and
+      correct specification of what "copy a Mac file faithfully" means: <code>PBHCreate</code>, copy data fork, copy
+      resource fork via <code>PBHOpenRF</code>, then <code>PBSetCatInfo</code> <em>last</em> to restore Finder info and
+      dates &mdash; plus preallocate-then-<code>SetEOF</code>, skip invisibles, and refuse to copy a directory into its
+      own descendant.</p>
+      <p><code>HFS_XFer.util.c</code> is a media-recognition hook: probe block 2 for the <code>'BD'</code> HFS
+      signature, else look for an Apple partition map, then hand the device to the running GUI over a Unix socket. The
+      Linux equivalent is roughly forty lines of udev rule plus <code>unar</code> and <code>hfsfuse</code>. Read it for
+      the design.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 11 SALVAGE ===================== -->
+<section class="panel" id="salvage">
+  <div class="panel__bar"><span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">11 &mdash; Salvage register</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span></div>
+  <div class="panel__body">
+    <h2>Read closely</h2>
+    <div class="tw"><table>
+      <thead><tr><th style="width:30%">Region</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>The core bridge <span class="cite">MacViewClass.m:396-537, :612-712, :340-393</span></td><td>Roughly 250 lines defining the whole architecture: dual framebuffer, aliasing rep, lockFocus outside <code>drawRect:</code>, multi-rect clip, Y-flip, <code>allocateGState</code>. Port the shape, retype every line.</td></tr>
+        <tr><td><code>- step</code> <span class="cite">:1059-1112</span></td><td>Run guest until the host has an event pending, then yield. Survives any redesign.</td></tr>
+        <tr><td><code>vdriver_flush_display</code> <span class="cite">:906-923</span></td><td>Read the comment. It documents a real failure mode where skipping the flush queues messages until the machine pages itself to death.</td></tr>
+        <tr><td><code>host_flush_shadow_screen</code> <span class="cite">:2233-2259</span></td><td>The polled-refresh design for apps that bypass QuickDraw. Still needed.</td></tr>
+        <tr><td><code>setcursorX</code> <span class="cite">:994-1035</span></td><td>The XOR-cursor dithering hack &mdash; inverted regions rendered as a per-row alternating checkerboard &mdash; and <code>disableCursorRects</code>. You will hit both.</td></tr>
+        <tr><td>Scrap handling <span class="cite">:1875-2193</span> + <span class="cite">NEXT.c:720-760</span></td><td>Multi-flavour ordering, staleness counters, CR&harr;LF, and the synthetic RTF font table. Hard-won; better than anything in the modern tree.</td></tr>
+        <tr><td>Focus delegates <span class="cite">MacAppClass.m:164-236</span></td><td>Host key-window focus to Mac suspend/resume, with the change-count gate deciding clipboard conversion. The right model.</td></tr>
+        <tr><td><code>performKeyEquivalent:</code> <span class="cite">:2486-2505</span></td><td>Swallow &#8984;-equivalents while a guest app runs. Small, essential, easy to forget.</td></tr>
+        <tr><td><span class="cite">NEXT.c:661-672</span></td><td>Two paragraphs proposing the correct keyboard architecture &mdash; import host keymaps at startup with optional guest KMAP/KCHR override. Worth more than the code around it.</td></tr>
+      </tbody>
+    </table></div>
+
+    <h2>Archaeology</h2>
+    <div class="tw"><table>
+      <thead><tr><th style="width:30%">Region</th><th>Verdict</th></tr></thead>
+      <tbody>
+        <tr><td><code>OldMacViewClass.m</code>, 2,907 lines</td><td>Superseded 1995 snapshot, <b>not in the build</b>. Its one unique idea &mdash; writing straight into NeXT video RAM via a setuid-root kernel module &mdash; is dead behind <code>if (0 &amp;&amp; …)</code> at <span class="cite">:1041, :2166</span>, and the callee has no implementation anywhere. Delete.</td></tr>
+        <tr><td><code>blockinterrupts.m</code></td><td><code>#error</code>'d by its author at line 76. Not in the build.</td></tr>
+        <tr><td><code>contextswitch</code> <span class="cite">NEXTmain.m:110-168, :288-344</span></td><td>Inline-asm coroutines with hand-built stacks. Modern Executor uses a real thread.</td></tr>
+        <tr><td><code>ROMlib_load_ardi_mods</code> <span class="cite">NEXTmain.m:183-259</span></td><td>Loads a setuid-root Mach kernel module and probes for it by <b>deliberately triggering SIGILL</b> <span class="cite">:256</span>.</td></tr>
+        <tr><td>Printing <span class="cite">MacViewClass.m:2689-2892</span></td><td>Raw PostScript into a DPS context, <code>rectForPage:</code> spinning <code>contextswitch</code> with a <b>10,000-iteration timeout existing for one Excel bug</b> <span class="cite">:1038-1057</span>, and <code>endPageSetup</code> emitting a deliberately false <code>%%BeginDocument:</code> to work around Word 5 <span class="cite">:2806-2810</span>.</td></tr>
+        <tr><td>~80% of <code>MacAppClass.m</code></td><td>Registration keys, serial numbers, licence enforcement, ARDI's phone number in five separate string constants.</td></tr>
+        <tr><td><code>MacViewClass.h:19-315</code></td><td>~300 lines of Mac Roman &harr; NeXT encoding defines. The problem is still real for the clipboard; this table is not the answer.</td></tr>
+        <tr><td><code>MacWinClass</code>, <code>MacPrintClass.h</code></td><td>28 lines total, plus a header for a class with no implementation. Under GNUstep you likely need no <code>NSWindow</code> subclass at all.</td></tr>
+        <tr><td>Mach-O linker magic <span class="cite">nextstep.make.*:6-19</span></td><td><code>-sectcreate</code>, <code>-segaddr</code>, <code>__ICON</code>, <code>lowseg</code>. No ELF equivalent &mdash; rewrite. Icons become bundle resources; the fixed-address segment becomes the <code>mmap(MAP_FIXED)</code> scheme the x11 and sdl front ends already use.</td></tr>
+        <tr><td><code>NEXTkeyboard.m</code></td><td>NeXT event-status-driver ADB probing. <b>Not <code>#ifdef</code>-guarded &mdash; always compiled.</b> Delete.</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</section>
+
+<!-- ===================== 12 UNKNOWNS ===================== -->
+<section class="panel" id="unknowns">
+  <div class="panel__bar"><span class="panel__btn" aria-hidden="true">&#9633;</span>
+    <span class="panel__title">12 &mdash; Unknowns</span>
+    <span class="panel__btn" aria-hidden="true">&times;</span></div>
+  <div class="panel__body">
+    <p class="lede">Stated plainly, because a review that hides its gaps is worse than one that names them.</p>
+    <ul>
+      <li><b>Nothing was compiled or executed.</b> No GNUstep toolchain, no clang, no Gorm on the review machine.</li>
+      <li>The literal output of <code>gnustep-config --objc-flags</code> and <code>--gui-libs</code> on a current
+      install. All flags given are derived from gnustep-make's own makefiles, not observed.</li>
+      <li>Whether distribution <code>-dev</code> packages install <code>libs-back/Headers/x11/XGServerWindow.h</code>,
+      which gates the raw-Xlib blit escape hatch.</li>
+      <li>Any GNUstep drawing benchmark newer than 2015.</li>
+      <li>Whether recent binutils fixed the GNU ld / v2-ABI problem, or whether lld remains strictly necessary.
+      gnustep-make's own check admits it has no accurate test and only warns.</li>
+      <li>Current first-hand bug reports for window levels under KWin, Mutter or i3 &mdash; the
+      <code>_NET_WM_STATE_ABOVE</code> gap is inferred from source only.</li>
+      <li>Whether <code>[NSGraphicsContext graphicsPort]</code> is populated with a live cairo context on the on-screen
+      path.</li>
+      <li>Gershwin's own build conventions &mdash; the project was not located from the review environment.</li>
+      <li>CMake's issue tracker for prior OBJCXX-on-Linux reports; automated fetching is blocked, so "not checked" rather
+      than "nothing there."</li>
+    </ul>
+  </div>
+</section>
+
+</div>
+
+<footer>
+  Companion to <a href="gnustep-executor-port-plan.html">A GNUstep Front End for Executor</a> &middot;
+  sources: <a href="https://github.com/pkgdemon/executor">pkgdemon/executor</a> (2008 MIT release) &middot;
+  <a href="https://github.com/autc04/executor">autc04/executor</a> (modern fork) &middot;
+  <a href="https://github.com/gnustep/libs-gui">libs-gui</a> &middot;
+  <a href="https://github.com/gnustep/libs-back">libs-back</a>
+</footer>
+
+</body>
+</html>

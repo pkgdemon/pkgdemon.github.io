@@ -1,0 +1,1245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A System 7 Workalike on Devuan — Feasibility Study</title>
+<style>
+:root{
+  --ink:#000;
+  --paper:#fff;
+  --desk:#8a8a8a;
+  --shadow:rgba(0,0,0,.55);
+  --gray1:#e4e4e4;
+  --gray2:#bdbdbd;
+  --gray3:#767676;
+  --select:#a9c6e8;
+  --go:#1c6b34;   --go-bg:#dcece0;
+  --hold:#8a5a00; --hold-bg:#f0e7d2;
+  --stop:#8f1d1d; --stop-bg:#f0dcdc;
+  --chrome:"Chicago","ChiKareGo2","Charcoal",Geneva,Verdana,Tahoma,"DejaVu Sans",sans-serif;
+  --body:Geneva,Verdana,Tahoma,"DejaVu Sans",Helvetica,Arial,sans-serif;
+  --mono:Monaco,"DejaVu Sans Mono",Menlo,Consolas,monospace;
+  --menubar-h:22px;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  font:13.5px/1.62 var(--body);
+  color:var(--ink);
+  background-color:var(--desk);
+  background-image:repeating-conic-gradient(#000 0% 25%, #fff 0% 50%);
+  background-size:2px 2px;
+  padding-top:var(--menubar-h);
+}
+
+/* ---------- menu bar ---------- */
+.menubar{
+  position:fixed; top:0; left:0; right:0; height:var(--menubar-h); z-index:100;
+  background:var(--paper); border-bottom:1px solid var(--ink);
+  display:flex; align-items:stretch; padding:0 6px;
+  font:12px/1 var(--chrome); -webkit-font-smoothing:none;
+  overflow-x:auto; scrollbar-width:none;
+}
+.menubar::-webkit-scrollbar{display:none}
+.menubar a,.menubar .mb-glyph{
+  display:flex; align-items:center; padding:0 9px; color:var(--ink);
+  text-decoration:none; white-space:nowrap; letter-spacing:.02em;
+}
+.menubar a:hover,.menubar a:focus-visible{background:var(--ink); color:var(--paper); outline:none}
+.mb-glyph{padding:0 10px 0 4px}
+.mb-spacer{flex:1 1 auto; min-width:8px}
+.mb-clock{display:flex;align-items:center;padding:0 6px;color:var(--gray3);font-size:11px}
+
+/* ---------- layout ---------- */
+.desktop{max-width:940px; margin:0 auto; padding:26px 20px 90px; display:flex; flex-direction:column; gap:26px}
+
+/* ---------- window chrome ---------- */
+.win{background:var(--paper); border:1px solid var(--ink); box-shadow:2px 2px 0 var(--shadow)}
+.win__bar{
+  position:relative; display:flex; align-items:center; gap:6px;
+  height:21px; padding:0 5px; border-bottom:1px solid var(--ink); background:var(--paper);
+}
+.win__bar::before{
+  content:""; position:absolute; left:0; right:0; top:4px; bottom:4px;
+  background:repeating-linear-gradient(to bottom, var(--ink) 0 1px, var(--paper) 1px 2px);
+}
+.win__bar > *{position:relative; z-index:1}
+.win__box{width:11px; height:11px; border:1px solid var(--ink); background:var(--paper); flex:none}
+.win__box--zoom{padding:1px; background:var(--paper)}
+.win__box--zoom i{display:block; width:100%; height:100%; border:1px solid var(--ink)}
+.win__title{
+  background:var(--paper); padding:0 9px; font:12px/1 var(--chrome);
+  -webkit-font-smoothing:none; letter-spacing:.02em; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
+}
+.win__spacer{flex:1 1 auto; height:1px}
+.win__body{padding:20px 22px 24px}
+.win--inactive .win__bar::before{display:none}
+.win--inactive .win__title{color:var(--gray3)}
+
+/* ---------- headline window ---------- */
+.hero .win__body{padding:26px 26px 28px}
+.hero h1{
+  font:400 27px/1.16 var(--chrome); -webkit-font-smoothing:none;
+  margin:0 0 4px; letter-spacing:-.01em; text-wrap:balance;
+}
+.hero .kicker{
+  font:11px/1 var(--chrome); -webkit-font-smoothing:none; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--gray3); margin:0 0 14px;
+}
+.hero .verdict{font-size:15px; line-height:1.6; max-width:66ch; margin:0 0 4px}
+.hero .verdict strong{background:var(--select); padding:0 3px}
+
+/* ---------- typography inside windows ---------- */
+.win__body h3{
+  font:12px/1 var(--chrome); -webkit-font-smoothing:none;
+  text-transform:uppercase; letter-spacing:.11em;
+  margin:26px 0 10px; padding-bottom:5px; border-bottom:1px solid var(--ink);
+}
+.win__body h3:first-child{margin-top:0}
+.win__body h4{font:400 14px/1.3 var(--chrome); -webkit-font-smoothing:none; margin:18px 0 6px}
+.win__body p{margin:0 0 11px; max-width:68ch}
+.win__body ul{margin:0 0 12px; padding-left:19px; max-width:68ch}
+.win__body li{margin:0 0 5px}
+.win__body li::marker{color:var(--gray3)}
+code,kbd,.mono{font-family:var(--mono); font-size:.9em; background:var(--gray1); padding:1px 4px; border:1px solid var(--gray2)}
+a{color:var(--ink)}
+.lede{font-size:14.5px; max-width:64ch}
+
+/* ---------- chips ---------- */
+.chip{
+  display:inline-flex; align-items:center; gap:5px; vertical-align:middle;
+  border:1px solid var(--ink); padding:1px 7px; background:var(--paper);
+  font:10.5px/1.5 var(--chrome); -webkit-font-smoothing:none;
+  letter-spacing:.06em; text-transform:uppercase; white-space:nowrap;
+}
+.chip--go{background:var(--go-bg); color:var(--go)}
+.chip--hold{background:var(--hold-bg); color:var(--hold)}
+.chip--stop{background:var(--stop-bg); color:var(--stop)}
+.chip::before{content:""; width:7px; height:7px; border:1px solid currentColor; background:currentColor; flex:none}
+.chip--go::before{background:var(--go)}
+.chip--hold::before{background:var(--hold); border-radius:50%}
+.chip--stop::before{background:var(--stop); transform:rotate(45deg)}
+
+/* ---------- tables ---------- */
+.tablewrap{overflow-x:auto; margin:0 0 14px; border:1px solid var(--ink)}
+table{border-collapse:collapse; width:100%; min-width:560px; background:var(--paper); font-size:12.5px}
+th,td{border:1px solid var(--gray2); padding:7px 10px; text-align:left; vertical-align:top}
+thead th{
+  position:relative; border-color:var(--ink); background:var(--gray1);
+  font:11px/1.3 var(--chrome); -webkit-font-smoothing:none;
+  text-transform:uppercase; letter-spacing:.07em;
+}
+tbody tr:nth-child(even) td{background:#f6f6f6}
+td.num{font-variant-numeric:tabular-nums; text-align:right; font-family:var(--mono); font-size:11.5px}
+td strong{font-weight:400; background:var(--select); padding:0 3px}
+
+/* ---------- notes ---------- */
+.note{
+  border:1px solid var(--ink); background:var(--paper); padding:13px 15px;
+  margin:0 0 14px; display:grid; grid-template-columns:26px 1fr; gap:12px; align-items:start;
+}
+.note p:last-child{margin-bottom:0}
+.note__mark{
+  width:24px; height:24px; border:1px solid var(--ink); border-radius:50%;
+  display:grid; place-items:center; font:14px/1 var(--chrome); -webkit-font-smoothing:none;
+}
+.note--warn{background:var(--hold-bg)}
+.note--stop{background:var(--stop-bg)}
+.note--go{background:var(--go-bg)}
+.note h4{margin:0 0 4px; font-size:13px}
+
+/* ---------- diagram frames ---------- */
+.figure{margin:4px 0 18px}
+.figure__frame{border:1px solid var(--ink); background:var(--paper); padding:14px; overflow-x:auto}
+.figure svg{display:block; min-width:520px; width:100%; height:auto}
+.figure figcaption{
+  font:10.5px/1.5 var(--chrome); -webkit-font-smoothing:none; letter-spacing:.07em;
+  text-transform:uppercase; color:var(--gray3); margin-top:7px;
+}
+svg text{font-family:var(--body)}
+svg .lbl{font-size:11px}
+svg .lbl-sm{font-size:9.5px; fill:var(--gray3)}
+svg .lbl-hd{font-family:var(--chrome); font-size:10px; letter-spacing:.08em; text-transform:uppercase}
+svg .mono-t{font-family:var(--mono); font-size:10px}
+
+/* ---------- desktop mockup ---------- */
+.mockwrap{overflow-x:auto; border:1px solid var(--ink)}
+.mock{
+  position:relative; min-width:800px; height:540px;
+  background-color:var(--desk);
+  background-image:repeating-conic-gradient(#000 0% 25%, #fff 0% 50%);
+  background-size:2px 2px;
+  font:12px/1.35 var(--body);
+}
+.mock__menubar{
+  position:absolute; inset:0 0 auto 0; height:21px; background:var(--paper);
+  border-bottom:1px solid var(--ink); display:flex; align-items:center; padding:0 8px; gap:16px;
+  font:11.5px/1 var(--chrome); -webkit-font-smoothing:none; z-index:5;
+}
+.mock__menubar .active{background:var(--ink); color:var(--paper); padding:3px 6px; margin:0 -6px}
+.mock-win{position:absolute; background:var(--paper); border:1px solid var(--ink); box-shadow:2px 2px 0 var(--shadow)}
+.mock-win__bar{position:relative; display:flex; align-items:center; gap:5px; height:18px; padding:0 4px; border-bottom:1px solid var(--ink); background:var(--paper)}
+.mock-win__bar::before{content:""; position:absolute; left:0; right:0; top:3px; bottom:3px; background:repeating-linear-gradient(to bottom,var(--ink) 0 1px,var(--paper) 1px 2px)}
+.mock-win__bar > *{position:relative; z-index:1}
+.mock-win__bar .b{width:9px;height:9px;border:1px solid var(--ink);background:var(--paper);flex:none}
+.mock-win__t{background:var(--paper); padding:0 7px; font:11px/1 var(--chrome); -webkit-font-smoothing:none}
+.mock-win__sp{flex:1}
+.mock-win__info{
+  height:15px; border-bottom:1px solid var(--ink); display:flex; align-items:center; padding:0 6px;
+  font:9.5px/1 var(--body); color:var(--gray3); justify-content:space-between;
+}
+.mock-win__body{padding:7px}
+.mock-list{display:grid; grid-template-columns:repeat(3,1fr); gap:9px 4px}
+.mock-item{display:flex; flex-direction:column; align-items:center; gap:3px; text-align:center; font-size:10px; line-height:1.2}
+.mock-item span{padding:0 3px}
+.mock-item.sel span{background:var(--ink); color:var(--paper)}
+.desk-icon{position:absolute; width:70px; display:flex; flex-direction:column; align-items:center; gap:3px; text-align:center; font-size:10px; line-height:1.2; color:var(--ink)}
+.desk-icon span{background:var(--paper); padding:0 3px; border:1px solid transparent}
+.callout{
+  position:absolute; width:17px; height:17px; border:1px solid var(--ink); border-radius:50%;
+  background:var(--paper); display:grid; place-items:center; z-index:20;
+  font:10px/1 var(--chrome); -webkit-font-smoothing:none; box-shadow:1px 1px 0 var(--shadow);
+}
+.legend{display:grid; grid-template-columns:repeat(auto-fit,minmax(238px,1fr)); gap:9px 20px; margin:14px 0 0; padding:0; list-style:none}
+.legend li{display:grid; grid-template-columns:19px 1fr; gap:9px; font-size:12px; line-height:1.45; margin:0}
+.legend b{
+  display:grid; place-items:center; width:17px; height:17px; border:1px solid var(--ink);
+  border-radius:50%; font:10px/1 var(--chrome); -webkit-font-smoothing:none; font-weight:400;
+}
+
+/* ---------- effort bars ---------- */
+.bars{display:flex; flex-direction:column; gap:9px; margin:2px 0 14px}
+.bar{display:grid; grid-template-columns:minmax(120px,1.1fr) 3fr auto; gap:11px; align-items:center; font-size:12px}
+.bar__name{font:11px/1.3 var(--chrome); -webkit-font-smoothing:none}
+.bar__track{height:15px; border:1px solid var(--ink); background:var(--paper); position:relative}
+.bar__fill{
+  position:absolute; top:0; bottom:0; left:0; border-right:1px solid var(--ink);
+  background:repeating-linear-gradient(-45deg, var(--ink) 0 1px, transparent 1px 4px);
+}
+.bar__fill--open{background:repeating-linear-gradient(-45deg, var(--gray3) 0 1px, transparent 1px 7px)}
+.bar__val{font-family:var(--mono); font-size:11px; font-variant-numeric:tabular-nums; color:var(--gray3); white-space:nowrap}
+
+/* ---------- two-up ---------- */
+.two{display:grid; grid-template-columns:repeat(auto-fit,minmax(290px,1fr)); gap:18px}
+.panel{border:1px solid var(--ink); padding:13px 15px; background:var(--paper)}
+.panel h4{margin-top:0}
+.panel p:last-child,.panel ul:last-child{margin-bottom:0}
+
+/* ---------- footer ---------- */
+.colophon{
+  max-width:940px; margin:0 auto; padding:0 20px 60px;
+  font:10.5px/1.7 var(--chrome); -webkit-font-smoothing:none; letter-spacing:.06em;
+  color:var(--paper); text-transform:uppercase;
+}
+.colophon a{color:var(--paper)}
+
+@media (max-width:640px){
+  .desktop{padding:16px 11px 60px; gap:18px}
+  .win__body{padding:16px 15px 18px}
+  .hero h1{font-size:22px}
+  .bar{grid-template-columns:1fr; gap:3px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none !important; transition:none !important}
+}
+@media print{
+  body{background:#fff; padding:0}
+  .menubar{display:none}
+  .win{box-shadow:none; break-inside:avoid}
+}
+</style>
+</head>
+<body>
+
+<nav class="menubar" aria-label="Sections">
+  <span class="mb-glyph" aria-hidden="true">
+    <svg width="13" height="14" viewBox="0 0 13 14" fill="none" stroke="#000" stroke-width="1" shape-rendering="crispEdges">
+      <path d="M6.5 1.5 v11 M1.5 4 L6.5 1.5 L11.5 4 v6 L6.5 12.5 L1.5 10 Z" />
+    </svg>
+  </span>
+  <a href="#verdict">Verdict</a>
+  <a href="#boot">Boot</a>
+  <a href="#desktop">Desktop</a>
+  <a href="#sysfolder">System&nbsp;Folder</a>
+  <a href="#apps">Applications</a>
+  <a href="#archives">Archives</a>
+  <a href="#classic">Classic</a>
+  <a href="#seamless">Seamless</a>
+  <a href="#plan">Plan</a>
+  <a href="#risks">Risks</a>
+  <span class="mb-spacer"></span>
+  <span class="mb-clock">27 Jul 2026</span>
+</nav>
+
+<main class="desktop">
+
+<!-- ============ HERO / VERDICT ============ -->
+<section class="win hero" id="verdict">
+  <div class="win__bar">
+    <span class="win__box" aria-hidden="true"></span>
+    <span class="win__spacer"></span>
+    <h2 class="win__title">Feasibility Study</h2>
+    <span class="win__spacer"></span>
+    <span class="win__box win__box--zoom" aria-hidden="true"><i></i></span>
+  </div>
+  <div class="win__body">
+    <p class="kicker">Build plan &middot; revision A</p>
+    <h1>A System&nbsp;7 workalike that boots on real hardware</h1>
+    <p class="verdict">A graphical-only Devuan ISO running <span class="mono">mlvwm</span> on XLibre, with a System&nbsp;Folder,
+    no user accounts, AppImages in <span class="mono">/Applications</span>, and classic Mac software one double-click away.
+    <strong>Everything but the last item is a weekend-to-a-fortnight project.</strong> The classic-app layer is where the
+    difficulty lives &mdash; and the constraint that makes it hard is legal, not technical.</p>
+    <p>The headline finding: there <em>is</em> a fully redistributable path to running System&nbsp;7 software, and it does not
+    involve an Apple ROM. See <a href="#classic">Classic Applications</a>.</p>
+
+    <h3>Component scoreboard</h3>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th style="width:27%">Component</th><th style="width:14%">Verdict</th><th>The actual obstacle</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Boot straight to graphics</td><td><span class="chip chip--go">Easy</span></td><td>None. Standard live-image practice.</td></tr>
+          <tr><td>mlvwm on XLibre</td><td><span class="chip chip--go">Easy</span></td><td>1990s imake and K&amp;R C. XLibre is Xlib-compatible; mlvwm cannot tell it apart from Xorg.</td></tr>
+          <tr><td>&ldquo;System Folder&rdquo; layout</td><td><span class="chip chip--hold">Scope&nbsp;call</span></td><td>Cosmetic version is trivial. A literal one means rebuilding the toolchain.</td></tr>
+          <tr><td>AppImages in /Applications</td><td><span class="chip chip--go">Easy</span></td><td>Menu regeneration, FUSE versions, and write persistence on a live ISO.</td></tr>
+          <tr><td>A Finder</td><td><span class="chip chip--hold">Gap</span></td><td><strong>mlvwm is only a window manager.</strong> No desktop icons, no file manager, no Trash.</td></tr>
+          <tr><td>No user accounts</td><td><span class="chip chip--go">Easy</span></td><td>Some applications refuse to run as uid&nbsp;0. Use a fixed unprivileged user instead.</td></tr>
+          <tr><td>.sit / .hqx / .bin extraction</td><td><span class="chip chip--go">Easy</span></td><td>Preserving resource forks across the Linux filesystem.</td></tr>
+          <tr><td>Mounting HFS volumes</td><td><span class="chip chip--hold">Move&nbsp;to&nbsp;userspace</span></td><td>The in-kernel <span class="mono">hfs</span>/<span class="mono">hfsplus</span> drivers were orphaned upstream.</td></tr>
+          <tr><td>Running System&nbsp;7 applications</td><td><span class="chip chip--hold">Hard</span></td><td>Apple ROMs and Apple system software are not redistributable. One clean-room path is.</td></tr>
+          <tr><td>Seamless (rootless) windows</td><td><span class="chip chip--stop">Research</span></td><td>Nothing off-the-shelf does per-window compositing for 68k Mac software.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ============ BOOT ============ -->
+<section class="win" id="boot">
+  <div class="win__bar">
+    <span class="win__box" aria-hidden="true"></span>
+    <span class="win__spacer"></span>
+    <h2 class="win__title">1 &mdash; Boot Chain</h2>
+    <span class="win__spacer"></span>
+    <span class="win__box win__box--zoom" aria-hidden="true"><i></i></span>
+  </div>
+  <div class="win__body">
+    <p class="lede">The goal is zero text frames: from firmware handoff to a dithered desktop, the user never sees a console.</p>
+
+    <figure class="figure">
+      <div class="figure__frame">
+        <svg viewBox="0 0 880 250" role="img" aria-label="Boot chain from firmware through GRUB, kernel, squashfs, autologin, XLibre, to mlvwm and Filer" shape-rendering="crispEdges">
+          <defs>
+            <marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+              <path d="M0 1 L8 4.5 L0 8 Z" fill="#000"/>
+            </marker>
+          </defs>
+
+          <!-- stage boxes -->
+          <g fill="#fff" stroke="#000">
+            <rect x="8"   y="60" width="118" height="54"/>
+            <rect x="158" y="60" width="118" height="54"/>
+            <rect x="308" y="60" width="140" height="54"/>
+            <rect x="480" y="60" width="140" height="54"/>
+            <rect x="652" y="60" width="140" height="54"/>
+          </g>
+          <g class="lbl" text-anchor="middle">
+            <text x="67"  y="82">Firmware</text><text x="67"  y="98" class="lbl-sm">UEFI / BIOS</text>
+            <text x="217" y="82">Bootloader</text><text x="217" y="98" class="lbl-sm">GRUB, hidden menu</text>
+            <text x="378" y="82">Kernel + initramfs</text><text x="378" y="98" class="lbl-sm">quiet loglevel=0</text>
+            <text x="550" y="82">squashfs root</text><text x="550" y="98" class="lbl-sm">+ overlay for writes</text>
+            <text x="722" y="82">Autologin</text><text x="722" y="98" class="mono-t">agetty --autologin</text>
+          </g>
+          <g stroke="#000" marker-end="url(#ar)" fill="none">
+            <path d="M126 87 H154"/><path d="M276 87 H304"/><path d="M448 87 H476"/><path d="M620 87 H648"/>
+          </g>
+
+          <!-- drop to second row -->
+          <path d="M722 114 V150 H360" stroke="#000" fill="none"/>
+          <path d="M360 150 V174" stroke="#000" fill="none" marker-end="url(#ar)"/>
+
+          <g fill="#fff" stroke="#000">
+            <rect x="240" y="176" width="240" height="52"/>
+            <rect x="530" y="176" width="262" height="52"/>
+          </g>
+          <g class="lbl" text-anchor="middle">
+            <text x="360" y="197">XLibre server</text>
+            <text x="360" y="213" class="lbl-sm">startx, no display manager</text>
+            <text x="661" y="197">mlvwm + Filer + Applications daemon</text>
+            <text x="661" y="213" class="lbl-sm">the whole user-visible system</text>
+          </g>
+          <path d="M480 202 H526" stroke="#000" fill="none" marker-end="url(#ar)"/>
+
+          <!-- annotation bracket -->
+          <path d="M8 40 H792" stroke="#000" fill="none" stroke-dasharray="3 3"/>
+          <path d="M8 40 V50 M792 40 V50" stroke="#000" fill="none"/>
+          <text x="400" y="30" class="lbl-hd" text-anchor="middle">No console output at any point &mdash; splash covers the gap</text>
+
+          <text x="8" y="246" class="lbl-sm">Devuan base &mdash; sysvinit, no systemd anywhere in the chain. Cold boot to desktop: target under 12 seconds on SATA SSD, under 25 from USB 2.0.</text>
+        </svg>
+      </div>
+      <figcaption>Fig. 1 &mdash; Boot chain</figcaption>
+    </figure>
+
+    <h3>Decisions</h3>
+    <ul>
+      <li><b>Base distribution: Devuan.</b> It inherits Debian's archive, so the entire long tail you need is already packaged &mdash; <span class="mono">unar</span>, <span class="mono">macutils</span>, <span class="mono">hfsutils</span>, <span class="mono">hfsprogs</span>, <span class="mono">qemu</span> &mdash; without systemd underneath it. Alpine would give you a ~200&nbsp;MB ISO, but rebuilding that long tail costs more time than the disk space is worth.</li>
+      <li><b>Init.</b> sysvinit is the default and the right call here: this system has a fixed, known boot path with no dynamic service topology to manage. runit is a reasonable alternative if you want supervision for the <span class="mono">/Applications</span> watcher, but the watcher belongs to the X session, not to init &mdash; start it from the session script and the question goes away.</li>
+      <li><b>Hiding the console.</b> <span class="mono">quiet loglevel=0 vt.global_cursor_default=0</span> on the kernel command line, plus a Plymouth theme, or a bare X splash started from the initramfs if you want to skip Plymouth's dependency weight.</li>
+      <li><b>No display manager.</b> Autologin on tty1 via <span class="mono">agetty --autologin macintosh</span> in <span class="mono">/etc/inittab</span>, then <span class="mono">startx</span> from the shell profile. No getty on the other VTs, so there is no second console to stumble into.</li>
+      <li><b>Image builder.</b> <span class="mono">live-build</span> is packaged for Devuan and is the shortest path from a package list to a bootable ISO. Devuan's own Refracta tooling is the native alternative and is better at snapshotting a system you have already configured by hand &mdash; useful later, once the layout has stopped moving.</li>
+    </ul>
+
+    <div class="note note--go">
+      <span class="note__mark" aria-hidden="true">&#10003;</span>
+      <div>
+        <h4>Devuan is a good fit beyond the init preference</h4>
+        <p>A System&nbsp;7 workalike wants a small, legible, static system with a fixed boot path and no service manager
+        negotiating seats and sessions on its behalf. That is Devuan's whole thesis. The one thing to watch: some AppImages
+        expect <span class="mono">logind</span> to exist. Devuan ships <b>elogind</b> for exactly this &mdash; install it,
+        along with a minimal session <span class="mono">dbus</span>, and treat the pair as a compatibility shim for modern
+        applications rather than as part of the system's own architecture.</p>
+      </div>
+    </div>
+
+    <h3>Bases weighed</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th style="width:17%">Base</th><th style="width:13%">Verdict</th><th>Reasoning</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><b style="font-weight:400">Devuan</b></td>
+            <td><span class="chip chip--go">Chosen</span></td>
+            <td>Debian's archive without systemd. Every tool in this document is already packaged, which is the single largest time saver available.</td>
+          </tr>
+          <tr>
+            <td><b style="font-weight:400">Tiny Core</b></td>
+            <td><span class="chip chip--hold">Steal from it</span></td>
+            <td>Architecturally the closest thing to this vision that already exists &mdash; see below. Rejected as the base on packaging grounds alone.</td>
+          </tr>
+          <tr>
+            <td>Alpine</td>
+            <td><span class="chip chip--hold">Viable, costly</span></td>
+            <td>A ~200&nbsp;MB ISO and a clean musl base, but the long tail is thinner and musl breaks a share of prebuilt AppImages outright.</td>
+          </tr>
+          <tr>
+            <td>Arch</td>
+            <td><span class="chip chip--stop">No</span></td>
+            <td>A rolling base under an immutable, frozen-by-design system is a permanent maintenance tax for no benefit here.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <span class="note__mark" aria-hidden="true">?</span>
+      <div>
+        <h4>Tiny Core deserves a real answer, not a dismissal</h4>
+        <p>It already implements three things this plan spends effort building. It <b>runs entirely from RAM</b> off a
+        read-only base, which is exactly the immutable System&nbsp;Folder model. It <b>boots straight into X with no display
+        manager and no meaningful account model</b> &mdash; the <span class="mono">tc</span> user with passwordless sudo is
+        the &ldquo;no user accounts&rdquo; goal, already shipped. And its <b><span class="mono">.tcz</span> extension
+        format is squashfs images mounted on demand</b>, which is the same idea as dropping a self-contained bundle into a
+        folder and having it become an application. The philosophical overlap is not partial; it is near-total.</p>
+        <p><b>What kills it as the base is the long tail.</b> <span class="mono">unar</span>, <span class="mono">macutils</span>,
+        <span class="mono">hfsutils</span>, <span class="mono">hfsfuse</span>, <span class="mono">dmg2img</span>, mlvwm,
+        XLibre, Executor, and AMS would all become extensions you build and maintain yourself, on a busybox userland, using
+        an on-demand toolchain. That is the entire dependency surface of this project moved onto your shoulders in exchange
+        for saving a few hundred megabytes. AppImages compound it: they assume a conventional desktop baseline, and Tiny
+        Core is the least conventional baseline available.</p>
+        <p><b>The useful synthesis:</b> stay on Devuan and take Tiny Core's architecture anyway &mdash; read-only squashfs
+        base, RAM-resident, writable overlay only where the user's own files live. That is already what Fig.&nbsp;1 and
+        Fig.&nbsp;2 describe. Revisit Tiny Core as a separate minimal edition once the components are packaged and the
+        porting cost is a known quantity rather than an open one.</p>
+      </div>
+    </div>
+
+    <div class="note note--warn">
+      <span class="note__mark" aria-hidden="true">!</span>
+      <div>
+        <h4>Do not run the session as root</h4>
+        <p>&ldquo;No user accounts&rdquo; is a user-experience goal, not a uid goal. Chromium-based AppImages and several other
+        applications hard-refuse to start as uid&nbsp;0. Ship a fixed unprivileged user &mdash; call it <span class="mono">macintosh</span>,
+        uid&nbsp;1000, no password, autologin, no account visible anywhere in the interface. Semantically account-free,
+        practically sane. Classic Mac OS had no accounts either; it still ran as an unprivileged system.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ DESKTOP MOCKUP ============ -->
+<section class="win" id="desktop">
+  <div class="win__bar">
+    <span class="win__box" aria-hidden="true"></span>
+    <span class="win__spacer"></span>
+    <h2 class="win__title">2 &mdash; The Desktop</h2>
+    <span class="win__spacer"></span>
+    <span class="win__box win__box--zoom" aria-hidden="true"><i></i></span>
+  </div>
+  <div class="win__body">
+    <p class="lede">What the finished system looks like in normal use: a mounted HFS volume, an AppImage running natively,
+    and a 1994 application in a window beside it.</p>
+
+    <div class="mockwrap">
+      <div class="mock">
+        <div class="mock__menubar">
+          <svg width="12" height="13" viewBox="0 0 13 14" fill="none" stroke="#000" stroke-width="1" shape-rendering="crispEdges" aria-hidden="true">
+            <path d="M6.5 1.5 v11 M1.5 4 L6.5 1.5 L11.5 4 v6 L6.5 12.5 L1.5 10 Z"/>
+          </svg>
+          <span class="active">File</span><span>Edit</span><span>View</span><span>Label</span><span>Special</span>
+        </div>
+
+        <!-- desktop volume icons -->
+        <div class="desk-icon" style="top:38px; right:16px">
+          <svg width="34" height="30" viewBox="0 0 34 30" fill="#fff" stroke="#000" shape-rendering="crispEdges" aria-hidden="true">
+            <rect x="1.5" y="4.5" width="31" height="21"/>
+            <rect x="5.5" y="8.5" width="23" height="9" fill="#e4e4e4"/>
+            <rect x="23.5" y="19.5" width="5" height="3"/>
+          </svg>
+          <span>Macintosh&nbsp;HD</span>
+        </div>
+        <div class="desk-icon" style="top:104px; right:16px">
+          <svg width="30" height="30" viewBox="0 0 30 30" fill="#fff" stroke="#000" shape-rendering="crispEdges" aria-hidden="true">
+            <rect x="3.5" y="2.5" width="23" height="25"/>
+            <rect x="8.5" y="2.5" width="13" height="9" fill="#e4e4e4"/>
+            <circle cx="15" cy="19" r="5"/>
+            <circle cx="15" cy="19" r="1.5" fill="#000"/>
+          </svg>
+          <span>Extras.hfs</span>
+        </div>
+        <div class="desk-icon" style="bottom:14px; right:16px">
+          <svg width="28" height="32" viewBox="0 0 28 32" fill="#fff" stroke="#000" shape-rendering="crispEdges" aria-hidden="true">
+            <path d="M4.5 8.5 h19 l-2 20 h-15 Z"/>
+            <path d="M2.5 4.5 h23 v4 h-23 Z"/>
+            <path d="M10.5 12.5 v12 M17.5 12.5 v12"/>
+          </svg>
+          <span>Trash</span>
+        </div>
+
+        <!-- System Folder window (behind) -->
+        <div class="mock-win win--inactive" style="left:24px; top:44px; width:246px">
+          <div class="mock-win__bar" style="background:#fff">
+            <span class="b"></span><span class="mock-win__sp"></span>
+            <span class="mock-win__t" style="color:#767676">System Folder</span>
+            <span class="mock-win__sp"></span><span class="b"></span>
+          </div>
+          <div class="mock-win__info"><span>4 items</span><span>read only</span></div>
+          <div class="mock-win__body">
+            <div class="mock-list">
+              <div class="mock-item">
+                <svg width="26" height="22" viewBox="0 0 26 22" fill="#fff" stroke="#000" shape-rendering="crispEdges"><path d="M1.5 4.5 h8 l2 3 h13 v13 h-23 Z"/></svg>
+                <span>Extensions</span>
+              </div>
+              <div class="mock-item">
+                <svg width="26" height="22" viewBox="0 0 26 22" fill="#fff" stroke="#000" shape-rendering="crispEdges"><path d="M1.5 4.5 h8 l2 3 h13 v13 h-23 Z"/></svg>
+                <span>Control Panels</span>
+              </div>
+              <div class="mock-item">
+                <svg width="26" height="22" viewBox="0 0 26 22" fill="#fff" stroke="#000" shape-rendering="crispEdges"><path d="M1.5 4.5 h8 l2 3 h13 v13 h-23 Z"/></svg>
+                <span>Preferences</span>
+              </div>
+              <div class="mock-item">
+                <svg width="26" height="22" viewBox="0 0 26 22" fill="#fff" stroke="#000" shape-rendering="crispEdges"><path d="M1.5 4.5 h8 l2 3 h13 v13 h-23 Z"/></svg>
+                <span>Startup Items</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Applications window (front) -->
+        <div class="mock-win" style="left:96px; top:150px; width:290px">
+          <div class="mock-win__bar">
+            <span class="b"></span><span class="mock-win__sp"></span>
+            <span class="mock-win__t">Applications</span>
+            <span class="mock-win__sp"></span><span class="b"></span>
+          </div>
+          <div class="mock-win__info"><span>6 items</span><span>4.1 GB available</span></div>
+          <div class="mock-win__body">
+            <div class="mock-list">
+              <div class="mock-item sel">
+                <svg width="26" height="26" viewBox="0 0 26 26" fill="#fff" stroke="#000" shape-rendering="crispEdges"><rect x="2.5" y="2.5" width="21" height="21"/><path d="M7.5 8.5 h11 M7.5 12.5 h11 M7.5 16.5 h7"/></svg>
+                <span>GIMP.AppImage</span>
+              </div>
+              <div class="mock-item">
+                <svg width="26" height="26" viewBox="0 0 26 26" fill="#fff" stroke="#000" shape-rendering="crispEdges"><rect x="2.5" y="2.5" width="21" height="21"/><circle cx="13" cy="13" r="6"/></svg>
+                <span>Firefox.AppImage</span>
+              </div>
+              <div class="mock-item">
+                <svg width="26" height="26" viewBox="0 0 26 26" fill="#fff" stroke="#000" shape-rendering="crispEdges"><rect x="2.5" y="2.5" width="21" height="21"/><path d="M6.5 19.5 L13 6.5 L19.5 19.5 Z"/></svg>
+                <span>Inkscape</span>
+              </div>
+              <div class="mock-item">
+                <svg width="26" height="26" viewBox="0 0 26 26" fill="#fff" stroke="#000" shape-rendering="crispEdges"><rect x="2.5" y="2.5" width="21" height="21"/><rect x="7.5" y="7.5" width="11" height="11"/></svg>
+                <span>HyperCard</span>
+              </div>
+              <div class="mock-item">
+                <svg width="26" height="26" viewBox="0 0 26 26" fill="#fff" stroke="#000" shape-rendering="crispEdges"><rect x="2.5" y="2.5" width="21" height="21"/><path d="M2.5 16.5 L9 10 l4 4 l5 -6 l5.5 5.5"/></svg>
+                <span>MacPaint</span>
+              </div>
+              <div class="mock-item">
+                <svg width="26" height="26" viewBox="0 0 26 26" fill="#fff" stroke="#000" shape-rendering="crispEdges"><rect x="2.5" y="2.5" width="21" height="21"/><path d="M8.5 6.5 v13 l9 -6.5 Z"/></svg>
+                <span>mpv.AppImage</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Classic app window -->
+        <div class="mock-win" style="right:112px; top:206px; width:264px">
+          <div class="mock-win__bar">
+            <span class="b"></span><span class="mock-win__sp"></span>
+            <span class="mock-win__t">Untitled&nbsp;1 &mdash; MacPaint</span>
+            <span class="mock-win__sp"></span><span class="b"></span>
+          </div>
+          <div class="mock-win__body" style="padding:0">
+            <div style="display:flex; height:150px">
+              <div style="width:44px; border-right:1px solid #000; display:grid; grid-template-columns:1fr 1fr; align-content:start">
+                <svg width="22" height="20" viewBox="0 0 22 20" fill="#000" stroke="#000" shape-rendering="crispEdges" style="border-right:1px solid #000;border-bottom:1px solid #000;background:#000"><path d="M5 15 L11 4 L16 15 Z" fill="#fff"/></svg>
+                <svg width="22" height="20" viewBox="0 0 22 20" fill="none" stroke="#000" shape-rendering="crispEdges" style="border-bottom:1px solid #000"><rect x="5.5" y="5.5" width="11" height="9"/></svg>
+                <svg width="22" height="20" viewBox="0 0 22 20" fill="none" stroke="#000" shape-rendering="crispEdges" style="border-right:1px solid #000;border-bottom:1px solid #000"><circle cx="11" cy="10" r="5"/></svg>
+                <svg width="22" height="20" viewBox="0 0 22 20" fill="none" stroke="#000" shape-rendering="crispEdges" style="border-bottom:1px solid #000"><path d="M4 15 C 8 4, 14 16, 18 6"/></svg>
+                <svg width="22" height="20" viewBox="0 0 22 20" fill="none" stroke="#000" shape-rendering="crispEdges" style="border-right:1px solid #000;border-bottom:1px solid #000"><path d="M6 14 L14 6 M12 4 l4 4 l-2 2 l-4 -4 Z"/></svg>
+                <svg width="22" height="20" viewBox="0 0 22 20" fill="none" stroke="#000" shape-rendering="crispEdges" style="border-bottom:1px solid #000"><path d="M6.5 5.5 h9 v9 h-9 Z" stroke-dasharray="2 2"/></svg>
+              </div>
+              <div style="flex:1; position:relative; background:#fff">
+                <svg width="100%" height="150" viewBox="0 0 216 150" fill="none" stroke="#000" shape-rendering="crispEdges" aria-hidden="true">
+                  <path d="M30 118 L74 40 L118 118 Z"/>
+                  <circle cx="150" cy="70" r="26"/>
+                  <path d="M124 118 h84" />
+                  <path d="M40 30 h30 M40 34 h22" stroke-dasharray="1 1"/>
+                  <rect x="132" y="52" width="36" height="36" stroke-dasharray="3 3" stroke="#767676"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- callouts -->
+        <span class="callout" style="left:8px;  top:4px">1</span>
+        <span class="callout" style="left:4px;  top:60px">2</span>
+        <span class="callout" style="left:78px; top:166px">3</span>
+        <span class="callout" style="right:14px; top:118px">4</span>
+        <span class="callout" style="right:96px; top:196px">5</span>
+        <span class="callout" style="right:14px; bottom:52px">6</span>
+      </div>
+    </div>
+
+    <ol class="legend">
+      <li><b>1</b><span><b style="all:unset;font-weight:400">Menu bar</b> drawn by mlvwm's own bar, not a panel. The mark at the left is a placeholder &mdash; see <a href="#risks">Trade dress</a>.</span></li>
+      <li><b>2</b><span>The <b style="all:unset;font-weight:400">System Folder</b>, presented read-only. Its contents are bind mounts onto ordinary FHS paths.</span></li>
+      <li><b>3</b><span><b style="all:unset;font-weight:400">/Applications</b> holding AppImages and classic applications side by side, indistinguishable to the user.</span></li>
+      <li><b>4</b><span>A mounted <b style="all:unset;font-weight:400">HFS volume</b> from a period disk image, via userspace FUSE.</span></li>
+      <li><b>5</b><span>A <b style="all:unset;font-weight:400">1984 application</b> running under a clean-room Toolbox reimplementation, framed by mlvwm.</span></li>
+      <li><b>6</b><span><b style="all:unset;font-weight:400">Trash</b> supplied by the Finder replacement, since mlvwm has none.</span></li>
+    </ol>
+
+    <div class="note note--warn">
+      <span class="note__mark" aria-hidden="true">!</span>
+      <div>
+        <h4>The gap nobody mentions: mlvwm is only a window manager</h4>
+        <p>It draws System&nbsp;7 chrome and manages windows. It has no desktop icons, no file manager, no Trash, and no
+        double-click-to-open. Almost everything in the mockup above that makes it feel like a Macintosh comes from a
+        <em>second</em> program you still have to choose.</p>
+        <p><b>ROX-Filer</b> is the closest lightweight fit &mdash; pinboard desktop icons, application directories, small
+        dependency footprint. Before committing, look hard at <b>helloSystem</b>: it is a FreeBSD project that has already
+        built most of this vision, and its Qt-based &ldquo;Filer&rdquo; is worth borrowing conceptually even though you cannot
+        lift it wholesale onto Linux without work.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SYSTEM FOLDER ============ -->
+<section class="win" id="sysfolder">
+  <div class="win__bar">
+    <span class="win__box" aria-hidden="true"></span>
+    <span class="win__spacer"></span>
+    <h2 class="win__title">3 &mdash; The System Folder</h2>
+    <span class="win__spacer"></span>
+    <span class="win__box win__box--zoom" aria-hidden="true"><i></i></span>
+  </div>
+  <div class="win__body">
+    <p class="lede">Make it a presentation layer, not a filesystem rewrite. The user sees a System&nbsp;Folder; the dynamic
+    linker still sees the paths it was compiled against.</p>
+
+    <figure class="figure">
+      <div class="figure__frame">
+        <svg viewBox="0 0 880 300" role="img" aria-label="Diagram mapping presented System Folder paths onto underlying FHS paths via bind mounts" shape-rendering="crispEdges">
+          <defs>
+            <marker id="ar2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <path d="M0 1 L7 4 L0 7 Z" fill="#767676"/>
+            </marker>
+          </defs>
+
+          <text x="20"  y="20" class="lbl-hd">What the user sees</text>
+          <text x="520" y="20" class="lbl-hd">What is actually there</text>
+
+          <!-- left column -->
+          <g fill="#fff" stroke="#000">
+            <rect x="20" y="32" width="290" height="30"/>
+            <rect x="44" y="70" width="266" height="28"/>
+            <rect x="44" y="104" width="266" height="28"/>
+            <rect x="44" y="138" width="266" height="28"/>
+            <rect x="44" y="172" width="266" height="28"/>
+            <rect x="20" y="212" width="290" height="28"/>
+            <rect x="20" y="248" width="290" height="28"/>
+          </g>
+          <g class="mono-t">
+            <text x="32"  y="51">/System Folder</text>
+            <text x="56"  y="88">Extensions/</text>
+            <text x="56"  y="122">Control Panels/</text>
+            <text x="56"  y="156">Preferences/</text>
+            <text x="56"  y="190">Fonts/</text>
+            <text x="32"  y="230">/Applications</text>
+            <text x="32"  y="266">/Documents</text>
+          </g>
+
+          <!-- right column -->
+          <g fill="#fff" stroke="#000">
+            <rect x="520" y="70" width="340" height="28"/>
+            <rect x="520" y="104" width="340" height="28"/>
+            <rect x="520" y="138" width="340" height="28"/>
+            <rect x="520" y="172" width="340" height="28"/>
+            <rect x="520" y="212" width="340" height="28"/>
+            <rect x="520" y="248" width="340" height="28"/>
+          </g>
+          <g class="mono-t">
+            <text x="532" y="88">/lib/modules + /usr/lib/xorg/modules</text>
+            <text x="532" y="122">/etc + settings front-ends</text>
+            <text x="532" y="156">~/.config</text>
+            <text x="532" y="190">/usr/share/fonts</text>
+            <text x="532" y="230">/opt/apps  (overlay, writable)</text>
+            <text x="532" y="266">/home/macintosh/Documents</text>
+          </g>
+
+          <!-- connectors -->
+          <g stroke="#767676" fill="none" marker-end="url(#ar2)" stroke-dasharray="4 3">
+            <path d="M310 84  H516"/>
+            <path d="M310 118 H516"/>
+            <path d="M310 152 H516"/>
+            <path d="M310 186 H516"/>
+          </g>
+          <g stroke="#000" fill="none" marker-end="url(#ar2)">
+            <path d="M310 226 H516"/>
+            <path d="M310 262 H516"/>
+          </g>
+          <text x="413" y="78"  class="lbl-sm" text-anchor="middle">bind, ro</text>
+          <text x="413" y="220" class="lbl-sm" text-anchor="middle">bind, rw</text>
+
+          <!-- hidden layer -->
+          <rect x="20" y="288" width="840" height="1" fill="#000"/>
+          <text x="20" y="300" class="lbl-sm">Untouched underneath: /usr /lib /etc /var /proc /sys /dev &mdash; hidden from the Finder, fully intact for the linker and package manager.</text>
+        </svg>
+      </div>
+      <figcaption>Fig. 2 &mdash; Presented layout over an unmodified FHS root</figcaption>
+    </figure>
+
+    <p>Hide the FHS directories from the Finder with a dotfile-style ignore list rather than by moving anything. The Finder
+    replacement decides what is visible; the kernel keeps its own opinion. Nothing on the system needs patching.</p>
+
+    <div class="note note--stop">
+      <span class="note__mark" aria-hidden="true">&times;</span>
+      <div>
+        <h4>Do not do this literally</h4>
+        <p>A real System&nbsp;Folder &mdash; with the OS actually living there and no <span class="mono">/usr</span> or
+        <span class="mono">/lib</span> at all &mdash; means a GoboLinux-style rebuild: patched dynamic linker, patched build
+        system, every package rebuilt against new paths, and permanent divergence from the upstream archive. That is a
+        distribution-year of work and it buys nothing the bind-mount presentation does not. Take the cosmetic route and
+        spend the year on the classic-app layer instead.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ APPLICATIONS ============ -->
+<section class="win" id="apps">
+  <div class="win__bar">
+    <span class="win__box" aria-hidden="true"></span>
+    <span class="win__spacer"></span>
+    <h2 class="win__title">4 &mdash; /Applications and AppImages</h2>
+    <span class="win__spacer"></span>
+    <span class="win__box win__box--zoom" aria-hidden="true"><i></i></span>
+  </div>
+  <div class="win__body">
+    <p class="lede">Drop a file in a folder; it becomes an application. AppImage is already a single-file bundle, so this maps
+    onto the Macintosh model almost for free.</p>
+
+    <figure class="figure">
+      <div class="figure__frame">
+        <svg viewBox="0 0 880 236" role="img" aria-label="Pipeline from dropping an AppImage into slash Applications through inotify, indexer, menu rewrite, to a running application" shape-rendering="crispEdges">
+          <defs>
+            <marker id="ar3" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+              <path d="M0 1 L8 4.5 L0 8 Z" fill="#000"/>
+            </marker>
+          </defs>
+
+          <g fill="#fff" stroke="#000">
+            <rect x="10"  y="52" width="132" height="58"/>
+            <rect x="176" y="52" width="132" height="58"/>
+            <rect x="342" y="52" width="150" height="58"/>
+            <rect x="526" y="52" width="150" height="58"/>
+            <rect x="710" y="52" width="160" height="58"/>
+          </g>
+          <g class="lbl" text-anchor="middle">
+            <text x="76"  y="76">Drop file</text><text x="76"  y="92" class="mono-t">/Applications</text>
+            <text x="242" y="76">Watcher</text><text x="242" y="92" class="mono-t">inotify IN_CLOSE_WRITE</text>
+            <text x="417" y="70">Indexer</text>
+            <text x="417" y="85" class="lbl-sm">extracts icon +</text>
+            <text x="417" y="97" class="lbl-sm">.desktop metadata</text>
+            <text x="601" y="70">Menu writer</text>
+            <text x="601" y="85" class="lbl-sm">rewrites a marked block</text>
+            <text x="601" y="97" class="mono-t">~/.mlvwmrc</text>
+            <text x="790" y="76">mlvwm Restart</text><text x="790" y="92" class="lbl-sm">application appears in menu</text>
+          </g>
+          <g stroke="#000" fill="none" marker-end="url(#ar3)">
+            <path d="M142 81 H172"/><path d="M308 81 H338"/><path d="M492 81 H522"/><path d="M676 81 H706"/>
+          </g>
+
+          <text x="10" y="30" class="lbl-hd">Hot path &mdash; under a second from drop to menu entry</text>
+          <path d="M10 38 H870" stroke="#000" fill="none" stroke-dasharray="3 3"/>
+
+          <!-- support boxes -->
+          <g fill="#fff" stroke="#000" stroke-dasharray="4 3">
+            <rect x="10"  y="146" width="272" height="54"/>
+            <rect x="304" y="146" width="272" height="54"/>
+            <rect x="598" y="146" width="272" height="54"/>
+          </g>
+          <g class="lbl">
+            <text x="24"  y="166">FUSE, both generations</text>
+            <text x="24"  y="182" class="lbl-sm">ship libfuse2 and fuse3; fall back to</text>
+            <text x="24"  y="194" class="mono-t">--appimage-extract-and-run</text>
+            <text x="318" y="166">Write persistence</text>
+            <text x="318" y="182" class="lbl-sm">live ISO needs an overlay partition or</text>
+            <text x="318" y="194" class="lbl-sm">/Applications is read-only</text>
+            <text x="612" y="166">Icon fidelity</text>
+            <text x="612" y="182" class="lbl-sm">scale PNG to 32&times;32 and dither to 1-bit</text>
+            <text x="612" y="194" class="lbl-sm">so modern icons match the era</text>
+          </g>
+          <text x="10" y="224" class="lbl-sm">Dashed boxes are supporting concerns, not pipeline stages.</text>
+        </svg>
+      </div>
+      <figcaption>Fig. 3 &mdash; The /Applications daemon</figcaption>
+    </figure>
+
+    <h3>Notes on implementation</h3>
+    <ul>
+      <li><b>Marked block, not full rewrite.</b> Bracket the generated menu with sentinel comments in <span class="mono">.mlvwmrc</span> so a user's hand edits outside the block survive regeneration.</li>
+      <li><b>Restart, not reload.</b> mlvwm predates runtime config reloading; the practical move is <span class="mono">Restart</span>, which preserves managed windows.</li>
+      <li><b>Classic applications land here too.</b> A System&nbsp;7 application in <span class="mono">/Applications</span> gets the same treatment &mdash; the indexer just routes it to a different launcher. To the user there is one folder and one gesture.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ ARCHIVES ============ -->
+<section class="win" id="archives">
+  <div class="win__bar">
+    <span class="win__box" aria-hidden="true"></span>
+    <span class="win__spacer"></span>
+    <h2 class="win__title">5 &mdash; Archives and Volumes</h2>
+    <span class="win__spacer"></span>
+    <span class="win__box win__box--zoom" aria-hidden="true"><i></i></span>
+  </div>
+  <div class="win__body">
+    <p class="lede">The whole problem here is the resource fork. Solve it by never letting the payload sit on a Linux
+    filesystem in the first place &mdash; go straight from archive to HFS image.</p>
+
+    <figure class="figure">
+      <div class="figure__frame">
+        <svg viewBox="0 0 880 268" role="img" aria-label="Pipeline converting sit, hqx and bin archives through unar and macutils into MacBinary, then into an HFS disk image via hcopy" shape-rendering="crispEdges">
+          <defs>
+            <marker id="ar4" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+              <path d="M0 1 L8 4.5 L0 8 Z" fill="#000"/>
+            </marker>
+          </defs>
+
+          <g fill="#fff" stroke="#000">
+            <rect x="10"  y="60" width="122" height="60"/>
+            <rect x="166" y="60" width="150" height="60"/>
+            <rect x="350" y="60" width="150" height="60"/>
+            <rect x="534" y="60" width="150" height="60"/>
+            <rect x="718" y="60" width="152" height="60"/>
+          </g>
+          <g class="lbl" text-anchor="middle">
+            <text x="71"  y="84">Archive</text>
+            <text x="71"  y="100" class="mono-t">.sit .hqx .bin</text>
+            <text x="241" y="78">Extract</text>
+            <text x="241" y="94" class="mono-t">unar</text>
+            <text x="241" y="108" class="lbl-sm">macutils for the crustier ones</text>
+            <text x="425" y="78">Both forks intact</text>
+            <text x="425" y="94" class="lbl-sm">data + resource, type/creator</text>
+            <text x="425" y="108" class="lbl-sm">preserved as AppleDouble</text>
+            <text x="609" y="78">Wrap</text>
+            <text x="609" y="94" class="mono-t">MacBinary</text>
+            <text x="609" y="108" class="lbl-sm">single-stream, fork-safe</text>
+            <text x="794" y="78">Install</text>
+            <text x="794" y="94" class="mono-t">hcopy -m &rarr; disk.hfs</text>
+            <text x="794" y="108" class="lbl-sm">emulator sees a normal volume</text>
+          </g>
+          <g stroke="#000" fill="none" marker-end="url(#ar4)">
+            <path d="M132 90 H162"/><path d="M316 90 H346"/><path d="M500 90 H530"/><path d="M684 90 H714"/>
+          </g>
+
+          <text x="10" y="34" class="lbl-hd">One gesture in the Finder; five programs underneath</text>
+          <path d="M10 42 H870" stroke="#000" fill="none" stroke-dasharray="3 3"/>
+
+          <!-- danger zone -->
+          <rect x="350" y="150" width="150" height="46" fill="#f0dcdc" stroke="#000"/>
+          <text x="425" y="170" class="lbl" text-anchor="middle">Never land here</text>
+          <text x="425" y="185" class="lbl-sm" text-anchor="middle">bare ext4 = forks lost</text>
+          <path d="M425 120 V146" stroke="#8f1d1d" fill="none" stroke-dasharray="3 3" marker-end="url(#ar4)"/>
+          <path d="M404 158 l42 30 M446 158 l-42 30" stroke="#8f1d1d" fill="none"/>
+
+          <text x="10" y="228" class="lbl-hd">Mounting existing media</text>
+          <path d="M10 236 H870" stroke="#000" fill="none"/>
+          <text x="10" y="256" class="lbl-sm">hfsutils for classic HFS &middot; hfsfuse or hfsplus-userspace for HFS+ &middot; dmg2img for .dmg &middot; stay out of the kernel drivers</text>
+        </svg>
+      </div>
+      <figcaption>Fig. 4 &mdash; Archive to mountable volume</figcaption>
+    </figure>
+
+    <h3>Toolchain</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th style="width:19%">Tool</th><th style="width:26%">Handles</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">unar / lsar</td><td>StuffIt 1&ndash;5, much of SITX, BinHex, MacBinary, Compact Pro</td><td>The Unarchiver's command-line tools. Already in the archive, actively maintained, and can emit resource forks rather than discarding them.</td></tr>
+          <tr><td class="mono">macutils</td><td><span class="mono">.hqx</span>, <span class="mono">.bin</span>, MacBinary streams</td><td><span class="mono">hexbin</span> and <span class="mono">macunpack</span>. Ancient, unglamorous, and still the answer for 1980s uploads that <span class="mono">unar</span> declines.</td></tr>
+          <tr><td class="mono">hfsutils</td><td>Classic HFS read/write</td><td><span class="mono">hmount</span>, <span class="mono">hcopy -m</span>, <span class="mono">humount</span>. Userspace, so no kernel exposure. This is how software gets <em>into</em> a volume.</td></tr>
+          <tr><td class="mono">hfsfuse</td><td>HFS+ / HFSX</td><td>Actively maintained FUSE driver. Read-oriented; treat it as the safe way to browse period media.</td></tr>
+          <tr><td class="mono">dmg2img</td><td><span class="mono">.dmg</span></td><td>Converts to a raw image the above tools can open.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note note--warn">
+      <span class="note__mark" aria-hidden="true">!</span>
+      <div>
+        <h4>The in-kernel HFS drivers are on their way out</h4>
+        <p>The kernel's <span class="mono">hfs</span> and <span class="mono">hfsplus</span> drivers were marked orphaned
+        upstream and their removal has been discussed openly. Building a distribution feature on them is building on sand,
+        and they carry the worse risk profile besides: a malformed volume from a 30-year-old floppy image hits parsing code
+        in ring&nbsp;0 that nobody is maintaining. Do the mounting in userspace from day one. It is not a compromise; it is
+        the better design.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CLASSIC ============ -->
+<section class="win" id="classic">
+  <div class="win__bar">
+    <span class="win__box" aria-hidden="true"></span>
+    <span class="win__spacer"></span>
+    <h2 class="win__title">6 &mdash; Classic Applications</h2>
+    <span class="win__spacer"></span>
+    <span class="win__box win__box--zoom" aria-hidden="true"><i></i></span>
+  </div>
+  <div class="win__body">
+    <p class="lede">This section decides the project. Everything else is assembly; this is the part with a real constraint,
+    and the constraint is copyright rather than engineering.</p>
+
+    <div class="note note--go">
+      <span class="note__mark" aria-hidden="true">&#10003;</span>
+      <div>
+        <h4>Verified: Executor is redistributable</h4>
+        <p>Cliff Matthews open-sourced Executor in 2008 under an <b>MIT-style license</b> (see <span class="mono">COPYING</span>
+        in the source tree). It needs <b>no Apple ROM and no Apple system software</b> &mdash; it reimplements the classic Mac
+        Toolbox the way Wine reimplements Win32, and installs its own synthetic system files on first run. It ships in your
+        ISO with no legal asterisk.</p>
+        <p>One caveat worth designing around: the built-in debugger is based on <b>cxmon, which is GPLv2+</b>, so a stock build
+        is effectively bound by the GPL for the whole binary. cxmon is optional and removable if you want a
+        non-copyleft build &mdash; but for a Linux distribution shipping under the GPL anyway, this is a non-issue. Build it in.</p>
+      </div>
+    </div>
+
+    <h3>The options, compared</h3>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:20%">Approach</th>
+            <th style="width:13%">Apple ROM</th>
+            <th style="width:15%">Apple system software</th>
+            <th style="width:15%">Shippable in the ISO</th>
+            <th>Compatibility</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b style="font-weight:400">Executor</b><br><span class="lbl-sm">MIT + optional GPL component</span></td>
+            <td><span class="chip chip--go">Not needed</span></td>
+            <td><span class="chip chip--go">Not needed</span></td>
+            <td><span class="chip chip--go">Yes</span></td>
+            <td>A subset. Many System 6 and 7-era applications run; many do not. Reimplementation coverage, not emulation completeness.</td>
+          </tr>
+          <tr>
+            <td><b style="font-weight:400">Advanced Mac Substitute</b><br><span class="lbl-sm">actively developed</span></td>
+            <td><span class="chip chip--go">Not needed</span></td>
+            <td><span class="chip chip--go">Not needed</span></td>
+            <td><span class="chip chip--go">Yes</span></td>
+            <td>Narrower today, but deliberately Apple-code-free and moving. The honest long-term bet; pair it with Executor rather than choosing.</td>
+          </tr>
+          <tr>
+            <td>Basilisk II</td>
+            <td><span class="chip chip--stop">Required</span></td>
+            <td><span class="chip chip--stop">Required</span></td>
+            <td><span class="chip chip--stop">No</span></td>
+            <td>Excellent &mdash; it is real 68k emulation. Blocked on assets you cannot distribute.</td>
+          </tr>
+          <tr>
+            <td>Mini vMac</td>
+            <td><span class="chip chip--stop">Required</span></td>
+            <td><span class="chip chip--stop">Required</span></td>
+            <td><span class="chip chip--stop">No</span></td>
+            <td>Superb for Plus-era software. Same blocker.</td>
+          </tr>
+          <tr>
+            <td><span class="mono">qemu-system-m68k -M q800</span></td>
+            <td><span class="chip chip--stop">Required</span></td>
+            <td><span class="chip chip--stop">Required</span></td>
+            <td><span class="chip chip--stop">No</span></td>
+            <td>Improving quickly. Same blocker.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>What &ldquo;only legal methods&rdquo; actually rules out</h3>
+    <p>The ROM is the hard blocker, not the operating system. Apple's ROMs are copyrighted firmware and there is no licensed
+    way to put one in a downloadable image. System&nbsp;7.5.3 was famously a free download from Apple for years, but
+    <em>free to download</em> is not <em>licensed for you to redistribute</em>, and those two get conflated constantly in
+    retrocomputing circles.</p>
+    <p>That leaves a clean division. Ship Executor and AMS in the image, working out of the box, no setup. Then offer an
+    optional first-run assistant that lets a user point at a ROM they dumped from hardware they own &mdash; which unlocks
+    Basilisk II and full fidelity, entirely legally, without you ever distributing Apple's code. Shipping the
+    <em>dumping instructions</em> is fine. Shipping the dump is not.</p>
+
+    <div class="two">
+      <div class="panel">
+        <h4>Default experience</h4>
+        <p>Executor + AMS, preinstalled. Double-click a <span class="mono">.sit</span>, get a working application. Nothing to
+        configure, nothing to acquire, nothing to explain. Compatibility is partial and that is an honest trade to state
+        plainly in the documentation rather than paper over.</p>
+      </div>
+      <div class="panel">
+        <h4>Enthusiast path</h4>
+        <p>A ROM assistant in the System&nbsp;Folder. The user supplies their own dump; the system configures Basilisk&nbsp;II
+        around it and the compatibility ceiling disappears. Opt-in, clearly labelled, and legally clean because the user
+        supplies the only encumbered asset.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SEAMLESS ============ -->
+<section class="win" id="seamless">
+  <div class="win__bar">
+    <span class="win__box" aria-hidden="true"></span>
+    <span class="win__spacer"></span>
+    <h2 class="win__title">7 &mdash; Seamless Windowing</h2>
+    <span class="win__spacer"></span>
+    <span class="win__box win__box--zoom" aria-hidden="true"><i></i></span>
+  </div>
+  <div class="win__body">
+    <p class="lede">Nothing off the shelf gives you rootless 68k windows. But you get most of the effect cheaply, because
+    mlvwm is already drawing System&nbsp;7 chrome around everything.</p>
+
+    <figure class="figure">
+      <div class="figure__frame">
+        <svg viewBox="0 0 880 300" role="img" aria-label="Two architectures: instance-per-application now, versus a guest agent reporting window geometry to a host compositor later" shape-rendering="crispEdges">
+          <defs>
+            <marker id="ar5" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+              <path d="M0 1 L8 4.5 L0 8 Z" fill="#000"/>
+            </marker>
+          </defs>
+
+          <!-- divider -->
+          <path d="M440 16 V292" stroke="#000" stroke-dasharray="4 4" fill="none"/>
+
+          <text x="14"  y="26" class="lbl-hd">Ship this &mdash; instance per application</text>
+          <text x="460" y="26" class="lbl-hd">Research this &mdash; true rootless</text>
+
+          <!-- LEFT -->
+          <g fill="#fff" stroke="#000">
+            <rect x="14" y="44" width="180" height="44"/>
+            <rect x="14" y="112" width="180" height="44"/>
+            <rect x="14" y="180" width="180" height="44"/>
+            <rect x="248" y="112" width="164" height="44"/>
+          </g>
+          <g class="lbl">
+            <text x="26" y="62">Executor instance A</text><text x="26" y="78" class="lbl-sm">boots straight into MacPaint</text>
+            <text x="26" y="130">Executor instance B</text><text x="26" y="146" class="lbl-sm">boots straight into HyperCard</text>
+            <text x="26" y="198">Executor instance C</text><text x="26" y="214" class="lbl-sm">boots straight into ResEdit</text>
+            <text x="260" y="130">mlvwm</text>
+            <text x="260" y="146" class="lbl-sm">frames each borderless window</text>
+          </g>
+          <g stroke="#000" fill="none" marker-end="url(#ar5)">
+            <path d="M194 66 H222 V130 H244"/>
+            <path d="M194 134 H244"/>
+            <path d="M194 202 H222 V138 H244"/>
+          </g>
+          <text x="14" y="252" class="lbl-sm">Each application is one host window. Costs RAM, which is free now.</text>
+          <text x="14" y="268" class="lbl-sm">Because mlvwm already draws System 7 chrome, the seams read as</text>
+          <text x="14" y="282" class="lbl-sm">consistent rather than as emulation.</text>
+
+          <!-- RIGHT -->
+          <g fill="#fff" stroke="#000">
+            <rect x="460" y="44" width="180" height="52"/>
+            <rect x="460" y="124" width="180" height="52"/>
+            <rect x="694" y="84" width="172" height="52"/>
+            <rect x="694" y="180" width="172" height="52"/>
+          </g>
+          <g class="lbl">
+            <text x="472" y="64">Guest agent</text>
+            <text x="472" y="79" class="lbl-sm">walks the window list,</text>
+            <text x="472" y="91" class="lbl-sm">reports rects + z-order</text>
+            <text x="472" y="144">Framebuffer</text>
+            <text x="472" y="159" class="lbl-sm">single shared surface</text>
+            <text x="472" y="171" class="lbl-sm">from the emulator</text>
+            <text x="706" y="104">Host compositor</text>
+            <text x="706" y="119" class="lbl-sm">crops regions, reprojects</text>
+            <text x="706" y="131" class="lbl-sm">each into its own X window</text>
+            <text x="706" y="200">Input router</text>
+            <text x="706" y="215" class="lbl-sm">maps host clicks back to</text>
+            <text x="706" y="227" class="lbl-sm">guest coordinates</text>
+          </g>
+          <g stroke="#000" fill="none" marker-end="url(#ar5)">
+            <path d="M640 70 H668 V108 H690"/>
+            <path d="M640 150 H668 V114 H690"/>
+            <path d="M780 180 V140" />
+          </g>
+          <text x="460" y="256" class="lbl-sm">Feasible precisely because Executor and AMS are open source &mdash; you</text>
+          <text x="460" y="270" class="lbl-sm">can add the agent inside the Toolbox implementation rather than</text>
+          <text x="460" y="284" class="lbl-sm">reverse-engineering a black box. This is a paper, not a milestone.</text>
+        </svg>
+      </div>
+      <figcaption>Fig. 5 &mdash; Two paths to &ldquo;seamless&rdquo;</figcaption>
+    </figure>
+
+    <p>The instance-per-application approach is not a consolation prize. A user launching MacPaint from
+    <span class="mono">/Applications</span> gets a window with System&nbsp;7 chrome that they can move, resize, and stack
+    against a GIMP window that has identical chrome. The illusion holds for everything except overlapping modal dialogs
+    inside a single classic application, which stay trapped in their instance's window.</p>
+  </div>
+</section>
+
+<!-- ============ PLAN ============ -->
+<section class="win" id="plan">
+  <div class="win__bar">
+    <span class="win__box" aria-hidden="true"></span>
+    <span class="win__spacer"></span>
+    <h2 class="win__title">8 &mdash; Sequencing</h2>
+    <span class="win__spacer"></span>
+    <span class="win__box win__box--zoom" aria-hidden="true"><i></i></span>
+  </div>
+  <div class="win__body">
+    <p class="lede">Five milestones. The first four produce something people would actually install and use. The fifth is
+    open-ended and should be treated that way from the start.</p>
+
+    <div class="bars" role="img" aria-label="Relative effort per milestone: bootable desktop 3 days, Finder and Applications 5 days, archives and volumes 4 days, classic layer 4 weeks, seamless windowing open-ended">
+      <div class="bar">
+        <span class="bar__name">1. Bootable desktop</span>
+        <span class="bar__track"><span class="bar__fill" style="width:9%"></span></span>
+        <span class="bar__val">~3 days</span>
+      </div>
+      <div class="bar">
+        <span class="bar__name">2. Finder + /Applications</span>
+        <span class="bar__track"><span class="bar__fill" style="width:15%"></span></span>
+        <span class="bar__val">~5 days</span>
+      </div>
+      <div class="bar">
+        <span class="bar__name">3. Archives + volumes</span>
+        <span class="bar__track"><span class="bar__fill" style="width:12%"></span></span>
+        <span class="bar__val">~4 days</span>
+      </div>
+      <div class="bar">
+        <span class="bar__name">4. Classic layer</span>
+        <span class="bar__track"><span class="bar__fill" style="width:62%"></span></span>
+        <span class="bar__val">~4 weeks</span>
+      </div>
+      <div class="bar">
+        <span class="bar__name">5. Seamless windowing</span>
+        <span class="bar__track"><span class="bar__fill bar__fill--open" style="width:100%"></span></span>
+        <span class="bar__val">open-ended</span>
+      </div>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th style="width:6%">#</th><th style="width:24%">Milestone</th><th>Done when</th></tr></thead>
+        <tbody>
+          <tr><td class="num">1</td><td>Bootable desktop</td><td>ISO boots to mlvwm with a ROX-Filer pinboard, no console visible, no login prompt, on both UEFI and BIOS.</td></tr>
+          <tr><td class="num">2</td><td>Finder + /Applications</td><td>Dropping an AppImage into <span class="mono">/Applications</span> makes it appear in the menu and on the desktop within a second, and it survives reboot via the overlay.</td></tr>
+          <tr><td class="num">3</td><td>Archives + volumes</td><td>Double-clicking a <span class="mono">.sit</span> in the Finder produces a mounted HFS volume with forks intact. No terminal involved.</td></tr>
+          <tr><td class="num">4</td><td>Classic layer</td><td>Executor and AMS packaged; a classic application in <span class="mono">/Applications</span> launches from a double-click in a framed window. ROM assistant available but never required.</td></tr>
+          <tr><td class="num">5</td><td>Seamless windowing</td><td>Individual classic windows are individual X windows. Ship 1&ndash;4 first and treat this as a separate project with its own timeline.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <span class="note__mark" aria-hidden="true">&rarr;</span>
+      <div>
+        <h4>Start here</h4>
+        <p>The highest-information first step is milestone&nbsp;1 plus a compile of mlvwm against XLibre. If the imake build
+        fights you, you learn that in an afternoon rather than after committing to the whole architecture &mdash; and the
+        fallback is to build against plain Xorg, which changes nothing else in this document.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ RISKS ============ -->
+<section class="win" id="risks">
+  <div class="win__bar">
+    <span class="win__box" aria-hidden="true"></span>
+    <span class="win__spacer"></span>
+    <h2 class="win__title">9 &mdash; Risks and Trade Dress</h2>
+    <span class="win__spacer"></span>
+    <span class="win__box win__box--zoom" aria-hidden="true"><i></i></span>
+  </div>
+  <div class="win__body">
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th style="width:26%">Risk</th><th style="width:13%">Severity</th><th>Mitigation</th></tr></thead>
+        <tbody>
+          <tr><td>Shipping Apple fonts or icons</td><td><span class="chip chip--stop">High</span></td><td>Chicago, Charcoal, and the System&nbsp;7 icon set are Apple's property. Use clean-room bitmap lookalikes with explicit licenses, and check each one's terms individually &mdash; several popular &ldquo;free&rdquo; Chicago clones are personal-use only.</td></tr>
+          <tr><td>Apple logo in the menu bar</td><td><span class="chip chip--stop">High</span></td><td>Trademark, not copyright, and no fair-use argument helps you here. Use an original mark. The placeholder in the mockup above is deliberately not an apple.</td></tr>
+          <tr><td>Imitating the System&nbsp;7 look</td><td><span class="chip chip--hold">Low</span></td><td>Trade dress is a grey area, but themes of this kind have existed unchallenged for three decades and mlvwm itself has shipped since the 1990s. The risk is in the assets, not the geometry.</td></tr>
+          <tr><td>XLibre packaging burden</td><td><span class="chip chip--hold">Medium</span></td><td>Few distributions package it, so you are building and maintaining it yourself. mlvwm does not care either way &mdash; keep plain Xorg as a drop-in fallback so this never blocks a release.</td></tr>
+          <tr><td>Kernel HFS drivers disappear</td><td><span class="chip chip--go">Handled</span></td><td>Already designed around: userspace mounting from day one.</td></tr>
+          <tr><td>Executor compatibility ceiling</td><td><span class="chip chip--hold">Medium</span></td><td>Real and permanent. State it plainly in the documentation, maintain a tested-application list, and offer the user-supplied-ROM path for anyone who needs full fidelity.</td></tr>
+          <tr><td>AppImages assume a desktop stack</td><td><span class="chip chip--hold">Medium</span></td><td>Some expect XDG portals, a notification daemon, <span class="mono">logind</span>, or a working <span class="mono">dbus</span> session. On Devuan that means <span class="mono">elogind</span> plus a minimal session bus and the portal shims &mdash; install them deliberately as a compatibility layer rather than discovering the need one application at a time.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note note--go">
+      <span class="note__mark" aria-hidden="true">&#10003;</span>
+      <div>
+        <h4>Prior art worth reading before writing code</h4>
+        <p><b>helloSystem</b> has built a large share of this vision on FreeBSD, including the Finder replacement and the
+        application-bundle model. <b>GoboLinux</b> is the cautionary tale for the literal System&nbsp;Folder. <b>ROX-Filer</b>
+        supplies the desktop layer you are missing. Read all three before milestone&nbsp;1; each one either saves you weeks
+        or tells you which weeks not to spend.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="colophon">
+  Feasibility study &middot; 27 July 2026 &middot; Executor licensing verified against the project source tree, July 2026.
+  Sources: <a href="https://github.com/autc04/executor">autc04/executor</a> &middot;
+  <a href="https://en.wikipedia.org/wiki/Executor_(software)">Executor (software)</a> &middot;
+  <a href="https://github.com/morgant/mlvwm">morgant/mlvwm</a>
+</footer>
+
+</body>
+</html>

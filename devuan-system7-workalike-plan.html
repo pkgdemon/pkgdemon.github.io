@@ -310,7 +310,7 @@ svg .mono-t{font-family:var(--mono); font-size:10px}
           <tr><td>A Finder</td><td><span class="chip chip--hold">Gap</span></td><td><strong>mlvwm is only a window manager.</strong> No desktop icons, no file manager, no Trash.</td></tr>
           <tr><td>No user accounts</td><td><span class="chip chip--go">Easy</span></td><td>Some applications refuse to run as uid&nbsp;0. Use a fixed unprivileged user instead.</td></tr>
           <tr><td>.sit / .hqx / .bin extraction</td><td><span class="chip chip--go">Easy</span></td><td>Preserving resource forks across the Linux filesystem.</td></tr>
-          <tr><td>Mounting HFS volumes</td><td><span class="chip chip--hold">Move&nbsp;to&nbsp;userspace</span></td><td>The in-kernel <span class="mono">hfs</span>/<span class="mono">hfsplus</span> drivers were orphaned upstream.</td></tr>
+          <tr><td>Mounting HFS volumes</td><td><span class="chip chip--go">Easy</span></td><td>Prefer sandboxed FUSE over the in-kernel drivers &mdash; not because they are going away, but because parsing untrusted 1990s media in ring&nbsp;0 is the wrong place for it.</td></tr>
           <tr><td>Running System&nbsp;7 applications</td><td><span class="chip chip--hold">Hard</span></td><td>Apple ROMs and Apple system software are not redistributable. One clean-room path is.</td></tr>
           <tr><td>Seamless (rootless) windows</td><td><span class="chip chip--stop">Research</span></td><td>Nothing off-the-shelf does per-window compositing for 68k Mac software.</td></tr>
         </tbody>
@@ -896,7 +896,7 @@ svg .mono-t{font-family:var(--mono); font-size:10px}
 
           <text x="10" y="228" class="lbl-hd">Mounting existing media</text>
           <path d="M10 236 H870" stroke="#000" fill="none"/>
-          <text x="10" y="256" class="lbl-sm">hfsutils for classic HFS &middot; hfsfuse or hfsplus-userspace for HFS+ &middot; dmg2img for .dmg &middot; stay out of the kernel drivers</text>
+          <text x="10" y="256" class="lbl-sm">hfsutils for classic HFS &middot; hfsfuse for HFS+ &middot; dmg2img for .dmg &middot; userspace for untrusted images, kernel driver only for volumes the system made itself</text>
         </svg>
       </div>
       <figcaption>Fig. 4 &mdash; Archive to mountable volume</figcaption>
@@ -919,12 +919,21 @@ svg .mono-t{font-family:var(--mono); font-size:10px}
     <div class="note note--warn">
       <span class="note__mark" aria-hidden="true">!</span>
       <div>
-        <h4>The in-kernel HFS drivers are on their way out</h4>
-        <p>The kernel's <span class="mono">hfs</span> and <span class="mono">hfsplus</span> drivers were marked orphaned
-        upstream and their removal has been discussed openly. Building a distribution feature on them is building on sand,
-        and they carry the worse risk profile besides: a malformed volume from a 30-year-old floppy image hits parsing code
-        in ring&nbsp;0 that nobody is maintaining. Do the mounting in userspace from day one. It is not a compromise; it is
-        the better design.</p>
+        <h4>Prefer userspace mounting &mdash; for the security reason, not the removal reason</h4>
+        <p><b>The in-kernel drivers survived.</b> <span class="mono">hfs</span> and <span class="mono">hfsplus</span> had
+        been orphaned since roughly 2014, and an effort to delete them outright ran through 2025. Maintainers stepped up
+        instead: as of the current tree both are marked <b>Maintained</b>, with three maintainers and a dedicated git tree.
+        Debian Ports carried much of the argument &mdash; without HFS, GRUB cannot boot PowerMacs. Any plan that assumed
+        imminent removal was wrong.</p>
+        <p><b>The security argument is the one that actually decides this.</b> These drivers have a long history of memory
+        corruption on malformed volumes, serious enough that Debian carries a bug titled &ldquo;HFS/HFS+ are insecure.&rdquo;
+        This system's whole purpose is mounting 30-year-old disk images of unknown provenance &mdash; hostile input parsed
+        in ring&nbsp;0. A FUSE process can be sandboxed and dies harmlessly when it faults. That is the better design no
+        matter who maintains the kernel code, and unprivileged FUSE mounts suit a no-accounts live system better than a
+        setuid mount helper besides.</p>
+        <p><b>Where the kernel driver still earns its place:</b> trusted local volumes, and read-write HFS+, since
+        <span class="mono">hfsfuse</span> is read-oriented. Make it a per-case choice rather than a blanket rule &mdash;
+        userspace for anything the user just downloaded, kernel for volumes the system created itself.</p>
       </div>
     </div>
   </div>
@@ -1212,7 +1221,7 @@ svg .mono-t{font-family:var(--mono); font-size:10px}
           <tr><td>Apple logo in the menu bar</td><td><span class="chip chip--stop">High</span></td><td>Trademark, not copyright, and no fair-use argument helps you here. Use an original mark. The placeholder in the mockup above is deliberately not an apple.</td></tr>
           <tr><td>Imitating the System&nbsp;7 look</td><td><span class="chip chip--hold">Low</span></td><td>Trade dress is a grey area, but themes of this kind have existed unchallenged for three decades and mlvwm itself has shipped since the 1990s. The risk is in the assets, not the geometry.</td></tr>
           <tr><td>XLibre packaging</td><td><span class="chip chip--go">Not a risk</span></td><td>Few distributions package it, but building and maintaining an X server is routine work here, so this is a task rather than an exposure. mlvwm links against Xlib and is indifferent to which server is on the other side; plain Xorg stays a drop-in fallback that changes nothing else in this document.</td></tr>
-          <tr><td>Kernel HFS drivers disappear</td><td><span class="chip chip--go">Handled</span></td><td>Already designed around: userspace mounting from day one.</td></tr>
+          <tr><td>Malformed HFS volume corrupts kernel memory</td><td><span class="chip chip--hold">Medium</span></td><td>The historical risk in these drivers, and this system exists to mount disk images of unknown provenance. Handled by defaulting to sandboxed FUSE mounts; the in-kernel path is reserved for volumes the system created itself. Removal is no longer a concern &mdash; both drivers are actively maintained again.</td></tr>
           <tr><td>Executor compatibility ceiling</td><td><span class="chip chip--hold">Medium</span></td><td>Real and permanent. State it plainly in the documentation, maintain a tested-application list, and offer the user-supplied-ROM path for anyone who needs full fidelity.</td></tr>
           <tr><td>AppImages assume a desktop stack</td><td><span class="chip chip--hold">Medium</span></td><td>Some expect XDG portals, a notification daemon, <span class="mono">logind</span>, or a working <span class="mono">dbus</span> session. On Devuan that means <span class="mono">elogind</span> plus a minimal session bus and the portal shims &mdash; install them deliberately as a compatibility layer rather than discovering the need one application at a time.</td></tr>
         </tbody>

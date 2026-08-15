@@ -51,6 +51,68 @@
 <p><span class="pill pill-good">Guiding principle</span> <strong>Start with bochs.</strong> It binds qemu&rsquo;s <em>default</em> <code>-vga std</code> device (<code>1234:1111</code>) with no qemu reconfiguration, and matches as a <strong>raw <code>IOPCIPrimaryMatch</code></strong> PCI node &mdash; exactly the personality shape <code>ko2kext.sh</code> already emits for i915/amd/radeon. So it unlocks the first end-to-end CI test by <em>reusing the existing match&rarr;<code>kextd</code>&rarr;load&rarr;bind machinery unchanged</em>. The real cost is not the driver; it is the <strong>missing DRM GEM helper(s)</strong> that drm-kmod never compiles. virtio-gpu and vmwgfx are larger follow-ons; NVIDIA is a separate, license-shaped repo.</p>
 </div>
 
+<div class="callout callout-good">
+<p><span class="pill pill-good">Status 2026-08-15 &mdash; IMPLEMENTED</span> <strong>bochs works.</strong> <code>BochsGraphics.kext</code> binds and publishes <code>/dev/dri/card0</code> on the shipped amd64 image, verified end-to-end in CI
+(<a href="https://github.com/nextbsd-redux/nextbsd-kernel-modules/pull/30">nextbsd-kernel-modules#30</a>):</p>
+<pre><code>drmn0: &lt;drmn&gt; on vgapci0
+[drm] Found bochs VGA, ID 0xb0c5.
+[drm] Initialized bochs-drm 1.0.0 for drmn0 on minor 0
+VT: Replacing driver "efifb" with new "drmfb".
+# ls -l /dev/dri
+card0 -&gt; ../drm/0</code></pre>
+<p>That <code>efifb</code>&nbsp;&rarr;&nbsp;<code>drmfb</code> line is the vt(4) framebuffer handover &mdash; the step this plan named as the canonical &ldquo;binds but black screen&rdquo; failure. It succeeded. This is also the first true <em>match&nbsp;&rarr;&nbsp;load&nbsp;&rarr;&nbsp;bind&nbsp;&rarr;&nbsp;KMS</em> test in the tree, and it needed <strong>no qemu reconfiguration</strong>: q35&rsquo;s default <code>-vga std</code> <em>is</em> the <code>1234:1111</code> device the kext matches.</p>
+</div>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Correction</span> <strong>The helper gate was over-estimated; the real cost was elsewhere.</strong> This plan called <code>drm_gem_vram_helper</code> (~1050 LOC, TTM-coupled) the make-or-break piece and budgeted most of 1&ndash;2 weeks for it. Measured against <code>6.12-lts</code>, its entire FreeBSD delta was <strong>one argument</strong>:</p>
+<pre><code>ret = ttm_device_init(&amp;vmm-&gt;bdev, &amp;bo_driver, dev-&gt;dev,
+#ifdef __linux__
+                         dev-&gt;anon_inode-&gt;i_mapping,
+#elif defined(__FreeBSD__)
+                         NULL,     /* drm-kmod takes void *dummy here */
+#endif</code></pre>
+<p>FreeBSD has no <code>anon_inode</code>, so drm-kmod&rsquo;s <code>ttm_device_init()</code> takes a <code>void *dummy</code>; <code>radeon_ttm.c</code> already passes <code>NULL</code> through the same <code>#ifdef</code>. <code>drm_simple_kms_helper.c</code> compiled verbatim. The actual work was four latent drm-kmod/LinuxKPI defects that no shipped driver reaches.</p>
+</div>
+
+<div class="callout">
+<p><span class="pill pill-neutral">Measured</span> <strong>drm-kmod / LinuxKPI defects this port surfaced.</strong> All four are latent for <em>any</em> small DRM driver &mdash; i915, amdgpu and radeon dodge every one &mdash; so vboxvideo and vmwgfx will hit them too unless fixed once, centrally:</p>
+<ol>
+  <li><code>drm_module_pci_driver_if_modeset()</code> expands to a four-argument <code>module_driver()</code>; FreeBSD&rsquo;s linuxkpi declares it with exactly three (Linux&rsquo;s is variadic). The macro cannot expand at all.</li>
+  <li>The whole <code>drm_module_*</code> family emits only SYSINITs and never <code>DECLARE_MODULE</code>, so a module built with it carries dependency metadata for a module that does not exist and <code>kldload</code> rejects it outright &mdash; surfacing as a bare <code>ENOEXEC</code> / &ldquo;Exec format error&rdquo;. Use <code>LKPI_DRIVER_MODULE</code>.</li>
+  <li><code>drivers/gpu/drm/drm_gem_framebuffer_helper.c</code> is a 76-line &ldquo;Public domain&rdquo; stub implementing three functions, while <code>include/drm/drm_gem_framebuffer_helper.h</code> still <em>declares</em> <code>drm_gem_fb_create</code> and friends. A driver using the generic helper compiles clean and dies at link.</li>
+  <li>LinuxKPI routes PCI registration on the driver&rsquo;s <strong>name</strong>: <code>pdrv-&gt;isdrm = strcmp(pdrv-&gt;name, "drmn") == 0</code>, choosing the <code>vgapci</code> devclass only when it matches. A DRM driver not called <code>drmn</code> registers on the plain <code>pci</code> devclass and <em>silently never probes</em> &mdash; it loads, sits resident, and prints nothing. i915 and radeon both carry an <code>#ifdef&nbsp;__FreeBSD__</code> override for exactly this.</li>
+</ol>
+<p>A fifth, cheaper one: a module that others <code>MODULE_DEPEND</code> on must declare <code>MODULE_VERSION</code>, or the dependant fails with &ldquo;not available or version mismatch&rdquo; &mdash; also reported as <code>ENOEXEC</code>.</p>
+</div>
+
+<div class="callout">
+<p><span class="pill pill-neutral">Revised</span> <strong>What changed in the plan&rsquo;s shape.</strong></p>
+<ul>
+  <li><strong>No drm-kmod fork was needed.</strong> Sources are copied into the throwaway <code>/tmp/drm-kmod</code> clone at build time, so it stays an untouched upstream checkout &mdash; the &ldquo;fork unmodified + companion repo&rdquo; split is still the right end state, but it is not a prerequisite.</li>
+  <li><strong>Staged in <code>nextbsd-kernel-modules</code></strong> rather than a new <code>nextbsd-graphics</code> repo, because that repo already had a green drm-kmod build and the toolchain container. Moving later is a directory move.</li>
+  <li><strong>The shared helper module is real and named</strong> <code>IOGraphicsExtras.kext</code> (<code>drm_extra_helpers.ko</code>) &mdash; it now carries <code>drm_simple_kms_helper</code>, <code>drm_gem_vram_helper</code> <em>and</em> the real <code>drm_gem_framebuffer_helper</code>, so the next driver inherits all three.</li>
+  <li><strong>Per-arch scope is now settled &mdash; see the matrix below.</strong> bochs is amd64-only in practice, and <strong>virtio-gpu is the arm64 answer</strong>, which makes it a higher priority than this plan gave it.</li>
+</ul>
+</div>
+
+<div class="callout">
+<p><span class="pill pill-neutral">Measured</span> <strong>Which driver serves which architecture.</strong> Taken from upstream Linux&rsquo;s own <code>Kconfig</code> gates plus the EDK2 firmware manifests, not from inference:</p>
+<table>
+<thead><tr><th>Driver</th><th>Linux <code>Kconfig</code> gate</th><th>amd64</th><th>arm64</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><strong>virtio-gpu</strong></td><td><code>DRM &amp;&amp; VIRTIO_MENU &amp;&amp; MMU</code></td><td>yes</td><td><strong>yes</strong></td><td>No arch gate, and <code>ArmVirtQemu.dsc</code> builds <code>VirtioGpuDxe</code> &mdash; so the firmware provides a GOP, giving <code>efifb</code>/<code>vt</code> at boot and then the same DRM handover amd64 demonstrated.</td></tr>
+<tr><td><strong>vmwgfx</strong></td><td><code>(X86 &amp;&amp; HYPERVISOR_GUEST) || ARM64</code></td><td>yes</td><td><strong>yes</strong></td><td>Upstream explicitly supports ARM64 &mdash; VMware Fusion runs arm64 guests on Apple Silicon. The only other dual-arch candidate.</td></tr>
+<tr><td><strong>bochs</strong></td><td><code>DRM &amp;&amp; PCI &amp;&amp; MMU</code></td><td>yes</td><td>no, in practice</td><td>The driver has no arch gate and qemu&rsquo;s <code>bochs-display</code> is a plain PCI device that attaches on <code>virt</code> &mdash; but <code>ArmVirtQemu.dsc</code> ships <em>no</em> <code>QemuVideoDxe</code> (x86&rsquo;s <code>OvmfPkgX64.dsc</code> does). Nothing initializes the device until a KMS driver loads, so there is no boot framebuffer, no <code>efifb</code>, and nothing for the <code>efifb&nbsp;&rarr;&nbsp;drmfb</code> handover to replace. Observed directly: a UTM arm64 guest set to bochs sits at &ldquo;guest has not initialized the display yet&rdquo;.</td></tr>
+<tr><td><strong>vboxvideo</strong></td><td><code>DRM &amp;&amp; <strong>X86</strong> &amp;&amp; PCI</code></td><td>yes</td><td>no</td><td>Gated x86-only upstream; VirtualBox has no arm64 guests either.</td></tr>
+<tr><td>i915</td><td>&mdash;</td><td>yes</td><td>no</td><td>Intel integrated graphics is x86.</td></tr>
+<tr><td>NVIDIA (proprietary)</td><td>&mdash;</td><td>yes</td><td>no</td><td>The FreeBSD port is amd64/i386 only.</td></tr>
+<tr><td>amdgpu / radeon</td><td>&mdash;</td><td>yes</td><td>possible</td><td>Discrete PCIe cards do work on ARM hosts in Linux; drm-kmod lists <code>aarch64</code> as supported. Low priority for NextBSD, not blocked.</td></tr>
+</tbody>
+</table>
+<p><strong>Delivery path.</strong> On amd64 nothing new is needed to ship these: <code>nextbsd-pkg</code> already pulls <code>--pattern&nbsp;'*kext*.tar.gz'</code> from <code>nextbsd-kernel-modules</code>&rsquo; <code>continuous</code> release, and the graphics bundle publishes as <code>graphics-kexts.tar.gz</code>, so it lands in <code>NextBSD-kernel-extensions</code> and thence into the image (which is assembled purely from <code>pkg install NextBSD-everything</code>). A kext-only change still needs <code>nextbsd-pkg</code>&rsquo;s <code>workflow_dispatch</code> to repackage. <strong>arm64 does need work</strong>: that download is guarded by <code>if [ "$ARCH" = amd64 ]</code>, and the package is amd64-only &ldquo;until the arm64 kext build path exists&rdquo;. So arm64 virtio-gpu needs three things, in order: an arm64 lane in the modules build, the arm64 kext download in <code>nextbsd-pkg</code>, and an arm64 end-to-end boot test.</p>
+<p><strong>Consequence for the roadmap:</strong> bochs remains the right P0 &mdash; it delivered the end-to-end amd64 test cheaply, and its helper work is what every later driver inherits &mdash; but it cannot be the arm64 story. arm64 needs <strong>virtio-gpu</strong>, whose remaining cost is unchanged from this plan (<code>drm_gem_shmem_helper</code>, the linuxkpi virtio bridge, and IOKit sub-bus matcher plumbing) <em>minus</em> the four defects and three helpers already closed by the bochs work.</p>
+</div>
+
 <div class="toc">
 <h2>Contents</h2>
 <ol>

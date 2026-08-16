@@ -249,6 +249,11 @@ MODULE_DEPEND(virtio_gpu_drm, virtio, 1, 1, 1);</code></pre>
 </div>
 
 <h2 id="shmem">7. The one hard prerequisite: shmem GEM</h2>
+<div class="callout callout-good">
+<p><span class="pill pill-good">Unexpected advantage</span> <strong>shmem backing sidesteps <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/71">nextbsd-kernel#71</a> entirely.</strong> That defect blocks any driver whose buffers live in device memory: once a VRAM BO is pinned for scanout, the fault path hands a device-BAR pfn to a function that assumes managed shmem pages, and the faulting thread never wakes. It currently blocks bochs and vboxvideo, and it will block vmwgfx.</p>
+<p>virtio-gpu's buffers are shmem &mdash; system memory &mdash; so they take the same branch i915 does, which is <em>verified working on real hardware</em>. The shmem helper was already the largest single cost in this plan; it turns out to also be what keeps virtio-gpu clear of the defect that stops every VRAM-backed driver.</p>
+<p><strong>Caveat:</strong> blob resources / host-visible memory <em>do</em> map device memory and would re-enter that territory. They are already out of scope (FreeBSD's 12-method VIRTIO_BUS interface has no <code>get_shm_region</code>), but if that bus method is ever added, this constraint returns with it.</p>
+</div>
 
 <p>virtio-gpu is built on shmem-backed GEM objects &mdash; <code>virtgpu_object.c:145</code> calls <code>drm_gem_shmem_get_pages_sgt()</code>, and that is where <em>all</em> guest-page DMA mapping happens. It is not optional or incidental, unlike in the fallback driver where a TTM substitution works.</p>
 

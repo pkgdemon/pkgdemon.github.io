@@ -201,6 +201,9 @@ VT: Replacing driver "efifb" with new "drmfb".</code></pre>
 <p>That last row is a gap of our own making. When <code>drm_gem_framebuffer_helper.c</code> was vendored, five functions were excluded under <code>#ifndef __FreeBSD__</code> &mdash; three because drm-kmod's stub already provides them, and the dma-buf CPU-access pair because nothing needed them at the time. simpledrm's damage-blit path calls exactly that pair. Re-enabling them is small and known, but it is a real prerequisite rather than a detail to discover at link time.</p>
 
 <h4>Buffer backing &mdash; decide before writing</h4>
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">Second strike against the VRAM helper</span> Beyond the Wayland double-buffering problem below, <code>drm_gem_vram_helper</code> places the BO in <strong>device memory</strong> &mdash; precisely the path blocked by <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/71">nextbsd-kernel#71</a>. TTM <em>system-domain</em> GEM, the recommendation below, stays in system memory and takes the branch verified working on i915 hardware. This is now a correctness reason, not only a capacity one.</p>
+</div>
 <p>The scanout target is fixed iomem; a GEM allocator is only needed for client-side buffers, which are then blitted in. <strong>TTM system-domain GEM</strong> is the right choice. <code>drm_gem_vram_helper</code> is already built and would appear to work, but a VRAM pool over a firmware aperture is exactly one screen's worth of memory &mdash; sufficient for Xorg <code>modesetting</code>, and <strong>fatal for any Wayland compositor that wants to double-buffer</strong>. Choosing it would produce a driver that passes a smoke test and fails the actual use case.</p>
 
 <h2 id="licence">7. Write or port: the licensing fork</h2>

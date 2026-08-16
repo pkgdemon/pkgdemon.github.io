@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD arm64 KMS — six routes to /dev/dri/card0 in an ARM virtual machine</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  h4 { font-size:0.98rem; margin:20px 0 8px; }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .scroll { overflow-x:auto; }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e6e6; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+  .opt { border:1px solid var(--border); border-radius:4px; padding:2px 22px 6px; margin:0 0 26px; background:white; }
+  .opt h3 { margin-top:22px; }
+  .verdict { font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; sub-plan of the <a href="nextbsd-graphics-plan.html">NextBSD graphics plan</a>, which covers the shipped amd64 stack (bochs, vboxvideo, Intel/AMD/Radeon, NVIDIA)</p>
+
+<h1>NextBSD arm64 KMS: six routes to <code>/dev/dri/card0</code> in an ARM virtual machine</h1>
+
+<p class="lede">The amd64 graphics stack is done &mdash; <code>BochsGraphics</code> and <code>VBoxGraphics</code> ship, Intel and AMD bind on real hardware. arm64 has <strong>nothing</strong>, and neither does anyone else: two independent research sweeps of the FreeBSD mailing lists, Bugzilla, Phabricator, forums and GitHub found <strong>zero reports of <code>/dev/dri</code> in any arm64 FreeBSD VM, ever</strong>. This page lays out every route to changing that, with honest costs, so the choice can be made from evidence rather than from my summary of it.</p>
+
+<p class="meta">2026-08-16. Written after a 3-agent research sweep (upstream drm-kmod virtio enablement; the ravynsoft fork; arm64 KMS state of the art). Citations to Linux v6.12/v6.16 <code>drivers/gpu/drm</code>, <code>freebsd/drm-kmod</code> <code>6.12-lts</code>, <code>freebsd/freebsd-src</code> <code>main</code> and <code>releng/15.1</code>, FreeBSD Phabricator, Bugzilla, and QEMU/UTM/EDK2 sources. Two claims made earlier in this project are <a href="#corrections">corrected below</a>.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Settled 2026-08-16</span> <strong>The DRM stack builds on aarch64.</strong> <a href="https://github.com/nextbsd-redux/nextbsd-kernel-modules/pull/33">nextbsd-kernel-modules#33</a> compiles <code>drm.ko</code>, <code>ttm.ko</code>, <code>dmabuf.ko</code>, <code>radeonkms.ko</code> and our <code>drm_extra_helpers.ko</code> for arm64 and verifies every resulting kext resolves against the arm64 kernel. That was an open question; it no longer is. What is missing is not the DRM core &mdash; it is a <em>driver that binds something an ARM VM actually presents</em>.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#settled">What is already measured</a></li>
+  <li><a href="#decisions">The decisions to make</a></li>
+  <li><a href="#layers">Where the work belongs: three layers</a></li>
+  <li><a href="#licence">The licensing line &mdash; GPL-2.0-only vs or-later</a></li>
+  <li><a href="#options">The six options</a></li>
+  <li><a href="#matrix">Side-by-side comparison</a></li>
+  <li><a href="#priorart">Prior art, assessed</a></li>
+  <li><a href="#corrections">Corrections to earlier claims</a></li>
+  <li><a href="#unconfirmed">Unconfirmed &mdash; check before committing effort</a></li>
+  <li><a href="#targets">Proposed per-arch target set</a></li>
+</ol>
+</div>
+
+<h2 id="settled">1. What is already measured</h2>
+
+<p>Facts, not plans. Each was verified directly rather than inferred.</p>
+
+<div class="scroll">
+<table>
+<tr><th>Fact</th><th>Evidence</th></tr>
+<tr><td>drm-kmod's core builds on aarch64: <code>drm</code>, <code>ttm</code>, <code>dmabuf</code>, <code>amdgpu</code>, <code>radeonkms</code>, plus our helper module</td><td>PR&nbsp;#33 CI, 2026-08-16. <code>drm-kmod (arm64) built: drm amdgpu radeonkms</code></td></tr>
+<tr><td><code>i915</code> is correctly absent on arm64</td><td>drm-kmod <code>Makefile</code> adds i915 to <code>DEFAULT_KMODS</code> for amd64/i386 only</td></tr>
+<tr><td><strong>Upstream's <code>amdgpu.ko</code> cannot load on aarch64</strong></td><td><code>kconfig.mk</code> gates <code>DRM_AMD_DC_FP</code> behind <code>.if ${MACHINE_CPUARCH} == "amd64"</code>, dropping the Display Core FP sources while references stay compiled. Five undefined symbols (<code>dal_hw_factory_dcn401_init</code>, <code>dal_hw_translate_dcn401_init</code>, three <code>dscl*_spl_calc_lb_num_partitions</code>) &rarr; <code>kldload</code> <code>ENOEXEC</code>. Caught by <code>tools/check-kext-symbols.py</code></td></tr>
+<tr><td>There is no aarch64-capable drm <em>port</em> at all</td><td><code>graphics/drm-510-kmod</code>, the last with <code>aarch64</code> in <code>ONLY_FOR_ARCHS</code>, was deleted 2026-05-05</td></tr>
+<tr><td>FreeBSD base has <strong>no LinuxKPI virtio shim</strong></td><td>249 headers in <code>sys/compat/linuxkpi/common/include/linux/</code> on <code>main</code>; zero occurrences of the string &ldquo;virtio&rdquo; anywhere under <code>sys/compat/linuxkpi</code>. Same on <code>releng/15.1</code></td></tr>
+<tr><td>drm-kmod 6.12-lts ships <strong>no</strong> <code>tiny/</code>, <code>sysfb/</code>, <code>virtio/</code> or <code>vmwgfx/</code>, and no <code>drm_gem_shmem_helper.c</code></td><td>Full file-tree listing of <code>6.12-lts</code> and <code>master</code></td></tr>
+<tr><td>FreeBSD's native <code>virtio_gpu(4)</code> is a vt(4) console framebuffer only &mdash; no DRM, no <code>/dev/dri</code>, no 3D</td><td><code>VT_DRIVER_DECLARE(vt_vtgpu, ...)</code>; added 2023-08-17 by andrew@, sponsored by Arm Ltd (D40094). Restated on freebsd-virtualization 2026-07: <em>&ldquo;a simple 2D/scanout driver with no virgl support&rdquo;</em></td></tr>
+<tr><td><strong>Nobody has ever reported <code>/dev/dri</code> in an arm64 FreeBSD VM</strong></td><td>Two independent exhaustive sweeps: freebsd-arm, -x11, -virtualization, -drivers, -current, -hackers, -ports, Bugzilla, forums, Phabricator, GitHub</td></tr>
+</table>
+</div>
+
+<h2 id="decisions">2. The decisions to make</h2>
+
+<p>Everything below this section is evidence. These are the calls that evidence does not make for you &mdash; each one changes what gets built next. Marked <strong>blocking</strong> where work cannot start until it is answered.</p>
+
+<h3>D1 &mdash; Is software-rendered, fixed-resolution KMS acceptable on arm64? <span class="pill pill-bad">blocking</span></h3>
+<p>This single answer picks the whole near-term route.</p>
+<ul>
+  <li><strong>Yes</strong> &rarr; <a href="#options">Option B</a>. Weeks, no licence cost, works on every UEFI arm64 VM, Wayland and Xorg both run. No 3D, and resizing the VM window will not resize the guest.</li>
+  <li><strong>No &mdash; dynamic resolution and/or 3D are required</strong> &rarr; <a href="#options">Option E</a>. Months, three prerequisites before the driver is even reached, and the one previous attempt died at <code>drm_dev_alloc()</code>.</li>
+</ul>
+<p>These are not mutually exclusive in the long run &mdash; B is a stepping stone that E does not invalidate &mdash; but they compete for the next block of effort.</p>
+
+<h3>D2 &mdash; Is GPL-2.0-only code acceptable inside NextBSD? <span class="pill pill-bad">blocking for C and E</span></h3>
+<p>Everything vendored so far is GPL-2.0-<strong>or-later</strong>, and <code>graphics/README.md</code> states that as an invariant. <code>drm_gem_shmem_helper.c</code>, <code>simpledrm.c</code> and the whole <code>sysfb/</code> family are GPL-2.0-<strong>only</strong>.</p>
+<ul>
+  <li><strong>Not acceptable</strong> &rarr; Option C is out entirely, Option E needs a clean-room shmem replacement, Option B is unaffected (it is written, not imported).</li>
+  <li><strong>Acceptable</strong> &rarr; C becomes viable and E gets materially cheaper.</li>
+</ul>
+<p>Worth deciding deliberately rather than by accident: the stated long-term direction for this code is migration toward FreeBSD base, and that is exactly the conflict evadot raised on PR&nbsp;#119. A decision here should also either amend or reaffirm the README invariant.</p>
+
+<h3>D3 &mdash; Take the free interim unblock? <span class="pill pill-good">independent, recommended</span></h3>
+<p><a href="#options">Option D</a> costs nothing and is orthogonal to everything else: <code>hint.virtio_pci.1.disabled="1"</code> keeps <code>efifb</code> (which has <code>vd_fb_mmap</code>) instead of letting <code>vtgpu</code> displace it, giving working X11-on-llvmpipe in UTM today. The only argument against is that it may mask the problem a real driver should solve.</p>
+
+<h3>D4 &mdash; Which GEM backing for Option B? <span class="pill pill-warn">only if D1 = yes</span></h3>
+<p>Decide before writing, because it is hard to change later and one choice silently breaks Wayland:</p>
+<ul>
+  <li><strong>TTM system-domain GEM</strong> &mdash; recommended. drm-kmod already compiles <code>ttm/</code> and <code>drm_gem_ttm_helper.c</code>; adds no new code.</li>
+  <li><code>drm_gem_vram_helper</code> &mdash; already built and shipping, but a VRAM pool over the EFI aperture is exactly one screen's worth: fine for Xorg <code>modesetting</code>, <strong>fatal for Wayland compositors that want two or more buffers</strong>.</li>
+  <li>Bespoke ~200-line GEM &mdash; most control, most to maintain.</li>
+</ul>
+
+<h3>D5 &mdash; Does arm64 ship <code>RadeonGraphics</code>? <span class="pill pill-neutral">low stakes</span></h3>
+<p>It builds and resolves cleanly on aarch64, but only matters for a discrete AMD card in a physical PCIe slot &mdash; never in a VM. Ship it (costs build time, serves ARM server hardware) or drop it (keeps the arm64 package to what VMs use). Currently shipped in <a href="https://github.com/nextbsd-redux/nextbsd-kernel-modules/pull/33">PR&nbsp;#33</a>.</p>
+
+<h3>D6 &mdash; What to do about the upstream <code>amdgpu</code>/aarch64 defect? <span class="pill pill-neutral">outward-facing</span></h3>
+<p>drm-kmod's <code>DRM_AMD_DC_FP</code> gating produces an <code>amdgpu.ko</code> that builds clean and cannot load on aarch64, and nothing upstream checks for it. Options: report it upstream, fix it locally and carry a patch, or leave it and keep the guard in PR&nbsp;#33. Reporting is a project-representation decision, so it is being left alone pending a call.</p>
+
+<h3>D7 &mdash; Confirm the two blocking unknowns first? <span class="pill pill-warn">cheap, high information</span></h3>
+<ul>
+  <li><strong>The arm64 <code>kldload</code> hang</strong> reported against drm-kmod 6.12 (dsl@ and evadot, Jan 2026). If it is a <code>drm.ko</code> core path rather than amdgpu-specific, <em>every</em> option here is blocked until it is understood. Testable now by loading our arm64 <code>IOGraphics.kext</code> in a VM.</li>
+  <li><strong>The Fusion PCI ID on Apple Silicon</strong> &mdash; one <code>lspci -nn</code> in an ARM guest decides whether Option F is addressable at all.</li>
+</ul>
+<p>Both are hours of work and could invalidate weeks of it.</p>
+
+<h2 id="layers">3. Where the work belongs: three layers</h2>
+
+<p>drm-kmod is <strong>FreeBSD's out-of-tree port of Linux's DRM subsystem</strong>. Driver source is copied from Linux and patched as little as possible; branches track Linux LTS releases (<code>5.4-lts</code> &hellip; <code>6.12-lts</code>); FreeBSD Makefiles replace Kbuild. The Linux kernel API those files call is <em>not</em> in drm-kmod &mdash; it comes from <strong>LinuxKPI</strong>, which lives in FreeBSD base at <code>sys/compat/linuxkpi</code>. The project's stated preference is to add to LinuxKPI rather than patch drivers, so a fix is not applied twice.</p>
+
+<p>So any missing piece can live in one of three places, and choosing wrongly means either carrying a patch forever or waiting on someone else:</p>
+
+<div class="scroll">
+<table>
+<tr><th>Layer</th><th>Repository</th><th>What belongs there</th><th>Our leverage</th></tr>
+<tr><td>LinuxKPI</td><td>FreeBSD <strong>base</strong></td><td><code>linux/virtio.h</code>, devres wrappers, <code>gen_pool</code></td><td>None directly &mdash; needs a base commit</td></tr>
+<tr><td>drm-kmod</td><td><code>freebsd/drm-kmod</code></td><td>vendored Linux DRM + FreeBSD glue</td><td>PRs only; the virtio PR has sat 5 years</td></tr>
+<tr><td><strong>ours</strong></td><td><code>nextbsd-kernel-modules</code></td><td>whatever the two above omit</td><td>Total &mdash; this is the only layer we control</td></tr>
+</table>
+</div>
+
+<p>Everything shipped so far is layer 3. <code>graphics/drm_extra_helpers</code> now carries four files that drm-kmod either does not ship or ships and never compiles:</p>
+
+<pre><code>drm_simple_kms_helper.c      not shipped by drm-kmod
+drm_gem_vram_helper.c        not shipped by drm-kmod
+drm_gem_atomic_helper.c      header is a 15-line stub; zero shadow-plane code
+drm_format_helper.c          IN drm-kmod's tree, EXPORT_SYMBOLs intact,
+                             named by no Makefile anywhere &mdash; dead code upstream</code></pre>
+
+<p class="cite">That last one is worth remembering when estimating any option below: a file being present in drm-kmod does not mean it is built, and a driver building does not mean it loads. Both traps have already cost this project a CI cycle each.</p>
+
+<h2 id="licence">4. The licensing line &mdash; GPL-2.0-only vs or-later</h2>
+
+<p>This is a genuine decision input, and it is <em>not</em> the one stated earlier in this project. There is no maintainer edict against any specific file. What exists is a licence boundary that our own repo already promises to respect &mdash; <code>graphics/README.md</code> states <em>&ldquo;Sources are GPL-2.0-or-later, as is the rest of the vendored Linux DRM code.&rdquo;</em></p>
+
+<div class="scroll">
+<table>
+<tr><th>File</th><th>SPDX</th><th>Status here</th></tr>
+<tr><td><code>drm_gem_vram_helper.c</code></td><td>GPL-2.0-<strong>or-later</strong></td><td>vendored, shipping</td></tr>
+<tr><td><code>drm_simple_kms_helper.c</code></td><td>GPL-2.0-<strong>or-later</strong></td><td>vendored, shipping</td></tr>
+<tr><td><code>tiny/bochs.c</code></td><td>GPL-2.0-<strong>or-later</strong></td><td>vendored, shipping</td></tr>
+<tr><td><code>drm_gem_shmem_helper.c</code></td><td><strong>GPL-2.0-only</strong></td><td>would be new</td></tr>
+<tr><td><code>tiny/simpledrm.c</code></td><td><strong>GPL-2.0-only</strong></td><td>would be new</td></tr>
+<tr><td><code>sysfb/efidrm.c</code>, <code>drm_sysfb*.c</code></td><td><strong>GPL-2.0-only</strong></td><td>would be new</td></tr>
+</table>
+</div>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Note</span> Dropping the shmem helper does <strong>not</strong> rescue simpledrm &mdash; <code>simpledrm.c</code> is itself GPL-2.0-only. Any option that imports Linux's framebuffer-DRM code crosses this line twice. The only way to get that functionality while keeping the or-later invariant is to <strong>write the driver</strong> rather than import it (Option B).</p>
+<p>Whether GPL-2.0-only is actually disqualifying for NextBSD is a project decision, not a technical one. It matters more than usual here because the stated long-term direction for this code is migration toward base.</p>
+</div>
+
+<h2 id="options">5. The six options</h2>
+
+<div class="opt">
+<h3>Option A &mdash; run our existing <code>bochs.ko</code> on arm64</h3>
+<p><span class="pill pill-bad">Ruled out</span> <span class="verdict">Cost: days. Rejected on direct observation.</span></p>
+<p><strong>The idea.</strong> <code>bochs-display</code> is instantiable on <code>qemu-system-aarch64 -M virt</code> and is listed in UTM's own generated aarch64 device table (<code>QEMUConstantGenerated.swift:6537</code>). It is PCI <code>1234:1111</code> with BAR0 framebuffer and BAR2 MMIO and <em>no legacy VGA I/O ports</em>, which is exactly why it survives on ARM. <code>hw/arm/sbsa-ref.c</code> instantiates it unconditionally. Gerd Hoffmann's widely-cited 2019 claim that PCI-memory-BAR displays fail on ARM was corrected by QEMU's ARM maintainer: the failure needs KVM-on-Arm <em>and</em> a host lacking FEAT_S2FWB, and Apple M1+ are Armv8.5-A, so it does not apply. We already build every helper bochs needs.</p>
+<p><strong>Why it is out.</strong> Tested directly in UTM: <strong>no display at all, before any driver handoff.</strong> <code>ArmVirtPkg/ArmVirtQemu.dsc</code> ships only <code>QemuRamfbDxe</code> under &ldquo;Video support&rdquo; &mdash; there is no <code>QemuVideoDxe</code>, so the firmware never drives the device. Even if <code>bochs.ko</code> bound after <code>kldload</code>, the machine is black from power-on through loader, kernel boot and single-user. That is not shippable for a desktop OS, and pairing it with <code>-device ramfb</code> to cover the gap means running two display devices to get one working screen.</p>
+<p class="cite">Recorded here because the analysis is sound and the conclusion is not obvious &mdash; if a future ARM firmware ships <code>QemuVideoDxe</code> (as <code>SbsaQemu.dsc</code> already does), this becomes viable at near-zero cost.</p>
+</div>
+
+<div class="opt">
+<h3>Option B &mdash; write a native FreeBSD &ldquo;efidrm&rdquo; on helpers we already own</h3>
+<p><span class="pill pill-good">Recommended near-term</span> <span class="verdict">Cost: 1&ndash;3 weeks. ~400&ndash;600 lines.</span></p>
+<p><strong>The idea.</strong> Bind the framebuffer the <em>firmware has already lit</em>, rather than any device. FreeBSD's <code>loader.efi</code> records the UEFI GOP in <code>MODINFOMD_EFI_FB</code>, and <code>sys/dev/vt/hw/efifb/efifb.c</code> &mdash; all 5,442 bytes of it &mdash; reads the framebuffer address, stride, dimensions and colour masks straight out of it:</p>
+<pre><code>efifb = (struct efi_fb *)preload_search_info(preload_kmdp,
+    MODINFO_METADATA | MODINFOMD_EFI_FB);
+info-&gt;fb_stride = efifb-&gt;fb_stride * (info-&gt;fb_bpp / NBBY);
+info-&gt;fb_pbase  = efifb-&gt;fb_addr;</code></pre>
+<p>A DRM driver consumes the identical structure. Take <code>bochs.c</code> as the template, replace PCI BAR discovery with that <code>preload_search_info()</code> call, and delete the mode-setting &mdash; one fixed mode, one CRTC/encoder/connector on <code>drm_simple_kms_helper</code>.</p>
+<p><strong>Why it fits.</strong> There is <em>no black-screen gap by construction</em>: firmware paints, <code>efifb</code> paints, then the DRM driver takes over the same buffer and publishes <code>card0</code>. That is the <code>efifb &rarr; drmfb</code> handover already proven on amd64, sourced from firmware metadata instead of a BAR. It works on <strong>every arm64 VM that boots UEFI</strong> &mdash; UTM, Parallels, Fusion, Apple Virtualization.framework, Hetzner &mdash; because it binds firmware output rather than a device. UTM defaults to <code>virtio-ramfb</code>, so the framebuffer is already there and already working.</p>
+<p><strong>What it costs in licence terms: nothing.</strong> No shmem, no virtio shim, no GPL-2.0-only imports. <code>drm_simple_kms_helper</code>, <code>drm_gem_atomic_helper</code> and <code>drm_format_helper</code> are already built and exported in <code>IOGraphicsExtras.kext</code>.</p>
+<h4>One design decision to make up front</h4>
+<p>The scanout target is fixed iomem; a GEM allocator is needed only for <em>client-side</em> buffers, which are then blitted in. Three choices:</p>
+<ul>
+  <li><strong>TTM system-domain GEM</strong> &mdash; drm-kmod already ships and compiles <code>ttm/</code> and <code>drm_gem_ttm_helper.c</code>. Cleanest; adds no new code. <strong>Recommended.</strong></li>
+  <li><code>drm_gem_vram_helper</code> &mdash; already built, but a VRAM pool over the EFI aperture is exactly one screen's worth. Fine for Xorg <code>modesetting</code> (one scanout BO + cursor); <strong>fatal for Wayland compositors that want two or more buffers.</strong></li>
+  <li>A bespoke ~200-line GEM.</li>
+</ul>
+<h4>Inherent limits &mdash; not fixable within this approach</h4>
+<ul>
+  <li><strong>Software rendering only.</strong> <code>card0</code> but no render node, so llvmpipe/swrast. evadot's own framing of SimpleDRM: <em>&ldquo;you still have software accel (and so need swrast/llvmpipe) but can talk with KMS to the driver meaning wayland software will work.&rdquo;</em></li>
+  <li><strong>Fixed resolution.</strong> The mode comes from firmware; resizing the VM window will not resize the guest. Dynamic resolution is what virtio-gpu buys.</li>
+</ul>
+<p><strong>Upside beyond us:</strong> this closes drm-kmod <a href="https://github.com/freebsd/drm-kmod/issues/269">#269</a> (open since 2023-12-01, <em>&ldquo;currently there is no way to use Wayland e.g. in VMs&rdquo;</em>) and <a href="https://github.com/freebsd/drm-kmod/issues/389">#389</a>, both with standing demand and no implementation. No other BSD has one either &mdash; OpenBSD and NetBSD use <code>wsfb</code>/<code>genfb</code>.</p>
+</div>
+
+<div class="opt">
+<h3>Option C &mdash; port Linux's <code>simpledrm</code> / <code>efidrm</code> verbatim</h3>
+<p><span class="pill pill-warn">Possible, but dominated by B</span> <span class="verdict">Cost: 2&ndash;4 weeks + a GPL-2.0-only decision.</span></p>
+<p>Linux moved simpledrm out of <code>tiny/</code> in April 2025 into <code>drivers/gpu/drm/sysfb/</code> and added <code>efidrm</code>, an EFI-specific variant closer to what we want, landing in 6.16.</p>
+<div class="scroll">
+<table>
+<tr><th>File</th><th>Lines</th><th>Note</th></tr>
+<tr><td><code>sysfb/efidrm.c</code></td><td>434</td><td>closest fit</td></tr>
+<tr><td><code>sysfb/simpledrm.c</code></td><td>906</td><td></td></tr>
+<tr><td><code>sysfb/drm_sysfb_modeset.c</code></td><td>608</td><td>shared</td></tr>
+<tr><td>v6.12 <code>tiny/simpledrm.c</code></td><td>1,076</td><td>pre-split, self-contained</td></tr>
+</table>
+</div>
+<p><code>ofdrm</code> is irrelevant (<code>depends on ... (PPC || COMPILE_TEST)</code>, reads an Open Firmware device tree, exists for PowerPC Macs) and <code>vesadrm</code> is x86-only. <code>simpledrm</code> and <code>efidrm</code> are the only arch-neutral members.</p>
+<p><strong>Why B dominates it.</strong> Both <code>select DRM_GEM_SHMEM_HELPER</code>, so this inherits the shmem port <em>and</em> GPL-2.0-only code twice over. LinuxKPI is also missing <code>linux/sysfb.h</code> and <code>linux/screen_info.h</code>, which are precisely how <code>efidrm.c</code> <em>finds</em> the framebuffer &mdash; and on FreeBSD that whole layer collapses into the four-line <code>preload_search_info()</code> call above. You would be deleting the parts that differ and keeping the parts we can already write.</p>
+<p class="cite">If the shmem helper is wanted anyway: it is 782 lines, and its dependencies are in better shape than expected &mdash; <code>drm_gem_get_pages</code>/<code>put_pages</code> are present and exported in drm-kmod's <code>drm_gem.c</code>, and LinuxKPI already has <code>shmem_fs.h</code>, <code>dma_map_sgtable()</code> and <code>set_pages_array_wc()</code>. Note the familiar trap: <code>drm_fbdev_shmem.c</code> sits in drm-kmod's tree and appears in no Makefile.</p>
+</div>
+
+<div class="opt">
+<h3>Option D &mdash; D55012, or simply disabling vtgpu</h3>
+<p><span class="pill pill-neutral">Interim unblock, not KMS</span> <span class="verdict">Cost: days, or zero.</span></p>
+<p><strong>The problem it solves.</strong> <code>sys/dev/virtio/gpu/virtio_gpu.c:121</code> declares <code>.vd_fb_mmap = NULL, /* No mmap as we need to signal the host */</code>, while <code>vt_efifb</code> sets <code>.vd_fb_mmap = vt_fb_mmap</code>. vtgpu's priority is <code>VD_PRIORITY_GENERIC+10</code> against efifb's <code>+1</code>, so on any VM presenting a virtio-gpu it <em>displaces efifb and removes the mmap <code>xf86-video-scfb</code> needs</em> &mdash; giving <code>scfb_mmap: Invalid argument</code>.</p>
+<p><a href="https://reviews.freebsd.org/D55012">D55012</a> (Tiago Gasiba, <code>tiga@FreeBSD.org</code>, created 2026-01-31, <strong>&ldquo;Needs Review&rdquo;, not committed</strong>) implements the vt(4) framebuffer <code>mmap</code> plus a ~30 fps host-flush task issuing <code>TRANSFER_TO_HOST_2D</code> + <code>RESOURCE_FLUSH</code>, with <code>hw.virtio_gpu.*</code> tunables. Confirmed working by a third party on <a href="https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=283646">bug 283646</a>. <code>andrew@</code> objected to the polling design, which is likely why it has sat six months.</p>
+<p><strong>Notably, Gasiba's own test platform is &ldquo;FreeBSD 15 (arm64) running on MacOS 26.2 and UTM&rdquo;</strong> &mdash; our exact target.</p>
+<p><strong>It does not produce <code>/dev/dri</code>.</strong> Framebuffer/scfb only: X11 on llvmpipe, no DRM device, no render node, no modesetting, no Wayland.</p>
+<p><strong>Zero-cost equivalent available today:</strong> keep efifb (which already has <code>vd_fb_mmap</code>) by stopping vtgpu attaching &mdash; <code>hint.virtio_pci.1.disabled="1"</code> in <code>/boot/device.hints</code>, or <code>nodevice virtio_gpu</code>. newbus honours this generically via <code>resource_disabled()</code>.</p>
+</div>
+
+<div class="opt">
+<h3>Option E &mdash; port Linux's virtio-gpu DRM driver</h3>
+<p><span class="pill pill-warn">The real prize, and the real cost</span> <span class="verdict">Cost: months. Four separable sub-projects.</span></p>
+<p><strong>Why it is wanted.</strong> It is the <em>only</em> display device Apple's Virtualization.framework and Parallels offer, Parallels ships VirGL 3D, and it is the only option here that gives <strong>dynamic resolution</strong> &mdash; resize the window, the guest follows.</p>
+<p><strong>What it needs, none of which exists in shippable form:</strong></p>
+<ol>
+  <li><strong>A LinuxKPI virtio shim in base</strong> (~500&ndash;700 lines; 6 headers + <code>linux_virtio.c</code>). <a href="https://reviews.freebsd.org/D32372">D32372</a> is a usable design sketch but has sat in &ldquo;Needs Review&rdquo; since 2021, was never committed, depends on another uncommitted review (D32371), calls a <code>virtio_alloc_virtqueues()</code> signature removed in 2023, and its <code>virtio_reset</code>/<code>virtio_del_vqs</code> are <code>panic()</code> stubs. A rewrite informed by it, not a rebase.</li>
+  <li><strong><code>drm_gem_shmem_helper</code></strong> (782 lines, GPL-2.0-only) &mdash; virtio-gpu genuinely needs it (<code>drm_gem_shmem_create</code>, <code>_get_pages_sgt</code>, <code>_object_{mmap,pin,vmap}</code>), unlike Option B where it is incidental.</li>
+  <li><strong>The driver re-ported from 6.12</strong> (~4,000 lines), not the 5.5 snapshot in PR #119 &mdash; <code>virtgpu_drv.c</code> there calls <code>drm_fbdev_generic_setup()</code>, which no longer exists.</li>
+  <li><strong>Making it attach.</strong> The 2021 work never got past <code>drm_dev_alloc()</code>.</li>
+</ol>
+<p><strong>Licence:</strong> mostly MIT, <em>except</em> the vram bits, which are GPLv2 (Linux <code>16845c5d5409</code>).</p>
+</div>
+
+<div class="opt">
+<h3>Option F &mdash; port vmwgfx</h3>
+<p><span class="pill pill-warn">Genuinely supports ARM64 &mdash; but largest, and one hypervisor</span> <span class="verdict">Cost: months. 1.12 MB across 57 files.</span></p>
+<p>Contrary to an assumption made earlier in this project, <strong>vmwgfx is not x86-only</strong>. Linux's Kconfig reads <code>depends on (X86 &amp;&amp; HYPERVISOR_GUEST) || ARM64</code>, added by VMware's Zack Rusin in <code>523375c943e5</code> (2021-05-05, <em>&ldquo;drm/vmwgfx: Port vmwgfx to arm64&hellip; ARM support is provided in svga version 3&rdquo;</em>), which split the hypervisor backdoor into <code>vmwgfx_msg_x86.h</code> and <code>vmwgfx_msg_arm64.h</code>.</p>
+<p>Broadcom's own <a href="https://knowledge.broadcom.com/external/article/315602">KB 315602</a> confirms vmwgfx is the display driver for Arm guests on Apple Silicon, with accelerated 3D on kernel 5.19+ and Mesa 22.1.1+. The device is <strong>SVGA3</strong> (<code>VMWGFX_PCI_ID_SVGA3 0x0406</code>), not SVGA2 (<code>0x0405</code>).</p>
+<p><strong>Against it:</strong> <code>vmwgfx_execbuf.c</code> alone is 140 KB, versus 19 KB for all of <code>bochs.c</code>. It buys exactly one hypervisor. Prior FreeBSD art is dead &mdash; vmwgfx and vboxvideo were removed from drm-kmod in <code>787a917018a3</code> (2021-10-08, <em>&ldquo;haven't been compiled or working for more than a year&rdquo;</em>). ravynsoft's <code>vmware</code> branch reached &ldquo;vmwgfx now compiles&rdquo; (2023-12-28) but never &ldquo;works&rdquo;, with <code>vmwgfx_page_dirty.c</code> gutted to five empty <code>// FIXME</code> bodies and a documented memory leak in the validation path.</p>
+</div>
+
+<h2 id="matrix">6. Side-by-side comparison</h2>
+
+<div class="scroll">
+<table>
+<tr>
+  <th>Option</th><th>Cost</th><th><code>card0</code></th><th>Render node / 3D</th><th>Dynamic res</th><th>Display from power-on</th><th>New GPL-2.0-only</th><th>Works on</th>
+</tr>
+<tr><td><strong>A</strong> bochs on arm64</td><td>days</td><td>probable</td><td>no</td><td>yes*</td><td><strong>no &mdash; black until kldload</strong></td><td>no</td><td>qemu/UTM only</td></tr>
+<tr><td><strong>B</strong> native efidrm</td><td>1&ndash;3 wk</td><td><strong>yes</strong></td><td>no (llvmpipe)</td><td>no</td><td><strong>yes</strong></td><td><strong>no</strong></td><td>every UEFI arm64 VM</td></tr>
+<tr><td><strong>C</strong> port simpledrm</td><td>2&ndash;4 wk</td><td>yes</td><td>no (llvmpipe)</td><td>no</td><td>yes</td><td><strong>yes, twice</strong></td><td>every UEFI arm64 VM</td></tr>
+<tr><td><strong>D</strong> D55012 / hint</td><td>0&ndash;days</td><td><strong>no</strong></td><td>no</td><td>no</td><td>yes</td><td>no</td><td>UTM, Parallels</td></tr>
+<tr><td><strong>E</strong> virtio-gpu</td><td>months</td><td>yes</td><td>yes (virgl)</td><td><strong>yes</strong></td><td>yes</td><td>vram bits only</td><td>UTM, Parallels, AVF</td></tr>
+<tr><td><strong>F</strong> vmwgfx</td><td>months</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>no</td><td>VMware Fusion only</td></tr>
+</table>
+</div>
+<p class="cite">* Option A's mode-setting works, but is moot given the boot-time blackout.</p>
+
+<div class="callout">
+<p><strong>The decision in one sentence.</strong> If software-rendered Wayland at a fixed resolution is acceptable on arm64, <strong>Option B</strong> is weeks and carries no licence cost; if dynamic resolution or 3D is required, <strong>Option E</strong> is unavoidable and is a months-long project with three prerequisites before the driver is even reached. <strong>Option D</strong> is worth doing regardless as a same-day unblock, because it is free.</p>
+</div>
+
+<h2 id="priorart">7. Prior art, assessed</h2>
+
+<div class="scroll">
+<table>
+<tr><th>Effort</th><th>State</th><th>Verdict</th></tr>
+<tr>
+  <td><a href="https://github.com/freebsd/drm-kmod/pull/119">drm-kmod PR #119</a><br><span class="cite">Alex Richardson, 2021-10-08</span></td>
+  <td>Open/draft. Linux <strong>5.5</strong>. Compiles; <strong>panics on attach</strong> &mdash; page fault at <code>0x30</code> in <code>drm_sysfs_minor_alloc()</code>. <code>virtgpu_bsdmodule.c</code> passes an uninitialised <code>struct linux_virtio_device</code> into <code>virtio_gpu_probe()</code>. Author, 2024-02: <em>&ldquo;I stopped working on this a long time ago.&rdquo;</em></td>
+  <td>Design reference. ~5 years and 12 kernel releases stale. Its <code>VIRTIO_DRIVER_MODULE</code>-on-native-virtio-bus attach pattern (~120 lines, BSD-2-Clause) is the salvageable part.</td>
+</tr>
+<tr>
+  <td><a href="https://reviews.freebsd.org/D32372">D32372</a> LinuxKPI virtio<br><span class="cite">Richardson, 2021-10-08</span></td>
+  <td>&ldquo;Needs Review&rdquo; &mdash; never accepted, never committed. Depends on D32371, also never committed. Already API-broken.</td>
+  <td>Usable sketch; needs rewriting.</td>
+</tr>
+<tr>
+  <td><a href="https://github.com/ravynsoft/drm-kmod">ravynsoft/drm-kmod</a> <code>virtio</code></td>
+  <td><strong>Does not compile</strong> &mdash; literal syntax error in <code>linux_virtio.c</code> (stray paren, missing semicolon), introduced 2022-07-16 and never fixed. Would not link even so: calls <code>vq_ring_must_notify_host()</code>/<code>vq_ring_notify_host()</code>, both <code>static</code> in FreeBSD. <code>drm_gem_shmem_helper.c</code> implementation absent entirely. <strong>Unrelated git history</strong> to that fork's <code>main</code>.</td>
+  <td><strong>Dead end.</strong> Last commit 2022-07-17. ravynOS itself uses the stock <code>graphics/drm-kmod</code> port.</td>
+</tr>
+<tr>
+  <td>ravynsoft <code>vmware</code></td>
+  <td>Linux 5.17 vmwgfx on a 6.1 core; <em>&ldquo;vmwgfx now compiles&rdquo;</em> 2023-12-28. Nobody ever claimed it runs. <code>vmwgfx_page_dirty.c</code> has five empty <code>// FIXME: what is needed here?</code> FreeBSD branches; documented memory leak in <code>vmwgfx_validation.c</code>.</td>
+  <td>Porting <em>knowledge</em> is valuable (backdoor hypercall, Makefile, LinuxKPI tweaks); the 47.5k-line diff is not &mdash; 6.12's vmwgfx is a different driver.</td>
+</tr>
+<tr>
+  <td><a href="https://github.com/bsd-sbc-drm/drm-subtree">bsd-sbc-drm/drm-subtree</a><br><span class="cite">Jesper Schmitz Mouridsen (jsm@)</span></td>
+  <td><strong>Active &mdash; last push 2026-08-10.</strong> Ships <code>drm_kmod.ko</code>, <code>rk_vop.ko</code>, <code>rk_drm.ko</code> etc. as <strong>loadable DRM modules on arm64, rebased onto drm-kmod</strong>, on 15-/16-CURRENT.</td>
+  <td><strong>Read this first.</strong> The only working demonstration that DRM drivers link and load on FreeBSD/arm64 against modern drm-kmod. Build methodology directly reusable; the Rockchip SoC driver content is not.</td>
+</tr>
+<tr>
+  <td><a href="https://reviews.freebsd.org/D55012">D55012</a><br><span class="cite">Tiago Gasiba (tiga@)</span></td>
+  <td>&ldquo;Needs Review&rdquo;. Third-party confirmed working. Tested on <strong>FreeBSD 15 arm64 under UTM on macOS</strong>.</td>
+  <td>Complementary, not competing &mdash; scfb/X11, not DRM.</td>
+</tr>
+</table>
+</div>
+
+<h2 id="corrections">8. Corrections to earlier claims</h2>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">Corrected</span> Two claims made earlier in this project were wrong and are retracted here so they do not propagate.</p>
+<p><strong>1. <code>scripts/diffignore</code> is not a licensing blacklist.</strong> It was cited as evidence that drm-kmod &ldquo;refuses&rdquo; <code>drm_gem_shmem_helper.c</code>. It is in fact the ignore-list for drm-kmod's own diff tooling (<code>drmdiff</code>, <code>drmcheck</code>) &mdash; the set of upstream paths to skip when diffing against Linux, i.e. &ldquo;files drm-kmod does not carry&rdquo;. Its first three entries are <code>Kconfig</code>, <code>Kconfig.*</code>, <code>Makefile</code>, and it also lists <code>drm_gem_vram_helper.c</code>, <code>drm_gem_atomic_helper.c</code> and <code>drm_gem_framebuffer_helper.c</code> &mdash; three files we have already vendored and ship. Presence there carries no policy verdict.</p>
+<p><strong>2. The GPL objection was overstated.</strong> What is sourceable is evadot objecting on PR #119 to GPL-2.0 files <em>specifically because they conflict with moving code into the FreeBSD base system</em> &mdash; which does not obviously bind an out-of-tree kld. No blanket refusal of the shmem helper exists. The real constraint is the narrower <a href="#licence">or-later vs only</a> line, which our own README asserts.</p>
+<p><strong>Also corrected:</strong> vmwgfx was assumed x86-only; it supports ARM64 upstream and is the display driver for Arm guests on Apple Silicon. And bochs was described as invalid on arm64 for lack of a VGA device; the device is in fact instantiable and listed in UTM's own device table &mdash; it is <a href="#options">firmware, not the device</a>, that makes Option A unusable.</p>
+</div>
+
+<h2 id="unconfirmed">9. Unconfirmed &mdash; check before committing effort</h2>
+<ul>
+  <li>Whether the arm64 <code>kldload</code> hang reported against drm-kmod 6.12 (dsl@ and evadot, Jan 2026) is amdgpu-specific or touches <code>drm.ko</code> core paths. <strong>This one matters for Option B</strong> &mdash; if it is a core path, every option here is blocked until it is understood.</li>
+  <li>The numeric PCI ID VMware Fusion presents on Apple Silicon. <code>15ad:0406</code> is a strong inference from the Kconfig and Rusin's commit, but no <code>lspci -nn</code> dump was found. Decides whether Option F is even addressable.</li>
+  <li>Whether Apple's <code>VZVirtioGraphicsDeviceConfiguration</code> exposes virtio-gpu over PCI or MMIO, and whether FreeBSD arm64 boots under AVF with graphics at all.</li>
+  <li><code>bsd-sbc-drm/drm-subtree</code>'s <code>modules/Makefile</code> internals &mdash; not read. It is the one place someone else has solved &ldquo;build a DRM kmod for aarch64 against drm-kmod&rdquo;.</li>
+</ul>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Source to distrust</span> <a href="https://www.freebsdsoftware.org/blog/freebsd-wayland-2026.html">freebsdsoftware.org, &ldquo;State of Wayland on FreeBSD in 2026&rdquo;</a> (2026-04-09) claims virtio-gpu works with Wayland compositors on FreeBSD and that nouveau has limited drm-kmod support. <strong>Both are false</strong> &mdash; drm-kmod ships neither driver. Likely generated content; do not cite it.</p>
+</div>
+
+<h2 id="targets">10. Proposed per-arch target set</h2>
+
+<p>Reflecting the stated preference that arm64 carry only what an ARM VM can actually use, rather than everything that happens to compile.</p>
+
+<div class="scroll">
+<table>
+<tr><th>Driver</th><th>amd64</th><th>arm64</th><th>Why</th></tr>
+<tr><td><code>IOGraphics</code> / <code>TTM</code> / <code>DMABuf</code> / <code>IOGraphicsExtras</code></td><td>ship</td><td><strong>ship</strong></td><td>Core + helpers. Prerequisite for every option; already builds and resolves</td></tr>
+<tr><td><code>IntelGraphics</code></td><td>ship</td><td>&mdash;</td><td>drm-kmod gates i915 to amd64/i386; no Intel iGPU on aarch64</td></tr>
+<tr><td><code>AMDGraphics</code></td><td>ship</td><td><strong>cannot</strong></td><td>Upstream <code>DRM_AMD_DC_FP</code> gating makes <code>amdgpu.ko</code> unloadable on aarch64</td></tr>
+<tr><td><code>RadeonGraphics</code></td><td>ship</td><td>optional</td><td>Builds and resolves; only relevant for a discrete card in a PCIe slot, not a VM</td></tr>
+<tr><td><code>BochsGraphics</code></td><td>ship</td><td>&mdash;</td><td>Option A: black screen until <code>kldload</code> on ARM firmware</td></tr>
+<tr><td><code>VBoxGraphics</code></td><td>ship</td><td>&mdash;</td><td>VirtualBox guests are x86</td></tr>
+<tr><td>NVIDIA</td><td>ship</td><td>&mdash;</td><td>No aarch64 legacy blob</td></tr>
+<tr><td><strong>EFIGraphics</strong> (Option B)</td><td>optional</td><td><strong>target</strong></td><td>Would also give amd64 VMs a firmware-framebuffer KMS fallback</td></tr>
+<tr><td><strong>VirtIOGraphics</strong> (Option E)</td><td>eventual</td><td><strong>eventual</strong></td><td>The only path to dynamic resolution and 3D</td></tr>
+</table>
+</div>
+
+<p class="footnote">Sub-plan of the <a href="nextbsd-graphics-plan.html">NextBSD graphics plan</a>. Written 2026-08-16 from a three-agent research sweep; every factual claim above was checked against a primary source (repository file, commit, review, mailing-list post or CI log) rather than inferred, and the items that could <em>not</em> be confirmed are listed in &sect;8 rather than smoothed over. Where this page contradicts something said earlier in the project, &sect;7 says so explicitly.</p>
+
+</div>
+</body>
+</html>

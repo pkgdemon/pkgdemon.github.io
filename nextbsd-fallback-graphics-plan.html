@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD fallback graphics — KMS on machines with no supported GPU</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  h4 { font-size:0.98rem; margin:20px 0 8px; }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .scroll { overflow-x:auto; }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e6e6; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+  .opt { border:1px solid var(--border); border-radius:4px; padding:2px 22px 6px; margin:0 0 26px; background:white; }
+  .opt h3 { margin-top:22px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; sub-plan of the <a href="nextbsd-graphics-plan.html">NextBSD graphics plan</a> &middot; sibling of the <a href="nextbsd-virtio-gpu-plan.html">virtio-gpu DRM plan</a></p>
+
+<h1>NextBSD fallback graphics: KMS on machines with no supported GPU</h1>
+
+<p class="lede">A machine whose GPU we do not support gets a vt(4) text console and nothing else &mdash; no <code>/dev/dri/card0</code>, so no Wayland, no Xorg <code>modesetting</code>, no desktop. Linux solved this in 2021 with <strong>SimpleDRM</strong>: a DRM driver that binds the framebuffer the <em>firmware</em> already set up, works on any machine regardless of GPU, and steps aside automatically when a real driver arrives. This plan scopes the NextBSD equivalent.</p>
+
+<p class="meta">2026-08-16. Scoped separately from the <a href="nextbsd-virtio-gpu-plan.html">virtio-gpu work</a> because it is a different problem with different users: virtio-gpu is about making VMs fast, this is about making unsupported hardware usable at all. Neither blocks the other. Citations to Linux v6.12/v6.16, <code>freebsd/drm-kmod</code> <code>6.12-lts</code> and <code>freebsd/freebsd-src</code> <code>releng/15.1</code>.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Scope</span> This driver is deliberately <strong>not</strong> a substitute for a real one. It produces <code>/dev/dri/card0</code> with <strong>no render node</strong> &mdash; software rendering via llvmpipe, at whatever single resolution the firmware chose. It is the difference between &ldquo;no desktop&rdquo; and &ldquo;a working desktop&rdquo;, not between slow and fast. Every machine that has a real driver should use the real driver, and this one must get out of the way when that happens.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#problem">The problem it solves</a></li>
+  <li><a href="#linux">What Linux does &mdash; and the surprising part</a></li>
+  <li><a href="#firmware">Firmware paths: this is not EFI-only</a></li>
+  <li><a href="#trigger">The load-trigger question &mdash; the NextBSD-specific problem</a></li>
+  <li><a href="#handoff">Handoff and eviction</a></li>
+  <li><a href="#build">What we would build, and what we already have</a></li>
+  <li><a href="#licence">Write or port: the licensing fork</a></li>
+  <li><a href="#decisions">Decisions to make</a></li>
+</ol>
+</div>
+
+<h2 id="problem">1. The problem it solves</h2>
+
+<p>Today, NextBSD's graphics kexts bind by PCI device id. <code>IntelGraphics</code> carries 364 ids, <code>AMDGraphics</code> 308, <code>RadeonGraphics</code> 550. If a machine's GPU is not in one of those tables &mdash; new silicon, an NVIDIA card outside the legacy blob's range, anything unusual &mdash; nothing matches, nothing loads, and there is no DRM device at all.</p>
+
+<p>The user-visible result is not &ldquo;slower graphics&rdquo;. It is a text console. No compositor will start, because Wayland compositors require a KMS device and Xorg's <code>modesetting</code> driver requires <code>/dev/dri/card0</code>. The machine is unusable as a desktop until someone writes or fixes a driver for that specific GPU.</p>
+
+<p>A fallback driver changes that outcome to &ldquo;a working desktop on software rendering&rdquo;, on any machine, immediately &mdash; including machines nobody has ever tested.</p>
+
+<h2 id="linux">2. What Linux does &mdash; and the surprising part</h2>
+
+<p>Linux's <code>simpledrm</code> landed in 5.14 (2021) at <code>drivers/gpu/drm/tiny/simpledrm.c</code> and moved to <code>drivers/gpu/drm/sysfb/</code> in April 2025, gaining <code>efidrm</code>, <code>vesadrm</code> and <code>ofdrm</code> siblings. drm-kmod's own maintainer describes the value precisely, in <a href="https://github.com/freebsd/drm-kmod/issues/269">issue #269</a>:</p>
+
+<blockquote><p><em>&ldquo;SimpleDRM creates a drm device (/dev/dri/card0) but no drm render device. So you still have software accel (and so need swrast/llvmpipe) but can talk with KMS to the driver meaning wayland software will work.&rdquo;</em></p></blockquote>
+
+<div class="callout">
+<p><span class="pill pill-neutral">The surprising part</span> <strong>Linux does not gate the load on &ldquo;is anything else driving the display?&rdquo;</strong> It loads the fallback <em>unconditionally and early</em>, then lets the real driver <strong>evict</strong> it when it probes.</p>
+<p>Boot-time firmware code (<code>drivers/firmware/sysfb.c</code>) registers a platform device &mdash; <code>simple-framebuffer</code>, <code>efi-framebuffer</code> or <code>vesa-framebuffer</code> &mdash; from the framebuffer the firmware left behind. simpledrm binds it as an ordinary platform driver. Later, when a real GPU driver probes, it calls <code>drm_aperture_remove_conflicting_framebuffers()</code>, which unregisters that device and unbinds simpledrm.</p>
+<p>This is worth weighing carefully, because the intuitive design &mdash; &ldquo;load it only if nothing else claimed the display&rdquo; &mdash; has a flaw Linux's approach avoids: <strong>there is no window during which the machine has no KMS device.</strong> The fallback is there from early boot, and the handover is a replacement rather than a gap.</p>
+</div>
+
+<h2 id="firmware">3. Firmware paths: this is not EFI-only</h2>
+
+<p>FreeBSD's vt(4) already has four framebuffer backends, and they are structurally identical &mdash; the same <code>preload_search_info()</code> call against a different metadata tag left by the loader:</p>
+
+<pre><code>/* sys/dev/vt/hw/efifb/efifb.c:86 */
+efifb = (struct efi_fb *)preload_search_info(preload_kmdp,
+    MODINFO_METADATA | MODINFOMD_EFI_FB);
+
+/* sys/dev/vt/hw/vbefb/vbefb.c:86 */
+vbefb = (struct vbe_fb *)preload_search_info(preload_kmdp,
+    MODINFO_METADATA | MODINFOMD_VBE_FB);</code></pre>
+
+<p>They map one-to-one onto Linux's family, which means <strong>legacy BIOS machines are supportable by the same driver</strong> &mdash; a different front-end selecting the metadata source, not a separate driver:</p>
+
+<div class="scroll">
+<table>
+<tr><th>Firmware</th><th>FreeBSD vt(4) backend</th><th>Metadata tag</th><th>Linux DRM driver</th><th>Machines</th></tr>
+<tr><td>UEFI GOP</td><td><code>efifb</code></td><td><code>MODINFOMD_EFI_FB</code></td><td><code>efidrm</code></td><td>modern amd64, all arm64</td></tr>
+<tr><td><strong>BIOS VBE</strong></td><td><code>vbefb</code></td><td><code>MODINFOMD_VBE_FB</code></td><td><code>vesadrm</code></td><td>legacy amd64</td></tr>
+<tr><td>Open Firmware</td><td><code>ofwfb</code></td><td>&mdash;</td><td><code>ofdrm</code></td><td>PowerPC</td></tr>
+<tr><td>Device tree</td><td><code>simplefb</code></td><td>&mdash;</td><td><code>simpledrm</code></td><td>ARM SBCs</td></tr>
+</table>
+</div>
+
+<p>The name should therefore be firmware-neutral. <code>EFIGraphics</code> was the working title and is wrong; <code>FirmwareGraphics</code> or <code>SimpleGraphics</code> both describe it. This is <a href="#decisions">decision F4</a>, and it interacts with the still-open <code>IOGraphicsExtras</code> naming question.</p>
+
+<h2 id="trigger">4. The load-trigger question &mdash; the NextBSD-specific problem</h2>
+
+<p>This is the part Linux does not have to solve, and the reason this document exists separately.</p>
+
+<p>NextBSD kexts autoload through the in-kernel IOKit matcher, on <code>IOPCIPrimaryMatch</code> &mdash; a table of PCI vendor:device words matched against <code>IOPCIDevice</code> nodes. <strong>A firmware framebuffer is not a PCI node.</strong> There is no device to match; the driver's entire input is a struct the loader left in memory. So the existing autoload path cannot express &ldquo;load this one&rdquo;.</p>
+
+<p>Four candidate triggers, with the trade-off that matters for each:</p>
+
+<div class="opt">
+<h3>T1 &mdash; Always load early, evict on real bind <span class="pill pill-good">Linux's model</span></h3>
+<p>Load at boot (via <code>loader.conf</code>, or a kext the matcher always loads), take <code>card0</code> immediately, and rely on the real driver's <code>drm_aperture_remove_conflicting_framebuffers()</code> to evict it.</p>
+<p><strong>For:</strong> no window without a KMS device; the eviction machinery already exists in drm-kmod and is already called by our <code>bochs</code> and <code>vboxvideo</code> ports. Proven design.</p>
+<p><strong>Against:</strong> on the overwhelmingly common case &mdash; a supported GPU &mdash; we load a driver, publish a device node, then tear it down seconds later. The <code>card0</code> minor may shift when the real driver takes over, which compositors handle on Linux but is a behaviour to verify rather than assume.</p>
+</div>
+
+<div class="opt">
+<h3>T2 &mdash; Match any display controller at the lowest probe score <span class="pill pill-warn">most IOKit-idiomatic; needs verification</span></h3>
+<p>IOKit resolves competing drivers by <code>IOProbeScore</code> &mdash; highest wins. If the fallback carried a personality matching <em>any</em> PCI display controller by class code (<code>IOPCIClassMatch</code>, class <code>0x03</code>) at a probe score below every real driver's, the matcher would pick the real driver whenever one exists and the fallback only otherwise. No policy code anywhere; the arbitration is the framework's job.</p>
+<p><strong>For:</strong> this is exactly what <code>IOProbeScore</code> is for, it needs no new kextd logic, and it degrades correctly by construction.</p>
+<p><strong>Against:</strong> the matcher does <strong>not</strong> support class matching today &mdash; verified. <code>sys/sys/iocatalogue.h</code> documents exactly one match form:</p>
+<pre><code>/* each encoded 0x&lt;device&gt;&lt;vendor&gt; (device in the high 16 bits, vendor
+   in the low 16) - the IOPCIPrimaryMatch form, e.g. 0x24f38086 */</code></pre>
+<p>So this costs a matcher change before it costs a driver. <strong>But the change is small, because every ingredient is already present.</strong> The scan loop in <code>iokit_catalogue.c</code> already calls <code>pci_get_class(child)</code> and already compares it against <code>PCIC_DISPLAY</code>; <code>struct iocat_add</code> already carries <code>int32_t probe_score; /* IOProbeScore; higher wins */</code>. Adding a second match form (a class/subclass word alongside the vendor:device array) is a contained extension to code that already reads the field.</p>
+<p>The genuine limitation is different: it only covers displays that appear as PCI nodes. A machine whose framebuffer comes from a non-PCI display &mdash; the normal case on ARM SBCs &mdash; would still have nothing to match, so T2 cannot be the only trigger if those are ever a target.</p>
+</div>
+
+<div class="opt">
+<h3>T3 &mdash; kextd loads it if nothing claimed the display <span class="pill pill-neutral">explicit, but needs a new signal</span></h3>
+<p>After the matcher settles, kextd asks &ldquo;did any <code>IOPCIDevice</code> with a display class bind a driver?&rdquo; and loads the fallback if not.</p>
+<p><strong>For:</strong> explicit, debuggable, no wasted load on supported machines.</p>
+<p><strong>For, more than first assumed:</strong> the hard half of this already exists. The matcher's scan loop <em>already</em> answers &ldquo;does this display device have a DRM driver bound?&rdquo; &mdash; it walks PCI children, identifies display-class devices, looks <em>through</em> a <code>vgapci</code> claim to see whether a <code>drmn</code> child is actually attached (<code>iocat_drmn_bound()</code>), and requests the GPU kext when it is not. That logic was written so a vgapci-shadowed GPU still gets its driver loaded (#64). &ldquo;No display device has DRM bound&rdquo; is the same query with a different answer, not new machinery.</p>
+<p><strong>Against:</strong> it still needs a &ldquo;matching has settled&rdquo; moment, which does not exist. Matching is asynchronous &mdash; proving autoload for bochs required <em>polling</em> rather than a single check, because the first look raced the load. Deciding &ldquo;nothing claimed it&rdquo; too early gives a false negative on a slow-probing driver, and the cost of that error is a machine that boots to a text console for no reason.</p>
+</div>
+
+<div class="opt">
+<h3>T4 &mdash; loginwindow triggers it <span class="pill pill-bad">too late</span></h3>
+<p>Userland decides at session start.</p>
+<p><strong>Against:</strong> leaves the console without KMS for the whole boot, cannot help anything running before the login window, and puts a kernel-driver policy decision in a GUI process. Recorded for completeness; not recommended.</p>
+</div>
+
+<h2 id="handoff">5. Handoff and eviction</h2>
+
+<p>Whichever trigger is chosen, the eviction path is the same one already working in our tree. On amd64 the bochs port produces exactly this transition:</p>
+
+<pre><code>drmn0: &lt;drmn&gt; on vgapci0
+[drm] Found bochs VGA, ID 0xb0c5.
+VT: Replacing driver "efifb" with new "drmfb".</code></pre>
+
+<p>The fallback sits one layer up in the same sequence:</p>
+
+<pre><code>firmware GOP / VBE
+  → efifb | vbefb            vt(4) console, from power-on
+  → FirmwareGraphics.kext    card0, software rendering — ANY machine
+  → IntelGraphics | AMDGraphics | RadeonGraphics | VirtIOGraphics …
+                             card0, accelerated — when the GPU is supported</code></pre>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Ordering is load-bearing</span> A real driver must evict the fallback <em>before</em> it touches the hardware, not after. On some configurations the firmware framebuffer is a resource allocated on the device itself &mdash; on arm64, <code>ArmVirtQemu</code>'s <code>VirtioGpuDxe</code> allocates the GOP framebuffer as a virtio-gpu resource &mdash; so a device reset invalidates the very memory the fallback is scanning out of. Sloppy ordering would survive on amd64, where <code>efifb</code> points at a PCI BAR that outlives a reset, and would fault on arm64. This belongs in the boot test as an asserted behaviour rather than an assumed one.</p>
+</div>
+
+<h2 id="build">6. What we would build, and what we already have</h2>
+
+<p>The driver is small: read the framebuffer descriptor, publish one fixed mode, one CRTC/encoder/connector on <code>drm_simple_kms_helper</code>, and damage-blit client buffers into the fixed aperture. The reason it is small is that the helper layer already exists &mdash; it was built for bochs and vboxvideo and happens to be exactly what this needs.</p>
+
+<p>Checking Linux's <code>simpledrm</code> plane-update path against what <code>IOGraphicsExtras.kext</code> exports today:</p>
+
+<div class="scroll">
+<table>
+<tr><th>Needed</th><th>Provided by</th><th>Status</th></tr>
+<tr><td><code>drm_fb_blit</code></td><td><code>drm_format_helper.c</code></td><td>✅ built (added for vboxvideo)</td></tr>
+<tr><td><code>drm_format_conv_state_reserve</code></td><td><code>drm_format_helper.c</code></td><td>✅ built (added for vboxvideo)</td></tr>
+<tr><td>shadow plane state</td><td><code>drm_gem_atomic_helper.c</code></td><td>✅ built (added for vboxvideo)</td></tr>
+<tr><td><code>drm_gem_fb_create_with_dirty</code></td><td>our <code>drm_gem_framebuffer_helper.c</code></td><td>✅ shipping</td></tr>
+<tr><td><code>drm_simple_display_pipe</code></td><td><code>drm_simple_kms_helper.c</code></td><td>✅ shipping</td></tr>
+<tr><td><code>drm_atomic_helper_damage_iter_*</code></td><td><code>drm_damage_helper.c</code></td><td>✅ drm-kmod ships it</td></tr>
+<tr><td>TTM system-domain GEM</td><td><code>ttm/</code>, <code>drm_gem_ttm_helper.c</code></td><td>✅ drm-kmod ships it</td></tr>
+<tr><td><strong><code>drm_gem_fb_begin_cpu_access</code> / <code>end_cpu_access</code></strong></td><td>our <code>drm_gem_framebuffer_helper.c</code></td><td>❌ <strong>excluded when vendored</strong></td></tr>
+</table>
+</div>
+
+<p>That last row is a gap of our own making. When <code>drm_gem_framebuffer_helper.c</code> was vendored, five functions were excluded under <code>#ifndef __FreeBSD__</code> &mdash; three because drm-kmod's stub already provides them, and the dma-buf CPU-access pair because nothing needed them at the time. simpledrm's damage-blit path calls exactly that pair. Re-enabling them is small and known, but it is a real prerequisite rather than a detail to discover at link time.</p>
+
+<h4>Buffer backing &mdash; decide before writing</h4>
+<p>The scanout target is fixed iomem; a GEM allocator is only needed for client-side buffers, which are then blitted in. <strong>TTM system-domain GEM</strong> is the right choice. <code>drm_gem_vram_helper</code> is already built and would appear to work, but a VRAM pool over a firmware aperture is exactly one screen's worth of memory &mdash; sufficient for Xorg <code>modesetting</code>, and <strong>fatal for any Wayland compositor that wants to double-buffer</strong>. Choosing it would produce a driver that passes a smoke test and fails the actual use case.</p>
+
+<h2 id="licence">7. Write or port: the licensing fork</h2>
+
+<p>Everything vendored so far is GPL-2.0-<strong>or-later</strong>, and <code>graphics/README.md</code> states that as an invariant. Linux's <code>simpledrm.c</code>, the whole <code>sysfb/</code> family, and <code>drm_gem_shmem_helper.c</code> (which they all <code>select</code>) are GPL-2.0-<strong>only</strong>.</p>
+
+<div class="scroll">
+<table>
+<tr><th></th><th>Port Linux's simpledrm/efidrm</th><th>Write the FreeBSD-native equivalent</th></tr>
+<tr><td>Licence</td><td>GPL-2.0-only, twice over (driver + shmem helper)</td><td><strong>No new obligation</strong> &mdash; invariant holds</td></tr>
+<tr><td>Buffer backing</td><td>Inherits <code>drm_gem_shmem_helper</code> (782 lines, not in drm-kmod)</td><td>TTM, already shipping</td></tr>
+<tr><td>Framebuffer discovery</td><td>Needs <code>linux/sysfb.h</code>, <code>linux/screen_info.h</code> &mdash; neither in LinuxKPI</td><td>Four-line <code>preload_search_info()</code> call</td></tr>
+<tr><td>Upstream drift</td><td>Tracks a moving Linux target</td><td>Ours to maintain</td></tr>
+</table>
+</div>
+
+<p>The native route wins on every axis here, which is unusual in this project &mdash; for bochs and vboxvideo, vendoring was clearly right because the drivers encode real hardware knowledge. A firmware framebuffer encodes none: the &ldquo;driver&rdquo; is a mode, a pointer and a blit. Most of what Linux's version contains is discovery plumbing that FreeBSD replaces with one call.</p>
+
+<h2 id="decisions">8. Decisions to make</h2>
+
+<h3>F1 &mdash; Which load trigger? <span class="pill pill-bad">blocking</span></h3>
+<p>T1 (always load, evict) is proven and has no KMS-less window. T2 (class match at low probe score) is the most IOKit-idiomatic and needs no policy code, <em>if</em> the matcher supports <code>IOPCIClassMatch</code> &mdash; unverified, and cheap to check. T3 needs a &ldquo;matching finished&rdquo; signal that does not exist. T4 is too late to be useful.</p>
+
+<h3>F2 &mdash; Write native, or port Linux's? <span class="pill pill-bad">blocking</span></h3>
+<p>Native keeps the GPL-2.0-or-later invariant and avoids the shmem helper entirely. Porting tracks upstream but crosses the licence line twice and drags in a 782-line helper drm-kmod does not carry. See &sect;7.</p>
+
+<h3>F3 &mdash; Which firmware paths at launch?</h3>
+<p>UEFI (<code>efifb</code>) covers all arm64 and modern amd64. BIOS (<code>vbefb</code>) is a small addition on the same driver. Device tree and Open Firmware are only relevant if NextBSD ever targets SBCs or PowerPC.</p>
+
+<h3>F4 &mdash; Name</h3>
+<p><code>FirmwareGraphics</code>, <code>SimpleGraphics</code>, or something else. Not <code>EFIGraphics</code> &mdash; the driver is not EFI-specific.</p>
+
+<h3>F5 &mdash; Extend the matcher with a class-match form? <span class="pill pill-good">answered: not supported today; small to add</span></h3>
+<p>Resolved by reading <code>src-overlay/sys/dev/iokit/iokit_catalogue.c</code> and <code>sys/sys/iocatalogue.h</code>: the matcher supports the <code>IOPCIPrimaryMatch</code> vendor:device form only. Class matching would be a new form.</p>
+<p>What remains is a genuine choice rather than an unknown, because the extension is cheap &mdash; the scan already reads <code>pci_get_class()</code> and tests <code>PCIC_DISPLAY</code>, and <code>probe_score</code> is already in the ABI. Either:</p>
+<ul>
+  <li><strong>Extend the matcher</strong> (enables T2, benefits any future catch-all driver), or</li>
+  <li><strong>Do not</strong>, and pick T1 or T3, both of which work with the matcher exactly as it is.</li>
+</ul>
+
+<h3>F6 &mdash; Does the fallback need to cover non-PCI displays? <span class="pill pill-neutral">scoping</span></h3>
+<p>T2 can only match displays that appear as PCI nodes. A firmware framebuffer on a machine with no PCI display device &mdash; ARM SBCs, some virtual platforms &mdash; has nothing to match against, and would need T1 or T3 regardless. Deciding whether those are ever a NextBSD target settles whether T2 can stand alone or must be paired.</p>
+
+<p class="footnote">Sub-plan of the <a href="nextbsd-graphics-plan.html">NextBSD graphics plan</a>; sibling of the <a href="nextbsd-virtio-gpu-plan.html">virtio-gpu DRM plan</a>, which is the priority work. This document exists because the two solve different problems &mdash; virtio-gpu makes VMs fast, this makes unsupported hardware usable &mdash; and neither blocks the other. Every claim above was checked against a primary source; the one item that is <strong>not</strong> verified is the matcher's <code>IOPCIClassMatch</code> support (&sect;F5), and it is flagged as such rather than assumed.</p>
+
+</div>
+</body>
+</html>

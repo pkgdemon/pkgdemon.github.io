@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD virtio-gpu DRM — accelerated OpenGL in virtual machines</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  h4 { font-size:0.98rem; margin:20px 0 8px; }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .scroll { overflow-x:auto; }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e6e6; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+  .opt { border:1px solid var(--border); border-radius:4px; padding:2px 22px 6px; margin:0 0 26px; background:white; }
+  .opt h3 { margin-top:22px; }
+  .phase { border-left:4px solid var(--accent); padding-left:18px; margin:0 0 30px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; sub-plan of the <a href="nextbsd-graphics-plan.html">NextBSD graphics plan</a> &middot; sibling of the <a href="nextbsd-fallback-graphics-plan.html">fallback graphics plan</a> &middot; decision record: <a href="nextbsd-arm64-kms-options.html">arm64 KMS options</a></p>
+
+<h1>NextBSD virtio-gpu DRM: accelerated OpenGL in virtual machines</h1>
+
+<p class="lede">The target is the real driver, not a framebuffer stand-in: <code>/dev/dri/card0</code> <em>and</em> a render node, dynamic resolution, and hardware-accelerated OpenGL through Mesa's virgl. This has never worked on any BSD. What follows is a complete specification of what stands between here and there &mdash; and the two findings that make it a substantially smaller project than it looked.</p>
+
+<p class="meta">2026-08-16. Kernel design verified against <code>freebsd-src</code> <code>main</code> and <code>releng/15.1</code>, <code>drm-kmod</code> <code>6.12-lts</code> @ <code>01682db</code> (our pin), Linux v6.12, Phabricator D32372/D32371, and drm-kmod PR #119. Userland verified against <code>freebsd-ports</code> <code>main</code>.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Finding 1</span> <strong>The LinuxKPI virtio shim can live entirely in our repo. No FreeBSD base change is required.</strong> This was the thing that appeared to make virtio-gpu depend on upstream cooperation. It does not.</p>
+</div>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Finding 2</span> <strong>The entire userland half already ships.</strong> FreeBSD's Mesa builds the virgl Gallium driver unconditionally, on every architecture, and libdrm already installs <code>virtgpu_drm.h</code>. Accelerated OpenGL needs <em>no</em> ports work &mdash; only the kernel driver.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#done">What &ldquo;done&rdquo; means</a></li>
+  <li><a href="#have">What is already in place</a></li>
+  <li><a href="#userland">The userland half &mdash; already shipping</a></li>
+  <li><a href="#approach">Extend base's driver, or build on drm-kmod?</a></li>
+  <li><a href="#shim">The shim: why no base patch is needed</a></li>
+  <li><a href="#layout">Repository layout and module graph</a></li>
+  <li><a href="#shmem">The one hard prerequisite: shmem GEM</a></li>
+  <li><a href="#phases">Phase plan</a></li>
+  <li><a href="#risks">Three risks that would pass a smoke test</a></li>
+  <li><a href="#decisions">Decisions to make</a></li>
+  <li><a href="#unconfirmed">Unconfirmed</a></li>
+</ol>
+</div>
+
+<h2 id="done">1. What &ldquo;done&rdquo; means</h2>
+
+<p>Two deliverables that are often conflated. Both are in scope; the first is a prerequisite for the second.</p>
+
+<div class="scroll">
+<table>
+<tr><th></th><th>KMS</th><th>Accelerated OpenGL</th></tr>
+<tr><td>Device node</td><td><code>/dev/dri/card0</code></td><td>+ <code>/dev/dri/renderD128</code></td></tr>
+<tr><td>Feature bits</td><td><code>VIRTIO_F_VERSION_1</code></td><td>+ <code>VIRTIO_GPU_F_VIRGL</code>, <code>_CONTEXT_INIT</code></td></tr>
+<tr><td>Ioctls</td><td>modeset, dumb buffers</td><td>+ <code>EXECBUFFER</code>, <code>GET_CAPS</code>, <code>RESOURCE_CREATE_3D</code></td></tr>
+<tr><td>Userland</td><td>Xorg <code>modesetting</code>, any Wayland compositor</td><td>Mesa virgl Gallium driver</td></tr>
+<tr><td>Host must offer</td><td><code>virtio-gpu-pci</code></td><td><code>virtio-gpu-gl-pci</code> + GL display backend</td></tr>
+<tr><td>Gives you</td><td>dynamic resolution, no tearing</td><td>GPU-accelerated GL</td></tr>
+</table>
+</div>
+
+<p>Both are achievable with kernel work alone. Note the last row: <strong>the host has to offer 3D too</strong> &mdash; plain <code>virtio-gpu-pci</code> is 2D scanout however good the guest driver is.</p>
+
+<h2 id="have">2. What is already in place</h2>
+
+<p>More than expected, because the bochs and vboxvideo ports paid for most of the helper layer.</p>
+
+<div class="scroll">
+<table>
+<tr><th>Piece</th><th>Status</th></tr>
+<tr><td>DRM core on both arches (<code>drm.ko</code>, <code>ttm.ko</code>, <code>dmabuf.ko</code>)</td><td>✅ builds, resolves, ships as kexts &mdash; arm64 proven in <a href="https://github.com/nextbsd-redux/nextbsd-kernel-modules/pull/33">PR&nbsp;#33</a></td></tr>
+<tr><td>Helper layer (<code>drm_simple_kms_helper</code>, <code>drm_gem_vram_helper</code>, <code>drm_gem_atomic_helper</code>, <code>drm_format_helper</code>, <code>drm_gem_framebuffer_helper</code>)</td><td>✅ shipping as <code>IOGraphicsExtras.kext</code></td></tr>
+<tr><td>Out-of-tree LinuxKPI extension pattern</td><td>✅ proven &mdash; <code>graphics/include/linux/genalloc.h</code> is exactly this</td></tr>
+<tr><td>Kext packaging, autoload, symbol-resolution gate</td><td>✅ <code>ko2kext.sh</code>, IOKit matcher, <code>check-kext-symbols.py</code></td></tr>
+<tr><td>Boot-test harness that proves load &rarr; bind &rarr; <code>card0</code></td><td>✅ used for bochs and vboxvideo</td></tr>
+<tr><td><strong>Mesa virgl + libdrm virtgpu</strong></td><td>✅ <strong>already in ports</strong> &mdash; see &sect;3</td></tr>
+<tr><td>LinuxKPI virtio shim</td><td>❌ does not exist anywhere</td></tr>
+<tr><td><code>drm_gem_shmem_helper</code></td><td>❌ not in drm-kmod</td></tr>
+<tr><td>The driver</td><td>❌ never worked on any BSD</td></tr>
+</table>
+</div>
+
+<h2 id="userland">3. The userland half &mdash; already shipping</h2>
+
+<p><code>graphics/mesa-dri/Makefile</code>:</p>
+
+<pre><code>GALLIUM_DRIVERS=	virgl zink
+
+OPTIONS_GROUP_GALLIUM=	crocus i915 iris llvmpipe panfrost r300 r600 radeonsi svga
+OPTIONS_EXCLUDE+=	${ARCH:Naarch64:C/.+/panfrost/}
+OPTIONS_EXCLUDE+=	${ARCH:Namd64:Ni386:Nx86_64:C/.+/crocus i915 iris svga/}</code></pre>
+
+<p><code>virgl</code> is in the <strong>unconditional</strong> assignment, not the options group &mdash; it is always built. And unlike <code>panfrost</code> (aarch64-only) or the x86 drivers, it carries <strong>no architecture exclusion</strong>, so it is built on amd64 and aarch64 alike. <code>graphics/libdrm</code>'s <code>pkg-plist</code> installs <code>include/libdrm/virtgpu_drm.h</code> unconditionally.</p>
+
+<p>So the moment a render node appears, Mesa can drive it. <strong>No ports work is in scope for this project.</strong></p>
+
+<p class="cite">Note: <code>virglrenderer</code> &mdash; the <em>host</em>-side library &mdash; is not in FreeBSD ports at all. That only matters for running FreeBSD as a virtualisation host, which is out of scope; our hosts are macOS running UTM/QEMU, which bundle their own.</p>
+
+<h2 id="approach">4. Extend base's driver, or build on drm-kmod?</h2>
+
+<p>FreeBSD already has a working virtio-gpu driver &mdash; <code>sys/dev/virtio/gpu/virtio_gpu.c</code>, 734 lines plus a 454-line header, by andrew@ (sponsored by Arm Ltd, 2023). It speaks the virtio-gpu protocol correctly today. So the obvious question is whether to grow that into a KMS driver rather than vendor Linux's.</p>
+
+<p>Three genuinely distinct routes:</p>
+
+<div class="opt">
+<h3>A &mdash; Extend base's <code>virtio_gpu(4)</code> into a DRM driver</h3>
+<p><strong>Keep:</strong> the transport. It already does <code>virtqueue_enqueue</code> / <code>virtqueue_notify</code> / <code>TRANSFER_TO_HOST_2D</code> / <code>RESOURCE_FLUSH</code> against FreeBSD's native virtio API, correctly, with no shim.</p>
+<p><strong>Write:</strong> everything else &mdash; the DRM device, GEM objects, modesetting, the full ioctl surface, dma-buf, the render node, and 3D command submission.</p>
+<p><strong>The catch that sinks it:</strong> <em>there is no FreeBSD DRM core other than drm-kmod.</em> DRM on FreeBSD <strong>is</strong> drm-kmod. So &ldquo;extending the base driver&rdquo; still means linking against <code>drmn.ko</code> &mdash; you do not escape drm-kmod, you only give up Linux's driver. And it puts the work in FreeBSD base, where D32372 has waited five years and D55012 six months.</p>
+</div>
+
+<div class="opt">
+<h3>B &mdash; Vendor Linux's driver onto drm-kmod <span class="pill pill-good">recommended</span></h3>
+<p>~4,000 lines vendored from v6.12, plus the ~600-line LinuxKPI virtio shim, plus shmem GEM. Everything lives in our repo, in the pattern already proven twice.</p>
+</div>
+
+<div class="opt">
+<h3>C &mdash; Native BSD DRM driver on drm-kmod's core, using FreeBSD virtio directly</h3>
+<p>The hybrid: write the driver in BSD style against <code>drmn.ko</code>, but talk to the device through FreeBSD's native virtio API. <strong>This needs no LinuxKPI virtio shim at all</strong> &mdash; which is a real attraction, since the shim is the least conventional part of route B.</p>
+<p>But you then hand-implement the GEM layer, the modeset paths, and &mdash; critically &mdash; the entire <code>virtgpu</code> uapi.</p>
+</div>
+
+<h3>The deciding factor is the uapi, not the driver</h3>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">This is the argument</span> Mesa's virgl Gallium driver is <strong>already installed and already built for both architectures</strong> (&sect;3). It talks one specific kernel ABI: the ioctls in <code>drm/virtgpu_drm.h</code> &mdash; <code>EXECBUFFER</code>, <code>GET_CAPS</code>, <code>RESOURCE_CREATE</code>, <code>RESOURCE_INFO</code>, <code>MAP</code>, <code>WAIT</code>, <code>CONTEXT_INIT</code>, <code>TRANSFER_TO/FROM_HOST</code> &mdash; with exact structure layouts, exact semantics, and exact error codes.</p>
+<p><strong>That ABI is the contract, and it is not ours to design.</strong> Vendoring Linux's driver satisfies it <em>by construction</em>, because it is the implementation the ABI was defined by. Routes A and C require reimplementing it faithfully enough that an unmodified Mesa works &mdash; and every divergence surfaces as a rendering corruption or a hang inside a userland stack we did not write and cannot easily instrument.</p>
+</div>
+
+<p>Weighed against each other:</p>
+
+<div class="scroll">
+<table>
+<tr><th></th><th>A &mdash; extend base</th><th>B &mdash; vendor on drm-kmod</th><th>C &mdash; native on drm-kmod</th></tr>
+<tr><td>Mesa uapi fidelity</td><td>hand-written, must match exactly</td><td><strong>exact by construction</strong></td><td>hand-written, must match exactly</td></tr>
+<tr><td>Needs LinuxKPI virtio shim</td><td>no</td><td>yes (~600 lines, no base change)</td><td><strong>no</strong></td></tr>
+<tr><td>Needs shmem GEM</td><td>yes (or a BSD equivalent)</td><td>yes</td><td>yes (or a BSD equivalent)</td></tr>
+<tr><td>Still depends on drm-kmod</td><td><strong>yes</strong> &mdash; unavoidable</td><td>yes</td><td>yes</td></tr>
+<tr><td>New code we own forever</td><td>~4,000+ lines, no upstream</td><td>~600 (shim) + deltas</td><td>~4,000+ lines, no upstream</td></tr>
+<tr><td>Upstream fixes flow to us</td><td>no</td><td><strong>yes</strong></td><td>no</td></tr>
+<tr><td>3D / virgl</td><td>write from scratch</td><td><strong>included</strong></td><td>write from scratch</td></tr>
+<tr><td>Where the work lands</td><td>FreeBSD base (slow review)</td><td><strong>our repo</strong></td><td>our repo</td></tr>
+</table>
+</div>
+
+<p><strong>Route B.</strong> The shim is the price of admission and it is bounded, well-understood, and now known not to require a base change. Routes A and C trade ~600 lines of shim for ~4,000 lines of novel driver <em>plus</em> the obligation to reimplement a uapi we do not control, against a userland we cannot change, with no upstream to inherit fixes from. Route A additionally puts the work in base, on a review path this project has twice watched stall for years.</p>
+
+<div class="callout">
+<p><span class="pill pill-neutral">Base's driver is still useful</span> Not as a foundation, but as a <strong>reference</strong>. <code>virtio_gpu.c:441-489</code> is a known-correct example of the exact virtqueue dance our shim must reproduce &mdash; feature negotiation, <code>virtio_alloc_virtqueues</code>, then <code>enqueue</code> &rarr; <code>notify</code> &rarr; <code>poll</code> under one lock. It is the best available evidence of how these calls are meant to be sequenced on FreeBSD, and it should be read closely during Phase 1.</p>
+</div>
+
+<h2 id="shim">5. The shim: why no base patch is needed</h2>
+
+<p>The apparent blocker was that D32372's shim calls <code>vq_ring_must_notify_host()</code> and <code>vq_ring_notify_host()</code>, both <code>static</code> in <code>sys/dev/virtio/virtqueue.c</code> (confirmed on both branches). That is why it shipped with a companion base patch, <a href="https://reviews.freebsd.org/D32371">D32371</a>, to export them &mdash; and that patch has sat in <em>Needs Review</em> since 2021.</p>
+
+<p>It is not needed, for two reasons:</p>
+
+<ol>
+  <li><strong>FreeBSD's public <code>virtqueue_notify()</code> already <em>is</em> Linux's <code>virtqueue_kick()</code>.</strong> Read <code>virtqueue.c</code>: it does <code>bus_dmamap_sync(PREWRITE)</code> + <code>mb()</code> + <code>if (vq_ring_must_notify_host()) vq_ring_notify_host()</code> + reset <code>vq_queued_cnt</code>. The notification suppression that <code>kick_prepare()</code> performs is already inside it.</li>
+  <li><strong>virtio-gpu never calls <code>virtqueue_kick()</code>.</strong> It uses the split <code>kick_prepare</code>/<code>notify</code> form at exactly four sites (<code>virtgpu_vq.c:434,438,478,484</code>).</li>
+</ol>
+
+<p>So the mapping is simply:</p>
+
+<pre><code>bool linux_virtqueue_kick_prepare(struct virtqueue *vq)
+{
+        virtqueue_notify(vq-&gt;bsdq);   /* does the suppression check itself */
+        return (false);               /* driver then skips its own notify() */
+}</code></pre>
+
+<p>This performs the MMIO under the driver's <code>qlock</code> &mdash; which is precisely the convention every native FreeBSD virtio driver already follows, including base's own <code>virtio_gpu.c</code>. Zero spurious notifications, no base change, nothing to wait for.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">D32372 is a sketch, not a baseline</span> It <strong>does not compile</strong> &mdash; three errors, including returning values from <code>void</code> functions. It is also stale twice: <code>virtio_alloc_virtqueues()</code> lost its flags argument in <code>180c02405b12</code> (2023-09-18), and v6.12 replaced the <code>callbacks[]</code>/<code>names[]</code> signature with <code>struct virtqueue_info</code> &mdash; there is no <code>virtio_find_vqs_ctx</code> in 6.12 at all. Read it for the namespacing idea; write the rest fresh.</p>
+</div>
+
+<h4>Namespace collision &mdash; a cleaner approach than D32372's</h4>
+<p>FreeBSD and Linux both define <code>struct virtqueue</code> and <code>virtio_device</code>. D32372 handled this with <code>#define virtqueue linux_virtqueue</code> plus <code>__asm__</code> symbol renaming. <strong>Keep the <code>__asm__</code> half</strong> &mdash; it guarantees the emitted symbol is <code>linux_virtqueue_*</code> and can never collide in the kernel linker. <strong>Drop the object-like <code>#define</code></strong>: it leaks into every subsequent header and rewrites any unrelated identifier named <code>virtqueue</code>, failing far from its cause.</p>
+<p>Our build compiles vendored Linux sources and the shim as separate translation units with separate include sets, so we can simply name the shim struct <code>struct virtqueue</code> and never include <code>&lt;dev/virtio/virtqueue.h&gt;</code> in any TU that sees it. Only <code>linux_virtio.c</code> sees both namespaces, and there one <code>#define bsd_virtqueue</code> suffices.</p>
+
+<h2 id="layout">6. Repository layout and module graph</h2>
+
+<pre><code>graphics/include/linux/virtio.h            pure additions — LinuxKPI has
+graphics/include/linux/virtio_config.h     ZERO virtio files on main or
+graphics/include/linux/virtio_ring.h       releng/15.1, so no conflict is
+graphics/include/linux/virtio_ids.h        possible. Same pattern as our
+graphics/include/linux/virtio_gpu.h        existing linux/genalloc.h.
+graphics/include/uapi/linux/virtio_gpu.h   verbatim from v6.12
+
+graphics/linuxkpi_virtio/                  the shim .ko
+    linux_virtio.c                         sglist flattening, vq alloc, config space
+    linuxkpi_virtio_freebsd.c              MODULE_VERSION + MODULE_DEPEND
+    Makefile                               EXPORT_SYMS=YES
+
+graphics/drivers/gpu/drm/virtio/*.c        vendored v6.12 + #ifdef __FreeBSD__
+graphics/drivers/gpu/drm/drm_gem_shmem_helper.c   → into drm_extra_helpers
+graphics/virtio_gpu_drm/                   driver .ko + newbus attach glue</code></pre>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Symbol resolution is depth-1 only</span> <code>kern_linker.c:940-943</code> looks up symbols in <code>file-&gt;deps[]</code> with <code>deps = 0</code> &mdash; <strong>transitive dependencies are not searched</strong>. Every module must <code>MODULE_DEPEND</code> on everything it uses <em>directly</em>. This is why i915kms re-declares <code>linuxkpi</code> and <code>dmabuf</code> even though <code>drmn</code> already depends on them, and why our <code>drm_extra_helpers</code> pattern works. It is now documented rather than folklore.</p>
+</div>
+
+<pre><code>MODULE_DEPEND(virtio_gpu_drm, drmn, 2, 2, 2);
+MODULE_DEPEND(virtio_gpu_drm, linuxkpi, 1, 1, 1);
+MODULE_DEPEND(virtio_gpu_drm, dmabuf, 1, 1, 1);
+MODULE_DEPEND(virtio_gpu_drm, drm_extra_helpers, 1, 1, 1);
+MODULE_DEPEND(virtio_gpu_drm, linuxkpi_virtio, 1, 1, 1);
+MODULE_DEPEND(virtio_gpu_drm, virtio, 1, 1, 1);</code></pre>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">Naming</span> <strong>Do not name the module <code>virtio_gpu</code>.</strong> FreeBSD base already has <code>MODULE_VERSION(virtio_gpu, 1)</code> in <code>sys/dev/virtio/gpu/virtio_gpu.c</code>. That would be a name clash on top of the device clash. Equally: <strong>never add <code>device virtio_gpu</code> to the NEXTBSD kernel config.</strong> It is <code>optional</code>, absent from every GENERIC and from <code>sys/modules</code>, so it is not in our kernel today &mdash; and it must stay that way. It is a newbus driver that would compete for the same device, and it registers at <code>VD_PRIORITY_GENERIC+10</code> against <code>efifb</code>'s <code>+1</code>, so merely compiling it in displaces the console driver that works.</p>
+</div>
+
+<h2 id="shmem">7. The one hard prerequisite: shmem GEM</h2>
+
+<p>virtio-gpu is built on shmem-backed GEM objects &mdash; <code>virtgpu_object.c:145</code> calls <code>drm_gem_shmem_get_pages_sgt()</code>, and that is where <em>all</em> guest-page DMA mapping happens. It is not optional or incidental, unlike in the fallback driver where a TTM substitution works.</p>
+
+<p>drm-kmod does not ship it. Two routes:</p>
+
+<div class="scroll">
+<table>
+<tr><th></th><th>Vendor Linux's <code>drm_gem_shmem_helper.c</code></th><th>Clean-room BSD implementation</th></tr>
+<tr><td>Size</td><td>782 lines, mechanical</td><td>Comparable, but original</td></tr>
+<tr><td>Licence</td><td><strong>GPL-2.0-only</strong> &mdash; breaks our or-later invariant</td><td>Ours to choose</td></tr>
+<tr><td>Dependencies</td><td>In good shape: <code>drm_gem_get_pages</code>/<code>put_pages</code> are exported by drm-kmod's <code>drm_gem.c</code>; LinuxKPI has <code>shmem_fs.h</code>, <code>dma_map_sgtable()</code>, <code>set_pages_array_wc()</code></td><td>Built on FreeBSD <code>vm_object</code>/<code>OBJT_SWAP</code> directly</td></tr>
+<tr><td>Side benefit</td><td>Unblocks <code>drm_fbdev_shmem.c</code>, which sits in drm-kmod's tree building into nothing</td><td>Same, and upstreamable to base</td></tr>
+</table>
+</div>
+
+<p>This is <a href="#decisions">decision V2</a>, and it is the licensing fork for the whole project. Note the reason upstream rejected it on PR #119 &mdash; conflict with migrating code into FreeBSD base &mdash; <strong>does not apply to an out-of-tree NextBSD kext</strong>. What does apply is our own <code>graphics/README.md</code> invariant, which a vendored copy would break.</p>
+
+<h2 id="phases">8. Phase plan</h2>
+
+<div class="phase">
+<h3>Phase 0 &mdash; clear the blocking unknowns</h3>
+<p>Both are hours, and either could invalidate the work that follows.</p>
+<ul>
+  <li><strong>The arm64 <code>kldload</code> hang.</strong> dsl@ and evadot report drm-kmod 6.12 hanging early on arm64. If that is a <code>drm.ko</code> core path rather than amdgpu-specific, arm64 is blocked regardless of this driver. Testable now by loading our arm64 <code>IOGraphics.kext</code> in UTM.</li>
+  <li><strong>What the host actually offers.</strong> Confirm whether UTM on Apple Silicon can present <code>virtio-gpu-gl-pci</code> with a GL-capable backend, and whether Apple's Virtualization.framework exposes virgl at all. This decides whether the 3D half is reachable on your hardware or only under plain QEMU.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 1 &mdash; <code>linuxkpi_virtio.ko</code></h3>
+<p>Six headers plus <code>linux_virtio.c</code>. Out-of-line functions to implement, each with its FreeBSD backing:</p>
+<div class="scroll">
+<table>
+<tr><th>Linux</th><th>FreeBSD</th><th>Trap</th></tr>
+<tr><td><code>virtqueue_add_sgs</code></td><td><code>virtqueue_enqueue()</code> over a flattened <code>struct sglist</code></td><td>must return <strong>exactly <code>-ENOSPC</code></strong> &mdash; <code>virtgpu_vq.c:467</code> tests it literally</td></tr>
+<tr><td><code>virtqueue_get_buf</code></td><td><code>virtqueue_dequeue()</code></td><td><strong>not <code>virtqueue_poll()</code></strong>, which spins forever</td></tr>
+<tr><td><code>virtqueue_kick_prepare</code> / <code>notify</code></td><td><code>virtqueue_notify()</code></td><td>see &sect;4</td></tr>
+<tr><td><code>virtqueue_enable_cb</code></td><td><code>virtqueue_enable_intr()</code></td><td><strong>polarity is inverted</strong> &mdash; FreeBSD returns 1 when work is pending</td></tr>
+<tr><td><code>virtqueue_disable_cb</code></td><td><code>virtqueue_disable_intr()</code></td><td></td></tr>
+<tr><td><code>virtio_reset_device</code></td><td><code>virtio_stop()</code></td><td></td></tr>
+<tr><td><code>config-&gt;find_vqs</code> / <code>del_vqs</code></td><td><code>virtio_alloc_virtqueues()</code> (3 args) / <code>virtqueue_free()</code></td><td>v6.12 uses <code>struct virtqueue_info</code></td></tr>
+<tr><td><code>config-&gt;get</code> / <code>set</code></td><td><code>virtio_read/write_device_config()</code></td><td></td></tr>
+<tr><td><code>config-&gt;get_shm_region</code></td><td><strong>no equivalent</strong></td><td>return <code>false</code>; rules out blob resources</td></tr>
+</table>
+</div>
+<p>Header-only work: <code>virtio_find_vqs</code>, <code>virtio_has_feature</code> (note FreeBSD's <code>virtio_with_feature</code> takes a <em>mask</em>, Linux's takes a <em>bit index</em>), <code>virtio_cread_le</code>/<code>cwrite_le</code>, <code>virtio_device_ready</code>, <code>dev_to_virtio</code>, <code>module_virtio_driver</code> (LinuxKPI has no <code>module_driver()</code>). Also add <code>dma_sync_sgtable_for_device()</code>, absent from LinuxKPI on both branches.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 2 &mdash; shmem GEM</h3>
+<p>Per V2: vendor or clean-room. Add to <code>drm_extra_helpers</code>, which already carries the four other files drm-kmod omits.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 3 &mdash; the driver, vendored from v6.12</h3>
+<p>Not PR #119's Linux 5.5 snapshot &mdash; that calls <code>drm_fbdev_generic_setup()</code>, which no longer exists. Vendor fresh, apply <code>#ifdef __FreeBSD__</code> deltas in our established style.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 4 &mdash; attach glue, and getting past probe</h3>
+<p>Write from scratch; D32372 provides none, and this is exactly where the 2021 attempt died (page fault at <code>0x30</code> in <code>drm_sysfs_minor_alloc</code>, because <code>virtgpu_bsdmodule.c</code> passed an entirely uninitialised <code>struct linux_virtio_device</code> into <code>virtio_gpu_probe()</code>).</p>
+<p>virtio-gpu is a <code>virtio_driver</code>, not a <code>pci_driver</code>, so LinuxKPI's <code>linux_pci.c</code> routing does not apply &mdash; no <code>.name = "drmn"</code> trick here. Use <code>VIRTIO_DRIVER_MODULE</code> + <code>VIRTIO_SIMPLE_PNPINFO(..., VIRTIO_ID_GPU, ...)</code>, and return better than <code>BUS_PROBE_DEFAULT</code>. Base's own <code>sys/dev/virtio/gpu/virtio_gpu.c</code> is the working reference for the whole sequence.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 5 &mdash; KMS, then 3D</h3>
+<p><code>card0</code>, modeset, dynamic resolution, and the <code>efifb &rarr; drmfb</code> handover. Then negotiate <code>VIRTIO_GPU_F_VIRGL</code> and <code>_CONTEXT_INIT</code>, expose the render node, and confirm Mesa's virgl driver binds it.</p>
+<p><strong>Assert the handover ordering explicitly in the boot test.</strong> On arm64, <code>ArmVirtQemu</code>'s <code>VirtioGpuDxe</code> allocates the firmware framebuffer <em>as a virtio-gpu resource on the device</em>. Our device reset destroys it, so <code>drm_aperture_remove_conflicting_framebuffers()</code> must run first. On amd64 with bochs, <code>efifb</code> pointed at a PCI BAR that survives a reset, so sloppy ordering still looked fine. Here it would not.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 6 &mdash; packaging</h3>
+<p><code>VirtIOGraphics.kext</code> for amd64 and arm64, through the existing <code>ko2kext.sh</code> path, the symbol-resolution gate, and the boot test.</p>
+</div>
+
+<h2 id="risks">9. Three risks that would pass a smoke test</h2>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">R1 &mdash; silent memory corruption</span> <strong>The scatterlist&rarr;sglist flattening can lose the readable/writable boundary.</strong> <code>sglist_append_phys()</code> coalesces physically adjacent ranges (<code>subr_sglist.c:89-90</code>). If the last readable segment is adjacent to the first writable one, they merge &mdash; and <strong>the device gets write access to our command buffer</strong>. <code>virtqueue_enqueue()</code> also asserts <code>readable + writable == sg-&gt;sg_nseg</code>, so the counts must be post-flattening segment counts, not Linux <code>sgs[]</code> element counts.</p>
+<p><em>Mitigation:</em> fill <code>sg_segs[]</code> by hand over <code>sglist_init()</code> rather than using the append helpers, or explicitly detect and reject the merge. Both call sites hold a spinlock and pass <code>GFP_ATOMIC</code>, so pre-allocate per-vbuf sglists at <code>virtio_gpu_alloc_vbufs()</code> time. Note <code>sgs[1]</code> can be a <em>chained</em> multi-page list &mdash; walk <code>sg_next()</code>, do not assume <code>sg_is_last()</code> as D32372 did.</p>
+</div>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">R2 &mdash; a field that is a function here</span> <code>vq-&gt;num_free</code> is read <em>as a struct field</em> inside <code>wait_event()</code> predicates (<code>virtgpu_vq.c:338,341,469</code>). FreeBSD exposes it only as <code>virtqueue_nfree(vq)</code>. The predicate is re-evaluated after each wakeup with nothing in between to refresh a cached value, so a stale field deadlocks. <em>Mitigation:</em> refresh it inside <code>get_buf</code>/<code>add_sgs</code> (the wakeups come from the dequeue worker after it drains), or patch the three sites under <code>#ifdef __FreeBSD__</code> per our vendoring convention.</p>
+</div>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">R3 &mdash; capability ceilings</span> Three limits that cap what will work rather than breaking it outright. <strong>(a)</strong> No <code>get_shm_region</code> bus method exists, so blob resources / host-visible memory are out. <strong>(b)</strong> <code>VIRTIO_MAX_INDIRECT</code> is 256 descriptors &mdash; fine for 2D, potentially tight for large virgl command buffers. Pass <code>vqai_maxindirsz = 256</code> and negotiate <code>VIRTIO_RING_F_INDIRECT_DESC</code>; D32372 passed <strong>0</strong>, silently disabling indirect descriptors entirely. <strong>(c)</strong> <code>lkpinew_pci_dev()</code> does not call <code>linux_pdev_dma_init()</code>, so a hand-built <code>struct device</code> has <code>dma_priv == NULL</code> and the Linux DMA API will null-deref. Either parent the DRM device on a real <code>pci_dev</code>, or ensure <code>virtio_has_dma_quirk()</code> is true (the normal QEMU case) so the <code>sg_phys()</code> branch is taken instead.</p>
+</div>
+
+<h2 id="decisions">10. Decisions to make</h2>
+
+<h3>V0 &mdash; Extend base's driver, or build on drm-kmod? <span class="pill pill-good">recommended: drm-kmod, vendored</span></h3>
+<p>Fully worked in &sect;4. The short form: DRM on FreeBSD <em>is</em> drm-kmod, so no route escapes it; and Mesa's virgl driver &mdash; already installed, already built for both arches &mdash; talks a uapi we do not control. Vendoring satisfies that ABI by construction; hand-writing it means reimplementing it exactly against a userland we cannot change and cannot easily debug. The counter-argument worth taking seriously is that route C needs <strong>no LinuxKPI virtio shim at all</strong>, which is the least conventional part of the recommended route.</p>
+
+<h3>V1 &mdash; Where does the shim live? <span class="pill pill-good">answered: our repo</span></h3>
+<p>Resolved by &sect;4 &mdash; no base change is required, and LinuxKPI has zero virtio files to conflict with. Worth recording that upstreaming to drm-kmod is <em>not</em> the alternative: drm-kmod deleted <code>linuxkpi_gplv2.ko</code> in 2023 and is actively shrinking its out-of-tree LinuxKPI surface, so a shim would not be welcome there.</p>
+
+<h3>V2 &mdash; Vendor <code>drm_gem_shmem_helper.c</code>, or clean-room it? <span class="pill pill-bad">blocking</span></h3>
+<p>The licensing fork. Vendoring is mechanical but is GPL-2.0-<strong>only</strong>, breaking the or-later invariant stated in our own <code>graphics/README.md</code>. A clean-room implementation on FreeBSD <code>vm_object</code>/<code>OBJT_SWAP</code> keeps the invariant, is upstreamable to base, and would also unblock <code>drm_fbdev_shmem.c</code> &mdash; at the cost of being original VM work rather than a port. Whichever is chosen, the README should be amended or reaffirmed deliberately.</p>
+
+<h3>V3 &mdash; KMS first, or KMS and 3D together? <span class="pill pill-warn">sequencing</span></h3>
+<p>The 3D path adds <code>EXECBUFFER</code>, capsets and context-init on top of a working modeset driver. Landing KMS first gives a testable milestone and a shippable intermediate; going straight for 3D avoids reworking the ioctl surface twice. Note Phase 0 may decide this for us &mdash; if the host cannot present <code>virtio-gpu-gl</code>, 3D is untestable regardless.</p>
+
+<h3>V4 &mdash; Module and kext naming <span class="pill pill-warn">constrained</span></h3>
+<p>Not <code>virtio_gpu</code> &mdash; base owns that <code>MODULE_VERSION</code>. Proposed <code>virtio_gpu_drm</code> for the module and <code>VirtIOGraphics.kext</code> for the bundle. Avoid <code>linuxkpi_virtio</code> verbatim for the shim too: it is a plausible future base module name, and drm-kmod's <code>linuxkpi_video</code> collides with base for exactly that reason.</p>
+
+<h3>V5 &mdash; Which arches ship it? <span class="pill pill-neutral">expected: both</span></h3>
+<p>arm64 is the motivating case, but virtio-gpu is equally the right driver for amd64 VMs, where it would supersede bochs for anything using QEMU/KVM. Shipping both also means the amd64 CI lane can exercise the driver, which arm64 CI currently cannot.</p>
+
+<h3>V6 &mdash; Blob resources: accept the ceiling or pursue it? <span class="pill pill-neutral">scoping</span></h3>
+<p>Per R3(a), no <code>get_shm_region</code> bus method exists in FreeBSD's 12-method VIRTIO_BUS interface. Returning <code>false</code> degrades cleanly. Adding it would be a base change &mdash; the only place in this project where one is even arguably needed.</p>
+
+<h3>V7 &mdash; Never add <code>device virtio_gpu</code> <span class="pill pill-good">decided</span></h3>
+<p>Recorded as a standing constraint rather than a decision to revisit. See the naming callout in &sect;5.</p>
+
+<h2 id="unconfirmed">11. Unconfirmed</h2>
+<ul>
+  <li><strong>Nothing here has been compiled or loaded.</strong> Every claim is read from source, Makefiles and reviews.</li>
+  <li>Whether UTM on Apple Silicon can present <code>virtio-gpu-gl-pci</code> with a GL backend, and whether Apple's Virtualization.framework exposes virgl at all. <strong>Phase 0 work</strong> &mdash; it decides whether the 3D half is reachable on the target hardware.</li>
+  <li>Whether the arm64 <code>kldload</code> hang on drm-kmod 6.12 touches <code>drm.ko</code> core paths. <strong>Phase 0 work.</strong></li>
+  <li>Whether <code>drm_gem_shmem_helper.c</code> builds against our stack &mdash; its LinuxKPI gap was not assessed.</li>
+  <li>LinuxKPI's <code>dma_buf</code> completeness for <code>virtgpu_prime.c</code>'s export/attach path. Consider compiling that out initially.</li>
+</ul>
+
+<p class="footnote">Sub-plan of the <a href="nextbsd-graphics-plan.html">NextBSD graphics plan</a>. Sibling of the <a href="nextbsd-fallback-graphics-plan.html">fallback graphics plan</a>, which solves a different problem (unsupported hardware) and does not block or depend on this one. The <a href="nextbsd-arm64-kms-options.html">arm64 KMS options</a> page is the decision record showing how this route was chosen over five alternatives. Every factual claim was checked against a primary source; &sect;10 lists what was not.</p>
+
+</div>
+</body>
+</html>

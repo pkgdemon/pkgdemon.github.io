@@ -81,6 +81,7 @@
   <li><a href="#matrix">Side-by-side comparison</a></li>
   <li><a href="#priorart">Prior art, assessed</a></li>
   <li><a href="#corrections">Corrections to earlier claims</a></li>
+  <li><a href="#otherhv">Other hypervisors: Hyper-V and Xen</a></li>
   <li><a href="#unconfirmed">Unconfirmed &mdash; check before committing effort</a></li>
   <li><a href="#targets">Proposed per-arch target set</a></li>
 </ol>
@@ -351,7 +352,33 @@ info-&gt;fb_pbase  = efifb-&gt;fb_addr;</code></pre>
 <p><strong>Also corrected:</strong> vmwgfx was assumed x86-only; it supports ARM64 upstream and is the display driver for Arm guests on Apple Silicon. And bochs was described as invalid on arm64 for lack of a VGA device; the device is in fact instantiable and listed in UTM's own device table &mdash; it is <a href="#options">firmware, not the device</a>, that makes Option A unusable.</p>
 </div>
 
-<h2 id="unconfirmed">9. Unconfirmed &mdash; check before committing effort</h2>
+<h2 id="otherhv">9. Other hypervisors: Hyper-V and Xen</h2>
+
+<p>Both have real DRM drivers upstream; neither is in drm-kmod, and neither was in this plan's original six options. Verified against Linux&nbsp;v6.12.</p>
+
+<h3>Hyper-V &mdash; <code>drivers/gpu/drm/hyperv/</code> <span class="pill pill-good">cheapest follow-on</span></h3>
+<p>Five files, in Linux since 5.14. A proper KMS driver for Hyper-V synthetic video, and critically it is <strong>shmem-backed, not VRAM</strong>:</p>
+<pre><code>#include &lt;drm/drm_gem_shmem_helper.h&gt;
+DRM_GEM_SHMEM_DRIVER_OPS,
+drm_fbdev_shmem_setup(dev, 0);</code></pre>
+<p>That places it on the same side of the line as virtio-gpu: it would <em>not</em> hit the device-memory defect (<a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/71">nextbsd-kernel#71</a>) that stops every VRAM-backed driver, and it needs the same prerequisite &mdash; <code>drm_gem_shmem_helper</code>, the 782-line GPL-2.0-only file drm-kmod omits.</p>
+<p><strong>Why it is the cheapest follow-on:</strong> it shares virtio-gpu's single largest cost, so once that helper exists Hyper-V is mostly the driver itself. And unlike virtio, the transport is <em>not</em> starting from zero &mdash; FreeBSD ships Hyper-V support in base (<code>hv_vmbus</code> and friends), where LinuxKPI has no virtio bus at all.</p>
+
+<h3>Xen / Citrix &mdash; <code>drivers/gpu/drm/xen/</code> <span class="pill pill-bad">not recommended</span></h3>
+<p>Fourteen files: a paravirtual DRM frontend over Xen's display protocol, with its own event channels (<code>xen_drm_front_evtchnl.c</code>), config layer, and a bespoke GEM implementation (<code>xen_drm_front_gem.c</code>).</p>
+<p>The graphics driver is the <em>small</em> part of this job. It sits on Xen guest infrastructure &mdash; grant tables, xenbus &mdash; which is an entire KPI surface that does not exist, and which nothing else we want would reuse. Citrix Hypervisor guests can in any case use the standard emulated devices, so this buys little that is not already covered.</p>
+
+<div class="scroll">
+<table>
+<tr><th>Driver</th><th>Backing</th><th>Needs</th><th>Relative cost</th></tr>
+<tr><td>virtio-gpu</td><td>shmem</td><td>shmem helper + a LinuxKPI virtio bus shim (none exists)</td><td>months</td></tr>
+<tr><td><strong>hyperv_drm</strong></td><td>shmem</td><td>shmem helper + vmbus glue (<strong>base already has <code>hv_vmbus</code></strong>)</td><td><strong>less than virtio-gpu</strong></td></tr>
+<tr><td>vmwgfx</td><td>VRAM</td><td>nothing new, but 1.12&nbsp;MB across 57 files</td><td>months</td></tr>
+<tr><td>xen-drm-front</td><td>bespoke GEM</td><td>Xen grant tables + xenbus KPI, none of which exists</td><td>most</td></tr>
+</table>
+</div>
+
+<h2 id="unconfirmed">10. Unconfirmed &mdash; check before committing effort</h2>
 <ul>
   <li>Whether the arm64 <code>kldload</code> hang reported against drm-kmod 6.12 (dsl@ and evadot, Jan 2026) is amdgpu-specific or touches <code>drm.ko</code> core paths. <strong>This one matters for Option B</strong> &mdash; if it is a core path, every option here is blocked until it is understood.</li>
   <li>The numeric PCI ID VMware Fusion presents on Apple Silicon. <code>15ad:0406</code> is a strong inference from the Kconfig and Rusin's commit, but no <code>lspci -nn</code> dump was found. Decides whether Option F is even addressable.</li>
@@ -363,7 +390,7 @@ info-&gt;fb_pbase  = efifb-&gt;fb_addr;</code></pre>
 <p><span class="pill pill-warn">Source to distrust</span> <a href="https://www.freebsdsoftware.org/blog/freebsd-wayland-2026.html">freebsdsoftware.org, &ldquo;State of Wayland on FreeBSD in 2026&rdquo;</a> (2026-04-09) claims virtio-gpu works with Wayland compositors on FreeBSD and that nouveau has limited drm-kmod support. <strong>Both are false</strong> &mdash; drm-kmod ships neither driver. Likely generated content; do not cite it.</p>
 </div>
 
-<h2 id="targets">10. Proposed per-arch target set</h2>
+<h2 id="targets">11. Proposed per-arch target set</h2>
 
 <p>Reflecting the stated preference that arm64 carry only what an ARM VM can actually use, rather than everything that happens to compile.</p>
 

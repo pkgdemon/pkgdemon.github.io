@@ -82,6 +82,7 @@
   <li><a href="#priorart">Prior art, assessed</a></li>
   <li><a href="#corrections">Corrections to earlier claims</a></li>
   <li><a href="#otherhv">Other hypervisors: Hyper-V and Xen</a></li>
+  <li><a href="#candidates">Driver candidate survey &mdash; what the helper work unlocks</a></li>
   <li><a href="#unconfirmed">Unconfirmed &mdash; check before committing effort</a></li>
   <li><a href="#targets">Proposed per-arch target set</a></li>
 </ol>
@@ -378,7 +379,43 @@ drm_fbdev_shmem_setup(dev, 0);</code></pre>
 </table>
 </div>
 
-<h2 id="unconfirmed">10. Unconfirmed &mdash; check before committing effort</h2>
+<h2 id="candidates">10. Driver candidate survey &mdash; what the helper work unlocks</h2>
+
+<p>Recorded for later consideration, not proposed now. The question this answers: having built the VRAM/KMS helper layer for bochs and vboxvideo, which other upstream drivers become cheap?</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">The deflating answer</span> <strong>Almost every small driver migrated to shmem years ago.</strong> bochs and vboxvideo were effectively the last <code>drm_gem_vram_helper</code> holdouts, so the VRAM work unlocked exactly the two drivers it was written for &mdash; there is no queue of easy VRAM drivers behind it.</p>
+</div>
+
+<div class="scroll">
+<table>
+<tr><th>Driver</th><th>Backing</th><th>Blocked on</th><th>Why it might matter</th></tr>
+<tr><td><code>ast</code> (ASPEED BMC)</td><td>shmem</td><td>shmem helper</td><td><strong>arm64 and amd64 servers.</strong> Kconfig is <code>depends on DRM &amp;&amp; PCI &amp;&amp; MMU</code> with <em>no</em> arch constraint; ASPEED BMCs are what Ampere/Marvell-class arm64 server boards actually ship. The strongest hardware case on this list</td></tr>
+<tr><td><code>mgag200</code> (Matrox BMC)</td><td>shmem</td><td>shmem helper</td><td>Server BMCs, mostly x86 (Dell iDRAC / HPE iLO lineage)</td></tr>
+<tr><td><code>cirrus</code></td><td>shmem</td><td>shmem helper</td><td>Legacy qemu; largely superseded by bochs</td></tr>
+<tr><td><code>hyperv</code></td><td>shmem</td><td>shmem helper</td><td>Hyper-V guests. Transport already in FreeBSD base (<code>hv_vmbus</code>) &mdash; see &sect;9</td></tr>
+<tr><td><code>simpledrm</code> / <code>sysfb</code></td><td>shmem</td><td>shmem helper</td><td>Any UEFI machine, any arch. See the <a href="nextbsd-fallback-graphics-plan.html">fallback plan</a>, which proposes writing this natively instead</td></tr>
+<tr><td><strong><code>qxl</code></strong></td><td>TTM + <code>drm_gem_ttm_helper</code></td><td><strong>nothing new</strong></td><td><strong>The cheapest driver on the board.</strong> 168&nbsp;KB, and drm-kmod already ships and compiles both helpers it needs. A qemu/SPICE device, so unlike vboxvideo <em>CI could actually exercise it</em></td></tr>
+</table>
+</div>
+
+<h3>What this changes about the shmem helper</h3>
+<p>It is not virtio-gpu's private cost. One prerequisite gates <strong>six drivers</strong> &mdash; virtio-gpu, hyperv, ast, mgag200, cirrus and simpledrm &mdash; including the BMC driver that matters on real arm64 server hardware. That is a materially stronger argument for paying it than &ldquo;virtio-gpu needs it&rdquo;.</p>
+
+<h3>qxl: cheap, with one caution</h3>
+<p>qxl needs no new helper layer at all. The caution: drm-kmod <a href="https://github.com/freebsd/drm-kmod/issues/62">issue&nbsp;#62</a> records someone's qxl attempt panicking <em>inside <code>ttm_bo_vm_fault</code></em>. Now that the device-memory defect is understood (<a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/71">nextbsd-kernel#71</a>), that reads like the same bug &mdash; qxl has VRAM and would need the same <code>vm_phys_fictitious_reg_range()</code> registration. Suggestive, not proven.</p>
+
+<h3>Not in this category: SoC display controllers</h3>
+<p>Raspberry Pi (<code>vc4</code>), Rockchip, Allwinner and friends are a <strong>different problem</strong>, and none of the helper work applies. <code>vc4</code>'s Kconfig alone:</p>
+<pre><code>depends on ARCH_BCM2835
+depends on RASPBERRYPI_FIRMWARE      # VideoCore firmware mailbox
+depends on SND &amp;&amp; SND_SOC            # ALSA, for HDMI audio
+depends on COMMON_CLK                # Linux clock framework
+select DRM_GEM_DMA_HELPER            # CMA -- a third backing type
+select DRM_DISPLAY_HDMI_STATE_HELPER</code></pre>
+<p>659&nbsp;KB, needing a CMA GEM helper, the common clock framework, device-tree attachment, an ALSA/SoC binding and a firmware mailbox &mdash; none of which exists here. The only working precedent for DRM on FreeBSD/arm64 is <a href="https://github.com/bsd-sbc-drm/drm-subtree">bsd-sbc-drm</a> (jsm@), whose Rockchip drivers are exactly this shape. If SBCs ever become a target, that is a separate track with its own prerequisites and should be scoped as one.</p>
+
+<h2 id="unconfirmed">11. Unconfirmed &mdash; check before committing effort</h2>
 <ul>
   <li>Whether the arm64 <code>kldload</code> hang reported against drm-kmod 6.12 (dsl@ and evadot, Jan 2026) is amdgpu-specific or touches <code>drm.ko</code> core paths. <strong>This one matters for Option B</strong> &mdash; if it is a core path, every option here is blocked until it is understood.</li>
   <li>The numeric PCI ID VMware Fusion presents on Apple Silicon. <code>15ad:0406</code> is a strong inference from the Kconfig and Rusin's commit, but no <code>lspci -nn</code> dump was found. Decides whether Option F is even addressable.</li>
@@ -390,7 +427,7 @@ drm_fbdev_shmem_setup(dev, 0);</code></pre>
 <p><span class="pill pill-warn">Source to distrust</span> <a href="https://www.freebsdsoftware.org/blog/freebsd-wayland-2026.html">freebsdsoftware.org, &ldquo;State of Wayland on FreeBSD in 2026&rdquo;</a> (2026-04-09) claims virtio-gpu works with Wayland compositors on FreeBSD and that nouveau has limited drm-kmod support. <strong>Both are false</strong> &mdash; drm-kmod ships neither driver. Likely generated content; do not cite it.</p>
 </div>
 
-<h2 id="targets">11. Proposed per-arch target set</h2>
+<h2 id="targets">12. Proposed per-arch target set</h2>
 
 <p>Reflecting the stated preference that arm64 carry only what an ARM VM can actually use, rather than everything that happens to compile.</p>
 

@@ -223,6 +223,53 @@ FreeBSD: vfs.root.mountfrom=ufs:/dev/... -v</code></pre>
 
 <p>On a <strong>500+</strong> the 3-pin debug connector may not be physically exposed &mdash; the signals exist (<code>bcm2712-rpi-500.dts</code> still names <code>AON_GPIO_13 = "UART_TX_FS"</code>) but it is inside a keyboard enclosure and no teardown confirms a populated header. <strong>The 40-pin header is the path that definitely works</strong>: pin&nbsp;6 GND, pin&nbsp;8 TXD, pin&nbsp;10 RXD, 3.3&nbsp;V, 115200&nbsp;8N1, with <code>enable_rp1_uart=1</code> + <code>pciex4_reset=0</code> so the firmware initialises it and declines to reset RP1. For <code>EARLY_PRINTF</code>, hard-code the PL011 at <code>0x1F_0003_0000</code> &mdash; the firmware has already set the baud rate, so only the FIFO needs poking.</p>
 
+<h3>Physically connecting a console from a Mac</h3>
+
+<div class="callout callout-bad">
+<p><strong>USB-C will not work.</strong> The Pi&nbsp;500+'s USB-C port is <strong>power only</strong>. Verified on the board: <code>/sys/class/udc/</code> is <strong>empty</strong> (no USB Device Controller, so no gadget mode), there is no <code>dwc2</code> node, no <code>dr_mode</code> property anywhere in the device tree, and no <code>usb_role</code> switch. <code>/chosen/power/usbpd_power_data_objects</code> decodes to a 5&nbsp;V&nbsp;/&nbsp;5&nbsp;A fixed-supply PDO &mdash; it negotiates power and nothing else. The Pi&nbsp;4's USB-C could do OTG/gadget via <code>dwc2</code>; on the Pi&nbsp;5 family all USB goes through RP1's two host-only <code>snps,dwc3</code> controllers and the USB-C goes to the PMIC. A USB-A-to-USB-A cable does not help either &mdash; both ends are hosts.</p>
+</div>
+
+<p>A <strong>USB-to-TTL serial adapter</strong> is required: a USB device to the Mac on one side, 3.3&nbsp;V UART pins on the other.</p>
+
+<h4>What to buy</h4>
+
+<p>The <a href="https://www.raspberrypi.com/products/debug-probe/">Raspberry Pi Debug Probe</a> (<a href="https://www.raspberrypi.com/news/raspberry-pi-debug-probe-a-plug-and-play-debug-kit-for-12/">$12</a>, in production until at least Jan&nbsp;2030) is the right tool here for a reason specific to this board: <strong>it ships with cables for both UART paths</strong> &mdash; a 3-pin JST-SH&nbsp;&rarr;&nbsp;JST-SH lead that mates directly with the Pi&nbsp;5-family debug connector, <em>and</em> JST-SH&nbsp;&rarr;&nbsp;0.1&Prime; female and male header leads for the 40-pin GPIO header. One purchase covers whichever connector turns out to be reachable.</p>
+
+<p>It is also <strong>CDC-ACM class-compliant, so macOS needs no driver at all</strong> &mdash; it enumerates as <code>/dev/cu.usbmodem*</code>. That matters more than it sounds: generic CP2102 / CH340 dongles may want a vendor kext depending on the macOS version, which is friction you do not want in the middle of a bring-up. FTDI FT232R parts are the next-best option (macOS has carried an in-box FTDI driver for years).</p>
+
+<p>Stocked by <a href="https://www.raspberrypi.com/products/debug-probe/">Raspberry Pi's own reseller list</a>, and directly by <a href="https://shop.pimoroni.com/en-us/products/raspberry-pi-debug-probe">Pimoroni</a>, <a href="https://www.sparkfun.com/raspberry-pi-debug-probe.html">SparkFun</a>, <a href="https://www.microcenter.com/product/663804/raspberry-pi-debug-probe">Micro Center</a>, <a href="https://www.canakit.com/raspberry-pi-debug-probe.html">CanaKit</a> and <a href="https://vilros.com/products/raspberry-pi-debug-probe">Vilros</a>. <span class="cite">Prices and stock as of 2026-08-17 &mdash; check before ordering.</span></p>
+
+<h4>Wiring to the 40-pin header</h4>
+
+<p>Probe lead colours are <strong>orange = TX (out of probe)</strong>, <strong>yellow = RX (into probe)</strong>, <strong>black = GND</strong>. Serial is crossed, so:</p>
+
+<pre><code>Probe orange (TX) ──▶ Pi pin 10   GPIO15 / RXD
+Probe yellow (RX) ◀── Pi pin 8    GPIO14 / TXD
+Probe black (GND) ─── Pi pin 6    GND</code></pre>
+
+<div class="callout callout-warn">
+<p><strong>Two ways to damage the board.</strong> Use a <strong>3.3&nbsp;V</strong> adapter &mdash; a 5&nbsp;V one can destroy the SoC's UART pins. And <strong>leave the adapter's VCC / 5&nbsp;V line disconnected</strong>: the Pi powers itself, and back-feeding it through a GPIO pin is a common way to kill a board. Ground, TX and RX only &mdash; three wires, never four.</p>
+</div>
+
+<h4>On the Mac</h4>
+
+<pre><code>ls /dev/cu.usb*                          # find it
+brew install tio
+tio /dev/cu.usbmodem1101 -b 115200</code></pre>
+
+<p>Use <code>/dev/cu.*</code>, <strong>not</strong> <code>/dev/tty.*</code>. On macOS the <code>tty.</code> node blocks on carrier-detect and will simply hang; <code>cu.</code> (call-up) does not. And prefer <code>tio</code> over <code>screen</code> for one reason that matters enormously here: <strong>it reconnects automatically when the device disappears.</strong> Driver bring-up means power-cycling the board constantly, and <code>screen</code> dies on every reboot.</p>
+
+<h4>Which connector to aim for</h4>
+
+<table>
+<tr><th></th><th>UART10 &mdash; 3-pin debug</th><th>RP1 UART0 &mdash; 40-pin pins 8/10</th></tr>
+<tr><td>Survives a PCIe / RP1 reset</td><td><strong>Yes</strong> &mdash; it is in the BCM2712</td><td><strong>No</strong> &mdash; it is inside RP1</td></tr>
+<tr><td>Needs <code>enable_rp1_uart=1</code> + <code>pciex4_reset=0</code></td><td>No</td><td>Yes</td></tr>
+<tr><td>Exposed on a 500+</td><td><span class="pill pill-warn">unconfirmed</span> signals exist (<code>AON_GPIO_13 = "UART_TX_FS"</code>) but no teardown confirms a populated connector</td><td><span class="pill pill-good">yes</span> rear edge, as on the Pi&nbsp;400/500</td></tr>
+</table>
+
+<p>The 40-pin header is the path that certainly works, and is the right choice for phases&nbsp;0&ndash;2. But note what it costs from phase&nbsp;3 onward: <strong>the console would live on the very hardware being brought up.</strong> The first time a half-written <code>bcm2712-pcie</code> or <code>rpone</code> driver resets the link, output stops &mdash; and a lost console is indistinguishable from a hang. That is a concrete reason to open the case early and look for the 3-pin JST-SH connector, before the PCIe work starts rather than during it.</p>
+
 <h2 id="map">4. The driver map</h2>
 
 <div class="callout callout-good">

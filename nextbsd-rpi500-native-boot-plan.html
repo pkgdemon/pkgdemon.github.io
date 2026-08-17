@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD on the Raspberry Pi 500+ — native boot, and the driver map</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  h4 { font-size:0.98rem; margin:20px 0 8px; }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .scroll { overflow-x:auto; }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e6e6; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+  .opt { border:1px solid var(--border); border-radius:4px; padding:2px 22px 6px; margin:0 0 26px; background:white; }
+  .opt h3 { margin-top:22px; }
+  .verdict { font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; part of <a href="nextbsd-research.html">NextBSD Research</a> &middot; companion to the <a href="nextbsd-arm64-kms-options.html">arm64 KMS options</a> and the <a href="nextbsd-driver-delivery-plan.html">driver-delivery plan</a></p>
+
+<h1>NextBSD on the Raspberry Pi 500+: native boot, and the driver map</h1>
+
+<p class="lede">The target is a <strong>Raspberry Pi 500+</strong> &mdash; BCM2712 <strong>D0</strong> silicon, 16&nbsp;GB, built-in 256&nbsp;GB NVMe, and a keyboard that sits behind PCIe. <a href="https://github.com/worproject/rpi5-uefi">worproject/rpi5-uefi</a> cannot boot it, and that is not bad luck: the repo has been archived since Feb&nbsp;2025, its only releases target pre-D0 <code>BCM2712C1</code>, and board type <code>0x19</code> was never added. This page lays out <strong>every option</strong> for booting it natively &mdash; one of which, unexpectedly, needs <strong>zero new boot code</strong> &mdash; and maps every device on the board to a driver we can port today, port from Linux, or must write new.</p>
+
+<div class="callout">
+<p><span class="pill pill-neutral">Survey, not a decision</span> <strong>Nothing here is chosen yet.</strong> Every route is costed with its evidence so the calls can be made from the material rather than from a recommendation. The open decisions are gathered in <a href="#decisions">&sect;9</a>; the sequencing in <a href="#seq">&sect;7</a> is a <em>dependency order</em> (what unblocks what), not a schedule or a commitment.</p>
+</div>
+
+<p class="meta">2026-08-17. Written after a 4-agent research sweep (FreeBSD arm64 status; OpenBSD/NetBSD/DragonFly driver survey; the BCM2712 boot chain; Linux&nbsp;6.12 port viability), plus a live hardware inventory taken over ssh from the board itself. Citations to <code>freebsd/freebsd-src</code> <code>main</code>, <code>openbsd/src</code> <code>master</code>, <code>raspberrypi/linux</code> <code>rpi-6.12.y</code>, <code>u-boot/u-boot</code> <code>master</code>, and the Raspberry Pi documentation and EEPROM release notes. Every load-bearing source claim below was re-verified directly against the tree rather than taken from an agent summary.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Settled 2026-08-17</span> <strong>FreeBSD can already be booted directly by the Raspberry Pi firmware, with no U-Boot, no UEFI, and no new boot code.</strong> <code>sys/arm64/conf/std.arm64:70</code> sets <code>options LINUX_BOOT_ABI</code>; <code>sys/conf/Makefile.arm64:87</code> has a <code>kernel.bin</code> target that runs <code>arm_kernel_boothdr.awk -v hdrtype=v8booti</code>; and <code>write_v8booti()</code> emits a genuine arm64 Linux <code>Image_header</code>. The Pi&nbsp;5 firmware parses exactly that header. The two halves of this contract were built for unrelated reasons and happen to fit.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+  <li><a href="#hw">The hardware, as measured</a></li>
+  <li><a href="#uefi">Why the UEFI route is closed</a></li>
+  <li><a href="#boot">The boot chain, and the four routes</a></li>
+  <li><a href="#map">The driver map &mdash; port today, port from Linux, or write new</a></li>
+  <li><a href="#kext">Delivering it as kexts</a></li>
+  <li><a href="#graphics">Graphics: VideoCore, vc4, and v3d</a></li>
+  <li><a href="#seq">Dependency order</a></li>
+  <li><a href="#risks">Open questions and risks</a></li>
+  <li><a href="#decisions">The decisions to make</a></li>
+</ol>
+</div>
+
+<h2 id="hw">1. The hardware, as measured</h2>
+
+<p>Taken from the running board (Debian 13, kernel <code>6.12.47+rpt-rpi-2712</code>) rather than from a spec sheet, because the board and its firmware disagree about what it is.</p>
+
+<table>
+<tr><th>Property</th><th>Value</th><th>Consequence</th></tr>
+<tr><td>OTP revision</td><td><code>e04190</code> &rarr; Pi 500+ Rev 1.0, 16&nbsp;GB, Sony UK</td><td>type <code>0x19</code>, memory bits <code>0b110</code></td></tr>
+<tr><td>Reported model</td><td><code>Raspberry Pi 500 Rev 1.0</code></td><td>firmware appends the revision at runtime</td></tr>
+<tr><td>DTB loaded</td><td><code>bcm2712-rpi-500.dtb</code></td><td>no 500+ DTB exists on any branch &mdash; the 500 DTS covers both</td></tr>
+<tr><td>Stepping</td><td><strong>D0</strong> &mdash; <code>/proc/device-tree/axi/gpu/compatible</code> reads <code>brcm,bcm2712d0-vc6</code></td><td>the reason UEFI fails (&sect;2)</td></tr>
+<tr><td>EEPROM</td><td>2025-06-13; latest 2025-11-05</td><td>update available and probably wanted</td></tr>
+<tr><td>Secure firmware</td><td><code>atf@0 { reg = &lt;0 0 0 0x80000&gt;; no-map; }</code>, PSCI&nbsp;v1.1 over SMC, SMCCC&nbsp;v1.2</td><td><strong>real TF-A BL31 &mdash; SMP is free</strong></td></tr>
+<tr><td>UEFI</td><td><code>efi: UEFI not found</code></td><td>the firmware boots a kernel directly today</td></tr>
+<tr><td>Console</td><td><code>107d001000.serial</code> <code>[arm,pl011]</code> = <code>ttyAMA10</code> @115200</td><td>FreeBSD already has <code>uart_dev_pl011</code></td></tr>
+<tr><td>Framebuffer</td><td><strong>no <code>simple-framebuffer</code> node anywhere</strong>; only <code>raspberrypi,rpi-firmware-kms-2712</code></td><td><strong>serial is the only console until vc4 &mdash; see &sect;6</strong></td></tr>
+</table>
+
+<h3>The topology that decides everything</h3>
+
+<p>Both of the things you need to use this machine &mdash; the keyboard and the disk &mdash; are behind PCIe:</p>
+
+<pre><code>BCM2712
+ ├─ pcie1  0001:00:00.0 [brcm,bcm2712-pcie]  MSI: mip1
+ │   └─ 0001:01:00.0  NVMe 1d97:5216  FORESEE XP1000F256G, 238.5 G   ← built-in 500+ SSD
+ └─ pcie2  0002:00:00.0 [brcm,bcm2712-pcie]  MSI: mip0, Gen2 x4
+     └─ 0002:01:00.0  RP1 southbridge 1de4:0001
+         ├─ 1f00100000  ethernet [raspberrypi,rp1-gem, cdns,macb]   ← Cadence GEM
+         ├─ 1f00200000  usb [snps,dwc3] → xhci-hcd.0
+         └─ 1f00300000  usb [snps,dwc3] → xhci-hcd.1
+             └─ 3-2  2e8a:0011  "Raspberry Pi Ltd Pi 500+ Keyboard (ANSI)"  usbhid</code></pre>
+
+<p>That product string is read from the device's own USB descriptor, so it is the real 500+ keyboard. Nothing types on this machine until PCIe, RP1, dwc3, xHCI and USB-HID all work &mdash; five layers. <strong>A serial cable is not a convenience here, it is the only input channel for the entire bring-up.</strong></p>
+
+<h2 id="uefi">2. Why the UEFI route is closed</h2>
+
+<p>Three independent reasons, all verified, in order of severity.</p>
+
+<div class="callout callout-bad">
+<p><strong>1. Wrong silicon.</strong> <code>bcm2712-rpi-500.dts</code> opens with <code>#include "bcm2712d0-rpi-5-b.dts"</code> &mdash; the Pi 500/500+ is a <strong>D0</strong> part. worproject's README: <em>&ldquo;tested only on early Raspberry Pi 5B models with the BCM2712C1 SoC. Recent D0 models may require a newer EEPROM firmware, which has been reported to break the graphical output in UEFI.&rdquo;</em> The D0 build was never released &mdash; test builds only.</p>
+<p><strong>2. Board type <code>0x19</code> does not exist in the firmware.</strong> It is absent from <code>BoardRevisionHelperLib</code> on every branch, and no <code>bcm2712-rpi-500.dtb</code> ships in any image. In DT mode it hands the OS a Pi&nbsp;5B DTB describing hardware this machine does not have, and omitting the M.2 and keyboard wiring.</p>
+<p><strong>3. The repository is archived read-only</strong> (2025-02-04). No fixes are coming.</p>
+</div>
+
+<p><strong>16&nbsp;GB is <em>not</em> the problem</strong>, contrary to the obvious guess. <code>256MB &lt;&lt; 6</code> is decoded correctly and mapped above 4&nbsp;GB. (The 3&nbsp;GB cap people remember is <code>pftf/RPi4</code>, a real BCM2711 DMA erratum. BCM2712 has no such limit.) The failures are D0 display and DTB failures.</p>
+
+<p>And there will never be a <code>pftf/RPi5</code>. Pete Batard, <a href="https://github.com/pftf/RPi4/issues/243">pftf/RPi4#243</a>: <em>&ldquo;we have moved on to other endeavours and have currently no scope (or interest) to invest our time to do the same for the Pi&nbsp;5.&rdquo;</em> Mario B&#259;l&#259;nic&#259;, rpi5-uefi's own author, in the same thread: <em>&ldquo;most of us have simply moved on&hellip; I upstreamed my TF-A port for the RPi&nbsp;5 over a year ago&hellip; they still haven't contributed any of those changes back.&rdquo;</em></p>
+
+<p>Note which half survived: <strong>the TF-A port <em>was</em> upstreamed</strong> (<code>PLAT=rpi5</code> is in mainline TF-A) and lives on inside the EEPROM. The EDK2 platform half was never upstreamed, and died. That is the argument for putting our effort where upstream will carry it.</p>
+
+<div class="callout">
+<p><strong>The one live UEFI option, if we want it:</strong> <a href="https://github.com/NumberOneGit/rpi5-uefi">NumberOneGit/rpi5-uefi</a> &mdash; not archived, last push 2026-08-02, maintained by the person who did the D0 debugging in the archived tracker. Its README: <em>&ldquo;This fork remaps pinctrl for the D0 revision of the BCM2712&hellip; for users with D0 models &mdash; including the 16&nbsp;GB&hellip; variants.&rdquo;</em> It fixes reasons 1 and 3. It does <strong>not</strong> fix reason 2 &mdash; board type <code>0x19</code> would be our port. Also worth watching: <a href="https://github.com/pi-bmc/rpi5-uefi-build">pi-bmc/rpi5-uefi-build</a>, third-party, pushed 2026-08-17, carrying an <code>Rp1GemDxe</code> UEFI driver for RP1's Cadence GEM &mdash; precisely the ethernet gap every other fork has.</p>
+</div>
+
+<h2 id="boot">3. The boot chain, and the four routes</h2>
+
+<h3>What the Pi 5 firmware actually does</h3>
+
+<p>The Pi&nbsp;5 family firmware is <strong>entirely self-contained in the SPI EEPROM</strong>. There is no <code>bootcode.bin</code>, no <code>start*.elf</code>, no <code>fixup*.dat</code> &mdash; the docs are explicit: <em>&ldquo;The Raspberry Pi 5 does not use <code>elf</code> files&hellip; the bootloader has an embedded version of <code>start.elf</code>.&rdquo;</em></p>
+
+<pre><code>1. boot ROM → SPI EEPROM 2nd stage
+2. VPU bootloader:
+     • loads RP1 firmware (~46 KB) into RP1 SRAM over I2C   ← concurrent with DDR init
+       (RP1 missing = FATAL: 4 long / 3 short blinks)
+     • releases RP1_RUN → RP1's Cortex-M3 boots → its PCIe endpoint comes alive
+     • init clocks + LPDDR4X, walk BOOT_ORDER, train the x4 link, enumerate 1de4:0001
+3. loads armstub (TF-A BL31) at 0x0, kernel at 0x200000, DTB, initramfs
+4. unless pciex4_reset=0: resets the x4 controller before handoff
+5. EL3 TF-A BL31 → eret → EL2 non-secure: kernel entry, x0 = physical DTB pointer</code></pre>
+
+<p>Two things follow that are worth stating plainly, because they invert the usual assumption that the Pi is a hostile boot target:</p>
+
+<ul>
+<li><strong>RP1 is brought up by the firmware, not by us.</strong> Its firmware is embedded in the EEPROM &mdash; there is nothing to ship or load. An OS driver's whole job is: enumerate PCIe, map BAR1, allocate 61 MSI-X vectors, program <code>MSIX_CFG_n</code>, populate the DT subtree. Linux's <code>rp1_pci.c</code> probe is a few dozen lines, and it detects a firmware-less RP1 by checking whether BAR1 has grown from 64&nbsp;KB to 4&nbsp;MB.</li>
+<li><strong>The BCM2712 is a <em>more</em> conventional arm64 target than the BCM2711.</strong> The Pi&nbsp;4 chain needed FreeBSD's own hand-rolled EL3 armstub to fake up a GIC and PSCI. That is gone, replaced by real TF-A BL31, a real GICv2, competent DTB fixups, and a documented <code>kernel=</code> contract. FreeBSD's problem on this board was never the boot protocol.</li>
+</ul>
+
+<h3>The four routes, costed</h3>
+
+<p>Presented so they can be compared, not ranked. (a) and (c) are not mutually exclusive &mdash; they share every driver below the boot layer, and (a) doubles as the debugging harness for (c).</p>
+
+<div class="opt">
+<h3><span class="pill pill-good">Lowest cost to try</span> (a) Firmware &rarr; <code>kernel.bin</code> directly</h3>
+<p>Verified in <code>freebsd-src</code> <code>main</code>:</p>
+<table>
+<tr><th>Piece</th><th>Location</th><th>What it does</th></tr>
+<tr><td><code>LINUX_BOOT_ABI</code></td><td><code>sys/arm64/conf/std.arm64:70</code></td><td>included by GENERIC; enables the booti path</td></tr>
+<tr><td><code>kernel.bin</code> target</td><td><code>sys/conf/Makefile.arm64:87</code></td><td>strips ELF, prepends a boot header blob</td></tr>
+<tr><td><code>write_v8booti()</code></td><td><code>sys/tools/arm_kernel_boothdr.awk:150</code></td><td>emits a real arm64 <code>Image_header</code>, magic <code>0x644d5241</code></td></tr>
+<tr><td>FDT pointer</td><td><code>sys/arm64/arm64/locore.S</code></td><td><code>x0 != 0 &amp;&amp; x0 &lt; KERNBASE</code> &rarr; treat as physical FDT</td></tr>
+<tr><td>boot args</td><td><code>sys/arm64/arm64/machdep_boot.c:62</code></td><td><code>#define CMDLINE_GUARD "FreeBSD:"</code> &mdash; reads <code>/chosen/bootargs</code> after the guard</td></tr>
+</table>
+<p>So <code>make kernel.bin</code>, copy it as <code>kernel8.img</code>, ship <code>bcm2712-rpi-500.dtb</code> beside it, and the firmware parses the header, loads at <code>0x200000</code>, and jumps at EL2 with the DTB in <code>x0</code>. FreeBSD boots.</p>
+<pre><code># config.txt
+kernel=kernel8.img
+device_tree=bcm2712-rpi-500.dtb
+enable_rp1_uart=1      # firmware inits RP1 UART0 @115200 and does not reset RP1
+pciex4_reset=0         # required companion to the above
+enable_uart=1
+dtparam=uart0_console  # 2712-only: console to UART0 on 40-pin pins 6, 8, 10
+dtparam=nvme
+
+# cmdline.txt
+FreeBSD: vfs.root.mountfrom=ufs:/dev/... -v</code></pre>
+<p><strong>Code to write for the boot itself: none.</strong> Everything after is drivers.</p>
+<p class="verdict">Cost: ~1&ndash;3 days to a serial banner and a <code>mountroot</code> prompt. Trade: <strong>no loader means no <code>.ko</code> at boot</strong> &mdash; the kernel must be monolithic, which collides with the kext model until a loader exists (&sect;5). No <code>loader.conf</code>, no boot menu, no boot environments. Best understood as a bring-up and driver-development harness; whether it is also a shipping route is <a href="#decisions">an open decision</a>.</p>
+</div>
+
+<div class="opt">
+<h3><span class="pill pill-bad">Blocked on USB</span> (b) Firmware &rarr; U-Boot &rarr; EFI &rarr; <code>loader.efi</code></h3>
+<p>BCM2712 landed in U-Boot <strong>v2024.04</strong>; PCIe in <strong>v2026.07</strong>. The model table already has <code>[0x19] = { "500", &hellip; "bcm2712-rpi-500.dtb" }</code>. FreeBSD's <code>sysutils/u-boot-master</code> is pinned at <code>2025.10</code>, whose <code>pcie_brcmstb.c</code> matches only <code>brcm,bcm2711-pcie</code>.</p>
+<p><strong>But it does not solve the problem we have.</strong> U-Boot on BCM2712 has <strong>no USB driver at all</strong> &mdash; RP1's controllers are <code>snps,dwc3</code> MMIO blocks inside BAR1, not PCI-class xHCI functions, so <code>CONFIG_USB_XHCI_PCI</code> never matches. No keyboard. Ethernet is likewise absent (<code>raspberrypi,rp1-gem</code>, no driver; Duwe's RP1+MACB series is posted but unmerged as of v2026.10-rc2). <code>CONFIG_NVME_PCI</code> is absent from the defconfig.</p>
+<p>And a hazard worth recording: <code>arch/arm/mach-bcm283x/init.c</code> maps <strong>only the first 1&nbsp;GiB of DRAM</strong> on BCM2712 while <code>gd-&gt;ram_size</code> still reports 16&nbsp;GB, which is what feeds the EFI memory map.</p>
+<p class="verdict">Cost: ~2&ndash;4 days. Viable as a stopgap to chainload <code>loader.efi</code> from microSD while driver work proceeds. The USB gap is upstream work someone else may land &mdash; Duwe's RP1+MACB series is written and posted, just unmerged &mdash; so this option's value could change without us doing anything.</p>
+</div>
+
+<div class="opt">
+<h3><span class="pill pill-warn">Most complete today</span> (c) Firmware &rarr; EDK2 fork &rarr; <code>loader.efi</code></h3>
+<p>Fork <a href="https://github.com/NumberOneGit/rpi5-uefi">NumberOneGit/rpi5-uefi</a>; add board type <code>0x19</code> to <code>BoardRevisionHelperLib</code>; ship <code>bcm2712-rpi-500.dtb</code> and select it for <code>0x19</code>; verify the D0 pinctrl remap covers the 500+'s different GPIO wiring (<code>M2_DET_WAKE</code>/<code>M2_PWR_EN</code> on <code>gio</code>&nbsp;14/15, <code>KEYB_BOOTSEL</code>/<code>KEYB_RUN</code> on 18/21).</p>
+<p>The payoff is that ~95% already exists, <em>including a documented FreeBSD boot</em> &mdash; worproject's own compatibility table lists <code>FreeBSD | 13.2 | Display, UART, USB, SD, PCIe</code>. That is an existence proof that a FreeBSD arm64 kernel reaches a usable system on BCM2712 with a working keyboard.</p>
+<p class="verdict">Cost: ~2&ndash;5 weeks. Risk: an under-staffed upstream (<em>&ldquo;won't be able to maintain or add features alone&rdquo;</em>); RP1 ethernet, GPIO and PWM stay broken, so the fan runs at full speed and a USB NIC is required.</p>
+</div>
+
+<div class="opt">
+<h3><span class="pill pill-neutral">Subsumed by (a)</span> (d) Custom armstub / shim</h3>
+<p>FreeBSD's <code>kernel.bin</code> <em>is</em> the shim; route (a) subsumes this. The only reason to touch <code>armstub=</code> would be to replace TF-A BL31 &mdash; which would cost us PSCI and secondary-core startup for nothing.</p>
+</div>
+
+<div class="callout callout-good">
+<p><strong>Bonus accelerator: <code>kboot</code>.</strong> <code>share/mk/src.opts.mk</code> confirms <code>LOADER_KBOOT</code> is available on aarch64. Boot Raspberry Pi OS &mdash; which works perfectly on this board &mdash; then <code>kexec</code> into the NextBSD kernel from a fully configured machine. That gives a real loader, real metadata, and a known-good hardware state to iterate against. ~1 week, and it restores module loading that route&nbsp;(a) costs us. Note <code>LOADER_UBOOT</code> (ubldr) is explicitly <strong>broken on aarch64</strong>: <em>&ldquo;UBOOT is only for arm, and big-endian powerpc.&rdquo;</em></p>
+</div>
+
+<h3>Serial console &mdash; the part to get right first</h3>
+
+<p>There are two entirely different UARTs, and only one of them works before PCIe:</p>
+
+<table>
+<tr><th></th><th>UART10 (debug)</th><th>RP1 UART0</th></tr>
+<tr><td>Lives in</td><td><strong>BCM2712 itself</strong></td><td>RP1, behind PCIe</td></tr>
+<tr><td>Physical</td><td><code>0x10_7d00_1000</code></td><td><code>0x1F_0003_0000</code></td></tr>
+<tr><td>Compatible</td><td><code>arm,pl011</code> + <code>arm,primecell</code></td><td><code>arm,pl011-axi</code></td></tr>
+<tr><td>Connector</td><td>3-pin JST-SH between the HDMI ports <em>on a Pi 5B</em></td><td>40-pin header pins 6 / 8 / 10</td></tr>
+<tr><td>Needs RP1?</td><td><strong>No</strong></td><td>Yes</td></tr>
+</table>
+
+<p>On a <strong>500+</strong> the 3-pin debug connector may not be physically exposed &mdash; the signals exist (<code>bcm2712-rpi-500.dts</code> still names <code>AON_GPIO_13 = "UART_TX_FS"</code>) but it is inside a keyboard enclosure and no teardown confirms a populated header. <strong>The 40-pin header is the path that definitely works</strong>: pin&nbsp;6 GND, pin&nbsp;8 TXD, pin&nbsp;10 RXD, 3.3&nbsp;V, 115200&nbsp;8N1, with <code>enable_rp1_uart=1</code> + <code>pciex4_reset=0</code> so the firmware initialises it and declines to reset RP1. For <code>EARLY_PRINTF</code>, hard-code the PL011 at <code>0x1F_0003_0000</code> &mdash; the firmware has already set the baud rate, so only the FIFO needs poking.</p>
+
+<h2 id="map">4. The driver map</h2>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Headline</span> <strong>OpenBSD 7.8 already ships a complete, native, ISC-licensed BCM2712 + RP1 stack &mdash; 4,113 LOC across 12 files.</strong> It boots the Pi&nbsp;5 with working onboard ethernet. FreeBSD, NetBSD and DragonFly have nothing BCM2712-specific. For the boot-critical tier, <strong>OpenBSD is the source, not Linux</strong> &mdash; roughly 4&times; smaller than the Linux equivalent, and ISC rather than GPL.</p>
+</div>
+
+<h3>Why not LinuxKPI for this tier</h3>
+
+<p>Worth settling explicitly, because the drm-kmod success makes it the natural assumption. <strong>LinuxKPI cannot host a devicetree/platform driver at all:</strong></p>
+
+<pre><code>/* sys/compat/linuxkpi/common/include/linux/platform_device.h */
+platform_driver_register(...)  →  pr_debug("TODO"); return (-ENXIO);
+to_platform_device(dev)        →  (NULL)
+dev_is_platform(dev)           →  (false)</code></pre>
+
+<p><code>linux/of.h</code> is a 1,486-byte stub whose entire body is <code>#include &lt;linux/kobject.h&gt;</code>. <code>linux/clk.h</code>, <code>linux/reset.h</code>, <code>linux/pinctrl/</code>, <code>linux/gpio/</code> and <code>linux/dmaengine.h</code> do not exist. <code>regmap.h</code>, <code>component.h</code>, <code>of_address.h</code> and <code>property.h</code> exist only as <strong>0-byte files</strong> in <code>linuxkpi/dummy/include/</code>. There is no <code>linux_of.c</code>, <code>linux_platform.c</code> or <code>linux_clk.c</code>, and no evidence anyone has attempted one. Building that layer is a multi-year subsystem project, not a shim.</p>
+
+<p>FreeBSD's own equivalent is healthy and is where this belongs: <code>sys/dev/clk/</code>, <code>sys/dev/regulator/</code>, <code>sys/dev/hwreset/</code>, <code>sys/dev/phy/</code>, <code>sys/dev/syscon/</code>, <code>sys/dev/ofw/</code>, <code>sys/dev/fdt/fdt_pinctrl.c</code>.</p>
+
+<h3>The RP1 shape, and why FreeBSD can express it</h3>
+
+<p>RP1 is a PCIe endpoint that exposes an entire <code>simple-bus</code> of peripherals behind a BAR. OpenBSD solves it in four layers, and the trick is worth copying verbatim:</p>
+
+<ol>
+<li><code>bcmpcie</code> matches <code>brcm,bcm2712-pcie</code> <strong>and simultaneously inherits <code>simplebus_softc</code></strong>, so the PCIe node doubles as an FDT bus for RP1's subnodes.</li>
+<li><code>bcmmip</code> remaps MSI to GIC SPIs.</li>
+<li><code>rpone</code> attaches at <code>pci?</code> on <code>1de4:0001</code>, maps the MSI-X and peripheral BARs, builds a synthetic <code>bus_space</code> that rebases RP1 MMIO, and registers an FDT interrupt controller demuxing <strong>61 MSI-X vectors</strong> &mdash; in <strong>219 lines</strong>.</li>
+<li>RP1's children then attach as ordinary FDT devices.</li>
+</ol>
+
+<p>FreeBSD has every primitive, already exported as public API in <code>sys/dev/fdt/simplebus.h</code>: <code>simplebus_init()</code>, <code>simplebus_add_device()</code>, <code>simplebus_attach_impl()</code>, and <code>DECLARE_CLASS(simplebus_driver)</code> for inheritance. <code>simple_mfd.c</code> is the in-tree precedent. This was the blocker that stalled earlier FreeBSD attempts &mdash; mkarels reported <em>&ldquo;the rp1 node doesn't get probed and attached&rdquo;</em> &mdash; and it is not actually a missing primitive, just a missing driver.</p>
+
+<h3>Tier A &mdash; boot, console, storage, input</h3>
+
+<table>
+<tr><th>Device</th><th>Compatible</th><th>Source</th><th>Verdict</th></tr>
+<tr><td>PL011 console</td><td><code>arm,pl011</code></td><td>&mdash;</td><td><span class="pill pill-good">have it</span> <code>uart_dev_pl011</code></td></tr>
+<tr><td>GIC-400 / timer / PSCI</td><td><code>arm,gic-400</code>, <code>arm,armv8-timer</code>, <code>arm,psci-1.0</code></td><td>&mdash;</td><td><span class="pill pill-good">have it</span></td></tr>
+<tr><td>xHCI / NVMe / dwc3</td><td><code>snps,dwc3</code></td><td>&mdash;</td><td><span class="pill pill-good">have it</span> <code>dwc3.c</code> matches <code>snps,dwc3</code> directly</td></tr>
+<tr><td>VideoCore mailbox</td><td><code>brcm,bcm2835-mbox</code></td><td>&mdash;</td><td><span class="pill pill-good">have it</span> &mdash; survived on BCM2712 at a new address</td></tr>
+<tr><td>PCIe root complex</td><td><code>brcm,bcm2712-pcie</code></td><td>OpenBSD <code>bcm2711_pcie.c</code> (1,205, ISC)</td><td><span class="pill pill-warn">port</span> covers both SoCs in one file</td></tr>
+<tr><td>MSI controller</td><td><code>brcm,bcm2712-mip</code></td><td>OpenBSD <code>bcm2712_mip.c</code> (177, ISC)</td><td><span class="pill pill-warn">port</span> only BSD impl anywhere</td></tr>
+<tr><td>RP1 bridge</td><td>PCI <code>1de4:0001</code></td><td>OpenBSD <code>rpone.c</code> (219, ISC)</td><td><span class="pill pill-warn">port</span> <strong>the single most valuable file</strong></td></tr>
+<tr><td>RP1 clocks</td><td><code>raspberrypi,rp1-clocks</code></td><td>OpenBSD <code>rpiclock.c</code> (585, ISC)</td><td><span class="pill pill-warn">port</span></td></tr>
+<tr><td>RP1 GPIO / pinmux</td><td><code>raspberrypi,rp1-gpio</code></td><td>OpenBSD <code>rpigpio.c</code> (429, ISC)</td><td><span class="pill pill-warn">port</span></td></tr>
+<tr><td>Ethernet</td><td><code>raspberrypi,rp1-gem</code>, <code>cdns,macb</code></td><td>FreeBSD <code>if_cgem.c</code> + OpenBSD's 2-line quirk</td><td><span class="pill pill-good">graft</span> same Cadence GEM IP</td></tr>
+<tr><td>SD/eMMC</td><td><code>brcm,bcm2712-sdhci</code></td><td>OpenBSD <code>sdhc_fdt.c:133</code> + <code>vmmc-supply</code></td><td><span class="pill pill-good">graft</span> onto <code>sdhci_fdt</code>; <code>vmmc-supply</code> powers the WiFi chip</td></tr>
+<tr><td>L2 interrupt ctrl</td><td><code>brcm,bcm7271-l2-intc</code>, <code>brcm,l2-intc</code></td><td>OpenBSD <code>bcmstbintc.c</code> (247, ISC)</td><td><span class="pill pill-warn">port</span> add the second compat string</td></tr>
+<tr><td>Reset / rescal</td><td><code>brcm,brcmstb-reset</code></td><td>OpenBSD <code>bcmstbreset.c</code> + <code>bcmstbrescal.c</code></td><td><span class="pill pill-warn">port</span></td></tr>
+<tr><td>SoC pinctrl / GPIO</td><td><code>brcm,bcm2712d0-pinctrl</code></td><td>OpenBSD <code>bcmstbpinctrl.c</code> (267), <code>bcmstbgpio.c</code> (408)</td><td><span class="pill pill-warn">port</span> <strong>the <code>d0</code> variant this board uses is covered</strong></td></tr>
+</table>
+
+<h3>Tier B &mdash; useful, deferrable</h3>
+
+<table>
+<tr><th>Device</th><th>Source</th><th>Verdict</th></tr>
+<tr><td>RNG (<code>brcm,bcm2711-rng200</code>)</td><td>FreeBSD <code>bcm2835_rng.c</code></td><td><span class="pill pill-good">have it</span> already matches this string</td></tr>
+<tr><td>Watchdog, SPI, firmware/vcio/OTP</td><td>FreeBSD <code>bcm2835_*</code></td><td><span class="pill pill-good">have it</span></td></tr>
+<tr><td>RTC, thermal, PWM (fan)</td><td>OpenBSD <code>rpirtc.c</code>, <code>bcm2711_tmon.c</code>, <code>rpipwm.c</code></td><td><span class="pill pill-warn">port</span> &mdash; PWM matters: without it the fan runs flat out</td></tr>
+<tr><td>WiFi BCM43455 (SDIO)</td><td>OpenBSD/NetBSD <code>bwfm</code>, <em>or</em> FreeBSD's <strong>ISC-licensed</strong> <code>sys/contrib/dev/broadcom/brcm80211/brcmfmac</code></td><td><span class="pill pill-warn">two options</span> FreeBSD's is in-tree but <code>BRCMFMAC_SDIO=0</code> and needs MMCCAM</td></tr>
+<tr><td>Bluetooth BCM4345C0 (UART)</td><td>NetBSD <code>btuart.c</code> + <code>netbt</code></td><td><span class="pill pill-bad">hard</span> OpenBSD has no BT stack at all; FreeBSD's netgraph BT is USB-only</td></tr>
+<tr><td>I<sup>2</sup>C (<code>brcm,brcmstb-i2c</code>)</td><td>&mdash;</td><td><span class="pill pill-bad">net new</span> OpenBSD's <code>bcmbsc</code> is a different IP block</td></tr>
+<tr><td>IOMMU (<code>brcm,bcm2712-iommu</code>)</td><td>&mdash;</td><td><span class="pill pill-neutral">defer</span> OpenBSD boots without it</td></tr>
+<tr><td><code>dw_axi_dmac</code>, <code>rp1-pio</code>, <code>rp1-adc</code>, <code>rp1-mbox</code></td><td>&mdash;</td><td><span class="pill pill-bad">net new</span> no BSD has any of these</td></tr>
+</table>
+
+<h3>Tier C &mdash; graphics and media</h3>
+
+<table>
+<tr><th>Device</th><th>Source</th><th>Verdict</th></tr>
+<tr><td><code>v3d</code> (<code>brcm,2712-v3d</code>)</td><td>Linux <code>drivers/gpu/drm/v3d/</code>, 6,091 LOC, <code>GPL-2.0+</code></td><td><span class="pill pill-warn">port from Linux</span> the only realistic LinuxKPI candidate &mdash; &sect;6</td></tr>
+<tr><td><code>vc4</code> display (<code>brcm,bcm2712d0-vc6</code>)</td><td>Linux <code>drivers/gpu/drm/vc4/</code>, 23,773 LOC, mostly <code>GPL-2.0-only</code></td><td><span class="pill pill-warn">port from Linux</span> hard &mdash; &sect;6</td></tr>
+<tr><td><code>pispbe</code> ISP, <code>rpi-hevc-dec</code></td><td>Linux, blocked on V4L2 + videobuf2 + Media Controller</td><td><span class="pill pill-bad">drop</span> 30&ndash;40k LOC of absent infrastructure with no other consumer</td></tr>
+</table>
+
+<h3>The licence argument, stated once</h3>
+
+<p>NextBSD has so far vendored only <code>GPL-2.0-or-later</code>. That rule alone excludes a large share of the Linux candidates: <code>irq-bcm2712-mip</code>, <code>sdhci-brcmstb</code>, <code>macb_main</code>, <code>irq-brcmstb-l2</code>, <code>gpio-brcmstb</code>, <code>i2c-brcmstb</code>, <code>iproc-rng200</code> and <strong>most of vc4</strong> are all <code>GPL-2.0-only</code>. The OpenBSD route sidesteps the question entirely &mdash; all 4,113 LOC are ISC, which is strictly more permissive than anything in the Linux tree and imposes nothing on kext packaging. RTEMS learned this the expensive way: they got PCIe link training working by studying Circle (GPLv3) and Linux, then had to discard it &mdash; <em>&ldquo;we cannot accept GPL code into rtems.&rdquo;</em></p>
+
+<h2 id="kext">5. Delivering it as kexts</h2>
+
+<p>The <a href="nextbsd-driver-delivery-plan.html">driver-delivery plan</a> settled a three-tier split for amd64. Mapping it onto this board gives the shape below &mdash; <em>if</em> arm64 follows the same model, which is <a href="#decisions">decision&nbsp;3</a>:</p>
+
+<table>
+<tr><th>Tier</th><th>Form</th><th>Contents here</th></tr>
+<tr><td>1</td><td><strong>compiled into the kernel</strong></td><td>PL011, GIC-400, ARMv8 timer, PSCI, <code>bcm2712-pcie</code>, <code>bcm2712-mip</code>, RP1 bridge, dwc3/xHCI, USB HID, NVMe, and the FDT/simplebus plumbing</td></tr>
+<tr><td>2</td><td><strong>plain kld</strong>, devmatch-autoloaded</td><td>ethernet, SD, GPIO, pinctrl, I<sup>2</sup>C, SPI, RNG, watchdog, thermal, PWM, RTC</td></tr>
+<tr><td>3</td><td><strong>kext</strong></td><td>firmware-bearing or multi-version: WiFi (BCM43455 blob), Bluetooth (patchram), and the graphics stack</td></tr>
+</table>
+
+<div class="callout callout-warn">
+<p><strong>The sharpest conflict on this page.</strong> Booting <code>kernel.bin</code> directly means <em>no loader</em>, therefore <strong>no modules at boot at all</strong> &mdash; tiers 2 and 3 are both unavailable until root is mounted. For a first bring-up that is fine and arguably desirable. But an <em>image</em> whose premise is &ldquo;all possible drivers as kernel extensions&rdquo; needs a loader. So either route&nbsp;(a) is a bring-up harness and the shipping image rides (c) or <code>kboot</code>, or the kext premise bends on arm64. That is <a href="#decisions">decisions&nbsp;1 and&nbsp;2</a>, and it is better decided deliberately than discovered at packaging time. It also means <code>mach.ko</code> must be compiled in or deferred on any route-(a) kernel.</p>
+</div>
+
+<h2 id="graphics">6. Graphics: VideoCore, vc4, and v3d</h2>
+
+<p>The naming is confusing: BCM2712 has <strong>VideoCore VII</strong>, the DT compatible says <strong>vc6</strong>, and the Linux driver is still called <strong>vc4</strong> (from VideoCore IV, where it began). All three name the same lineage. On this board it resolves to two independent drivers:</p>
+
+<table>
+<tr><th></th><th>What it is</th><th>LOC (v6.12)</th><th>SPDX</th><th>2712 in mainline 6.12?</th></tr>
+<tr><td><code>vc4</code> &rarr; card1</td><td><strong>display</strong> &mdash; HDMI, HVS, pixelvalve, TXP</td><td>23,773</td><td>mostly <code>GPL-2.0-only</code></td><td><strong>No</strong> &mdash; landed v6.14</td></tr>
+<tr><td><code>v3d</code> &rarr; card0</td><td><strong>3D/compute</strong> &mdash; V3D 7.1</td><td>6,091</td><td><code>GPL-2.0+</code></td><td><strong>Yes</strong> &mdash; <code>brcm,2712-v3d</code></td></tr>
+</table>
+
+<p><strong>vc4 gives a picture; v3d gives acceleration.</strong> Since this board has no <code>simple-framebuffer</code> node and no UEFI GOP, there is <em>no</em> display path at all without vc4 &mdash; which is why serial is mandatory and why graphics cannot be an early shortcut.</p>
+
+<p>No BSD anywhere has either driver; tree-wide searches of all four found zero. The only prior art is NetBSD's GSoC&nbsp;2022 vc4 attempt (loaded on a real RPi&nbsp;3B+, then crashed <code>startx</code> in <code>drm_gem_object_put_unlocked</code>, never merged) and a FreeBSD compile-only skeleton whose last commit reads <em>&ldquo;now comes the hard part of actually getting it to work on hardware.&rdquo;</em></p>
+
+<h3>What already exists on our side</h3>
+
+<p><a href="https://github.com/nextbsd-redux/nextbsd-kernel-modules/pull/33">nextbsd-kernel-modules#33</a> has already measured the foundation: <code>drm.ko</code>, <code>ttm.ko</code>, <code>dmabuf.ko</code>, <code>radeonkms.ko</code> and <code>drm_extra_helpers.ko</code> build and fully symbol-resolve on aarch64 against the NextBSD kernel. That settles the question the ports tree appears to answer negatively &mdash; <code>graphics/drm-612-kmod</code> is <code>ONLY_FOR_ARCHS = amd64</code>, but we build from source, and the upstream tree's <code>SUPPORTED_ARCH</code> does list <code>aarch64</code>. The port's gate is conservative, not load-bearing.</p>
+
+<p>That PR also found a real upstream bug: <code>kconfig.mk</code> gates <code>DRM_AMD_DC_FP</code> to amd64 while the references stay compiled unconditionally, so <code>amdgpu.ko</code> builds clean on aarch64 and dies at <code>kldload</code> with five unresolved <code>dal_hw_*</code> / <code>dscl*_spl_calc_lb_num_partitions</code> symbols. Worth reporting upstream.</p>
+
+<h3>What is still missing</h3>
+
+<ol>
+<li><strong>Six DRM helpers, ~2,930 LOC</strong>, absent from drm-kmod <code>6.12-lts</code>: <code>drm_gem_shmem_helper.c</code> (782, v3d's GEM backend), <code>drm_gem_dma_helper.c</code> (604, vc4's), <code>drm_of.c</code> (546), <code>drm_simple_kms_helper.c</code> (457), <code>drm_fbdev_dma.c</code> (346), <code>drm_fb_dma_helper.c</code> (195). <code>graphics/drm_extra_helpers/</code> is already the designated home for exactly this.</li>
+<li><strong>The non-PCI guard.</strong> vc4 and v3d are FDT platform devices; every driver <code>drm.ko</code> has hosted so far is PCI. <a href="https://github.com/bsd-sbc-drm">bsd-sbc-drm</a>'s <code>drm-kmod</code> branch <code>sbc-nopci</code> is a <strong>one-commit</strong> guard on <code>to_pci_dev()</code> in <code>drm_sysctl_freebsd.c</code>. Its sibling <code>drm-subtree</code> (Jesper Schmitz Mouridsen, <code>jsm@</code>, pushed 2026-08-10) runs native FreeBSD arm64 KMS for Rockchip/Allwinner/komeda plus Panfrost on stock <code>drm.ko</code> &mdash; a working existence proof of the exact shape needed.</li>
+<li><strong>Mesa.</strong> <code>graphics/mesa-dri</code> ships no <code>vc4</code>, no <code>v3d</code>, no <code>broadcom</code>. A loading <code>v3d.kext</code> renders nothing without a separate ports task. <code>panfrost</code> <em>is</em> enabled on aarch64, so arm64 SoC Gallium is shippable &mdash; just not Broadcom's yet.</li>
+</ol>
+
+<h3>The two orders, and the vc4 walls</h3>
+
+<p><strong>v3d first</strong> minimises engineering risk &mdash; a quarter the size, inside the licence rule, already 2712-capable at 6.12, no component framework, no ASoC, no CEC, and its own MMU so no dependency on the BCM2712 IOMMU. It proves the FDT-driver-on-<code>drm.ko</code> plumbing cheaply. It also delivers nothing visible, and needs Mesa before it delivers anything at all.</p>
+
+<p><strong>vc4 first</strong> is the only path to a screen on this board, and pays the full cost up front. Three walls:</p>
+
+<ul>
+<li><strong>ASoC.</strong> <code>vc4_hdmi.c</code> includes <code>sound/soc.h</code>, <code>sound/hdmi-codec.h</code>, <code>sound/jack.h</code>, <code>sound/dmaengine_pcm.h</code>. FreeBSD has no ALSA/ASoC at all and it is a hard Kconfig <code>depends on</code>. ~450 lines must be surgically removed; no HDMI audio in v1.</li>
+<li><strong>The component framework.</strong> vc4 is a <code>component_master_add_with_match()</code> over eight OF sub-devices with a binding-order constraint. <code>linux/component.h</code> is 0 bytes. Implement over newbus, or flatten as the NetBSD port did.</li>
+<li><strong>Our 6.12 base is the worst available vc4 baseline.</strong> Measured deltas against <code>rpi-6.12.y</code>: <strong>v6.12 &rarr; 5,866 changed lines; v6.18 &rarr; 2,619.</strong> Take vc4 from v6.18, which also brings <code>GEN_6_C</code>/<code>GEN_6_D</code> &mdash; and this board is D0.</li>
+</ul>
+
+<p>Two easy scope cuts: dropping the eight MIT-licensed VC4-2.x 3D-submission files removes ~4,700 LOC <em>and</em> the licence wrinkle (2712's 3D is V3D 7.1, so they are dead code), and skipping downstream-only <code>vc4_firmware_kms.c</code> (2,079). Realistic KMS-only target: <strong>~14.5k LOC vendored + 3&ndash;5k of new shim</strong>, HDMI only.</p>
+
+<h2 id="seq">7. Dependency order</h2>
+
+<p>What unblocks what. This is a dependency graph, not a schedule &mdash; phases 0&ndash;2 are common to every route, and where the paths diverge is called out in <a href="#decisions">&sect;9</a>.</p>
+
+<table>
+<tr><th>Phase</th><th>Work</th><th>Unblocks</th></tr>
+<tr><td><strong>0</strong></td><td>Serial on 40-pin pins 6/8/10; confirm with Raspberry Pi OS and <code>earlycon=pl011,0x1f00030000,115200n8</code></td><td>everything &mdash; this is the only input channel</td></tr>
+<tr><td><strong>1</strong></td><td><code>make kernel.bin</code> &rarr; <code>kernel8.img</code> + <code>bcm2712-rpi-500.dtb</code>; <code>EARLY_PRINTF</code> at <code>0x1F_0003_0000</code></td><td>a FreeBSD banner on real hardware, no new code</td></tr>
+<tr><td><strong>2</strong></td><td>Confirm SMP on all four A76s via PSCI; verify <code>mountroot</code></td><td>proves TF-A hand-off and the FDT path</td></tr>
+<tr><td><strong>3</strong></td><td><code>SOC_BRCM_BCM2712</code> option; port <code>bcm2712-pcie</code> + <code>bcm2712-mip</code> from OpenBSD</td><td>PCIe and MSI</td></tr>
+<tr><td><strong>4</strong></td><td>RP1 bridge (<code>rpone</code> shape) on <code>simplebus_init()</code> + an intrng PIC over 61 MSI-X vectors</td><td><strong>everything behind RP1</strong></td></tr>
+<tr><td><strong>5</strong></td><td>dwc3/xHCI glue &rarr; <strong>keyboard</strong>; NVMe on <code>pcie1</code> &rarr; <strong>root</strong></td><td>a self-hosting machine</td></tr>
+<tr><td><strong>6</strong></td><td><code>cgem</code> + the 2-line RP1-GEM quirk &rarr; ethernet; <code>sdhci_fdt</code> + brcmstb</td><td>networking, SD</td></tr>
+<tr><td><strong>7</strong></td><td>Split tiers 2 and 3 into klds and kexts; requires a loader (route c or <code>kboot</code>)</td><td>the kext image</td></tr>
+<tr><td><strong>8</strong></td><td>Graphics: <code>sbc-nopci</code> + six helpers &rarr; v3d &rarr; vc4 (from v6.18) &rarr; Mesa</td><td>a display</td></tr>
+</table>
+
+<p>Phase&nbsp;3 has an upstream dependency worth engaging rather than forking around: <strong><a href="https://reviews.freebsd.org/D58105">D58105</a></strong>, Michal Meloun's bus-view DMA implementation, created 2026-07-08 and still being revised. BCM2712's <code>pcie2</code> has a non-identity <code>dma-ranges</code> &mdash; a 64&nbsp;GiB aperture mapping PCIe <code>0x10_0000_0000</code> &rarr; CPU <code>0x0</code> &mdash; and FreeBSD has <em>zero</em> <code>dma-ranges</code> parsing anywhere. The Pi&nbsp;4 driver dodges it by hardcoding its window, which does not generalise. mmel's own comment: <em>&ldquo;this minimal implementation targets RPi5 support for now.&rdquo;</em> Every PCIe driver is gated on it.</p>
+
+<h2 id="risks">8. Open questions and risks</h2>
+
+<table>
+<tr><th></th><th>Risk</th><th>Mitigation</th></tr>
+<tr><td><span class="pill pill-bad">high</span></td><td><strong>Nobody has publicly run any BSD on a Pi 500 or 500+.</strong> Zero mentions in any BSD source, wiki or mailing list. Same BCM2712-D0 + RP1 silicon, and OpenBSD's <code>bcmstbpinctrl</code> does cover the <code>d0</code> stepping &mdash; but treat it as untested.</td><td>phase&nbsp;1 is cheap and answers it immediately</td></tr>
+<tr><td><span class="pill pill-bad">high</span></td><td><strong>Is the 3-pin debug header physically present on a 500+?</strong> Unconfirmed &mdash; it is inside a keyboard enclosure and no teardown shows it.</td><td>use the 40-pin header route, which definitely works</td></tr>
+<tr><td><span class="pill pill-warn">med</span></td><td><strong>Secondary cores: MPIDR Aff1, not Aff0.</strong> On Cortex-A76/BCM2712 the CPU index lives in Aff1. Circle passes <code>(u64)nCore &lt;&lt; 8</code> to PSCI <code>CPU_ON</code>. A reported <code>CPU_ON</code> returning <code>ALREADY_ON</code> is almost certainly this bug.</td><td>FreeBSD reads MPIDR from the DT <code>reg</code> property (<code>0x000/0x100/0x200/0x300</code>), so it <em>should</em> be right &mdash; verify in phase 2</td></tr>
+<tr><td><span class="pill pill-warn">med</span></td><td><strong>L3 coherency.</strong> <code>DC CSW</code> reported insufficient on BCM2712's 2&nbsp;MB shared L3 &mdash; eviction lands in L3, not DRAM &mdash; needing explicit <code>DC CIVAC</code>. Will bite SMP startup and early DMA.</td><td>watch for it in phases 2&ndash;4</td></tr>
+<tr><td><span class="pill pill-warn">med</span></td><td><strong>NVMe boot.</strong> OpenBSD cannot boot from NVMe on this platform (U-Boot <code>CONFIG_PCI_NVME</code> disabled; <code>nvme scan</code> hangs). Our root disk is the built-in SSD.</td><td>route (a) bypasses U-Boot entirely; the firmware sets <code>dtparam=nvme</code> automatically when booted from NVMe</td></tr>
+<tr><td><span class="pill pill-neutral">low</span></td><td><strong>No BCM2712 datasheet exists and never will.</strong> A Raspberry Pi engineer: <em>&ldquo;the majority of the BCM2712 IP is owned by Broadcom&hellip; The Linux driver <strong>is</strong> the documentation.&rdquo;</em> The RP1 datasheet (RP-008370-DS) is still &ldquo;Final draft&rdquo; v1.1 from Nov&nbsp;2023, omits the Cortex-M3 entirely, and does not contain the 61 MSI-X vector map.</td><td>OpenBSD's ISC source is the licence-clean substitute for both</td></tr>
+</table>
+
+<h3>Ruled out by hard constraints, not preference</h3>
+
+<p>These are the only items the evidence closes off by itself. Each is reversible if the constraint changes.</p>
+
+<ul>
+<li><strong>A LinuxKPI clk/pinctrl/regulator/OF shim.</strong> Multi-year, and FreeBSD's native <code>extres</code> subsystems already do the job. <em>Constraint:</em> <code>platform_driver_register()</code> returns <code>-ENXIO</code>.</li>
+<li><strong><code>pispbe</code> and <code>rpi-hevc-dec</code>.</strong> 4,745 + 2,335 LOC sitting on 30&ndash;40k LOC of absent V4L2/videobuf2/Media-Controller infrastructure with no other consumer. <em>Constraint:</em> FreeBSD has no V4L2 in kernel. Software HEVC on four A76 cores is the fallback.</li>
+<li><strong>Replacing TF-A BL31.</strong> <em>Constraint:</em> it is what provides PSCI and secondary-core startup; replacing it costs both for no gain.</li>
+<li><strong>Circle and <code>raspberrypi/linux</code> as <em>copied</em> sources.</strong> GPLv3 and GPLv2 respectively. Circle is the most complete bare-metal BCM2712 source in existence and we cannot take code from it. <em>Constraint:</em> licence. Both remain usable as behavioural references for clean-room work &mdash; which is how the register maps get confirmed.</li>
+</ul>
+
+<h2 id="decisions">9. The decisions to make</h2>
+
+<p>Everything above is evidence. These are the calls it does not make for us, each with what would settle it.</p>
+
+<table>
+<tr><th>#</th><th>Decision</th><th>Options</th><th>What would settle it</th></tr>
+<tr><td>1</td><td><strong>Which boot route ships</strong></td><td>(a) direct <code>kernel.bin</code> &middot; (c) EDK2 fork &middot; <code>kboot</code> &middot; some combination</td><td>Run (a) first &mdash; it is 1&ndash;3 days and answers whether the board boots FreeBSD at all. That result reprices every other option. Note (a) and (c) share all driver work below the boot layer.</td></tr>
+<tr><td>2</td><td><strong>Whether the shipping image can be loader-less</strong></td><td>monolithic kernel &middot; loader + klds/kexts</td><td>Directly determined by #1. &ldquo;All drivers as kexts&rdquo; and route (a) are in tension (&sect;5) &mdash; this is the sharpest conflict on the page.</td></tr>
+<tr><td>3</td><td><strong>Kext granularity for arm64</strong></td><td>boot-minimum compiled in, rest kexts &middot; everything a kext, empty <code>/boot/kernel</code> &middot; defer the split until after bring-up</td><td>The three-tier split in the <a href="nextbsd-driver-delivery-plan.html">driver-delivery plan</a> already has a shape for amd64; whether arm64 follows it or diverges is open. A bring-up with no compiled-in fallback is hard to debug over a serial line.</td></tr>
+<tr><td>4</td><td><strong>Native FDT vs LinuxKPI, per tier</strong></td><td>native newbus/FDT for Tier&nbsp;A + LinuxKPI for graphics &middot; native everywhere &middot; invest in the LinuxKPI platform layer</td><td>Largely forced for Tier&nbsp;A (&sect;4) &mdash; the shim does not exist. The genuinely open part is graphics, where drm-kmod is proven for us but the drivers are FDT.</td></tr>
+<tr><td>5</td><td><strong>Whether to engage <a href="https://reviews.freebsd.org/D58105">D58105</a> upstream or carry a local <code>dma-ranges</code> patch</strong></td><td>help land mmel's review &middot; fork &middot; wait</td><td>Every PCIe driver is gated on it. Upstream has reviewers engaged and hardware context; a local patch is faster but permanent maintenance.</td></tr>
+<tr><td>6</td><td><strong>Graphics order</strong></td><td>v3d first (cheap, invisible) &middot; vc4 first (expensive, produces a screen) &middot; neither yet</td><td>Whether a display on this board is a goal or a nice-to-have. With no framebuffer of any kind (&sect;1), vc4 is the <em>only</em> path to a screen &mdash; but it also needs a Mesa ports task before it means anything.</td></tr>
+<tr><td>7</td><td><strong>vc4 baseline, if pursued</strong></td><td>v6.12 (matches our base) &middot; v6.18 (halves the delta)</td><td>Measured: v6.12 &rarr; 5,866 changed lines vs downstream; v6.18 &rarr; 2,619. But v6.18 against a 6.12 DRM core risks API drift &mdash; unquantified.</td></tr>
+<tr><td>8</td><td><strong>WiFi source</strong></td><td>OpenBSD/NetBSD <code>bwfm</code> (native, clean) &middot; FreeBSD's in-tree ISC <code>brcmfmac</code> (needs <code>BRCMFMAC_SDIO=1</code> + MMCCAM)</td><td>Nobody appears to have run FreeBSD's SDIO path against a BCM43455. Cheap to test once SD/SDIO works.</td></tr>
+<tr><td>9</td><td><strong>Whether to update the EEPROM first</strong></td><td>update to 2025-11-05 &middot; stay on 2025-06-13</td><td>A newer EEPROM may ship a 500+-aware DTB and changes the firmware-KMS behaviour. It also invalidates any baseline measured before it. Decide before phase&nbsp;1, not during.</td></tr>
+</table>
+
+<p>Two of these &mdash; #1 and #9 &mdash; are worth settling before any code is written, because they change what a phase-1 result means. The rest can wait for the first boot.</p>
+
+<p class="footnote">Hardware inventory captured 2026-08-17 over ssh from the board itself. Source claims re-verified against <code>freebsd/freebsd-src</code> <code>main</code> (<code>std.arm64</code>, <code>Makefile.arm64</code>, <code>arm_kernel_boothdr.awk</code>, <code>machdep_boot.c</code>, <code>platform_device.h</code>, <code>of.h</code>, <code>simplebus.h</code>), <code>openbsd/src</code> <code>master</code>, <code>raspberrypi/linux</code> <code>rpi-6.12.y</code>, <code>u-boot/u-boot</code> <code>master</code>, and <code>nextbsd-redux/nextbsd-kernel-modules</code> PR&nbsp;#33. Planning only &mdash; no code has been written against this board.</p>
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD Research</a></p>
+
+</div>
+</body>
+</html>

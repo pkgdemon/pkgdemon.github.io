@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD under Apple Virtualization.framework &mdash; boot, console, and the fbdev gap</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  h4 { font-size:0.98rem; margin:20px 0 8px; }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .scroll { overflow-x:auto; }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e6e6; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+  .opt { border:1px solid var(--border); border-radius:4px; padding:2px 22px 6px; margin:0 0 26px; background:white; }
+  .opt h3 { margin-top:22px; }
+  .phase { border-left:4px solid var(--accent); padding-left:18px; margin:0 0 30px; }
+  .verdict { font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; part of <a href="nextbsd-research.html">NextBSD Research</a> &middot; sibling of the <a href="nextbsd-virtio-gpu-plan.html">virtio-gpu DRM plan</a> &middot; decision record: <a href="nextbsd-arm64-kms-options.html">arm64 KMS options</a> &middot; console policy: <a href="nextbsd-quiet-console-plan.html">quiet console plan</a></p>
+
+<h1>NextBSD under Apple Virtualization.framework &mdash; boot, console, and the fbdev gap</h1>
+
+<p class="lede">Apple&rsquo;s VM stack is the one arm64 target where NextBSD has never booted, and the reason turned out not to be ACPI, GIC, or graphics. It was USB. This page records what was measured on real hardware, what the remaining blockers are, who else is already working on them, and the order to fix them in.</p>
+
+<p class="meta">Investigated 2026-08-18 on an Apple&nbsp;Silicon Mac, macOS&nbsp;26.5.2. Every claim tagged <em>measured</em> was observed directly on that machine against a NextBSD arm64 install (kernel <code>20260818-174943</code>) and the <code>NextBSD-arm64-20260817-065847</code> ISO. Upstream claims carry source links. Claims from binary analysis of Apple&rsquo;s framework are tagged as such and are the least durable thing here.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Root-caused 2026-08-18</span> <strong>The &ldquo;Internal Virtualization error&rdquo; is xHCI.</strong> Apple&rsquo;s virtual xHCI controller aborts the entire VMM &mdash; <code>Security Assertion Hit</code> &rarr; <code>__os_crash</code> &rarr; <code>brk #0x1</code> on the vCPU thread &mdash; when a guest writes a register it does not model, and FreeBSD&rsquo;s <code>xhci(4)</code> does exactly that. Any <code>VZUSBKeyboardConfiguration</code>, <code>VZUSBScreenCoordinatePointingDeviceConfiguration</code>, or <code>VZUSBMassStorageDevice</code> instantiates that controller. Remove them and the crash goes away: <strong>6&ndash;8&nbsp;s crash &rarr; 121&nbsp;s and still running, guest idle at 0.1&nbsp;% CPU</strong>.</p>
+</div>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Still blocked</span> <strong>Booting is not fixed, only unblocked.</strong> With USB removed the guest reaches the kernel and then sits idle without networking. It is mute &mdash; no GOP, no UART, no SPCR &mdash; so the next blocker cannot be identified without first giving the guest a console. That, not ACPI, is the critical path.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#measured">What was measured</a></li>
+<li><a href="#xhci">The xHCI fatality</a></li>
+<li><a href="#mute">Why the guest is mute &mdash; three routes to a console</a></li>
+<li><a href="#blockers">Remaining boot blockers, ranked</a></li>
+<li><a href="#prior">Prior art &mdash; we are not first</a></li>
+<li><a href="#fbdev">The fbdev gap &mdash; smaller than we thought</a></li>
+<li><a href="#reconcile">Reconciling with V7 and Option&nbsp;D</a></li>
+<li><a href="#phases">Plan</a></li>
+<li><a href="#calls">Open calls</a></li>
+</ol>
+</div>
+
+<h2 id="measured">1. What was measured</h2>
+
+<p>A NextBSD arm64 install was copied out of its UTM qcow2 to a sparse raw image and booted under Virtualization.framework through a ~90-line Swift harness, ad-hoc signed with <code>com.apple.security.virtualization</code>. Everything below is first-hand.</p>
+
+<div class="scroll"><table>
+<tr><th>Question</th><th>Result</th><th>How it was established</th></tr>
+<tr><td>Does Apple&rsquo;s EFI read a FreeBSD disk?</td><td><strong>Yes</strong></td><td><code>lsdev</code> at the loader prompt: <code>disk0: ISO9660</code> / GPT+ESP raw image; kernel and <code>mfsroot</code> load normally</td></tr>
+<tr><td>Device tree?</td><td><strong>None</strong></td><td>Loader: <code>No valid device tree blob found!</code> &mdash; a warning, not a failure; <code>bootinfo.c</code> prints it whenever <code>acpi.revision</code> is unset</td></tr>
+<tr><td>ACPI?</td><td><strong>Yes</strong></td><td><code>show acpi.rsdp</code> &rarr; <code>0x00000000efbf0018</code>; <code>show acpi.oem</code> &rarr; <code>APPLE</code></td></tr>
+<tr><td>GOP / framebuffer?</td><td><strong>None at all</strong></td><td><code>gop list</code> &rarr; <code>gop: Graphics Output Protocol not present</code>. Not Blt-only &mdash; absent</td></tr>
+<tr><td>Kernel output after ExitBootServices?</td><td><strong>Zero, ever</strong></td><td>Screen freezes mid-word on the loader&rsquo;s last line; nothing follows on any configuration</td></tr>
+<tr><td>With USB devices attached</td><td><strong>VMM aborts in 6&ndash;8&nbsp;s</strong></td><td><code>VZErrorDomain Code=1</code>; <code>EXC_BREAKPOINT</code>/<code>SIGTRAP</code> on <code>com.apple.virtualization.thread.cpu-0</code></td></tr>
+<tr><td>With no USB devices</td><td><strong>Survives; idle</strong></td><td>121&nbsp;s+ alive, VMM at 0.1&nbsp;% CPU, no DHCP lease</td></tr>
+<tr><td>Stock kernel (with <code>virtio_gpu</code>)</td><td><strong>Hangs, spinning</strong></td><td>VM alive but pegged ~199&nbsp;% across 2 vCPUs &mdash; a different failure from the idle case</td></tr>
+<tr><td>Does <code>virtio_gpu(4)</code> drive Apple&rsquo;s virtio-gpu?</td><td><strong>No evidence it does</strong></td><td>A kernel containing it produced no console under VZ</td></tr>
+<tr><td><strong>Stock FreeBSD 16.0-CURRENT VM image</strong> (<code>-ufs.raw</code>, 2026-08-04 snapshot)</td><td><strong>Same 199&nbsp;% spin, no lease</strong></td><td>Loader menu renders normally under Apple&rsquo;s EFI, <code>Loading kernel&hellip;</code>, then two vCPUs pegged for 151&nbsp;s+ with no DHCP. <strong>Not a NextBSD bug</strong></td></tr>
+<tr><td>Stock FreeBSD <code>disc1.iso</code> as VZ media</td><td><strong>Not bootable</strong></td><td>No loader output, then a clean power-off. macOS also refuses that ESP (<code>mount -t msdos</code> &rarr; error&nbsp;71) while NextBSD&rsquo;s mounts as FAT12 <code>EFISYS</code>. Two independent readers failing on the same image points at the media, not the kernel</td></tr>
+</table></div>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Media caveat</span> <strong>Test FreeBSD releases with a VM image or memstick, never <code>disc1.iso</code>.</strong> An install ISO that Apple&rsquo;s EFI cannot read produces exactly the same outward signature as a kernel that fails to boot &mdash; black screen, no output &mdash; so it is an easy way to draw a wrong conclusion. This may be what <a href="https://github.com/crc-org/vfkit/issues/446">vfkit&nbsp;#446</a> actually is, reported there as &ldquo;missing device tree&rdquo;.</p>
+</div>
+
+<p>The crash/hang split is diagnostic, not cosmetic: <strong>a crash means the guest touched a device model Apple refuses; an idle guest means the kernel stopped scheduling; a spin means it is looping.</strong> The triggered thread name in <code>~/Library/Logs/DiagnosticReports/com.apple.Virtualization.VirtualMachine-*.ips</code> discriminates further &mdash; <code>thread.cpu-N</code> is a guest-triggered device assertion, <code>virtual-machine-service</code> is a configuration the VMM refused at start.</p>
+
+<h2 id="xhci">2. The xHCI fatality</h2>
+
+<p>The crash report&rsquo;s faulting function, disassembled, references only xHCI MMIO-decode strings:</p>
+
+<pre><code>"Security Assertion Hit: "
+"Guest attempted to write into RsvdP in the Host Controller Runtime Registers's
+ Interrupter Register Set \"%u\". "
+"Guest attempted to write into a Host Controller Operational Registers' port
+ register at offset \"0x%x\". The offset is past MaxPorts of this device."
+"Unhandled endpoint type %d"   "Non-zero doorbell target %u is unexpected"</code></pre>
+
+<p>The call site is <code>adrp x1, "Report an error"; bl &hellip;</code>, and that callee ends in <code>adrp x0, "assertion failed"; bl __os_crash; brk #0x1</code>. This is a deliberate design choice: an unmodelled guest write kills the VMM rather than being ignored.</p>
+
+<p>It also matches the only known-good FreeBSD-on-VZ writeup independently, whose blocker&nbsp;#4 reads verbatim <em>&ldquo;USB/XHCI is fatal &mdash; any USB device makes VZ present an XHCI controller and FreeBSD&rsquo;s USB stack dies&rdquo;</em>.</p>
+
+<div class="callout">
+<p><strong>Two independent belts.</strong> Host side: never configure keyboards, pointing devices, USB mass storage, or an explicit <code>VZXHCIControllerConfiguration</code>. Guest side: <code>nodevice xhci</code> in KERNCONF, or <code>hint.xhci.0.disabled="1"</code>. The guest-side belt is the one that matters, because it protects users running third-party VZ front-ends we do not control &mdash; and every published VZ tool configures a keyboard by default.</p>
+</div>
+
+<p class="cite">Sources: local crash reports 2026-08-18; <a href="https://github.com/networkextension/FreeBSD-vz">networkextension/FreeBSD-vz</a>.</p>
+
+<h2 id="mute">3. Why the guest is mute &mdash; three routes to a console</h2>
+
+<p>VZ gives an arm64 guest no console path that FreeBSD can currently use. This is a platform fact, not a bug in our configuration:</p>
+
+<ul>
+<li><strong>No GOP</strong> &mdash; measured. So <code>vt_efifb</code> can never attach, and there is no <code>MODINFOMD_EFI_FB</code> to hand over. The <a href="nextbsd-fallback-graphics-plan.html">fallback graphics</a> route does not exist on this platform.</li>
+<li><strong>No SPCR, no DBG2, no UART in the DSDT</strong> &mdash; a real VZ Linux guest shows exactly five tables (<code>RSDP/XSDT/FACP/DSDT/GTDT/APIC/MCFG</code>, OEM <code>APPLE</code>, creator <code>Apple Vz</code>). SPCR is generated per configured device, and the public API configures none that qualify. Note FreeBSD ignores DBG2 anyway unless <code>hw.acpi.enable_dbg2=yes</code>, and SPCR structurally cannot describe a virtio console &mdash; its Interface Type byte defers to DBG2 serial subtypes, all of which are UART variants.</li>
+<li><strong>virtio-console is tty-only in FreeBSD</strong> &mdash; <code>sys/dev/virtio/console/virtio_console.c</code> creates <code>/dev/ttyV0.x</code> but registers no <code>consdev</code>/<code>cnputc</code>, so it cannot carry <code>printf</code> from early boot. Linux uses the same device as <code>hvc0</code>, which is why every VZ tool&rsquo;s &ldquo;serial output&rdquo; works for Linux guests and not for us &mdash; including <a href="https://github.com/pkgdemon/swift-vm-cli">swift-vm-cli</a>, which wires <code>VZVirtioConsoleDeviceSerialPortConfiguration</code> to stdio in raw mode.</li>
+</ul>
+
+<div class="opt">
+<h3>Route&nbsp;A &mdash; port the virtio-console <code>consdev</code></h3>
+<p><span class="pill pill-good">Recommended</span> <span class="verdict">~250 LOC, already written by someone else, no entitlements, ships to users.</span></p>
+<p>The FreeBSD-vz fork carries a low-level console for <code>virtio_console(4)</code> (<code>cf50f191e</code>, +252 lines). This is the only console VZ hands an <em>unentitled</em> harness, it needs no private API, and it is the piece that makes NextBSD debuggable on this platform for good. It also benefits <code>std.virt</code> generally &mdash; the one-line <code>device virtio_console</code> is worth adding regardless of what else lands.</p>
+<p>Reconcile with <a href="nextbsd-driver-delivery-plan.html">driver delivery</a>&nbsp;&sect;3: <code>console (vt)</code> sits in the compiled-in tier. A console-capable <code>virtio_console</code> must join it there, or take an explicit documented exception.</p>
+</div>
+
+<div class="opt">
+<h3>Route&nbsp;B &mdash; Apple&rsquo;s private PL011</h3>
+<p><span class="pill pill-warn">Debug harness only</span> <span class="verdict">Zero kernel LOC &mdash; but entitlement-gated, and unusable by end users.</span></p>
+<p>Binary analysis of <code>Virtualization.framework</code> shows a private <code>_VZPL011SerialPortConfiguration</code> (serial port type 1) beside the public virtio console (type 2), plus a device table giving four slots at <code>0x20010000 + n*0x10000</code>, GSIV <code>32+n</code>. QEMU&rsquo;s clean-room <code>vmapple</code> machine model places a PL011 at exactly <code>0x20010000</code>, which corroborates it. FreeBSD would then need only:</p>
+<pre><code>hw.uart.console="mm:0x20010000,br:115200,rs:2,rw:4,xo:0"</code></pre>
+<p><strong>Measured caveat:</strong> the class passes <code>validate()</code> but <code>start()</code> fails with <code>Code=1</code> under an ad-hoc signature, trapping on <code>virtual-machine-service</code> &mdash; the <code>com.apple.private.virtualization</code> gate. Unlocking it means weakening SIP/AMFI. Fine for a lab, never for a shipped tool. Treat as a debugging accelerator, not a solution.</p>
+</div>
+
+<div class="opt">
+<h3>Route&nbsp;C &mdash; the virtio-gpu KMS console</h3>
+<p><span class="pill pill-neutral">Downstream</span> <span class="verdict">The eventual product, not a debugging tool.</span></p>
+<p>Since VZ has no GOP, the <em>only</em> way a VZ guest ever gets a graphical console is a virtio-gpu driver that publishes one &mdash; which is the <a href="nextbsd-virtio-gpu-plan.html">virtio-gpu plan</a> plus the fbdev work in &sect;6. It cannot help diagnose early boot (it needs a fully running kernel), so it is sequenced last.</p>
+</div>
+
+<h2 id="blockers">4. Remaining boot blockers, ranked</h2>
+
+<p>With xHCI removed, the guest reaches the kernel and goes idle. These are the candidates, ranked by how well they fit that signature, each with the cheapest test.</p>
+
+<div class="scroll"><table>
+<tr><th>#</th><th>Hypothesis</th><th>Fit</th><th>Cheapest test / known fix</th></tr>
+<tr><td>1</td><td><strong>MADT GICD <code>Version == 0</code></strong> &rarr; <code>gic_v3_acpi_identify()</code> bails &rarr; <code>panic: No usable event timer found</code></td><td>High &mdash; explains an idle guest with no output</td><td>Dump <code>APIC</code> from a Linux VZ guest and read the version byte. Fix exists: read <code>GICD_PIDR2</code> as Linux does &mdash; <code>aabce0c83</code> on <code>networkextension:apple-vz-gic-version-none</code>, not upstream</td></tr>
+<tr><td>2</td><td><strong>Zeroed/bad SPCR geometry</strong> (<code>rs:0,rw:1</code> vs <code>rs:2,rw:4</code>)</td><td>High</td><td>FreeBSD bug&nbsp;282936 is the same signature; fixed upstream by <code>dea3eef94caf</code> (D47946), <strong>not in releng/14.3</strong>. Kernel-side <code>SerialPort.Address == 0</code> guard analogous to <code>d82698ac68c2</code> is still unfiled</td></tr>
+<tr><td>3</td><td><strong>virtio feature negotiation</strong> &mdash; VZ is strict/all-or-nothing</td><td>High</td><td>Probe with <code>hw.vtnet.{csum,tso,lro,mq}_disable="1"</code>; then cherry-pick <code>f9a4dd60b0cf</code>, <code>8bdc312dac55</code> (<code>VIRTIO_F_RING_RESET</code>), <code>d4ddf8eaee93</code>, <code>5481c2d3ac1f</code> from <code>main</code> &mdash; <strong>none are MFC&rsquo;d to stable/15</strong></td></tr>
+<tr><td>4</td><td><strong><code>vtgpu</code> hangs at attach</strong></td><td>Medium-high &mdash; fits the 199&nbsp;% spin of the stock kernel</td><td><code>nodevice virtio_gpu</code> (which our test kernel already has &mdash; and it idles rather than spins)</td></tr>
+<tr><td>5</td><td><strong>GTDT virtual-timer interrupt wrong</strong> &mdash; an EL1 guest uses <code>GT_VIRT</code> only; vmapple wires only INTID&nbsp;27</td><td>Medium</td><td>Same ACPI dump, <code>iasl -d GTDT</code></td></tr>
+<tr><td>6</td><td><strong>PSCI conduit resolved to SMC</strong> &mdash; <code>psci_acpi_get_callfn()</code> reads FADT <code>ArmBootFlags</code> with no probe or fallback; an SMC faults on a guest with no EL3</td><td>Low &mdash; VZ&rsquo;s DT says <code>hvc</code></td><td><code>iasl -d FACP</code>, check bits 0/1</td></tr>
+</table></div>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Do this first</span> <strong>One Linux guest settles four hypotheses at once.</strong> Boot arm64 Linux under <code>VZEFIBootLoader</code> on the same host and copy out <code>/sys/firmware/acpi/tables/{APIC,GTDT,FACP,SPCR,MCFG,DSDT}</code>, then <code>iasl -d</code> them. That answers #1, #2, #5 and #6 with no NextBSD changes at all. A second, direct-kernel boot (<code>VZLinuxBootLoader</code>) yields VZ&rsquo;s own DTB via <code>dtc -I fs -O dts /sys/firmware/devicetree/base</code> &mdash; which could be handed to <code>loader.efi</code> in <code>/boot/dtb/</code> and selected with <code>kern.cfg.order=fdt</code>, bypassing the ACPI path entirely as a bring-up shortcut.</p>
+</div>
+
+<p>Note also that <code>bus_probe()</code> in <code>sys/arm64/arm64/machdep.c</code> has <strong>no health check and no fallback</strong> &mdash; the presence of an RSDP alone wins, even if the tables that follow are unusable. And FreeBSD detects hypervisors only via SMBIOS, so under VZ <code>vm_guest</code> is unset and no guest quirks apply (bug&nbsp;292082 / D54595 proposes <code>boot_el</code>-based detection).</p>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">Measured 2026-08-18</span> <strong>Upstream <code>main</code> does not boot under VZ either.</strong> The stock FreeBSD 16.0-CURRENT arm64 VM image &mdash; which already carries the four merged virtio fixes and ACPI-by-default &mdash; loads its kernel and then spins two vCPUs indefinitely with no networking, exactly as NextBSD&rsquo;s stock kernel does. This removes NextBSD from the suspect list entirely and makes the out-of-tree patch set in &sect;5 a <strong>hard dependency</strong>, not an optimisation. It also means a VZ boot cannot be fixed by rebasing.</p>
+</div>
+
+<h2 id="prior">5. Prior art &mdash; we are not first</h2>
+
+<div class="scroll"><table>
+<tr><th>Who</th><th>Status</th><th>What it gives us</th></tr>
+<tr><td><a href="https://github.com/networkextension/FreeBSD-vz">networkextension/FreeBSD-vz</a></td><td><strong>FreeBSD 16.0-CURRENT boots to multiuser under VZ</strong>, headless, 2026-07-06</td><td>The proof it is possible, a <code>VZ</code> KERNCONF, the GIC-version patch, and the virtio-console <code>consdev</code> port. Their dmesg shows <code>acpi0: &lt;APPLE Apple Vz&gt;</code>, <code>gic0 &hellip; v3.0</code>, <code>vtnet0/vtcon0/vtblk0/vtrnd0</code></td></tr>
+<tr><td><a href="https://github.com/tjfontaine/freebsd-apple-virtualization">tjfontaine/freebsd-apple-virtualization</a></td><td>Publishes dated evidence runs</td><td>Raw ACPI blobs &mdash; potentially skips our &sect;4 dump entirely</td></tr>
+<tr><td>Faraz Vahedi, freebsd-src PRs 2319 / 2322</td><td><strong>Merged to <code>main</code></strong>, 2026-07</td><td>The four virtio commits VZ needs. Not MFC&rsquo;d &mdash; if NextBSD tracks releng/15.0 we must carry them</td></tr>
+<tr><td>OpenBSD 7.9, 2026-05-19</td><td><em>&ldquo;Made OpenBSD work on Apple Virtualization.&rdquo;</em></td><td>Every blocker they hit was <strong>virtio feature negotiation</strong>, not boot: <code>VIRTIO_NET_F_MTU</code> (VZ refuses to work without it), TSO-without-<code>MRG_RXBUF</code>, and a <code>viogpu</code> mmap returning a KVA where a physical address was required. Also the architectural idea worth stealing: their bootloader <strong>synthesizes an FDT from ACPI</strong> (<code>efiacpi.c</code>) so the kernel only ever sees FDT</td></tr>
+<tr><td>Apple, <a href="https://github.com/apple/containerization">containerization</a></td><td>Reference guest config</td><td>The authoritative device list: GICv3, PSCI, arch timer, PCI-generic, virtio-PCI, PL011, PL061, PL031, EFI stub. Console is <code>hvc0</code>; shutdown is PL061 GPIO &rarr; <code>gpio-keys</code>, not ACPI PWRBTN</td></tr>
+<tr><td>UTM / vfkit</td><td>Explicitly unsupported</td><td>UTM documents macOS and Linux only; vfkit issue&nbsp;446 has FreeBSD 15.0 failing with &ldquo;missing device tree&rdquo;. Nobody ships this &mdash; being early is the point</td></tr>
+</table></div>
+
+<h3>The platform, as measured by others</h3>
+<p>Worth recording because it differs from QEMU&rsquo;s <code>virt</code> in ways that break assumptions: <strong>RAM is at <code>0x7000_0000</code>, not <code>0x4000_0000</code></strong> (PCIe ECAM sits there instead); GICv3 only, <strong>no ITS and no MSI/MSI-X</strong> &mdash; PCIe is legacy INTx on SPIs; PSCI 0.2 with HVC conduit and an EL1-only guest, so SMC faults; virtio-PCI modern only, no virtio-mmio; 4K or 16K granule, never 64K. Our own <code>acpi.rsdp = 0xefbf0018</code> is consistent with the <code>0x70000000</code> RAM base and inconsistent with a QEMU-virt layout &mdash; a useful independent confirmation.</p>
+
+<h2 id="fbdev">6. The fbdev gap &mdash; smaller than we thought</h2>
+
+<p>This closes the open question left dangling in the <a href="nextbsd-graphics-plan.html">graphics plan</a>&nbsp;&sect;10 (<em>&ldquo;Did drm-kmod&rsquo;s core build with <code>CONFIG_DRM_FBDEV_EMULATION</code>?&rdquo;</em>) and corrects the rationale currently written into <code>graphics/drm_shmem_helpers/Makefile</code>.</p>
+
+<p>Enabling <code>drm_fbdev_shmem.c</code> in CI produced exactly <strong>8 errors, no missing headers, no incomplete types</strong>: <code>fb_deferred_io_init</code>/<code>_cleanup</code> undeclared, <code>fb_WARN_ON_ONCE</code> undeclared, and <code>fbdefio</code> missing from <code>struct drm_fb_helper</code> and <code>struct linux_fb_info</code>.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Corrected</span> <strong>Deferred I/O is not needed at all.</strong> The Makefile&rsquo;s note that &ldquo;wiring deferred I/O into drm-kmod&rsquo;s fb_helper is its own piece of work&rdquo; is wrong. <code>drm_fbdev_ttm.c</code> &mdash; which drm-kmod <em>does</em> build, and which is why BochsGraphics has a console &mdash; makes the identical calls and simply wraps them in <code>#ifdef __linux__</code>. Everything in Linux&rsquo;s <code>fb_defio.c</code> exists to service a userspace <code>mmap()</code> of <code>/dev/fbN</code>, and drm-kmod creates no such cdev.</p>
+</div>
+
+<p>The console&rsquo;s damage path is separate and already implemented and exported: <code>vt_drmfb</code> draws only through <code>info-&gt;fbops-&gt;fb_imageblit</code> &rarr; <code>drm_fb_helper_damage_area()</code> &rarr; <code>fb_dirty</code> &rarr; our <code>drm_atomic_helper_dirtyfb</code> &rarr; <code>virtio_gpu_cmd_transfer_to_host_2d()</code> + <code>resource_flush</code>. vt(4) already batches at 25&nbsp;Hz (<code>VT_TIMERFREQ</code>) &mdash; the same order as Linux&rsquo;s <code>HZ/20</code> defio delay, with exact damage clips rather than full-screen blasts.</p>
+
+<p>So the fix is <strong>~20&ndash;40 LOC of stubs</strong>, with upstream precedent: drm-kmod commit <code>2ac98d2787</code> (wulf@, 2026-06-14, on <code>master</code> but not yet <code>6.12-lts</code>) adds the empty <code>fb_deferred_io_cleanup()</code> and drops the <code>__linux__</code> guard; Phabricator D57488 moves this code into base <em>keeping</em> the stubs. Implementing real deferred I/O would fight the direction of travel and needs VM plumbing FreeBSD lacks (<code>vm_page</code> has no <code>lru</code>).</p>
+
+<p>Three runtime traps the compiler will not catch: <code>drm_fb_helper_deferred_io</code> is declared but <code>__linux__</code>-guarded out (undefined symbol at load &mdash; <code>tools/check-kext-symbols.py</code> catches it); <code>fb_deferred_io_mmap()</code> is a live <code>panic()</code>; and shmem&rsquo;s <code>fix.smem_start == 0</code> means <code>vt_fb_mmap()</code> would hand out pages nothing ever flushes, so set <code>FB_FLAG_NOMMAP</code>.</p>
+
+<p><strong>Scope note:</strong> this unlocks shmem-backed fbdev only &mdash; i.e. virtio-gpu, plus the other shmem consumers (<code>ast</code>, <code>mgag200</code>, <code>cirrus</code>, <code>hyperv</code>) our <code>drm_shmem_helpers</code> module already pays for. Bochs and VBox are unaffected: they are TTM-backed and already work.</p>
+
+<p class="cite">OpenBSD&rsquo;s <code>viogpu.c</code> is the counter-example worth knowing: it transfers and flushes the <em>whole screen every 10&nbsp;ms</em> with no damage tracking, from a non-DRM wsdisplay driver. It proves a crude periodic flush is viable, and simultaneously that FreeBSD&rsquo;s <code>vt_drmfb</code> path is the better of the two.</p>
+
+<h2 id="reconcile">7. Reconciling with V7 and Option&nbsp;D</h2>
+
+<p>The <a href="nextbsd-virtio-gpu-plan.html">virtio-gpu plan</a> carries standing constraint <strong>V7: never add <code>device virtio_gpu</code> to the NEXTBSD kernel config</strong>, and <a href="nextbsd-arm64-kms-options.html">arm64 KMS options</a>&nbsp;&sect;Option&nbsp;D recommends <code>nodevice virtio_gpu</code>, because base&rsquo;s driver registers at <code>VD_PRIORITY_GENERIC+10</code> against efifb&rsquo;s <code>+1</code> and displaces the console that works.</p>
+
+<div class="callout">
+<p><strong>Both remain correct, with one qualification neither page states: they assume a firmware framebuffer exists.</strong> That holds when <code>QemuRamfbDxe</code> produces a GOP with a real linear framebuffer. It does <em>not</em> hold on a VM whose only display device is the virtio-gpu &mdash; there OVMF&rsquo;s GOP is Blt-only, and under Apple&rsquo;s EFI there is no GOP at all. On such a machine <code>nodevice virtio_gpu</code> leaves <code>VT: init without driver</code> and a black screen from kernel start until a kext loads. Measured on a UTM guest configured <code>-vga none -device virtio-gpu-pci</code>.</p>
+</div>
+
+<p>Practical consequence: the constraint should be restated as <em>&ldquo;never rely on base <code>virtio_gpu(4)</code> for the console, and ensure the VM provides a firmware framebuffer or the KMS kext provides one&rdquo;</em>. &sect;6 is what makes the second half true. Until then, removing base&rsquo;s driver is only safe on VMs that have another display device.</p>
+
+<p>Separately, newbus has <strong>no re-bid mechanism</strong> &mdash; <code>device_probe()</code> returns <code>-1</code> once a device is <code>DS_ALIVE</code>, and <code>bus_generic_driver_added()</code> only probes <code>DS_NOTPRESENT</code> children. A driver loaded later can never displace an incumbent; the handover must be triggered explicitly, and <code>devctl detach</code> of an active <code>vtgpu0</code> panics the box (measured). That is why priority alone (<code>BUS_PROBE_VENDOR</code>, kernel-modules#37) only helps when the kext is resident before the bus probes its children.</p>
+
+<h2 id="phases">8. Plan</h2>
+
+<div class="phase">
+<h3>Phase 0 &mdash; stop killing the VM <span class="pill pill-good">done 2026-08-18</span></h3>
+<p>Remove USB from the harness; add <code>nodevice xhci</code> / <code>hint.xhci.0.disabled="1"</code> to the guest side so third-party front-ends cannot trip it. Exit criterion met: guest survives &gt;120&nbsp;s.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 1 &mdash; give the guest a voice</h3>
+<p>Port the virtio-console <code>consdev</code> (Route&nbsp;A) and add <code>device virtio_console</code> to the kernel config. In parallel, dump VZ&rsquo;s ACPI tables from a Linux guest &mdash; or take tjfontaine&rsquo;s published blobs. <strong>Exit criterion:</strong> kernel <code>printf</code> reaches the host terminal from early boot.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 2 &mdash; make it boot</h3>
+<p>With output in hand, work &sect;4 top-down: GIC version, SPCR geometry, virtio negotiation, GTDT, PSCI. Cherry-pick the four merged virtio commits and evaluate the GIC-version patch. <strong>Exit criterion:</strong> multiuser, DHCP lease, ssh.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 3 &mdash; the console people actually see</h3>
+<p>Land the fbdev stubs (&sect;6) so the virtio-gpu kext publishes a framebuffer, and pair with kernel-modules#37 so it wins the device. <strong>Exit criterion:</strong> <code>VT: Replacing driver &hellip; with new "drmfb".</code> beside <code>/dev/dri/card0</code>, on both qemu and VZ.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 4 &mdash; upstream and CI</h3>
+<p>Offer the virtio-console <code>consdev</code> and the GIC-version fallback to FreeBSD; add a VZ boot lane once a headless boot is reproducible. Note the boot-test guard in kernel-modules greps <code>kldstat</code>, which cannot see a compiled-in driver &mdash; it should read <code>kern.conftxt</code>.</p>
+</div>
+
+<h2 id="calls">9. Open calls</h2>
+<ol>
+<li>Do we carry the four virtio commits locally, or wait for an MFC to stable/15? They are merged to <code>main</code> only.</li>
+<li>Does <code>virtio_console</code> join the compiled-in tier in <a href="nextbsd-driver-delivery-plan.html">driver delivery</a>&nbsp;&sect;3, or take a documented exception?</li>
+<li>Contact networkextension and tjfontaine before writing code &mdash; two parties are already on this platform, and one has it booting. Given that stock <code>main</code> spins (&sect;5), their patch set is the dependency; the question is whether we carry it, or help push it upstream.</li>
+<li>Is the OpenBSD trick (synthesize FDT from ACPI in the loader) worth adopting as a bring-up shortcut, given <code>bus_probe()</code> has no fallback when ACPI is present but unusable?</li>
+<li>Does the harness belong in <a href="https://github.com/pkgdemon/swift-vm-cli">swift-vm-cli</a> (which already does the VZ + virtio-console half) rather than living as a scratch tool?</li>
+<li>Restate V7 / Option&nbsp;D per &sect;7, or leave them and add the qualification only here?</li>
+</ol>
+
+<p class="footnote">Sub-plan of the <a href="nextbsd-graphics-plan.html">NextBSD graphics plan</a> where it touches the console; a peer of the <a href="nextbsd-virtio-gpu-plan.html">virtio-gpu DRM plan</a> and the <a href="nextbsd-arm64-kms-options.html">arm64 KMS decision record</a>, which it amends in &sect;7. Everything tagged <em>measured</em> was observed on 2026-08-18 on macOS&nbsp;26.5.2 against NextBSD arm64; upstream claims are linked to source. Claims derived from disassembling Apple&rsquo;s framework are marked and are the least durable material here &mdash; they describe private, undocumented API and may change without notice.</p>
+
+</div>
+</body>
+</html>

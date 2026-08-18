@@ -93,6 +93,12 @@
 <tr><td>With no USB devices</td><td><strong>Survives; idle</strong></td><td>121&nbsp;s+ alive, VMM at 0.1&nbsp;% CPU, no DHCP lease</td></tr>
 <tr><td>Stock kernel (with <code>virtio_gpu</code>)</td><td><strong>Hangs, spinning</strong></td><td>VM alive but pegged ~199&nbsp;% across 2 vCPUs &mdash; a different failure from the idle case</td></tr>
 <tr><td>Does <code>virtio_gpu(4)</code> drive Apple&rsquo;s virtio-gpu?</td><td><strong>No evidence it does</strong></td><td>A kernel containing it produced no console under VZ</td></tr>
+<tr><td><strong>Linux under <code>VZEFIBootLoader</code></strong> (GRUB on the guest ESP)</td><td><strong>Boots, console works</strong></td><td>ACPI path confirmed (<code>rtc-efi</code>, not <code>pl031</code>). Tables present: <code>APIC DSDT FACP GTDT MCFG</code> &mdash; <strong>no SPCR</strong></td></tr>
+<tr><td>MADT GIC Distributor version</td><td><strong><code>GicVersion = 3</code></strong></td><td>Not 0. The carried GIC-version fallback patch is inert here and was dropped. GICD base <code>0x10000000</code>, GICv2m MSI frame <code>0x1fff0000</code></td></tr>
+<tr><td>GTDT / FADT</td><td><strong>Well-formed</strong></td><td>VirtualTimer <strong>INTID 27</strong> (what Linux uses), NonSecureEL1 30, EL2 26; FADT rev&nbsp;6 with <code>HW_REDUCED_ACPI</code>, <code>PSCI_COMPLIANT</code> and <code>PSCI_USE_HVC</code> all set</td></tr>
+<tr><td>Linux via <code>VZLinuxBootLoader</code> (direct kernel)</td><td><strong>Boots, DT path</strong></td><td>VZ&rsquo;s own DTB captured: <code>arm,gic-v3</code>, <code>psci</code> method <code>hvc</code>, RAM at <code>0x70000000</code>, PL031 <code>0x20050000</code>, PL061 <code>0x20060000</code>, <strong>no serial node</strong></td></tr>
+<tr><td><strong>NextBSD + VZ graphics device</strong></td><td><strong>199&nbsp;% spin</strong></td><td>Every kernel containing base <code>virtio_gpu(4)</code> spins; the one built <code>nodevice virtio_gpu</code> does not</td></tr>
+<tr><td><strong>NextBSD, no graphics device</strong></td><td><strong>Idle 0.1&nbsp;%</strong></td><td>No console output even with the consdev patch resident &mdash; so it stops <em>before</em> virtio device probe. Cause unknown</td></tr>
 <tr><td><strong>Stock FreeBSD 16.0-CURRENT VM image</strong> (<code>-ufs.raw</code>, 2026-08-04 snapshot)</td><td><strong>Same 199&nbsp;% spin, no lease</strong></td><td>Loader menu renders normally under Apple&rsquo;s EFI, <code>Loading kernel&hellip;</code>, then two vCPUs pegged for 151&nbsp;s+ with no DHCP. <strong>Not a NextBSD bug</strong></td></tr>
 <tr><td>Stock FreeBSD <code>disc1.iso</code> as VZ media</td><td><strong>Not bootable</strong></td><td>No loader output, then a clean power-off. macOS also refuses that ESP (<code>mount -t msdos</code> &rarr; error&nbsp;71) while NextBSD&rsquo;s mounts as FAT12 <code>EFISYS</code>. Two independent readers failing on the same image points at the media, not the kernel</td></tr>
 </table></div>
@@ -157,7 +163,15 @@
 
 <h2 id="blockers">4. Remaining boot blockers, ranked</h2>
 
-<p>With xHCI removed, the guest reaches the kernel and goes idle. These are the candidates, ranked by how well they fit that signature, each with the cheapest test.</p>
+<div class="callout callout-good">
+<p><span class="pill pill-good">Settled 2026-08-18</span> <strong>Four of these six are now eliminated by measurement</strong> (&sect;1): the MADT reports <code>GicVersion = 3</code>, there is no SPCR to be malformed, the GTDT virtual timer is INTID&nbsp;27, and the FADT sets both PSCI flags. VZ&rsquo;s firmware description is well formed &mdash; the blocker is not in the tables.</p>
+</div>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Two failures, not one</span> <strong>#4 is real and is the 199&nbsp;% spin.</strong> Base <code>virtio_gpu(4)</code> attaching to Apple&rsquo;s virtio-gpu pegs both vCPUs; removing the graphics device from the VM removes the spin. What remains underneath is a <em>second</em>, earlier failure: the guest goes idle at 0.1&nbsp;% with no console output at all, which places it before virtio device probe &mdash; early enough that the consdev patch cannot report it.</p>
+</div>
+
+<p>With xHCI removed, the guest reaches the kernel and goes idle. These are the candidates, ranked by how well they fit that signature, each with the cheapest test. Status reflects what has since been measured.</p>
 
 <div class="scroll"><table>
 <tr><th>#</th><th>Hypothesis</th><th>Fit</th><th>Cheapest test / known fix</th></tr>
@@ -234,13 +248,14 @@
 </div>
 
 <div class="phase">
-<h3>Phase 1 &mdash; give the guest a voice</h3>
-<p>Port the virtio-console <code>consdev</code> (Route&nbsp;A) and add <code>device virtio_console</code> to the kernel config. In parallel, dump VZ&rsquo;s ACPI tables from a Linux guest &mdash; or take tjfontaine&rsquo;s published blobs. <strong>Exit criterion:</strong> kernel <code>printf</code> reaches the host terminal from early boot.</p>
+<h3>Phase 1 &mdash; give the guest a voice <span class="pill pill-good">merged</span></h3>
+<p>Done: the consdev landed as patch <code>0010</code> in nextbsd-kernel (arm64 <code>GENERIC</code> already includes <code>std.virt</code>, so no config change was needed), and VZ&rsquo;s ACPI tables were dumped from a Linux guest booted on the same host. A carried GIC-version patch was landed alongside it and then dropped once the MADT proved it inert.</p>
+<p><strong>Exit criterion not yet met.</strong> The consdev is resident and correct (<code>cn_pri = CN_NORMAL</code>, <code>cnadd(9)</code> at attach) but produces nothing, because the guest stops before the virtio bus is probed. A console that registers at device-attach time cannot report a pre-attach failure &mdash; a limitation worth recording, since it is the whole premise of Route&nbsp;A.</p>
 </div>
 
 <div class="phase">
 <h3>Phase 2 &mdash; make it boot</h3>
-<p>With output in hand, work &sect;4 top-down: GIC version, SPCR geometry, virtio negotiation, GTDT, PSCI. Cherry-pick the four merged virtio commits and evaluate the GIC-version patch. <strong>Exit criterion:</strong> multiuser, DHCP lease, ssh.</p>
+<p>The table-driven theories are spent. Since the guest is mute before device probe, the remaining technique that needs no console is a <strong>PSCI tracer</strong>: patch an <code>HVC SYSTEM_OFF</code> (<code>0x84000008</code>) in at a chosen early point and watch for a clean power-off on the host &mdash; <code>guestDidStop</code> is observable from the harness &mdash; then binary-search the boot path. Roughly log&#8322;(N) CI builds. Separately, fix the <code>vtgpu</code> spin, which is an independent bug that also affects qemu guests. <strong>Exit criterion:</strong> multiuser, DHCP lease, ssh.</p>
 </div>
 
 <div class="phase">

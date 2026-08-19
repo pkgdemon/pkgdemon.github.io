@@ -53,7 +53,7 @@
 
 <p class="lede">Apple&rsquo;s VM stack is the one arm64 target where NextBSD has never booted, and the reason turned out not to be ACPI, GIC, or graphics. It was USB. This page records what was measured on real hardware, what the remaining blockers are, who else is already working on them, and the order to fix them in.</p>
 
-<p class="meta">Investigated 2026-08-18 on an Apple&nbsp;Silicon Mac, macOS&nbsp;26.5.2. Every claim tagged <em>measured</em> was observed directly on that machine against a NextBSD arm64 install (kernel <code>20260818-174943</code>) and the <code>NextBSD-arm64-20260817-065847</code> ISO. Upstream claims carry source links. Claims from binary analysis of Apple&rsquo;s framework are tagged as such and are the least durable thing here.</p>
+<p class="meta">Investigated 2026-08-18, updated 2026-08-19 on an Apple&nbsp;Silicon Mac, macOS&nbsp;26.5.2. Every claim tagged <em>measured</em> was observed directly on that machine against a NextBSD arm64 install (kernel <code>20260818-174943</code>) and the <code>NextBSD-arm64-20260817-065847</code> ISO. Upstream claims carry source links. Claims from binary analysis of Apple&rsquo;s framework are tagged as such and are the least durable thing here.</p>
 
 <div class="callout callout-good">
 <p><span class="pill pill-good">Root-caused 2026-08-18</span> <strong>The &ldquo;Internal Virtualization error&rdquo; is xHCI.</strong> Apple&rsquo;s virtual xHCI controller aborts the entire VMM &mdash; <code>Security Assertion Hit</code> &rarr; <code>__os_crash</code> &rarr; <code>brk #0x1</code> on the vCPU thread &mdash; when a guest writes a register it does not model, and FreeBSD&rsquo;s <code>xhci(4)</code> does exactly that. Any <code>VZUSBKeyboardConfiguration</code>, <code>VZUSBScreenCoordinatePointingDeviceConfiguration</code>, or <code>VZUSBMassStorageDevice</code> instantiates that controller. Remove them and the crash goes away: <strong>6&ndash;8&nbsp;s crash &rarr; 121&nbsp;s and still running, guest idle at 0.1&nbsp;% CPU</strong>.</p>
@@ -61,6 +61,11 @@
 
 <div class="callout callout-warn">
 <p><span class="pill pill-warn">Still blocked</span> <strong>Booting is not fixed, only unblocked.</strong> With USB removed the guest reaches the kernel and then sits idle without networking. It is mute &mdash; no GOP, no UART, no SPCR &mdash; so the next blocker cannot be identified without first giving the guest a console. That, not ACPI, is the critical path.</p>
+</div>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Updated 2026-08-19</span> <strong>Two of the three blockers on this page are now closed in tree, and neither of them was the boot hang.</strong> The <code>vtgpu</code> attach spin (&sect;4 #4) is fixed by kernel patch <code>0011</code>, which bounds the control-queue wait and calls <code>virtio_stop()</code> on timeout instead of spinning a vCPU forever. The fbdev gap (&sect;6) is closed outright: <code>drm_fbdev_shmem</code> is built and shipping, and a stock arm64 boot now reaches <code>/dev/dri/card0</code> with a drmfb console unattended. Neither depends on a firmware framebuffer, so both carry over to VZ, where there is no GOP at all.</p>
+<p><strong>What is left for VZ is exactly one thing: the early hang.</strong> With USB removed the guest reaches the kernel and goes idle before the virtio bus is probed &mdash; earlier than any console this project can register, which is why the consdev (&sect;8 Phase&nbsp;1) is resident, correct, and silent. The next move is the <strong>PSCI tracer</strong> (&sect;8 Phase&nbsp;2): it needs no console at all. Everything else on this page is either measured-and-eliminated or now shipped.</p>
 </div>
 
 <div class="toc">
@@ -168,7 +173,8 @@
 </div>
 
 <div class="callout callout-warn">
-<p><span class="pill pill-warn">Two failures, not one</span> <strong>#4 is real and is the 199&nbsp;% spin.</strong> Base <code>virtio_gpu(4)</code> attaching to Apple&rsquo;s virtio-gpu pegs both vCPUs; removing the graphics device from the VM removes the spin. What remains underneath is a <em>second</em>, earlier failure: the guest goes idle at 0.1&nbsp;% with no console output at all, which places it before virtio device probe &mdash; early enough that the consdev patch cannot report it.</p>
+<p><span class="pill pill-warn">Two failures, not one</span> <strong>#4 was real and is now fixed.</strong> Base <code>virtio_gpu(4)</code> attaching to Apple&rsquo;s virtio-gpu pegged both vCPUs, because <code>vtgpu_attach()</code> waited on the control queue with an unbounded <code>virtqueue_poll(9)</code>. Kernel patch <code>0011</code> replaces that with a 5&nbsp;s bounded dequeue loop that reports and calls <code>virtio_stop()</code> rather than spinning. The spin is gone without removing the graphics device from the VM.</p>
+<p>What remains underneath is the <em>second</em>, earlier failure, and it is now the only one: the guest goes idle at 0.1&nbsp;% with no console output at all, which places it <strong>before virtio device probe</strong> &mdash; early enough that no device-attach-time console, the consdev included, can ever report it.</p>
 </div>
 
 <p>With xHCI removed, the guest reaches the kernel and goes idle. These are the candidates, ranked by how well they fit that signature, each with the cheapest test. Status reflects what has since been measured.</p>
@@ -178,7 +184,7 @@
 <tr><td>1</td><td><strong>MADT GICD <code>Version == 0</code></strong> &rarr; <code>gic_v3_acpi_identify()</code> bails &rarr; <code>panic: No usable event timer found</code></td><td>High &mdash; explains an idle guest with no output</td><td>Dump <code>APIC</code> from a Linux VZ guest and read the version byte. Fix exists: read <code>GICD_PIDR2</code> as Linux does &mdash; <code>aabce0c83</code> on <code>networkextension:apple-vz-gic-version-none</code>, not upstream</td></tr>
 <tr><td>2</td><td><strong>Zeroed/bad SPCR geometry</strong> (<code>rs:0,rw:1</code> vs <code>rs:2,rw:4</code>)</td><td>High</td><td>FreeBSD bug&nbsp;282936 is the same signature; fixed upstream by <code>dea3eef94caf</code> (D47946), <strong>not in releng/14.3</strong>. Kernel-side <code>SerialPort.Address == 0</code> guard analogous to <code>d82698ac68c2</code> is still unfiled</td></tr>
 <tr><td>3</td><td><strong>virtio feature negotiation</strong> &mdash; VZ is strict/all-or-nothing</td><td>High</td><td>Probe with <code>hw.vtnet.{csum,tso,lro,mq}_disable="1"</code>; then cherry-pick <code>f9a4dd60b0cf</code>, <code>8bdc312dac55</code> (<code>VIRTIO_F_RING_RESET</code>), <code>d4ddf8eaee93</code>, <code>5481c2d3ac1f</code> from <code>main</code> &mdash; <strong>none are MFC&rsquo;d to stable/15</strong></td></tr>
-<tr><td>4</td><td><strong><code>vtgpu</code> hangs at attach</strong></td><td>Medium-high &mdash; fits the 199&nbsp;% spin of the stock kernel</td><td><code>nodevice virtio_gpu</code> (which our test kernel already has &mdash; and it idles rather than spins)</td></tr>
+<tr><td>4</td><td><strong><code>vtgpu</code> hangs at attach</strong> <span class="pill pill-good">fixed</span></td><td>Was medium-high &mdash; it was the 199&nbsp;% spin</td><td><strong>Fixed in tree by patch <code>0011</code></strong>: bounded control-queue wait (5&nbsp;s, 10&nbsp;&micro;s interval) then <code>device_printf</code> + <code>virtio_stop()</code> + <code>ETIMEDOUT</code>. No <code>nodevice</code> needed, and the fix helps qemu guests too</td></tr>
 <tr><td>5</td><td><strong>GTDT virtual-timer interrupt wrong</strong> &mdash; an EL1 guest uses <code>GT_VIRT</code> only; vmapple wires only INTID&nbsp;27</td><td>Medium</td><td>Same ACPI dump, <code>iasl -d GTDT</code></td></tr>
 <tr><td>6</td><td><strong>PSCI conduit resolved to SMC</strong> &mdash; <code>psci_acpi_get_callfn()</code> reads FADT <code>ArmBootFlags</code> with no probe or fallback; an SMC faults on a guest with no EL3</td><td>Low &mdash; VZ&rsquo;s DT says <code>hvc</code></td><td><code>iasl -d FACP</code>, check bits 0/1</td></tr>
 </table></div>
@@ -208,7 +214,11 @@
 <h3>The platform, as measured by others</h3>
 <p>Worth recording because it differs from QEMU&rsquo;s <code>virt</code> in ways that break assumptions: <strong>RAM is at <code>0x7000_0000</code>, not <code>0x4000_0000</code></strong> (PCIe ECAM sits there instead); GICv3 only, <strong>no ITS and no MSI/MSI-X</strong> &mdash; PCIe is legacy INTx on SPIs; PSCI 0.2 with HVC conduit and an EL1-only guest, so SMC faults; virtio-PCI modern only, no virtio-mmio; 4K or 16K granule, never 64K. Our own <code>acpi.rsdp = 0xefbf0018</code> is consistent with the <code>0x70000000</code> RAM base and inconsistent with a QEMU-virt layout &mdash; a useful independent confirmation.</p>
 
-<h2 id="fbdev">6. The fbdev gap &mdash; smaller than we thought</h2>
+<h2 id="fbdev">6. The fbdev gap &mdash; closed</h2>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Shipped 2026-08-19</span> <strong>This section is now history rather than plan.</strong> <code>drm_fbdev_shmem.c</code> is vendored into <code>graphics/drivers/gpu/drm/</code> with four <code>#ifdef __linux__</code> guards, built by <code>drm_shmem_helpers</code>, and called by default from the virtio-gpu kext (<code>hw.virtio_gpu_drm.fbdev=0</code> opts out) &mdash; kernel-modules#38. The prediction below held: <strong>no deferred I/O was required</strong>. One further fix was needed that this section did not anticipate &mdash; <code>lkpinew_pci_dev()</code> created a <code>pci_dev</code> with no DMA tags, so the first <code>dma_map_sgtable()</code> page-faulted; kernel patch <code>0012</code> gives it tags via <code>linux_pdev_dma_init()</code>. With both in place: <code>card0</code> + <code>renderD128</code>, <code>VT: Replacing driver &quot;virtio_gpu&quot; with new &quot;drmfb&quot;</code>, and zero alignment warnings or <code>[drm] *ERROR*</code> lines.</p>
+</div>
 
 <p>This closes the open question left dangling in the <a href="nextbsd-graphics-plan.html">graphics plan</a>&nbsp;&sect;10 (<em>&ldquo;Did drm-kmod&rsquo;s core build with <code>CONFIG_DRM_FBDEV_EMULATION</code>?&rdquo;</em>) and corrects the rationale currently written into <code>graphics/drm_shmem_helpers/Makefile</code>.</p>
 
@@ -236,9 +246,24 @@
 <p><strong>Both remain correct, with one qualification neither page states: they assume a firmware framebuffer exists.</strong> That holds when <code>QemuRamfbDxe</code> produces a GOP with a real linear framebuffer. It does <em>not</em> hold on a VM whose only display device is the virtio-gpu &mdash; there OVMF&rsquo;s GOP is Blt-only, and under Apple&rsquo;s EFI there is no GOP at all. On such a machine <code>nodevice virtio_gpu</code> leaves <code>VT: init without driver</code> and a black screen from kernel start until a kext loads. Measured on a UTM guest configured <code>-vga none -device virtio-gpu-pci</code>.</p>
 </div>
 
-<p>Practical consequence: the constraint should be restated as <em>&ldquo;never rely on base <code>virtio_gpu(4)</code> for the console, and ensure the VM provides a firmware framebuffer or the KMS kext provides one&rdquo;</em>. &sect;6 is what makes the second half true. Until then, removing base&rsquo;s driver is only safe on VMs that have another display device.</p>
+<div class="callout callout-good">
+<p><span class="pill pill-good">Settled 2026-08-19 &mdash; the other way</span> <strong>V7 and Option&nbsp;D are withdrawn for virtio-gpu. Base <code>virtio_gpu(4)</code> stays compiled in, and the kext takes the device from it.</strong> The reasoning above is why: on a machine whose only display is the virtio-gpu &mdash; which is every VZ guest &mdash; base is not a nuisance competing with efifb, it is the <em>only</em> console there is. <code>nodevice</code> buys KMS at the price of a blind boot from the first kernel message until userland loads a kext, panics included. That is the wrong trade on the one platform we cannot currently debug.</p>
+</div>
 
-<p>Separately, newbus has <strong>no re-bid mechanism</strong> &mdash; <code>device_probe()</code> returns <code>-1</code> once a device is <code>DS_ALIVE</code>, and <code>bus_generic_driver_added()</code> only probes <code>DS_NOTPRESENT</code> children. A driver loaded later can never displace an incumbent; the handover must be triggered explicitly, and <code>devctl detach</code> of an active <code>vtgpu0</code> panics the box (measured). That is why priority alone (<code>BUS_PROBE_VENDOR</code>, kernel-modules#37) only helps when the kext is resident before the bus probes its children.</p>
+<p>Restated constraint: <em>&ldquo;never rely on base <code>virtio_gpu(4)</code> as the <strong>final</strong> console, but do keep it as the <strong>first</strong> one, and hand the device over explicitly once the KMS kext is resident.&rdquo;</em></p>
+
+<p>The handover mechanism, since newbus will not do it for us. It remains true that there is <strong>no re-bid</strong> &mdash; <code>bus_generic_driver_added()</code> re-probes only <code>DS_NOTPRESENT</code> children, and <code>releng/15.1</code> has no <code>DF_REBID</code> &mdash; so an attached <code>vtgpu0</code> is never displaced by a better driver arriving later. Two pieces close that:</p>
+
+<ul>
+<li><strong>kernel#76</strong> teaches the in-kernel IOKit present-scan to look <em>through</em> <code>virtio_pci</code> to a base-shadowed virtio-gpu, exactly as it already looks through <code>vgapci</code> to an unbound <code>drmn</code>. Without it nothing ever asks kextd for the bundle: <code>device_nomatch</code> does not fire for a device base matched perfectly well.</li>
+<li><strong>kernel-modules#39</strong> makes the kext take the device itself on load &mdash; <code>device_detach()</code> then <code>device_probe_and_attach()</code>, inside one <code>bus_topo_lock()</code> section, on a deferred task. That is <code>DEV_SET_DRIVER</code>&rsquo;s sequence written in exported functions, and <code>BUS_PROBE_VENDOR</code> (kernel-modules#37) is what wins the resulting bid.</li>
+</ul>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">Measured 2026-08-19</span> <strong>Atomicity is the whole design, not a detail.</strong> Detaching whichever driver currently owns the console panics the machine seconds later, when the next console write reaches a driver that is gone &mdash; <code>vtgpu_detach()</code> calls <code>vt_deallocate()</code> and nothing repaints until a replacement registers. Both <code>devctl detach vtgpu0</code> and <code>devctl clear driver -f virtio_gpu_drm0</code> did exactly that, the latter twice; <code>clear driver</code> is just as fatal because it detaches first and re-attaches only if <code>device_probe()</code> succeeds. The atomic form, <code>devctl set driver -f vtgpu0 virtio_gpu_drm</code>, hands over cleanly. Any in-kernel trigger must do the same and never a bare detach.</p>
+</div>
+
+<p>Result, on a stock arm64 boot with nothing typed: base paints the console from <code>VT: initialize with new VT driver &quot;virtio_gpu&quot;</code>, kextd loads the bundle the scan asked for, the kext takes the device, and vt switches to <code>drmfb</code> &mdash; console the whole way through, plus <code>card0</code>. This is the shape VZ will inherit for free once it boots at all.</p>
 
 <h2 id="phases">8. Plan</h2>
 
@@ -255,12 +280,21 @@
 
 <div class="phase">
 <h3>Phase 2 &mdash; make it boot</h3>
-<p>The table-driven theories are spent. Since the guest is mute before device probe, the remaining technique that needs no console is a <strong>PSCI tracer</strong>: patch an <code>HVC SYSTEM_OFF</code> (<code>0x84000008</code>) in at a chosen early point and watch for a clean power-off on the host &mdash; <code>guestDidStop</code> is observable from the harness &mdash; then binary-search the boot path. Roughly log&#8322;(N) CI builds. Separately, fix the <code>vtgpu</code> spin, which is an independent bug that also affects qemu guests. <strong>Exit criterion:</strong> multiuser, DHCP lease, ssh.</p>
+<p><span class="pill pill-warn">the only thing left</span> The table-driven theories are spent and the <code>vtgpu</code> spin is fixed (patch <code>0011</code>), so this is now the whole remaining task. Since the guest is mute before device probe, the one technique that needs no console is a <strong>PSCI tracer</strong>: patch an <code>HVC SYSTEM_OFF</code> (<code>0x84000008</code>) in at a chosen early point and watch for a clean power-off on the host &mdash; <code>guestDidStop</code> is observable from the harness &mdash; then binary-search the boot path. Roughly log&#8322;(N) CI builds, and it reports through the hypervisor rather than through any guest device, which is precisely why it survives a failure this early.</p>
+<p>Note what this no longer needs: no console work, no graphics work, no ACPI work. Those were the plausible-looking prerequisites, and every one has since been either measured away (&sect;1) or shipped (&sect;6, &sect;7). <strong>Exit criterion:</strong> multiuser, DHCP lease, ssh.</p>
 </div>
 
 <div class="phase">
-<h3>Phase 3 &mdash; the console people actually see</h3>
-<p>Land the fbdev stubs (&sect;6) so the virtio-gpu kext publishes a framebuffer, and pair with kernel-modules#37 so it wins the device. <strong>Exit criterion:</strong> <code>VT: Replacing driver &hellip; with new "drmfb".</code> beside <code>/dev/dri/card0</code>, on both qemu and VZ.</p>
+<h3>Phase 3 &mdash; the console people actually see <span class="pill pill-good">done on qemu 2026-08-19</span></h3>
+<p>Landed as kernel-modules#37 (probe priority), #38 (<code>drm_fbdev_shmem</code>), #39 (atomic takeover) and kernel#76 (present-scan look-through), with kernel patch <code>0012</code> supplying the DMA tags the fbdev path needs. Exit criterion met on arm64 qemu, unattended, on a stock boot:</p>
+<pre><code>vtgpu0: &lt;VirtIO GPU&gt; on virtio_pci1
+VT: initialize with new VT driver "virtio_gpu".
+vtgpu0: detached
+virtio_gpu_drm0: &lt;VirtIO GPU (DRM/KMS)&gt; on virtio_pci1
+[drm] Initialized virtio_gpu 0.1.0 for virtio_pci1 on minor 0
+VT: Replacing driver "virtio_gpu" with new "drmfb".
+/dev/dri/card0  /dev/dri/renderD128</code></pre>
+<p><strong>The VZ half remains untested, for the obvious reason</strong> &mdash; it needs Phase&nbsp;2 first. Nothing in this path depends on a GOP or a firmware framebuffer, so it should carry over unchanged; that expectation is reasoned, not measured, and is flagged as such deliberately.</p>
 </div>
 
 <div class="phase">
@@ -275,10 +309,10 @@
 <li>Contact networkextension and tjfontaine before writing code &mdash; two parties are already on this platform, and one has it booting. Given that stock <code>main</code> spins (&sect;5), their patch set is the dependency; the question is whether we carry it, or help push it upstream.</li>
 <li>Is the OpenBSD trick (synthesize FDT from ACPI in the loader) worth adopting as a bring-up shortcut, given <code>bus_probe()</code> has no fallback when ACPI is present but unusable?</li>
 <li>Does the harness belong in <a href="https://github.com/pkgdemon/swift-vm-cli">swift-vm-cli</a> (which already does the VZ + virtio-console half) rather than living as a scratch tool?</li>
-<li>Restate V7 / Option&nbsp;D per &sect;7, or leave them and add the qualification only here?</li>
+<li><s>Restate V7 / Option&nbsp;D per &sect;7, or leave them and add the qualification only here?</s> <strong>Answered 2026-08-19:</strong> both are withdrawn for virtio-gpu &mdash; base stays compiled in and the kext takes the device (&sect;7). The peer pages still need editing to match.</li>
 </ol>
 
-<p class="footnote">Sub-plan of the <a href="nextbsd-graphics-plan.html">NextBSD graphics plan</a> where it touches the console; a peer of the <a href="nextbsd-virtio-gpu-plan.html">virtio-gpu DRM plan</a> and the <a href="nextbsd-arm64-kms-options.html">arm64 KMS decision record</a>, which it amends in &sect;7. Everything tagged <em>measured</em> was observed on 2026-08-18 on macOS&nbsp;26.5.2 against NextBSD arm64; upstream claims are linked to source. Claims derived from disassembling Apple&rsquo;s framework are marked and are the least durable material here &mdash; they describe private, undocumented API and may change without notice.</p>
+<p class="footnote">Sub-plan of the <a href="nextbsd-graphics-plan.html">NextBSD graphics plan</a> where it touches the console; a peer of the <a href="nextbsd-virtio-gpu-plan.html">virtio-gpu DRM plan</a> and the <a href="nextbsd-arm64-kms-options.html">arm64 KMS decision record</a>, which it amends in &sect;7. Everything tagged <em>measured</em> was observed on 2026-08-18 (VZ, macOS&nbsp;26.5.2) or 2026-08-19 (arm64 qemu guest, kernel <code>20260819-184420</code>) against NextBSD arm64; upstream claims are linked to source. Claims derived from disassembling Apple&rsquo;s framework are marked and are the least durable material here &mdash; they describe private, undocumented API and may change without notice.</p>
 
 </div>
 </body>

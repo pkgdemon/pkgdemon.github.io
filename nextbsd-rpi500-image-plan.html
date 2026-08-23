@@ -341,6 +341,48 @@ Device tree loaded to 0x2efec600</code></pre>
 <p><span class="pill pill-neutral">Next</span> The supported mechanism rather than another hack: <code>hw.uart.console="mm:0x1c00030000,br:115200"</code>. <code>uart_subr.c</code> parses <code>mm:</code>, <code>br:</code> and <code>dt:</code> tags, and that path builds a <em>real</em> uart console with a durable mapping instead of borrowing the early page tables. With no loader (route&nbsp;(a)) there is no <code>loader.conf</code> to set it in &mdash; but a kernel config can embed a static environment with the <code>env</code> directive, which is precisely what loader-less boots are for. <strong>Open:</strong> whether the default uart class on arm64 resolves to <code>uart_pl011_class</code>, or whether <code>dt:</code> must name it explicitly &mdash; an ns8250 pointed at a PL011 would produce garbage rather than silence.</p>
 </div>
 
+<h3>Result: phases&nbsp;1 and&nbsp;2 complete</h3>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Booted 2026-08-23</span> <strong>NextBSD runs on the Raspberry&nbsp;Pi&nbsp;500+.</strong> With <code>hw.uart.console</code> giving a real console and the wrong-SoC Broadcom drivers switched off, the kernel boots to an interactive <code>mountroot&gt;</code> prompt &mdash; the parent plan's phase&nbsp;1 <em>and</em> phase&nbsp;2 success criteria, on silicon no BSD had run on before.</p>
+</div>
+
+<pre><code>---&lt;&lt;BOOT&gt;&gt;---
+NextBSD Kernel Version 20260823-150236; ... NEXTBSD-RPI500 arm64
+mach services loaded - mach system calls available
+real memory  = 17175670784 (16379 MB)
+Starting CPU 1 (100) / CPU 2 (200) / CPU 3 (300)
+FreeBSD/SMP: Multiprocessor System Detected: 4 CPUs
+gic0: pn 0x2, arch 0x2, rev 0x1, implementer 0x43b irqs 320
+generic_timer0: Timecounter "ARM MPCore Timecounter" frequency 54000000 Hz
+uart0: &lt;PrimeCell UART (PL011)&gt; mem 0x7d001000-0x7d0011ff irq 19
+CPU  0: ARM Cortex-A76 r4p1 affinity:  0  0
+Release APs...done
+Trying to mount root from ufs:/dev/ufs/ROOTFS []...
+Mounting from ufs:/dev/ufs/ROOTFS failed with error 19.
+mountroot&gt; </code></pre>
+
+<table>
+<thead><tr><th>Claim</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>Route&nbsp;(a) boots FreeBSD with zero new boot code</td><td><span class="pill pill-good">confirmed</span> firmware &rarr; <code>kernel.bin</code> &rarr; EL2 &rarr; FDT in <code>x0</code></td></tr>
+<tr><td>16&nbsp;GB sized correctly</td><td><span class="pill pill-good">confirmed</span> <code>real memory = 16379 MB</code></td></tr>
+<tr><td>SMP over PSCI on all four A76s</td><td><span class="pill pill-good">confirmed</span> 4&nbsp;CPUs, <code>Release APs...done</code></td></tr>
+<tr><td>MPIDR Aff1 risk (plan &sect;8, <em>med</em>)</td><td><span class="pill pill-good">closed</span> <code>(100)/(200)/(300)</code> are the DT <code>reg</code> values; FreeBSD read them correctly, no bug</td></tr>
+<tr><td><code>mountroot</code> reached</td><td><span class="pill pill-good">confirmed</span> error&nbsp;19 = <code>ENODEV</code>, correct &mdash; no root fs on the boot partition</td></tr>
+<tr><td>Everything useful is behind PCIe</td><td><span class="pill pill-good">confirmed</span> <code>?</code> at the prompt lists <strong>zero</strong> GEOM disks</td></tr>
+</tbody>
+</table>
+
+<p>Two board-specific config changes got it there, both measured rather than guessed:</p>
+
+<ul>
+  <li><strong>A real console.</strong> <code>hw.uart.console="mm:0x1c00030000,br:115200,dt:pl011,rs:2,rw:4,xo:0"</code> in a compiled-in <code>env</code>. <code>dt:</code> is required because <code>uart_cpu_getdev()</code> defaults to <code>uart_ns8250_class</code>; <code>rs:</code>/<code>rw:</code> are required because <code>uart_getenv()</code> hardcodes <code>regshft=0, regiowidth=1</code> and does <em>not</em> inherit them from the class.</li>
+  <li><strong><code>nooptions SOC_BRCM_BCM2837</code> / <code>BCM2838</code>.</strong> <code>std.broadcom</code> enables the Pi&nbsp;3 and Pi&nbsp;4 SoCs; the Pi&nbsp;500 DTB matches <code>bcm2835_fbd</code> anyway, which then panics in <code>bcm283x_armc_to_vcbus</code> &mdash; a VideoCore bus offset that is 2837/2838-specific. <code>files.arm64</code> gates both files on exactly those options.</li>
+</ul>
+
+<p><strong>Next is phase&nbsp;3</strong>, unchanged from the parent plan and now with hardware evidence behind it: <code>SOC_BRCM_BCM2712</code> plus <code>bcm2712-pcie</code> and <code>bcm2712-mip</code> ported from OpenBSD. Nothing on this board &mdash; keyboard, NVMe, ethernet &mdash; exists until PCIe does.</p>
+
 <h3>The tryboot harness</h3>
 
 <p>Worth reusing. <code>tryboot</code> is one-shot: <code>reboot '0 tryboot'</code> boots from <code>tryboot.txt</code> instead of <code>config.txt</code>, and any failure reverts on the next power cycle. With <code>BOOT_ORDER=0xf461</code> (NVMe ahead of USB) the machine's default is always Raspberry&nbsp;Pi OS, so a dead kernel costs one reboot and ssh comes back by itself. That made an unattended build&rarr;deploy&rarr;boot&rarr;read loop possible with no USB stick and nothing to unplug.</p>

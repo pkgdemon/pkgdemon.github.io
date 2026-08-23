@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Pi 500+ internal debug connector</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  h4 { font-size:0.98rem; margin:20px 0 8px; }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .scroll { overflow-x:auto; }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e6e6; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+  .opt { border:1px solid var(--border); border-radius:4px; padding:2px 22px 6px; margin:0 0 26px; background:white; }
+  .opt h3 { margin-top:22px; }
+  .verdict { font-weight:600; }
+
+  /* --- wiring diagrams --- */
+  /* Diagrams break out of the 880px text column and scale to fit, so they
+     never need horizontal scrolling; the text measure stays comfortable. */
+  .fig { background:white; border:1px solid var(--border); border-radius:4px;
+         padding:18px; margin:0 0 26px;
+         width:min(1180px, calc(100vw - 40px));
+         position:relative; left:50%; transform:translateX(-50%);
+         box-sizing:border-box; overflow-x:auto; }
+  .fig svg { display:block; margin:0 auto; width:100%; height:auto; max-width:100%; }
+  .fig text { font-family:"SF Mono",Menlo,Consolas,monospace; font-variant-numeric:tabular-nums; }
+  .fig figcaption { font-size:0.85rem; color:var(--fg-muted); margin-top:10px; text-align:center; }
+  svg { --shroud:#23262b; --shroud-edge:#0d0f11; --pad:#c9cdc8; --pad-edge:#8d918c;
+        --chassis:#f7f6f2; --port:#e2e0d8; --rule:var(--border); --accent:var(--accent);
+        --ink:var(--fg); --ink-2:var(--fg-muted); --ink-3:#7d7a72;
+        --w-gnd:#33383f; --w-txd:#a8780a; --w-rxd:#c8501a;
+        --danger:var(--bad); --danger-bg:#f7e6e6; }
+  .num { font-size:12px; fill:var(--ink-3); text-anchor:middle; }
+  .num.tgt { fill:var(--ink); font-weight:600; }
+  .num.dgr { fill:var(--danger); font-weight:600; }
+  .bignum { font-size:22px; font-weight:600; fill:var(--ink-2); text-anchor:middle; }
+  .bignum.tgt { fill:var(--ink); font-weight:700; }
+  .bignum.dgr { fill:var(--danger); font-weight:700; }
+  .bigname { font-size:13px; fill:var(--ink-3); text-anchor:middle; }
+  .bigname.tgt { fill:var(--ink-2); } .bigname.dgr { fill:var(--danger); }
+  .rowlab,.endlab,.dirlab,.poslab,.portlab,.viewnote,.wirelab {
+        font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif; }
+  .rowlab { font-size:13px; font-weight:600; letter-spacing:0.1em; fill:var(--ink-3); }
+  .endlab { font-size:13.5px; font-weight:600; letter-spacing:0.06em; fill:var(--ink-3); }
+  .endlab.hi { fill:var(--accent); }
+  .dirlab { font-size:12.5px; letter-spacing:0.08em; fill:var(--ink-3); text-transform:uppercase; }
+  .posnum { font-size:15px; font-weight:600; fill:var(--accent); text-anchor:middle; }
+  .poslab { font-size:12.5px; font-weight:600; letter-spacing:0.1em; fill:var(--ink-3); }
+  .wirelab { font-size:15px; font-weight:700; letter-spacing:0.1em; text-anchor:middle; }
+  .cont { font-size:30px; fill:var(--pad-edge); }
+  .portlab { font-size:12.5px; fill:var(--ink-3); text-anchor:middle; }
+  .portlab.hot { fill:var(--accent); font-weight:700; letter-spacing:0.06em; }
+  .viewnote { font-size:11.5px; letter-spacing:0.13em; fill:var(--ink-3); }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; part of <a href="nextbsd-research.html">NextBSD Research</a> &middot; companion to <a href="nextbsd-rpi500-serial-console.html">the 40-pin serial console</a></p>
+
+<h1>The Pi&nbsp;500+ has an internal debug connector</h1>
+
+<p class="lede">It is a 3-pin JST-SH on the main board, it carries <strong>UART10 inside the BCM2712</strong>, and it is the console you want before doing any PCIe work. No teardown of a Pi&nbsp;500+ showing it had ever been published &mdash; several sources, this one included, had concluded it was not fitted.</p>
+
+<p class="meta">2026-08-23. Found by opening the case and looking; confirmed by moving the console onto it and reading the boot. Everything below was measured on the board.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Confirmed on hardware</span> The connector exists, it is UART10, and it is <strong>not</strong> behind PCIe. Linux reports the console as <code>ttyAMA10</code> and the device-tree alias resolves to <code>/soc@107c000000/serial@7d001000</code> &mdash; <code>soc@</code>, not <code>pcie@</code>.</p>
+</div>
+
+<h2 id="why">1. Why you would want it</h2>
+
+<p>The <a href="nextbsd-rpi500-serial-console.html">40-pin console</a> is excellent and needs no disassembly, but its pins are <strong>RP1 UART0</strong> &mdash; and RP1 sits behind PCIe. The moment a driver takes ownership of that controller the console moves out from under itself and the board goes silent mid-boot, which on the wire is indistinguishable from a crash.</p>
+
+<p>That is not a fault that can be patched around. The console&rsquo;s address depends on both the PCIe outbound window and RP1&rsquo;s BAR assignment, and bringing up the controller necessarily changes both. Measured: the first attach to <code>pcie2</code> killed the console exactly as the native-boot plan predicted it would.</p>
+
+<p>This connector is on the other side of that problem. It is inside the SoC, so PCIe can be reset freely.</p>
+
+<h2 id="where">2. Where it is</h2>
+
+<p>On the main board, immediately above the 40-pin header, between a small square QFN and the black <code>BOURNS</code> ethernet magnetics. Small, cream-coloured, with <strong>three</strong> metal contacts.</p>
+
+<div class="fig"><svg viewBox="0 0 1140 470" width="1140" height="470" role="img" aria-label="Schematic of the Pi 500+ main board seen from above with the case open. The 3-pin debug connector sits just above the 40-pin header, between a small square chip and the Bourns ethernet magnetics. The 2-pin BATTERY connector is far away on the left, near the M.2 slot.">
+<rect x="30" y="70" width="1080" height="330" rx="6" fill="var(--chassis)" stroke="var(--pad-edge)" stroke-width="2"/>
+<text x="1094" y="94" class="viewnote" text-anchor="end">MAIN BOARD, CASE OPEN, VIEWED FROM ABOVE</text>
+<rect x="70" y="150" width="250" height="26" rx="3" fill="var(--port)" stroke="var(--pad-edge)" stroke-width="1.5"/>
+<text x="195.0" y="142" class="portlab">M.2 &#183; SSD</text>
+<rect x="342" y="146" width="26" height="34" rx="3" fill="var(--danger-bg)" stroke="var(--danger)" stroke-width="2.5"/>
+<text x="355" y="138" class="portlab" style="fill:var(--danger);font-weight:700">BATTERY</text>
+<text x="355" y="200" class="portlab" style="fill:var(--danger)">2-pin &#183; NOT this one</text>
+<line x1="344" y1="148" x2="366" y2="178" stroke="var(--danger)" stroke-width="2.5"/>
+<line x1="366" y1="148" x2="344" y2="178" stroke="var(--danger)" stroke-width="2.5"/>
+<rect x="600" y="130" width="86" height="86" rx="3" fill="#2a2e33" stroke="#15181b" stroke-width="1.5"/>
+<text x="643.0" y="122" class="portlab">RP1</text>
+<rect x="536" y="232" width="46" height="46" rx="3" fill="#2a2e33" stroke="#15181b" stroke-width="1.5"/>
+<text x="559.0" y="224" class="portlab"></text>
+<rect x="700" y="205" width="118" height="46" rx="3" fill="#2a2e33" stroke="#15181b" stroke-width="1.5"/>
+<text x="759.0" y="197" class="portlab">BOURNS</text>
+<circle cx="620" cy="256" r="52" fill="var(--accent)" opacity="0.13"/>
+<rect x="606" y="236" width="28" height="40" rx="3" fill="#efe7d2" stroke="var(--accent)" stroke-width="3"/>
+<rect x="635" y="243" width="9" height="6" rx="1" fill="var(--pad-edge)"/>
+<rect x="635" y="254" width="9" height="6" rx="1" fill="var(--pad-edge)"/>
+<rect x="635" y="265" width="9" height="6" rx="1" fill="var(--pad-edge)"/>
+<line x1="651" y1="250" x2="900" y2="120" stroke="var(--accent)" stroke-width="2"/>
+<circle cx="651" cy="250" r="4" fill="var(--accent)"/>
+<text x="908" y="112" class="endlab hi" text-anchor="start" style="font-size:16px">THIS ONE &#8212; 3-pin JST-SH</text>
+<text x="908" y="134" class="endlab" text-anchor="start">just above the 40-pin header,</text>
+<text x="908" y="152" class="endlab" text-anchor="start">between the small chip and BOURNS</text>
+<rect x="380" y="330" width="52" height="56" rx="3" fill="var(--port)" stroke="var(--pad-edge)" stroke-width="1.5"/>
+<text x="406.0" y="322" class="portlab">HDMI0</text>
+<rect x="444" y="330" width="52" height="56" rx="3" fill="var(--port)" stroke="var(--pad-edge)" stroke-width="1.5"/>
+<text x="470.0" y="322" class="portlab">HDMI1</text>
+<rect x="516" y="330" width="392" height="56" rx="3" fill="#1e2225" stroke="#0e1113" stroke-width="2"/>
+<rect x="528" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="528" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="547" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="547" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="566" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="566" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="585" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="585" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="604" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="604" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="623" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="623" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="642" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="642" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="661" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="661" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="680" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="680" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="699" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="699" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="718" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="718" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="737" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="737" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="756" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="756" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="775" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="775" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="794" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="794" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="813" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="813" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="832" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="832" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="851" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="851" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="870" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="870" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="889" y="344" width="5" height="5" rx="1" fill="var(--pad)"/>
+<rect x="889" y="362" width="5" height="5" rx="1" fill="var(--pad)"/>
+<text x="712" y="322" class="portlab hot">40-PIN GPIO HEADER</text>
+<text x="712" y="406" class="viewnote" text-anchor="middle">UNPLUG THE THREE JUMPER WIRES FROM HERE</text>
+<rect x="926" y="326" width="90" height="64" rx="3" fill="var(--port)" stroke="var(--pad-edge)" stroke-width="1.5"/>
+<text x="971.0" y="318" class="portlab">ETHERNET</text>
+</svg>
+<figcaption>Main board with the case open, viewed from above. Not to scale &mdash; relative positions only.</figcaption></div>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">Do not confuse it with BATTERY</span> There is a second small connector at the far left of the board, near the M.2 slot, silkscreened <strong>BATTERY</strong>. It has <strong>two</strong> contacts and is the real-time-clock cell &mdash; a power input. Driving a probe into it would be a bad idea. Count the contacts: <strong>three, not two</strong>. A 4-contact connector, if present, is a fan header.</p>
+</div>
+
+<h2 id="opening">3. Getting to it</h2>
+
+<p>The case is designed to come apart &mdash; a tool is supplied for swapping the SSD. Undo the case screws, lift the keyboard half, and remove the metal heatspreader over the main board. <strong>The board itself does not need to come out</strong>, which is just as well: it is retained by plastic clips, the rear ports pass through the case wall, and the keyboard ribbon tethers it.</p>
+
+<p>The keyboard ribbon can be unplugged entirely while you work. Nothing needs it &mdash; and the board still powers on without it, because the bootloader reports <code>WAIT_FOR_POWER_BUTTON 0</code>: applying USB-C power is enough.</p>
+
+<h2 id="cable">4. The cable</h2>
+
+<p>This is the <strong>other</strong> lead in the Debug&nbsp;Probe box &mdash; the one with a keyed plug at both ends, usually described as the Pi&nbsp;5 debug cable. Not the three loose jumper wires. There are no pins to count and no orientation to get right: it is keyed.</p>
+
+<div class="fig"><svg viewBox="0 0 1000 300" width="1000" height="300" role="img" aria-label="The Debug Probe with a single keyed cable running from its U socket to the three-pin connector on the Pi board. The D socket is unused.">
+<rect x="120" y="80" width="380" height="118" rx="10" fill="var(--chassis)" stroke="var(--pad-edge)" stroke-width="2"/>
+<text x="310.0" y="66" class="portlab" style="font-size:13.5px">Debug Probe</text>
+<rect x="104" y="126.0" width="18" height="26" rx="6" fill="var(--shroud)"/>
+<line x1="92" y1="139.0" x2="32" y2="139.0" stroke="var(--rule)" stroke-width="2"/>
+<path d="M38 139.0 l12 -6 v12 z" fill="var(--rule)"/>
+<text x="24" y="131.0" class="endlab" text-anchor="end">USB-C</text>
+<text x="24" y="151.0" class="endlab" text-anchor="end">to the Mac</text>
+<rect x="450" y="98" width="58" height="26" rx="3" fill="var(--shroud)" stroke="var(--pad-edge)" stroke-width="1.5"/>
+<rect x="458" y="107" width="6" height="8" rx="1" fill="var(--pad)"/>
+<rect x="473" y="107" width="6" height="8" rx="1" fill="var(--pad)"/>
+<rect x="488" y="107" width="6" height="8" rx="1" fill="var(--pad)"/>
+<text x="438" y="117" class="rowlab" text-anchor="end" style="font-size:17px;fill:var(--pad-edge)">D</text>
+<text x="520" y="115" class="endlab">SWD &#8212; leave empty</text>
+<rect x="450" y="140" width="58" height="26" rx="3" fill="var(--shroud)" stroke="var(--accent)" stroke-width="3"/>
+<rect x="458" y="149" width="6" height="8" rx="1" fill="var(--pad)"/>
+<rect x="473" y="149" width="6" height="8" rx="1" fill="var(--pad)"/>
+<rect x="488" y="149" width="6" height="8" rx="1" fill="var(--pad)"/>
+<text x="438" y="159" class="rowlab" text-anchor="end" style="font-size:17px;fill:var(--accent)">U</text>
+<text x="520" y="157" class="endlab hi">UART &#8212; use this</text>
+<path d="M510 153 C 620 153, 700 205, 790 205" fill="none" stroke="#b9b3a6" stroke-width="13" stroke-linecap="round"/>
+<text x="620" y="137" class="endlab">one keyed cable, plug at both ends</text>
+<rect x="792" y="183" width="34" height="46" rx="3" fill="#efe7d2" stroke="var(--accent)" stroke-width="3"/>
+<rect x="827" y="191" width="10" height="7" rx="1" fill="var(--pad-edge)"/>
+<rect x="827" y="204" width="10" height="7" rx="1" fill="var(--pad-edge)"/>
+<rect x="827" y="217" width="10" height="7" rx="1" fill="var(--pad-edge)"/>
+<text x="850" y="199" class="endlab hi" text-anchor="start">3-pin connector</text>
+<text x="850" y="219" class="endlab" text-anchor="start">on the Pi board</text>
+<text x="980" y="284" class="viewnote" text-anchor="end">KEYED &#8212; IT ONLY FITS ONE WAY ROUND</text>
+</svg>
+<figcaption>One keyed cable, probe to board. <code>U</code> is the UART port; <code>D</code> is SWD and is not used.</figcaption></div>
+
+<h2 id="config">5. Firmware configuration</h2>
+
+<p>Simpler than the 40-pin case, because this is the firmware&rsquo;s default debug UART. In <code>config.txt</code>, <em>only</em>:</p>
+
+<pre><code>enable_uart=1</code></pre>
+
+<p>and crucially <strong>remove</strong> the three lines that redirect the console to the 40-pin header:</p>
+
+<pre><code>enable_rp1_uart=1      # RP1 UART0 -- not this connector
+pciex4_reset=0         # its required companion
+dtparam=uart0_console  # sends the console to the 40-pin header</code></pre>
+
+<p>Then <code>115200 8N1</code> as before. Worth doing this through <code>tryboot.txt</code> rather than <code>config.txt</code> the first time, so a power cycle always reverts.</p>
+
+<h2 id="what">6. What you get</h2>
+
+<p>Strictly more than the 40-pin console, which only ever picked up mid-bootloader. This one starts at the boot ROM:</p>
+
+<pre><code>RPi: BOOTSYS release VERSION:57db150d DATE: 2025/11/05
+BOOTMODE: 0x06 partition 0 ... boardrev e04190
+POWER_OFF_ON_HALT: 1 WAIT_FOR_POWER_BUTTON 0
+RP1_BOOT chip ID: 0x20001927
+SDRAM_CONFIG: 1b
+Initialising SDRAM rank 2 total-size: 128 Gbit 4267
+OTP boardrev e04190
+RP1_BOOT: fw size 31248
+PCI2 init / PCI2 reset / PCIe scan 00001de4:00000001
+...
+NOTICE:  BL31: Built : 12:55:13, Dec  4 2024
+Debian GNU/Linux 13 pi ttyAMA10</code></pre>
+
+<div class="callout">
+<p><span class="pill pill-neutral">Why that log proves it</span> Read the order. <strong>SDRAM initialisation prints before RP1 is loaded with firmware and before PCIe is scanned.</strong> A UART living behind PCIe could not produce those lines. You also get TF-A&rsquo;s <code>BL31</code> banner, which the 40-pin console never showed.</p>
+</div>
+
+<h2 id="unlocks">7. What moving the console here actually buys</h2>
+
+<p>It is worth being concrete, because &ldquo;a second serial port&rdquo; undersells it. The bring-up was <strong>hard blocked</strong> without this, not merely slowed.</p>
+
+<table>
+<thead><tr><th></th><th>40-pin header</th><th>This connector</th></tr></thead>
+<tbody>
+<tr><td>Which UART</td><td>RP1 UART0</td><td>UART10</td></tr>
+<tr><td>Lives in</td><td>RP1, behind PCIe</td><td>the BCM2712 itself</td></tr>
+<tr><td>Survives a PCIe reset</td><td><strong>no</strong></td><td><strong>yes</strong></td></tr>
+<tr><td>Earliest output</td><td>mid-bootloader</td><td>boot ROM, before SDRAM is trained</td></tr>
+<tr><td>Needs the case open</td><td>no</td><td>yes</td></tr>
+</tbody>
+</table>
+
+<h3>The blocked work it releases</h3>
+
+<p>Everything that makes this machine usable hangs off RP1 &mdash; and RP1 is precisely what could not be touched while the console lived inside it:</p>
+
+<pre><code>pcie2 -&gt; RP1 -+- ethernet   [raspberrypi,rp1-gem]
+              +- usb -&gt; xhci-hcd.0
+              \- usb -&gt; xhci-hcd.1 -&gt; the built-in keyboard</code></pre>
+
+<p>Writing the RP1 bridge driver means resetting that link repeatedly and watching what happens. On the 40-pin console the board simply goes quiet at the first reset, and a working driver looks exactly like a dead one. That is not a debugging inconvenience; it is a dead end. With the console in the SoC, the link can be reset as often as the work requires and the kernel keeps talking.</p>
+
+<p>It also retires a workaround. Until now the only way to make progress on PCIe at all was a device-tree overlay masking <code>pcie2</code> off entirely, so that FreeBSD never touched the controller the console depended on. That bought <code>pcie1</code> &mdash; the NVMe enumerates, and storage works &mdash; but it deliberately fenced off the half of the machine with the keyboard and the network on it. The overlay can now go.</p>
+
+<h3>And it is a better console regardless</h3>
+
+<p>Independently of PCIe, this connector sees more of the boot: the boot ROM, SDRAM training, OTP, USB-PD negotiation, boot-device selection and TF-A&rsquo;s <code>BL31</code> banner all appear here and none of them ever reached the 40-pin header. For diagnosing a board that will not boot at all &mdash; as opposed to an OS that will not boot &mdash; that is the difference between evidence and guesswork.</p>
+
+<h2 id="tradeoff">8. The trade-off</h2>
+
+<p>It is <em>internal</em>. The 40-pin header is on the rear edge and needs nothing opened; this one is inside the case, so the machine either stays open or the thin cable has to be routed out past the case seam. For bring-up work that is a fair price; for casual use the 40-pin header remains the better answer.</p>
+
+<p>Rule of thumb: <strong>use the 40-pin header until you start touching PCIe, then move here.</strong> The native-boot plan says to find this connector <em>before</em> the PCIe work rather than during it, and that advice is correct &mdash; we learned it the slow way.</p>
+
+<p class="footnote">Measured on a Raspberry&nbsp;Pi&nbsp;500+, revision <code>e04190</code>, board <code>Raspberry Pi 500 R4 (PVT)</code>, with a Raspberry&nbsp;Pi Debug&nbsp;Probe on macOS. Tracked as <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/80">nextbsd-kernel#80</a>.</p>
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD Research</a> &middot; <a href="nextbsd-rpi500-serial-console.html">40-pin serial console</a></p>
+</div>
+
+</body>
+</html>

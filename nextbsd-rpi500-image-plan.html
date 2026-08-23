@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD Pi 500+ &mdash; the boot partition, and where the image gets built</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  h4 { font-size:0.98rem; margin:20px 0 8px; }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .scroll { overflow-x:auto; }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e6e6; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+  .opt { border:1px solid var(--border); border-radius:4px; padding:2px 22px 6px; margin:0 0 26px; background:white; }
+  .opt h3 { margin-top:22px; }
+  .verdict { font-weight:600; }
+  .pill-meas { background:#cfe3f0; color:#1d5a7a; }
+
+</style>
+</head>
+<body>
+
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; part of <a href="nextbsd-research.html">NextBSD Research</a> &middot; sub-plan of <a href="nextbsd-rpi500-native-boot-plan.html">the Pi&nbsp;500+ native-boot plan</a></p>
+
+<h1>The Pi&nbsp;500+ boot partition, and where the image gets built</h1>
+
+<p class="lede">Phase&nbsp;0 is done &mdash; a serial console is live on the board. This page answers the three questions that came out of it: <strong>what <code>kernel8.img</code> actually is</strong>, <strong>why this machine can never boot an ISO</strong>, and <strong>which repo owns a Pi&nbsp;500+ image</strong>. Everything in &sect;1 was measured on the hardware on 2026-08-22; everything reasoned rather than measured is marked as such.</p>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Phase 0 complete</span> <strong>A serial console is working on the real board.</strong> Debug Probe on the 40-pin header (pins&nbsp;6/8/10), <code>115200&nbsp;8N1</code>, firmware handoff &rarr; kernel messages &rarr; <code>login:</code> &rarr; a root shell running commands. This was the gate on every other phase: the built-in keyboard sits five layers deep behind PCIe&rarr;RP1&rarr;dwc3&rarr;xHCI&rarr;HID, none of which exists yet, so serial is the <em>only</em> input channel for the entire bring-up.</p>
+</div>
+
+<p class="meta">2026-08-22. Written after phase&nbsp;0 was proven on the hardware. Measurements taken over ssh and over the serial console from the board itself; repo claims read directly out of <code>nextbsd/build.sh</code>, <code>nextbsd-userland/ci/assemble-image.sh</code> and <code>nextbsd-kernel/.github/workflows/build.yml</code> rather than from memory. Boot-header citations carried over from the parent plan, which verified them against <code>freebsd/freebsd-src</code> <code>main</code>.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#measured">What the board actually requires</a></li>
+<li><a href="#kernel8">What <code>kernel8.img</code> is</a></li>
+<li><a href="#iso">Why an ISO can never boot here</a></li>
+<li><a href="#repo">Which repo owns the image</a></li>
+<li><a href="#naming">What the published image is called</a></li>
+<li><a href="#loaderless">The loader-less consequence</a></li>
+<li><a href="#stick">Phase&nbsp;1 needs no image at all</a></li>
+<li><a href="#uart">Unresolved: the RP1 UART address</a></li>
+<li><a href="#open">Open questions</a></li>
+</ol>
+</div>
+
+<h2 id="measured">1. What the board actually requires</h2>
+
+<p><span class="pill pill-meas">Measured</span> Read off the running machine, not a spec sheet.</p>
+
+<pre><code>Disklabel type: dos                       &lt;- MBR, not GPT
+Device          Start       End   Sectors  Size Id Type
+/dev/nvme0n1p1  16384   1064959   1048576  512M  c W95 FAT32 (LBA)
+/dev/nvme0n1p2 1064960 500118191 499053232 238G 83 Linux</code></pre>
+
+<p>The boot partition holds 87&nbsp;MB of files, but nearly all of it is other boards&rsquo; DTBs and overlays &mdash; Raspberry&nbsp;Pi OS ships one universal image covering every Pi from the 2&nbsp;B up. This board&rsquo;s own boot path needs <strong>four files</strong>:</p>
+
+<table>
+<thead><tr><th>File</th><th>Role</th><th>Source</th></tr></thead>
+<tbody>
+<tr><td><code>config.txt</code></td><td>firmware configuration; names the kernel and DTB</td><td>written by the image builder</td></tr>
+<tr><td><code>cmdline.txt</code></td><td>boot args, behind the <code>FreeBSD:</code> guard</td><td>written by the image builder</td></tr>
+<tr><td><code>kernel8.img</code></td><td>the kernel, <code>booti</code>-wrapped (&sect;2)</td><td><code>nextbsd-kernel</code> &mdash; <strong>does not exist yet</strong></td></tr>
+<tr><td><code>bcm2712-rpi-500.dtb</code></td><td>device tree; no 500+-specific DTB exists, the 500 DTS covers both</td><td>Raspberry&nbsp;Pi firmware, 78,721&nbsp;bytes, <code>sha256 1cce1d35&hellip;</code></td></tr>
+</tbody>
+</table>
+
+<p><span class="pill pill-warn">Reasoned</span> <code>bootcode.bin</code>, <code>start*.elf</code> and <code>fixup*.dat</code> are present on that partition but are <em>not</em> in this board&rsquo;s path &mdash; on the Pi&nbsp;5 family the second-stage bootloader lives in SPI EEPROM. This is high-confidence rather than measured, and it is conveniently self-proving: if a four-file stick boots, it is settled.</p>
+
+<h3>EEPROM state, as of this session</h3>
+
+<p><span class="pill pill-meas">Measured</span> <code>BOOT_ORDER</code> was <code>0xf461</code>, which reads LSB-first as <strong>SD &rarr; NVMe &rarr; USB</strong>. On a machine with a populated internal NVMe that means a USB stick never gets a look. Changed to <code>0xf614</code> &mdash; <strong>USB &rarr; SD &rarr; NVMe</strong> &mdash; so the rotation is physical: stick in, you boot NextBSD; stick out, you fall through to the Raspberry&nbsp;Pi OS install that is still on the NVMe.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Side effect worth recording</span> <code>rpi-eeprom-config --apply</code> does not patch the running EEPROM image &mdash; it rebuilds from the newest bootloader image on disk. So the same command also upgraded the bootloader <strong>2025-06-13 &rarr; 2025-11-05</strong>. The parent plan wanted that update anyway (&ldquo;update available and probably wanted&rdquo;), and it verified clean, but it means two variables moved at once. If the next boot misbehaves, that is the first place to look.</p>
+</div>
+
+<h2 id="kernel8">2. What <code>kernel8.img</code> is</h2>
+
+<p>It is not a Raspberry&nbsp;Pi format. It is the FreeBSD kernel, ELF-stripped, with a 64-byte arm64 <code>Image</code> header prepended &mdash; the same header Linux uses. The <em>8</em> means ARMv8/64-bit.</p>
+
+<p>The bootloader reads <code>config.txt</code>, loads the file named by <code>kernel=</code>, parses that header for the load offset and image size, copies the payload to <code>0x200000</code>, and jumps to it <strong>at EL2 with <code>x0</code> holding the physical address of the DTB</strong>.</p>
+
+<p>FreeBSD already emits exactly this. Every piece was verified against <code>freebsd-src</code> <code>main</code> in the parent plan:</p>
+
+<table>
+<thead><tr><th>Piece</th><th>Location</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>kernel.bin</code> target</td><td><code>sys/conf/Makefile.arm64:87</code></td><td>strips the ELF, prepends the boot header blob</td></tr>
+<tr><td><code>write_v8booti()</code></td><td><code>sys/tools/arm_kernel_boothdr.awk:150</code></td><td>emits a real arm64 <code>Image_header</code>, magic <code>0x644d5241</code></td></tr>
+<tr><td><code>LINUX_BOOT_ABI</code></td><td><code>sys/arm64/conf/std.arm64:70</code></td><td>included by GENERIC; enables the <code>booti</code> entry path</td></tr>
+<tr><td>FDT pointer</td><td><code>sys/arm64/arm64/locore.S</code></td><td><code>x0 != 0 &amp;&amp; x0 &lt; KERNBASE</code> &rarr; treat as physical FDT</td></tr>
+<tr><td>boot args</td><td><code>sys/arm64/arm64/machdep_boot.c:62</code></td><td><code>CMDLINE_GUARD "FreeBSD:"</code> &mdash; why <code>cmdline.txt</code> must start with <code>FreeBSD:</code></td></tr>
+</tbody>
+</table>
+
+<p>So <code>kernel8.img</code> is <code>cp kernel.bin kernel8.img</code>. The work is not inventing a format.</p>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">The actual gap</span> <span class="pill pill-meas">Measured</span> <code>nextbsd-kernel</code> is an <em>overlay</em> repo &mdash; <code>patches/</code>, <code>src-overlay/</code>, <code>config/</code>, <code>ci/</code>, no full source tree. Its CI builds arm64 with <code>KERNCONF=NEXTBSD</code> and publishes <code>nextbsd-kernel-arm64</code>, but <strong>nothing anywhere invokes the <code>kernel.bin</code> target</strong>. That one missing make target is the entire distance between this project and a FreeBSD banner on real hardware.</p>
+</div>
+
+<h2 id="iso">3. Why an ISO can never boot here</h2>
+
+<p>The BCM2712 bootloader looks for a <strong>FAT partition containing <code>config.txt</code></strong>, and from there loads a kernel and a device tree. An ISO&nbsp;9660 image has neither a FAT partition nor a <code>config.txt</code>, so the firmware never looks inside it. This is not a NextBSD limitation and no amount of image work changes it &mdash; it is true of every Raspberry&nbsp;Pi.</p>
+
+<p>The consequence for <code>build.sh</code> is narrow but real: its <code>.iso.zip</code> output lane is <strong>meaningless for this target</strong>. A Pi&nbsp;500+ lane produces a <code>.img</code> and nothing else.</p>
+
+<p>&ldquo;Live USB&rdquo; still works &mdash; it is a <code>.img</code> written to the stick, with a FAT partition first. That is precisely what FreeBSD&rsquo;s own <code>RPI.img</code> board images are, which is the precedent to model.</p>
+
+<h2 id="repo">4. Which repo owns the image</h2>
+
+<p><span class="pill pill-meas">Measured</span> Two image builders exist and they are not peers:</p>
+
+<table>
+<thead><tr><th></th><th><code>nextbsd/build.sh</code></th><th><code>nextbsd-userland/ci/assemble-image.sh</code></th></tr></thead>
+<tbody>
+<tr><td>Its own description</td><td>&ldquo;assemble bootable NextBSD images by INSTALLING the packages&rdquo;</td><td>&ldquo;Phase&nbsp;1: assemble a minimal, <strong>CI-only</strong> bootable NextBSD .img&hellip; ports build.sh&rsquo;s makefs/mkimg recipe&rdquo;</td></tr>
+<tr><td>Produces</td><td><code>NextBSD-&lt;arch&gt;-&lt;date&gt;.img.zip</code> + <code>.iso.zip</code></td><td>a throwaway <code>disk.img</code> for qemu boot-testing</td></tr>
+<tr><td>Rootfs from</td><td><code>pkg install NextBSD-everything</code> + <code>pkglist.txt</code></td><td>the four cross-built CI artifacts</td></tr>
+<tr><td>arm64 today</td><td>yes &mdash; <code>ARCH=arm64</code>, <code>ABIARCH=aarch64</code>, cross-installs <code>FreeBSD:15:aarch64</code></td><td>yes, but UEFI-only</td></tr>
+</tbody>
+</table>
+
+<p><strong>The Pi&nbsp;500+ target belongs in <code>nextbsd</code>.</strong> That is where shipping images are assembled from packages; the userland one is a CI smoke-test that explicitly describes itself as a port of the same recipe.</p>
+
+<h3>What a <code>rpi500</code> target adds</h3>
+
+<p>The root half needs <em>no change</em> &mdash; <code>pkg install</code> into a root, <code>makefs -t ffs</code>, done, and the aarch64 lane already does this. Only the boot half is new:</p>
+
+<table>
+<thead><tr><th></th><th>aarch64 lane today</th><th>Pi&nbsp;500+</th></tr></thead>
+<tbody>
+<tr><td>partition scheme</td><td><code>mkimg -s gpt</code></td><td>MBR / <code>dos</code> label</td></tr>
+<tr><td>FAT partition</td><td>ESP, <code>EFI/BOOT/BOOTAA64.EFI</code></td><td>plain FAT32 type <code>0x0c</code>, not an ESP</td></tr>
+<tr><td>boot payload</td><td><code>loader.efi</code></td><td><code>config.txt</code> + <code>cmdline.txt</code> + <code>kernel8.img</code> + DTB</td></tr>
+<tr><td>ISO lane</td><td><code>.iso.zip</code></td><td>none &mdash; &sect;3</td></tr>
+</tbody>
+</table>
+
+<p><span class="pill pill-warn">Reasoned</span> MBR is chosen because it is the shape Raspberry&nbsp;Pi OS actually ships and therefore the proven one. The BCM2712 bootloader is believed to handle GPT as well; nobody has tested that here, and phase&nbsp;1 is not the place to find out.</p>
+
+<h2 id="naming">5. What the published image is called</h2>
+
+<p><span class="pill pill-meas">Measured</span> The convention is two lines of <code>build.sh</code>:</p>
+
+<pre><code>: "${IMG_DATE:=$(date -u +%Y%m%d-%H%M%S)}"    # :32  the SINGLE source of truth for the version
+IMG_NAME="NextBSD-${ARCH}-${IMG_DATE}.img"    # :379</code></pre>
+
+<p>That same <code>$IMG_DATE</code> also becomes <code>PRETTY_NAME</code>, the <code>os-release</code> <code>VERSION</code> and <code>nextbsd-version</code>, so the artifact name and the running system always agree. The published pair today:</p>
+
+<pre><code>out/NextBSD-arm64-20260822-231455.img.zip
+out/NextBSD-arm64-20260822-231455.iso.zip</code></pre>
+
+<h3>Proposed, for this board</h3>
+
+<pre><code>out/NextBSD-rpi500-arm64-20260822-231455.img.zip
+out/NextBSD-rpi500-arm64-20260822-231455.img.zip.sha256</code></pre>
+
+<p>No <code>.iso</code> member &mdash; &sect;3. Board token first, arch retained, same <code>$IMG_DATE</code> stamp so the version identity rule is untouched.</p>
+
+<h3>Why board-first, and not <code>NextBSD-arm64-rpi500-&hellip;</code></h3>
+
+<p>The obvious name is the arch-first one. It cannot be used, and the reason is mechanical rather than aesthetic.</p>
+
+<p><span class="pill pill-meas">Measured</span> <code>.github/workflows/build.yml</code> globs on the <code>NextBSD-&lt;arch&gt;-</code> prefix in four places:</p>
+
+<table>
+<thead><tr><th>Line</th><th>Code</th><th>Effect of an arch-first Pi name</th></tr></thead>
+<tbody>
+<tr><td><code>:276</code></td><td><code>IMG=$(ls out/NextBSD-${{ matrix.arch }}-*.img.zip)</code></td><td><strong>breaks</strong> &mdash; a bare <code>ls</code> into a scalar; two matches yields a two-line value</td></tr>
+<tr><td><code>:256</code></td><td><code>--pattern 'NextBSD-${{ matrix.arch }}-*.img.zip'</code></td><td>ambiguous match</td></tr>
+<tr><td><code>:244</code>, <code>:315</code></td><td><code>pattern: NextBSD-${{ matrix.arch }}-*</code></td><td>pulls the Pi image into lanes that cannot use it</td></tr>
+</tbody>
+</table>
+
+<div class="callout callout-bad">
+<p><span class="pill pill-bad">The trap</span> An arch-first Pi name would not merely fail to work &mdash; it would break the <strong>existing</strong> arm64 lane, because <code>:276</code> would start matching two files where it has always matched one. A board image that cannot boot in qemu would be handed to the qemu boot-test. <code>NextBSD-rpi500-arm64-&hellip;</code> sidesteps all four globs without touching a line of the workflow.</p>
+</div>
+
+<p>The release-assets step is the one glob that <em>should</em> match, and does: <code>:412</code> collects <code>out/NextBSD-*.img.zip</code>, so the Pi image is published alongside the others with no change.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Still required</span> The naming choice keeps the Pi image <em>out</em> of the qemu boot-test by accident rather than by intent. A <code>rpi500</code> lane should skip <code>img-boot-test.sh</code> explicitly &mdash; qemu cannot emulate a Pi&nbsp;500+, and the only real boot test for this artifact is the board itself. That is the same &ldquo;prove it on the hardware&rdquo; rule the rest of this project already follows.</p>
+</div>
+
+<p><span class="pill pill-warn">Reasoned</span> FreeBSD&rsquo;s own board images put the board last &mdash; <code>FreeBSD-14.3-RELEASE-arm64-aarch64-RPI.img.xz</code>. The inversion here is deliberate and is forced by the glob shapes above; it is worth a sentence in the PR so it does not read as an oversight.</p>
+
+<h2 id="loaderless">6. The loader-less consequence</h2>
+
+<p>This is the part that makes a Pi image more than a partition-layout variant, and it deserves to be settled before any PR.</p>
+
+<p>Route&nbsp;(a) &mdash; firmware loads <code>kernel8.img</code> directly &mdash; means <strong>there is no loader</strong>. No <code>loader.conf</code>, no boot menu, no boot environments, and critically <strong>no <code>.ko</code> is loaded at boot</strong>.</p>
+
+<p>But <code>build.sh</code> assembles the rootfs by installing <code>NextBSD-everything</code>, which lays down the kexts. On a Pi&nbsp;500+ image those kexts would be present on disk, correctly installed and correctly owned &mdash; and never loaded by anything. Everything boot-critical must instead be <strong>compiled into the kernel</strong>.</p>
+
+<div class="callout">
+<p>That is the parent plan&rsquo;s &sect;5 open decision &mdash; <em>&ldquo;boot-minimum compiled in, rest kexts / everything a kext / defer the split&rdquo;</em> &mdash; arriving as a hard constraint rather than a preference. A Pi&nbsp;500+ target therefore implies a <strong>board kernel config</strong> with the boot-critical tier built in, not just a new <code>mkimg</code> invocation. Any image PR that does not also answer this ships a rootfs the kernel cannot use.</p>
+</div>
+
+<h2 id="stick">7. Phase&nbsp;1 needs no image at all</h2>
+
+<p>Worth stating plainly, because it is easy to over-build here. Phase&nbsp;1&rsquo;s success criterion is <strong>a banner on the serial console</strong> &mdash; not a mounted root, not packages, not an installer. A hand-made FAT stick with four files answers it:</p>
+
+<pre><code># config.txt
+kernel=kernel8.img
+device_tree=bcm2712-rpi-500.dtb
+enable_rp1_uart=1
+pciex4_reset=0
+enable_uart=1
+dtparam=uart0_console
+
+# cmdline.txt
+FreeBSD: -v</code></pre>
+
+<p>The image work in &sect;4 becomes necessary at <strong>phase&nbsp;2</strong>, where <code>mountroot</code> needs a root filesystem to find. Designing the image before phase&nbsp;1 has run means designing against a hand-off nobody has observed on this silicon &mdash; and phase&nbsp;1 has already produced one correction to the plan, below.</p>
+
+<h2 id="uart">8. Unresolved: the RP1 UART address</h2>
+
+<p>The parent plan says to hard-code <code>EARLY_PRINTF</code> at <strong><code>0x1F_0003_0000</code></strong>. Linux on the running board agrees:</p>
+
+<pre><code>rp1 0002:01:00.0: bar1 len 0x400000, start 0x1f00000000
+1f00030000.serial: ttyAMA0 at MMIO 0x1f00030000 is a PL011 AXI
+serial0 = /axi/pcie@1000120000/rp1/serial@30000</code></pre>
+
+<p>But the firmware, which prints to serial because <code>BOOT_UART=1</code> is set, reported <code>RP1_UART&nbsp;0000001c00030000</code> &mdash; <strong><code>0x1C_0003_0000</code></strong>.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Reasoned, not settled</span> The likeliest explanation is that these are the same register block at two different times: the firmware maps RP1 at <code>0x1C_&hellip;</code>, and Linux later reprograms the PCIe outbound window to <code>0x1F_&hellip;</code>. If so, <strong>the plan&rsquo;s <code>EARLY_PRINTF</code> address is wrong for route&nbsp;(a)</strong> &mdash; a kernel loaded directly by the firmware runs before any PCIe driver exists and inherits the firmware&rsquo;s window, so it must poke <code>0x1C_0003_0000</code>. Getting this wrong produces a working kernel that looks completely dead, which is a punishing first bug. <code>/proc/device-tree/chosen/log</code> yielded no text, so the provenance of the firmware value is not yet confirmed.</p>
+</div>
+
+<h2 id="open">9. Open questions</h2>
+
+<table>
+<thead><tr><th></th><th>Question</th><th>What would settle it</th></tr></thead>
+<tbody>
+<tr><td><span class="pill pill-bad">high</span></td><td>Which RP1 UART base is live at kernel entry &mdash; <code>0x1C</code> or <code>0x1F</code>?</td><td>Capture the full firmware boot log over serial and confirm where <code>RP1_UART</code> is printed; or simply try <code>0x1C</code> first in phase&nbsp;1, since it costs one rebuild.</td></tr>
+<tr><td><span class="pill pill-bad">high</span></td><td>Which drivers are compiled into the board kernel, given no loader can load a kext?</td><td>&sect;6. Blocks any image PR, not just this target.</td></tr>
+<tr><td><span class="pill pill-warn">med</span></td><td>Does <code>nextbsd-kernel</code> CI gain a <code>kernel.bin</code> step, or is the wrap done in <code>nextbsd/build.sh</code> from the published artifact?</td><td>Cheaper in the kernel CI (the boothdr awk script and <code>objcopy</code> are already there); cleaner in <code>build.sh</code> if other boards follow.</td></tr>
+<tr><td><span class="pill pill-warn">med</span></td><td>MBR or GPT for the Pi image?</td><td>MBR is proven by Raspberry&nbsp;Pi OS. Test GPT only after a stick boots.</td></tr>
+<tr><td><span class="pill pill-neutral">low</span></td><td>Do <code>bootcode.bin</code> / <code>start*.elf</code> / <code>fixup*.dat</code> need shipping?</td><td>Believed no on the Pi&nbsp;5 family. A four-file stick that boots settles it.</td></tr>
+</tbody>
+</table>
+
+<p class="footnote">Measured on <code>root@pi</code> &mdash; Raspberry&nbsp;Pi 500+ rev <code>e04190</code>, Debian&nbsp;13 trixie, kernel <code>6.12.47+rpt-rpi-2712</code>, root on the built-in NVMe &mdash; over ssh and over the serial console, 2026-08-22. Note that this same board is currently the rollback host for the Quassel core; its <code>/var/lib/quassel</code> should be copied off before the machine is repurposed.</p>
+
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD Research</a> &middot; <a href="nextbsd-rpi500-native-boot-plan.html">Pi&nbsp;500+ native-boot plan</a></p>
+</div>
+
+</body>
+</html>

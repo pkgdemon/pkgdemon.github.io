@@ -210,7 +210,30 @@ out/NextBSD-rpi500-arm64-20260822-231455.img.zip.sha256</code></pre>
 <p><span class="pill pill-bad">The trap</span> An arch-first Pi name would not merely fail to work &mdash; it would break the <strong>existing</strong> arm64 lane, because <code>:276</code> would start matching two files where it has always matched one. A board image that cannot boot in qemu would be handed to the qemu boot-test. <code>NextBSD-rpi500-arm64-&hellip;</code> sidesteps all four globs without touching a line of the workflow.</p>
 </div>
 
-<p>The release-assets step is the one glob that <em>should</em> match, and does: <code>:412</code> collects <code>out/NextBSD-*.img.zip</code>, so the Pi image is published alongside the others with no change.</p>
+<h3>How it gets delivered: PR first, <code>continuous</code> only once proven</h3>
+
+<p><span class="pill pill-meas">Measured</span> The existing CI already enforces this, and needs no change to do it. The <code>release</code> job is guarded:</p>
+
+<pre><code>release:
+  if: github.ref == 'refs/heads/main'
+      &amp;&amp; (push || repository_dispatch || workflow_dispatch)
+      &amp;&amp; needs.build.result == 'success'</code></pre>
+
+<p>It therefore <strong>cannot run on a pull request</strong>. That gives two stages for free:</p>
+
+<table>
+<thead><tr><th>Stage</th><th>What runs</th><th>Where the image goes</th></tr></thead>
+<tbody>
+<tr><td><strong>1. PR</strong></td><td><code>build</code> only &mdash; <code>release</code> is skipped by the <code>ref</code>/event guard</td><td>an ordinary workflow artifact, fetched with <code>gh run download</code>. Written to a USB stick and booted <strong>on the board</strong>. Nothing reaches <code>continuous</code>.</td></tr>
+<tr><td><strong>2. Merge</strong></td><td>push to <code>main</code> &rarr; <code>release</code></td><td><code>:412</code>&rsquo;s <code>out/NextBSD-*.img.zip</code> glob matches <code>NextBSD-rpi500-arm64-*.img.zip</code> and publishes it to <code>continuous</code> alongside the others.</td></tr>
+</tbody>
+</table>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Policy</span> <strong>The Pi image is never published from a PR, and is only published to <code>continuous</code> after it has booted the real board.</strong> This is the same rule the kext work already follows &mdash; green CI is not evidence for this class of change, because nothing in CI can boot a Pi&nbsp;500+. The board is the test.</p>
+</div>
+
+<p>Note the board-first name earns its keep twice here: it keeps the image out of <code>img-test</code>&rsquo;s <code>NextBSD-&lt;arch&gt;-*</code> matrix at stage&nbsp;1, and still matches the deliberately broader <code>NextBSD-*</code> release glob at stage&nbsp;2.</p>
 
 <div class="callout callout-warn">
 <p><span class="pill pill-warn">Still required</span> The naming choice keeps the Pi image <em>out</em> of the qemu boot-test by accident rather than by intent. A <code>rpi500</code> lane should skip <code>img-boot-test.sh</code> explicitly &mdash; qemu cannot emulate a Pi&nbsp;500+, and the only real boot test for this artifact is the board itself. That is the same &ldquo;prove it on the hardware&rdquo; rule the rest of this project already follows.</p>

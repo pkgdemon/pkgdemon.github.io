@@ -53,7 +53,23 @@
 <p class="lede">The target is a <strong>Raspberry Pi 500+</strong> &mdash; BCM2712 <strong>D0</strong> silicon, 16&nbsp;GB, built-in 256&nbsp;GB NVMe, and a keyboard that sits behind PCIe. <a href="https://github.com/worproject/rpi5-uefi">worproject/rpi5-uefi</a> cannot boot it, and that is not bad luck: the repo has been archived since Feb&nbsp;2025, its only releases target pre-D0 <code>BCM2712C1</code>, and board type <code>0x19</code> was never added. This page lays out <strong>every option</strong> for booting it natively &mdash; one of which, unexpectedly, needs <strong>zero new boot code</strong> &mdash; and maps every device on the board to a driver we can port today, port from Linux, or must write new.</p>
 
 <div class="callout">
-<p><span class="pill pill-neutral">Survey, not a decision</span> <strong>Nothing here is chosen yet.</strong> Every route is costed with its evidence so the calls can be made from the material rather than from a recommendation. The open decisions are gathered in <a href="#decisions">&sect;9</a>; the sequencing in <a href="#seq">&sect;7</a> is a <em>dependency order</em> (what unblocks what), not a schedule or a commitment.</p>
+<p><span class="pill pill-neutral">Survey, not a decision</span> <strong>Nothing here was chosen when this was written</strong> &mdash; see the status block below for what has since been settled on the hardware. Every route is costed with its evidence so the calls can be made from the material rather than from a recommendation. The open decisions are gathered in <a href="#decisions">&sect;9</a>; the sequencing in <a href="#seq">&sect;7</a> is a <em>dependency order</em> (what unblocks what), not a schedule or a commitment.</p>
+</div>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Status &middot; 2026-08-23</span> <strong>The board boots NextBSD.</strong> Much of what this page presents as open has been settled by running it, and the decisions below are annotated in&nbsp;<a href="#decisions">&sect;9</a>. In short:</p>
+<ul>
+<li><strong>Route&nbsp;(a) ships</strong> &mdash; decisions&nbsp;1 and&nbsp;2. The firmware loads <code>kernel8.img</code> directly, there is no loader, and the shipping image is built that way (<code>BOARD=rpi500 sh build.sh</code>). The kext premise bends on arm64 rather than the boot route bending.</li>
+<li><strong>Boot-critical is compiled in</strong> &mdash; decision&nbsp;3, forced rather than chosen: PCIe delivers both the disk and the keyboard, so a kext providing it would have to come off a disk that only exists once it is loaded.</li>
+<li><strong>The board kernel is a family config</strong>, <code>NEXTBSD-RPI5</code> &mdash; nothing in it is specific to the 500+. Only the 500+ has been booted.</li>
+<li><strong>PCIe, MSI and RP1 enumeration work.</strong> NVMe attaches and the kernel reaches <code>mountroot</code>. RP1 registers as an interrupt controller and its children get IRQs.</li>
+<li><strong>The console moved</strong>, permanently &mdash; see the correction below.</li>
+</ul>
+<p>What now gates a published image is no longer &ldquo;does it boot&rdquo; but <strong>is it a machine you can sit down at</strong>: video, keyboard, mouse and Ethernet. That bar, and what blocks each part, is in <a href="nextbsd-rpi500-image-plan.html#publish-bar">the image plan</a> and tracked in <a href="https://github.com/nextbsd-redux/nextbsd/issues/416">nextbsd#416</a>.</p>
+</div>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Correction &middot; supersedes &sect;3</span> <strong>The serial console is UART10 inside the SoC at <code>0x10_7d00_1000</code></strong>, reached through the 3-pin JST-SH connector on the board &mdash; not RP1 UART0 on the 40-pin header, at either <code>0x1F_0003_0000</code> or <code>0x1C_0003_0000</code>. RP1 is a PCIe endpoint and console attach happens at <code>cninit()</code>, long before any PCIe host bridge; so the 40-pin UART <em>can never</em> be a boot console on this board, however complete the PCIe and RP1 drivers become. It also dies the moment a driver takes the controller, which makes a working driver look exactly like a dead one. Find that connector before starting the PCIe work, not during it.</p>
 </div>
 
 <div class="callout callout-good">

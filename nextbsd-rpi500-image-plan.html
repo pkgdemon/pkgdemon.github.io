@@ -233,13 +233,49 @@ out/NextBSD-rpi500-arm64-20260822-231455.img.zip.sha256</code></pre>
 <thead><tr><th>Stage</th><th>What runs</th><th>Where the image goes</th></tr></thead>
 <tbody>
 <tr><td><strong>1. PR</strong></td><td><code>build</code> only &mdash; <code>release</code> is skipped by the <code>ref</code>/event guard</td><td>an ordinary workflow artifact, fetched with <code>gh run download</code>. Written to a USB stick and booted <strong>on the board</strong>. Nothing reaches <code>continuous</code>.</td></tr>
-<tr><td><strong>2. Merge</strong></td><td>push to <code>main</code> &rarr; <code>release</code></td><td><code>:412</code>&rsquo;s <code>out/NextBSD-*.img.zip</code> glob matches <code>NextBSD-rpi500-arm64-*.img.zip</code> and publishes it to <code>continuous</code> alongside the others.</td></tr>
+<tr><td><strong>2. Merge</strong></td><td>push to <code>main</code> &rarr; <code>release</code></td><td><span class="pill pill-meas">Measured</span> The board image is <strong>deleted before the release glob sees it</strong>. <code>out/NextBSD-*.img.zip</code> would otherwise match <code>NextBSD-rpi500-arm64-*.img.zip</code> as happily as the generic ones, so the <code>release</code> job now runs <code>rm -fv out/NextBSD-rpi500-*</code> first. Generic images publish; Pi images do not.</td></tr>
 </tbody>
 </table>
 
 <div class="callout callout-good">
 <p><span class="pill pill-good">Policy</span> <strong>The Pi image is never published from a PR, and is only published to <code>continuous</code> after it has booted the real board.</strong> This is the same rule the kext work already follows &mdash; green CI is not evidence for this class of change, because nothing in CI can boot a Pi&nbsp;500+. The board is the test.</p>
 </div>
+
+<h3 id="publish-bar">What must work before <code>continuous</code></h3>
+
+<p><span class="pill pill-good">Policy</span> Booting is necessary and <strong>no longer sufficient</strong>. The bar for publishing is a machine somebody can sit down at: <strong>a fully functional desktop</strong>. Serial is a bring-up instrument, not a way to use a published image &mdash; an image whose only console is a cable into a connector <em>inside the case</em> has no audience.</p>
+
+<p>This is a deliberate raise. Everything below is a real requirement, not a wish-list, and each is either blocked on a named ticket or already done.</p>
+
+<table>
+<thead><tr><th>Requirement</th><th>Where the hardware lives</th><th>Blocked on</th></tr></thead>
+<tbody>
+<tr><td><strong>Video</strong> &mdash; console, then a desktop on it</td><td>VideoCore mailbox + <code>fb</code>, inside the SoC. Not RP1.</td><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/96">kernel#96</a></td></tr>
+<tr><td><strong>Keyboard and mouse</strong> &mdash; USB HID behind <code>xhci</code></td><td><code>usb@200000</code>, <code>usb@300000</code> &mdash; RP1 BAR1 <code>+0x200000</code>, <code>+0x300000</code></td><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/95">kernel#95</a></td></tr>
+<tr><td><strong>Ethernet</strong></td><td><code>1f00100000.ethernet</code> &mdash; RP1 BAR1 <code>+0x100000</code></td><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/95">kernel#95</a>, then driver work</td></tr>
+<tr><td>Boot, NVMe, root filesystem</td><td>&mdash;</td><td><span class="pill pill-good">Done</span></td></tr>
+</tbody>
+</table>
+
+<div class="callout callout-good">
+<p><span class="pill pill-meas">Measured</span> <strong>One bug blocks three of the four.</strong> Ethernet and both USB controllers are all RP1 children reached through the same <code>ranges</code> translation, and that translation is broken in the same way for all of them &mdash; RP1&rsquo;s parent is a PCI node, so its <code>ranges</code> names the parent in three-cell PCI form and <code>simplebus_fill_ranges()</code> passes the child address through untouched. Fixing <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/95">kernel#95</a> is the critical path for keyboard, mouse <em>and</em> networking at once.</p>
+</div>
+
+<h4>Video is two steps, and only the first is small</h4>
+
+<p><span class="pill pill-meas">Measured</span> The nodes FreeBSD already binds to are present on BCM2712 under the names it already knows &mdash; <code>/soc@107c000000/fb</code> is <code>brcm,bcm2708-fb</code> and <code>mailbox@7c013880</code> is <code>brcm,bcm2835-mbox</code>, which is exactly what <code>bcm2835_fbd.c</code> and <code>bcm2835_mbox.c</code> match. The firmware is already driving HDMI before the kernel starts. That path is switched off only because <code>bcm283x_armc_to_vcbus()</code> applies an ARM&rarr;VideoCore offset that is right for the Pi&nbsp;3/4 and wrong here.</p>
+
+<p><span class="pill pill-warn">Reasoned</span> A framebuffer console gets <code>vt(4)</code> a screen. A <em>desktop</em> then needs X on top of it, unaccelerated, the way FreeBSD runs X on ARM boards without KMS. An <strong>accelerated</strong> desktop is a different order of work entirely: <code>brcm,bcm2712-hdmi0</code> would need a real KMS driver (HVS, HDMI PHY, V3D), and none exists here. The bar above is <em>functional</em>, deliberately &mdash; treating &ldquo;accelerated&rdquo; as the gate would defer this image indefinitely.</p>
+
+<h4>Deferred, with reasons</h4>
+
+<table>
+<thead><tr><th>Deferred</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><strong>Wi-Fi</strong></td><td><span class="pill pill-meas">Measured</span> A BCM4345/6 (BCM43455) on SDIO at <code>mmc@1100000</code> (<code>brcm,bcm2712-sdhci</code>), inside the SoC &mdash; so it does <em>not</em> depend on RP1 and is independent of everything in the table above. Deferred past milestone&nbsp;1 because Ethernet already gives a usable machine, <strong>not</strong> because the route is unclear. It is four pieces: <code>net80211</code> on arm64 (<a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/53">kernel#53</a>), an <code>sdhci_fdt</code> attachment for <code>brcm,bcm2712-sdhci</code>, a port of OpenBSD&rsquo;s <code>bwfm(4)</code>, and the firmware blob. <span class="pill pill-good">Verified</span> <code>if_bwfm_sdio.c</code> and <code>bwfm.c</code> both handle <code>BRCM_CC_4345_CHIP_ID</code> and name the 43455 explicitly, and both are ISC &mdash; the same licence and the same source as <code>rpone(4)</code>, which this project has already ported once.</td></tr>
+<tr><td><strong>Bluetooth</strong></td><td>NextBSD has no Bluetooth stack on any architecture, so this board is not where that starts.</td></tr>
+</tbody>
+</table>
 
 <p>Note the board-first name earns its keep twice here: it keeps the image out of <code>img-test</code>&rsquo;s <code>NextBSD-&lt;arch&gt;-*</code> matrix at stage&nbsp;1, and still matches the deliberately broader <code>NextBSD-*</code> release glob at stage&nbsp;2.</p>
 

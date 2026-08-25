@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NextBSD &mdash; how an installer should decide what kind of boot to install</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  h4 { font-size:0.98rem; margin:20px 0 8px; }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.92rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .scroll { overflow-x:auto; }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e6e6; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+  .opt { border:1px solid var(--border); border-radius:4px; padding:2px 22px 6px; margin:0 0 26px; background:white; }
+  .opt h3 { margin-top:22px; }
+  .verdict { font-weight:600; }
+  .pill-meas { background:#cfe3f0; color:#1d5a7a; }
+
+</style>
+</head>
+<body>
+
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; part of <a href="nextbsd-research.html">NextBSD Research</a> &middot; sub-plan of <a href="nextbsd-rpi500-native-boot-plan.html">the Pi&nbsp;500+ native-boot plan</a></p>
+
+<h1>How an installer should decide what kind of boot to install</h1>
+
+<p class="lede">NextBSD&rsquo;s installer writes GPT with an EFI System Partition, unconditionally. That is unbootable on a Raspberry&nbsp;Pi, whose firmware reads <code>config.txt</code> off a FAT partition and enters the kernel directly &mdash; no UEFI, no BIOS, no loader of any kind. This page surveys every way of telling those cases apart, says what each signal actually proves, and picks one. Written after four attempts at the detection got it wrong in four different ways.</p>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Why this page exists</span> The first four attempts were each plausible and each broken: matching a device-tree compatible string (the tool prints hex unless asked for text, and then truncates at the first NUL); testing <code>machdep.efi_map</code> (<strong>does not exist on arm64</strong>); treating &ldquo;has a device tree&rdquo; as &ldquo;firmware booted us&rdquo; (<code>loader.efi</code> installs a DTB too); and mounting candidate filesystems to look for <code>config.txt</code> (intrusive, and it broke three ways). Picking from a survey costs an afternoon. Picking without one cost a day and would have shipped a bug that bricks every arm64 VM install.</p>
+</div>
+
+<h2 id="cases">1. The cases, and why there are more than two</h2>
+
+<p>An installer has to produce a disk the machine&rsquo;s firmware can actually start. There are three distinct arrangements, not two, and a fourth hybrid that catches people out.</p>
+
+<table>
+<thead><tr><th>Case</th><th>What starts the OS</th><th>What must be on disk</th></tr></thead>
+<tbody>
+<tr><td><strong>Legacy BIOS</strong> (x86)</td><td>MBR bootstrap &rarr; <code>gptboot</code> &rarr; loader</td><td>GPT + a <code>freebsd-boot</code> partition holding <code>pmbr</code>/<code>gptboot</code></td></tr>
+<tr><td><strong>UEFI</strong> (x86, arm64)</td><td>firmware &rarr; <code>BOOTAA64.EFI</code> &rarr; loader</td><td>GPT + an ESP (type <code>c12a7328-&hellip;</code>)</td></tr>
+<tr><td><strong>Firmware direct</strong> (Pi)</td><td>EEPROM bootloader reads <code>config.txt</code>, enters the kernel at EL2</td><td>MBR + FAT32 type <code>0x0c</code> holding <code>config.txt</code>, a DTB, and the kernel</td></tr>
+<tr><td><strong>UEFI on a Pi</strong> (EDK2)</td><td>EEPROM loads <code>RPI_EFI.fd</code> as an ARM stub, <em>then</em> UEFI</td><td><strong>both</strong>: MBR + FAT32 <code>0x0c</code> for the EEPROM, carrying an EFI firmware image</td></tr>
+</tbody>
+</table>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">The trap</span> The fourth row is why &ldquo;is this a Pi?&rdquo; and &ldquo;does this machine have UEFI?&rdquo; are both insufficient on their own. An EDK2 Pi answers <em>yes</em> to UEFI, but the EEPROM &mdash; not EDK2 &mdash; is still what reads the partition table, so it cannot use a GPT ESP. The pftf RPi3 documentation says so outright: <em>&ldquo;Do not try to use GPT for the partition scheme &hellip; as these are unsupported by the CPU-embedded bootloader.&rdquo;</em></p>
+</div>
+
+<h2 id="notus">2. What NextBSD is doing is not what FreeBSD does</h2>
+
+<p><span class="pill pill-meas">Verified in source</span> FreeBSD&rsquo;s own Raspberry&nbsp;Pi image does <strong>not</strong> use firmware-direct boot. <code>release/arm64/RPI.conf</code> installs <code>sysutils/u-boot-rpi-arm64</code> and ships a <code>config.txt</code> whose <code>kernel=</code> line names <code>u-boot.bin</code>. The chain is:</p>
+
+<pre><code>Pi EEPROM &rarr; u-boot.bin &rarr; U-Boot's built-in EFI &rarr; BOOTAA64.EFI &rarr; loader &rarr; kernel</code></pre>
+
+<p>U-Boot manufactures a UEFI environment so the ordinary arm64 path works. That is why nothing in FreeBSD&rsquo;s installer has a case for us: upstream never needs one. NextBSD&rsquo;s route&nbsp;(a) &mdash; firmware enters <code>kernel8.img</code> directly, no loader at all &mdash; is a genuinely different design, and the installer gap is a direct consequence of choosing it.</p>
+
+<p>The same pattern holds almost everywhere. Fedora, openSUSE and Debian all chainload U-Boot in front of the kernel and thereby dodge the question entirely. <strong>No project surveyed probes for &ldquo;the firmware entered the kernel directly&rdquo;</strong>; the ones that genuinely support it resolve it by board identity or by declaring it at build time.</p>
+
+<h2 id="signals">3. Every signal, and what it actually proves</h2>
+
+<p>Each of these was checked against FreeBSD source at <code>releng/15.1</code>, and the ones marked measured were read off a Pi&nbsp;500+ running NextBSD.</p>
+
+<table>
+<thead><tr><th>Signal</th><th>Proves</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td><code>machdep.bootmethod</code></td><td><code>BIOS</code> / <code>UEFI</code> / <code>PVH</code>. What bsdinstall itself uses.</td><td><span class="pill pill-bad">x86 only</span> Declared in <code>sys/x86/x86/cpu_machdep.c</code>. Absent on arm64.</td></tr>
+<tr><td><code>machdep.efi_map</code></td><td>The EFI memory map.</td><td><span class="pill pill-bad">amd64 only</span> One declaration in the tree, <code>sys/amd64/amd64/machdep.c:1724</code>. <strong>This is the bug that would have bricked arm64 VM installs.</strong></td></tr>
+<tr><td><code>/dev/efi</code></td><td>EFI runtime services present <em>and working</em> &mdash; <code>efidev(4)</code> declines to attach otherwise.</td><td><span class="pill pill-good">Good</span> Arch-neutral. Absence does not prove BIOS (RT can be broken or disabled).</td></tr>
+<tr><td><code>kenv efi-version</code></td><td><code>loader.efi</code> ran. Set nowhere else (<code>stand/efi/libefi/env.c</code>).</td><td><span class="pill pill-good">Good</span> Arch-neutral, cheap.</td></tr>
+<tr><td><code>hw.fdt.compatible</code></td><td>The root node&rsquo;s compatible, <strong>NULs already joined into spaces by the kernel</strong>.</td><td><span class="pill pill-good">Best board ID</span> World-readable; gives the whole property. <span class="pill pill-meas">Measured</span> <code>raspberrypi,500 brcm,bcm2712</code></td></tr>
+<tr><td><code>ofwdump -P compatible /</code></td><td>Same, via <code>/dev/openfirm</code>.</td><td><span class="pill pill-warn">Avoid</span> Needs root (mode 0600); prints raw hex without <code>-S</code>, and <code>-S</code> stops at the first NUL &mdash; so <code>brcm,bcm2712</code> is invisible. <code>-R</code> does return the whole property.</td></tr>
+<tr><td>&ldquo;an FDT exists&rdquo;</td><td>Nothing about the boot method.</td><td><span class="pill pill-bad">Misleading</span> <code>loader.efi</code> installs the DTB from the EFI configuration table &mdash; <code>&ldquo;Using DTB provided by EFI at %p&rdquo;</code>. Every UEFI arm64 VM has <code>/dev/openfirm</code>.</td></tr>
+<tr><td><code>debug.dump_modinfo</code></td><td>Which metadata the loader passed. No <code>MODINFOMD_ENVP</code> &rArr; no FreeBSD loader ran.</td><td><span class="pill pill-good">Strongest arm64 evidence</span> Arch-neutral, but requires parsing text.</td></tr>
+<tr><td><code>machdep.acpi_root</code></td><td>On arm64, non-zero only if a loader passed <code>acpi.rsdp</code> &mdash; there is no memory-scan fallback.</td><td><span class="pill pill-good">Corroborating</span> <span class="pill pill-meas">Measured</span> <code>0</code> on the Pi.</td></tr>
+<tr><td><code>hw.efi.*</code>, <code>machdep.efi_rt_handle_faults</code></td><td>That the kernel was <em>compiled</em> with <code>options EFIRT</code>.</td><td><span class="pill pill-bad">Not evidence</span> Present on BIOS amd64 and DTB arm64 alike.</td></tr>
+<tr><td><code>kenv -l</code></td><td>&mdash;</td><td><span class="pill pill-bad">Returns ENOENT</span> Needs <code>PRESERVE_EARLY_KENV</code>, which no GENERIC sets.</td></tr>
+<tr><td><code>gpart show</code> types</td><td>Partition scheme and type names, straight from disk metadata.</td><td><span class="pill pill-good">No mount needed</span> <span class="pill pill-meas">Measured</span> <code>da0s1 fat32lba</code>, <code>da0s2 freebsd</code></td></tr>
+<tr><td><code>/dev/msdosfs/&lt;label&gt;</code></td><td>A FAT volume with that label exists.</td><td><span class="pill pill-warn">Conditional</span> Needs <code>GEOM_LABEL</code> <em>and</em> a non-empty label; unlabelled volumes produce no node.</td></tr>
+</tbody>
+</table>
+
+<h2 id="required">4. What is actually required, versus merely conventional</h2>
+
+<p>A surprising amount of Pi boot lore turns out to be convention. Separating the two matters, because every genuine requirement is a constraint on the installer and every convention is a free choice.</p>
+
+<table>
+<thead><tr><th>Claim</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>MBR, not GPT</td><td><span class="pill pill-meas">Required</span> Raspberry&nbsp;Pi OS has shipped MBR in every release from 2012 to 2026, and the pftf UEFI ports state GPT is unsupported by the CPU-embedded bootloader.</td></tr>
+<tr><td>FAT partition type <code>0x0c</code> (fat32lba)</td><td><span class="pill pill-meas">Required in practice</span> What Raspberry&nbsp;Pi OS, FreeBSD&rsquo;s <code>arm.subr</code>, and openSUSE all converge on. Armbian explicitly converts <code>0xef</code>&rarr;<code>0x0c</code> because <code>0xef</code> breaks RPi3.</td></tr>
+<tr><td>The boot partition must be marked <em>active</em></td><td><span class="pill pill-bad">Convention only</span> Every Raspberry&nbsp;Pi OS image decoded, 2012&ndash;2026, has status byte <code>0x00</code>. FreeBSD&rsquo;s <code>arm.subr</code> sets it anyway; <code>rpi-imager</code> writes <code>0x80</code>. It evidently does not matter.</td></tr>
+<tr><td>FAT32 specifically</td><td><span class="pill pill-warn">Not strictly</span> Images were FAT16 until 2017-01-11, and FreeBSD&rsquo;s RPI image still formats FAT16 while labelling the partition <code>0x0c</code>. The firmware tolerates the mismatch.</td></tr>
+<tr><td>A partition table at all</td><td><span class="pill pill-meas">Required</span> The EEPROM looks for a FAT partition; it does not read a bare filesystem.</td></tr>
+</tbody>
+</table>
+
+<h2 id="options">5. The options</h2>
+
+<h3>A. Match the board&rsquo;s compatible string</h3>
+<p><strong>Test:</strong> <code>hw.fdt.compatible</code> contains <code>raspberrypi,</code>.<br>
+<strong>For:</strong> direct, cheap, world-readable, and the whole property is available.<br>
+<strong>Against:</strong> answers &ldquo;which board&rdquo;, not &ldquo;which boot method&rdquo;. <span class="pill pill-bad">Fails</span> on an EDK2 Pi, which is a Pi but wants the EFI payload. Needs a list that grows with the hardware.</p>
+
+<h3>B. Test for UEFI, everything else is firmware boot</h3>
+<p><strong>Test:</strong> <code>/dev/efi</code> or <code>kenv efi-version</code>.<br>
+<strong>For:</strong> arch-neutral; correctly sends an EDK2 Pi down the UEFI path; no board list.<br>
+<strong>Against:</strong> &ldquo;not UEFI&rdquo; is not the same as &ldquo;Pi firmware&rdquo; &mdash; a U-Boot board without EFI payload support would be misread. And it still gets the EDK2 Pi&rsquo;s <em>partitioning</em> wrong, since that needs MBR regardless.</p>
+
+<h3>C. Look for <code>config.txt</code> on the boot medium</h3>
+<p><strong>Test:</strong> mount candidate FAT partitions, look for <code>config.txt</code> plus the kernel it names.<br>
+<strong>For:</strong> proof rather than inference &mdash; that file <em>is</em> the boot method, and finding it also locates the files to copy.<br>
+<strong>Against:</strong> <span class="pill pill-bad">Mounts media the operator did not nominate.</span> Intrusive, and in practice it produced three separate bugs: probing the install target, leaking mounts, and failing silently on stale state.</p>
+
+<h3>D. Read the partition table only</h3>
+<p><strong>Test:</strong> <code>gpart</code> reports an MBR disk with a <code>fat32lba</code> slice.<br>
+<strong>For:</strong> no mounting; structural rather than by convention, so it recognises a stock Raspberry&nbsp;Pi OS card or a hand-made stick.<br>
+<strong>Against:</strong> describes a <em>layout</em>, not a capability. A machine could have such a disk attached and still be a PC.</p>
+
+<h3>E. Reproduce the medium&rsquo;s own boot setup</h3>
+<p><strong>Not a detection method &mdash; a way of acting on one.</strong> Rather than generating a <code>config.txt</code> from a template, copy the boot partition that started this machine. It demonstrably works on this hardware, which no amount of detection can promise, and it needs no per-board knowledge at all &mdash; a Pi&nbsp;4, a Pi&nbsp;5 or a board nobody has thought of yet all work unchanged.</p>
+
+<h2 id="decision">6. The decision</h2>
+
+<div class="callout callout-good">
+<p><span class="pill pill-good">Chosen</span> <strong>B, then A, and always E.</strong> Ask whether a UEFI loader ran; if not, ask whether this is a Pi; then reproduce the boot setup rather than inventing one.</p>
+</div>
+
+<pre><code>detect_board() {
+        # A UEFI loader ran -&gt; ESP layout, whatever the board.
+        # NOT machdep.efi_map: that does not exist on arm64.
+        if [ -e /dev/efi ] || [ -n "$(kenv -q efi-version 2&gt;/dev/null)" ]; then
+                echo generic; return
+        fi
+        # No UEFI. Is this a Raspberry Pi? hw.fdt.compatible has the whole
+        # property, NULs already joined; ofwdump would truncate it.
+        case "$(sysctl -n hw.fdt.compatible 2&gt;/dev/null)" in
+        *raspberrypi,*|*brcm,bcm2*) echo fdtboot; return ;;
+        esac
+        echo generic
+}</code></pre>
+
+<p><strong>Why this order.</strong> The UEFI test comes first because it is the one signal that is true of exactly one case and is arch-neutral. The board test comes second because it is only meaningful once UEFI has been ruled out &mdash; an EDK2 Pi matches both, and the first answer is the right one. Nothing tests for &ldquo;an FDT exists&rdquo;, because <code>loader.efi</code> provides one.</p>
+
+<p><strong>Why not C.</strong> Mounting during detection is intrusive and was the direct cause of three bugs. The information it provides &mdash; where the boot files are &mdash; is needed only when copying, at which point mounting one identified device read-only is proportionate.</p>
+
+<p><strong>Why E regardless.</strong> Every generated <code>config.txt</code> encodes an assumption about the board. A copied one encodes what actually booted.</p>
+
+<h2 id="open">7. What is still unresolved</h2>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Untested</span> <strong>The EDK2-on-Pi case.</strong> The chosen logic sends it down the <code>generic</code> path, which writes GPT+ESP &mdash; and that is <em>wrong</em>, because the EEPROM still needs MBR+FAT32 to find <code>RPI_EFI.fd</code>. Correct handling is a fourth layout: MBR, FAT32 <code>0x0c</code>, carrying both the EFI firmware image and an ESP-like directory tree. Nobody has tested this, and there is no upstream EDK2 for the Pi&nbsp;5 at all &mdash; the only port was archived in February 2025.</p>
+</div>
+
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Open</span> <strong>Root label collision.</strong> The generic path labels the installed root <code>NEXTBSD</code> so a leftover install medium cannot hijack the boot, and overrides the kernel&rsquo;s baked-in default through <code>loader.conf</code>. On a Pi there is no loader to do the overriding, so the target must be labelled <code>ROOTFS</code> &mdash; the same label the install medium carries. The current mitigation is &ldquo;do not leave the stick plugged in&rdquo;, which is weak. The real fix is a board kernel whose <code>ROOTDEVNAME</code> names something distinct.</p>
+</div>
+
+<p><span class="pill pill-warn">Reasoned</span> A U-Boot board with no EFI payload support would be classified <code>generic</code> and given an ESP it cannot boot. No such board has been tested here, and U-Boot has had <code>CONFIG_EFI_LOADER</code> on by default for armv8 for years, so this is a narrow case &mdash; but it is a real one.</p>
+
+<h2 id="measured">8. Measured on the hardware</h2>
+
+<p>A Pi&nbsp;500+ running NextBSD from USB, 2026-08-24. Everything in the decision above is consistent with these readings.</p>
+
+<pre><code>/dev/efi                  absent
+kenv efi-version          unset
+machdep.acpi_root         0
+dev.efirtc.0              absent
+hw.fdt.compatible         raspberrypi,500 brcm,bcm2712
+hw.fdt.model              Raspberry Pi 500 Rev 1.0
+ofwdump -S -P compatible  raspberrypi,500          &lt;- truncated at the first NUL
+kern.disks                da0 nda0
+
+gpart show -p da0
+  =&gt;     1  30871551    da0  MBR  (15G)
+         1    204800  da0s1  fat32lba  (100M)
+    204801   4500096  da0s2  freebsd   (2.1G)
+
+mount
+  /dev/ufs/ROOTFS on / (ufs, local, noatime, soft-updates)
+  devfs on /dev (devfs)          &lt;- the boot partition is NOT mounted at runtime</code></pre>
+
+<p class="meta">2026-08-24. Detection logic verified against <code>freebsd/freebsd-src</code> at <code>releng/15.1</code>; Raspberry&nbsp;Pi behaviour against the <code>raspberrypi/firmware</code>, <code>pi-gen</code> and <code>pftf</code> repositories; everything in &sect;8 read off the board itself. Implemented in <a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/60">nextbsd-userland#60</a>, tracking <a href="https://github.com/nextbsd-redux/nextbsd/issues/420">nextbsd#420</a>.</p>
+
+</div>
+</body>
+</html>

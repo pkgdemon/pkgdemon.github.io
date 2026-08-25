@@ -53,7 +53,7 @@
 
 <h1>How an installer should decide what kind of boot to install</h1>
 
-<p class="lede">NextBSD&rsquo;s installer writes GPT with an EFI System Partition, unconditionally. That is unbootable on a Raspberry&nbsp;Pi, whose firmware reads <code>config.txt</code> off a FAT partition and enters the kernel directly &mdash; no UEFI, no BIOS, no loader of any kind. This page surveys every way of telling those cases apart, says what each signal actually proves, and picks one. Written after four attempts at the detection got it wrong in four different ways.</p>
+<p class="lede">NextBSD&rsquo;s installer writes GPT with an EFI System Partition, unconditionally. That is unbootable on a Raspberry&nbsp;Pi, whose firmware reads <code>config.txt</code> off a FAT partition and enters the kernel directly &mdash; no UEFI, no BIOS, no loader of any kind. This page surveys every way of telling those cases apart, says what each signal actually proves, and picks one. Written after four attempts at the detection got it wrong in four different ways, then revised twice more when the research contradicted the result.</p>
 
 <div class="callout callout-warn">
 <p><span class="pill pill-warn">Why this page exists</span> The first four attempts were each plausible and each broken: matching a device-tree compatible string (the tool prints hex unless asked for text, and then truncates at the first NUL); testing <code>machdep.efi_map</code> (<strong>does not exist on arm64</strong>); treating &ldquo;has a device tree&rdquo; as &ldquo;firmware booted us&rdquo; (<code>loader.efi</code> installs a DTB too); and mounting candidate filesystems to look for <code>config.txt</code> (intrusive, and it broke three ways). Picking from a survey costs an afternoon. Picking without one cost a day and would have shipped a bug that bricks every arm64 VM install.</p>
@@ -117,8 +117,9 @@
 <table>
 <thead><tr><th>Claim</th><th>Status</th></tr></thead>
 <tbody>
-<tr><td>MBR, not GPT</td><td><span class="pill pill-warn">Conservative choice, not a requirement</span> <strong>The firmware has supported GPT since 2020.</strong> The BCM2711 release notes carry <em>&ldquo;Add support GPT and Hybrid MBR partition tables&rdquo;</em> (2020-09-14) and <em>&ldquo;Add support for GPT FAT16&rdquo;</em> (2021-10-04); the BCM2712 notes add 4K-native-sector GPT and further GPT autoboot fixes through 2025. Raspberry&nbsp;Pi&rsquo;s own <code>rpi-image-gen</code> ships <code>image/gpt/</code> and <code>image/mbr/</code> layouts side by side. What <em>is</em> true: Raspberry&nbsp;Pi OS itself has shipped MBR in every release from 2012 to 2026, and GPT is genuinely unsupported on Pi&nbsp;3 and older, whose bootloader predates the change. So MBR remains the choice that works on every generation &mdash; but calling it a requirement is wrong.</td></tr>
-<tr><td>FAT partition type <code>0x0c</code> (fat32lba)</td><td><span class="pill pill-meas">Required in practice</span> What Raspberry&nbsp;Pi OS, FreeBSD&rsquo;s <code>arm.subr</code>, and openSUSE all converge on. Armbian explicitly converts <code>0xef</code>&rarr;<code>0x0c</code> because <code>0xef</code> breaks RPi3.</td></tr>
+<tr><td>MBR, not GPT</td><td><span class="pill pill-warn">Depends on generation <em>and</em> media</span> Pi&nbsp;1/2/3 from SD: MBR only, and that is silicon &mdash; the mask ROM cannot be updated. Pi&nbsp;2B&nbsp;v1.2/3B/3B+ over <strong>USB&nbsp;mass storage</strong>: GPT works. Pi&nbsp;4 and&nbsp;5: GPT since firmware 2020-09-14 (<em>&ldquo;Add support GPT and Hybrid MBR partition tables&rdquo;</em>), with GPT FAT16 added 2021-10-04 and 4K-native-sector support on 2712. Raspberry&nbsp;Pi&rsquo;s own <code>rpi-image-gen</code> ships <code>image/gpt/</code> and <code>image/mbr/</code> side by side. So MBR is the only scheme that works <em>everywhere</em> &mdash; a decision, not a constraint.</td></tr>
+<tr><td>FAT partition type <code>0x0c</code> (fat32lba)</td><td><span class="pill pill-bad">Folklore</span> The documented rule is about the <em>filesystem</em>, not the type byte. <code>autoboot.adoc</code>: <em>&ldquo;Bootable partitions must be formatted as FAT12, FAT16 or FAT32 and contain a <code>start.elf</code> file (or <code>config.txt</code> file on Raspberry&nbsp;Pi&nbsp;5) in order to be classed as be bootable by the bootloader.&rdquo;</em> NOOBS &mdash; Raspberry&nbsp;Pi&rsquo;s own installer &mdash; shipped its bootable partition as <code>0x0E</code>; pftf&rsquo;s Pi&nbsp;4 port recommends <code>0xef</code>. <code>0x0c</code> is the conventional choice and a perfectly good one, but it is not the requirement.</td></tr>
+<tr><td>Some type bytes are actively dangerous</td><td><span class="pill pill-meas">Yes</span> <strong><code>0x07</code> exFAT as the first partition hangs the BCM2711 B0 mask ROM</strong> &mdash; a brief ACT flash, then nothing at all: no UART, no HDMI. This is the classic &ldquo;brand-new 64&nbsp;GB card will not boot&rdquo; report. Also: <code>0x0F</code> extended containers were unbootable before firmware 2024-05, and MBR slot&nbsp;4 was broken before 2025-05.</td></tr>
 <tr><td>The boot partition must be marked <em>active</em></td><td><span class="pill pill-bad">Convention only</span> Every Raspberry&nbsp;Pi OS image decoded, 2012&ndash;2026, has status byte <code>0x00</code>. FreeBSD&rsquo;s <code>arm.subr</code> sets it anyway; <code>rpi-imager</code> writes <code>0x80</code>. It evidently does not matter.</td></tr>
 <tr><td>FAT32 specifically</td><td><span class="pill pill-warn">Not strictly</span> Images were FAT16 until 2017-01-11, and FreeBSD&rsquo;s RPI image still formats FAT16 while labelling the partition <code>0x0c</code>. The firmware tolerates the mismatch.</td></tr>
 <tr><td>A partition table at all</td><td><span class="pill pill-meas">Required</span> The EEPROM looks for a FAT partition; it does not read a bare filesystem.</td></tr>
@@ -156,43 +157,66 @@
 
 <h2 id="decision">6. The decision</h2>
 
-<div class="callout callout-good">
-<p><span class="pill pill-good">Chosen</span> <strong>B, then A, and always E.</strong> Ask whether a UEFI loader ran; if not, ask whether this is a Pi; then reproduce the boot setup rather than inventing one.</p>
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">The gap that reordered this</span> Test UEFI first and a real case breaks. <strong>Stock FreeBSD&rsquo;s Pi image boots through a UEFI layer</strong> &mdash; U-Boot&rsquo;s, not EDK2&rsquo;s &mdash; so on that system <code>/dev/efi</code> exists and a UEFI-first rule answers &ldquo;generic&rdquo; and writes GPT+ESP. That disk will not boot, because the EEPROM is still what reads the partition table and it wants MBR+FAT. The same is true of an EDK2 Pi. <strong>A UEFI layer on a Pi does not change who reads the partition table.</strong></p>
 </div>
 
-<pre><code>detect_board() {
-        # A UEFI loader ran -&gt; ESP layout, whatever the board.
-        # NOT machdep.efi_map: that does not exist on arm64.
-        if [ -e /dev/efi ] || [ -n "$(kenv -q efi-version 2&gt;/dev/null)" ]; then
-                echo generic; return
-        fi
-        # No UEFI. Is this a Raspberry Pi? hw.fdt.compatible has the whole
-        # property, NULs already joined; ofwdump would truncate it.
-        case "$(sysctl -n hw.fdt.compatible 2&gt;/dev/null)" in
-        *raspberrypi,*|*brcm,bcm2*) echo fdtboot; return ;;
-        esac
-        echo generic
-}</code></pre>
+<p>The fix is not a different test but a different question. Two decisions were being conflated:</p>
 
-<p><strong>Why this order.</strong> The UEFI test comes first because it is the one signal that is true of exactly one case and is arch-neutral. The board test comes second because it is only meaningful once UEFI has been ruled out &mdash; an EDK2 Pi matches both, and the first answer is the right one. Nothing tests for &ldquo;an FDT exists&rdquo;, because <code>loader.efi</code> provides one.</p>
+<table>
+<thead><tr><th>Decision</th><th>Determined by</th><th>Because</th></tr></thead>
+<tbody>
+<tr><td><strong>Partition scheme and boot filesystem</strong></td><td>the <strong>board</strong></td><td>whatever reads the partition table first is fixed in silicon or EEPROM. On a Pi that is always the GPU firmware, whatever runs afterwards.</td></tr>
+<tr><td><strong>What goes on the boot partition</strong></td><td>the <strong>boot method</strong></td><td><code>kernel8.img</code>&nbsp;+&nbsp;<code>config.txt</code> for firmware-direct; <code>u-boot.bin</code> or <code>RPI_EFI.fd</code> plus an EFI tree where a UEFI layer is in play.</td></tr>
+</tbody>
+</table>
 
-<p><strong>Why not C.</strong> Mounting during detection is intrusive and was the direct cause of three bugs. The information it provides &mdash; where the boot files are &mdash; is needed only when copying, at which point mounting one identified device read-only is proportionate.</p>
+<div class="callout callout-good">
+<p><span class="pill pill-good">Chosen</span> <strong>Board decides the layout. Boot method decides the payload. Always reproduce the medium&rsquo;s boot setup rather than generating one.</strong></p>
+</div>
 
-<p><strong>Why E regardless.</strong> Every generated <code>config.txt</code> encodes an assumption about the board. A copied one encodes what actually booted.</p>
+<pre><code>. # 1. LAYOUT -- who reads the partition table?
+  #    A Pi is a Pi whether or not something UEFI-shaped runs later.
+  case "$(sysctl -n hw.fdt.compatible 2&gt;/dev/null)" in
+  *raspberrypi,*|*brcm,bcm2*)  LAYOUT=mbr-fat ;;
+  *)                           LAYOUT=gpt     ;;
+  esac
 
-<p><strong>Why MBR, given that GPT would work.</strong> On a Pi&nbsp;4 or&nbsp;5 either scheme boots, so this is a free choice rather than a forced one. MBR wins on reach: it is the only scheme a Pi&nbsp;3 or older can boot, it is what Raspberry&nbsp;Pi OS has shipped for fourteen years, and it is therefore the arrangement most likely to be recognised by anything else the user plugs the card into. A future single-GPT-layout simplification is possible, but it would drop support for pre-2020 firmware to save a branch that is already written.</p>
+  # 2. PAYLOAD -- did a UEFI loader run?
+  #    NOT machdep.efi_map: that does not exist on arm64.
+  if [ -e /dev/efi ] || [ -n "$(kenv -q efi-version)" ]; then
+          PAYLOAD=efi          # loader.efi into an EFI/BOOT tree
+  else
+          PAYLOAD=firmware     # config.txt + DTB + kernel8.img
+  fi</code></pre>
+
+<p>For NextBSD today that yields <code>mbr-fat</code>&nbsp;+&nbsp;<code>firmware</code> on the Pi and <code>gpt</code>&nbsp;+&nbsp;<code>efi</code> everywhere else &mdash; the same two outcomes as before. The difference is that the two remaining combinations are now expressible instead of silently wrong.</p>
+
+<p><strong>Why the board test can come first without an EDK2 exception.</strong> Because the layout it selects is correct for an EDK2 Pi too. That was the case the earlier ordering could not represent: it is a Pi <em>and</em> it is UEFI, and both facts have consequences that do not conflict once they are asked separately.</p>
+
+<p><strong>Why not mount to detect (option C).</strong> Mounting during detection is intrusive and was the direct cause of three bugs &mdash; probing the install target, leaking mounts, and failing silently on stale state. The information it yields is needed only when copying, at which point mounting one identified device read-only is proportionate.</p>
+
+<p><strong>Why E regardless.</strong> Every generated <code>config.txt</code> encodes an assumption about the board. A copied one encodes what actually booted. It is also the only approach that handles a Pi&nbsp;3 &mdash; whose boot partition needs <code>bootcode.bin</code> and <code>start.elf</code> that a Pi&nbsp;5 image has never heard of &mdash; without a per-generation file manifest.</p>
+
+<p><strong>Why MBR, given that GPT would work on a Pi&nbsp;4 or&nbsp;5.</strong> Reach. MBR is the only scheme a Pi&nbsp;3 can boot from SD, it is what Raspberry&nbsp;Pi OS has shipped for fourteen years, and it costs nothing here. GPT would buy A/B partitioning, which nothing needs yet.</p>
 
 <h2 id="open">7. What is still unresolved</h2>
 
-<div class="callout callout-warn">
-<p><span class="pill pill-warn">Untested</span> <strong>The EDK2-on-Pi case.</strong> The chosen logic sends it down the <code>generic</code> path, which writes GPT+ESP &mdash; and that is <em>wrong</em>, because the EEPROM still needs MBR+FAT32 to find <code>RPI_EFI.fd</code>. Correct handling is a fourth layout: MBR, FAT32 <code>0x0c</code>, carrying both the EFI firmware image and an ESP-like directory tree. Nobody has tested this, and there is no upstream EDK2 for the Pi&nbsp;5 at all &mdash; the only port was archived in February 2025.</p>
+<div class="callout callout-good">
+<p><span class="pill pill-good">Resolved by the research</span> <strong>UEFI on a Pi&nbsp;5 is not a case worth building for.</strong> There is no <code>pftf/RPi5</code>, and <code>edk2-platforms</code> contains only <code>RPi3/</code> and <code>RPi4/</code> &mdash; searching it for BCM2712 returns nothing. The only port, <code>worproject/rpi5-uefi</code>, was <strong>archived in February 2025</strong>; RP1 has no ACPI description, so Ethernet, GPIO and fan control do not work under it, and EEPROM access is broken so UEFI variables cannot persist. Raspberry&nbsp;Pi have declined to help twice, most recently <em>&ldquo;that would require a sizeable support commitment&rdquo;</em>. Nobody has reported booting it on a Pi&nbsp;500 at all. The layout/payload split above handles it correctly if it ever appears; nothing needs to be built for it now.</p>
 </div>
 
 <div class="callout callout-warn">
 <p><span class="pill pill-warn">Open</span> <strong>Root label collision.</strong> The generic path labels the installed root <code>NEXTBSD</code> so a leftover install medium cannot hijack the boot, and overrides the kernel&rsquo;s baked-in default through <code>loader.conf</code>. On a Pi there is no loader to do the overriding, so the target must be labelled <code>ROOTFS</code> &mdash; the same label the install medium carries. The current mitigation is &ldquo;do not leave the stick plugged in&rdquo;, which is weak. The real fix is a board kernel whose <code>ROOTDEVNAME</code> names something distinct.</p>
 </div>
 
-<p><span class="pill pill-warn">Reasoned</span> A U-Boot board with no EFI payload support would be classified <code>generic</code> and given an ESP it cannot boot. No such board has been tested here, and U-Boot has had <code>CONFIG_EFI_LOADER</code> on by default for armv8 for years, so this is a narrow case &mdash; but it is a real one.</p>
+<div class="callout callout-warn">
+<p><span class="pill pill-warn">Do not rely on it</span> <strong><code>efibootmgr</code> at install time.</strong> U-Boot cannot set UEFI variables at runtime at all &mdash; <em>&ldquo;we don&rsquo;t allow SetVariableRT, since the OS doesn&rsquo;t know how to write that file&rdquo;</em> &mdash; and pftf&rsquo;s Pi&nbsp;4 firmware stores variables inside <code>RPI_EFI.fd</code> and flushes them only during boot services, so entries written from a running OS silently vanish on reboot. EBBR makes <code>SetVariable</code> optional after <code>ExitBootServices()</code>. The installer already writes the removable-media fallback path <code>\EFI\BOOT\BOOTAA64.EFI</code> and treats the NVRAM entry as best-effort, which is the correct contract; this is a note not to tighten that later.</p>
+</div>
+
+<p><span class="pill pill-warn">Reasoned</span> Beyond the Pi, the layout question does not generalise. Allwinner wants U-Boot at raw sector 16 or 256, Rockchip at sector 64, Amlogic at sector 1 &mdash; none of them read a partition table at that stage, and the offsets collide with a primary GPT. FreeBSD, Fedora and Armbian have each independently converged on a per-SoC-family install hook, which is strong evidence no filesystem-only model exists. If NextBSD ever targets a non-Pi board, budget for that shape rather than extending this one.</p>
+
+<p><span class="pill pill-warn">Not verified</span> The FAT cluster and reserved-sector constraints for the Broadcom firmware specifically. Documented for TI&rsquo;s ROM, absent for this one. <code>mkfs</code> defaults have always worked here, so this is a latent unknown rather than a live problem.</p>
 
 <h2 id="measured">8. Measured on the hardware</h2>
 

@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIG explained — Mach RPC, from first principles to our tree</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+          padding: 1rem 1.1rem; }
+  .card h4 { margin-top: 0; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .phase.done { border-left: 4px solid var(--ok); }
+  .phase.todo { border-left: 4px solid var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  blockquote { margin: 1rem 0; padding: .5rem 1rem; border-left: 3px solid var(--accent);
+               background: #fff8f3; color: #333; }
+  .footnote { font-size: .85rem; color: var(--muted); }
+  ol li, ul li { margin: .25rem 0; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .filename { color: var(--accent); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .risk { background: #fff5e6; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .risk strong { color: var(--warn); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .step-num { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; background: var(--accent); color: white; border-radius: 50%; font-weight: 700; font-size: .85em; margin-right: .35em; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="#problem">The problem</a>
+  <a href="#ports">Ports &amp; rights</a>
+  <a href="#message">The message</a>
+  <a href="#defs">.defs</a>
+  <a href="#generated">Generated code</a>
+  <a href="#ids">msgh_id</a>
+  <a href="#complex">Simple vs complex</a>
+  <a href="#roundtrip">Round trip</a>
+  <a href="#ours">In our tree</a>
+  <a href="#broken">Case study</a>
+  <a href="#practical">Practical</a>
+</div>
+
+<h1>MIG explained <span class="pill info">reference</span></h1>
+<p class="subtitle">Mach RPC from first principles, using our own code as the worked example —
+and what two runtime probes settled about the kernel path.</p>
+
+<div class="tldr">
+  <h3>The one-paragraph version</h3>
+  <p><strong>MIG is a stub generator.</strong> You describe an interface in a <code>.defs</code> file;
+  MIG emits C for both ends — a <em>client stub</em> that turns a function call into a Mach message, and a
+  <em>server stub</em> that turns that message back into a function call. Everything difficult about MIG
+  comes from one fact: <strong>the two ends must agree perfectly, and nothing at runtime checks that they
+  do.</strong> Normally they agree because they were generated together from the same file. When that stops
+  being true — as it has for our kernel stubs — MIG stops helping and starts hurting.</p>
+</div>
+
+<h2 id="problem">1. The problem MIG solves</h2>
+
+<p>Two processes want to call each other's functions. Mach gives you exactly one primitive:
+<code>mach_msg()</code>, which sends a blob of bytes to a port. Everything else is your problem:</p>
+
+<ul>
+  <li>flatten arguments into bytes, in an order both sides agree on</li>
+  <li>respect alignment and padding, identically, on both sides</li>
+  <li>say <em>which</em> function you meant</li>
+  <li>allocate a port for the reply, and clean it up</li>
+  <li>handle the reply, including the error case where there is no reply at all</li>
+  <li>do the mirror image on the server</li>
+</ul>
+
+<p>That is mechanical, tedious, and unforgiving — the classic case for codegen. MIG is that codegen.
+It is conceptually identical to <code>rpcgen</code> for ONC RPC, or <code>protoc</code> for gRPC. The
+Mach Interface Generator dates from CMU Mach in the 1980s; it long predates XNU and is not
+Apple-specific.</p>
+
+<h2 id="ports">2. The vocabulary: ports, rights, dispositions</h2>
+
+<p>You cannot read MIG code without these four ideas.</p>
+
+<table>
+<tr><th>Term</th><th>What it is</th></tr>
+<tr><td><strong>Port</strong></td><td>A kernel-held message queue. Not a number you can forge — a kernel object.</td></tr>
+<tr><td><strong>Receive right</strong></td><td>Permission to <em>dequeue</em> from a port. Exactly one holder at a time. Owning it means you are the server.</td></tr>
+<tr><td><strong>Send right</strong></td><td>Permission to <em>enqueue</em>. Any number of holders. This is a capability: holding it <em>is</em> the authorisation.</td></tr>
+<tr><td><strong>Send-once right</strong></td><td>A send right good for exactly one message, then it evaporates. Used for reply ports.</td></tr>
+</table>
+
+<p>A <strong>port name</strong> (<code>mach_port_name_t</code>) is a per-task integer index into that task's
+port namespace — like a file descriptor. The same kernel port has different names in different tasks.
+This is why sending a port to another process is not just copying an integer: the kernel must translate
+the name, which is what "descriptors" below are for.</p>
+
+<p>A <strong>disposition</strong> tells the kernel what to do with a right you are sending:
+<code>MACH_MSG_TYPE_COPY_SEND</code> (give them a copy, keep yours),
+<code>MOVE_SEND</code> (hand yours over), <code>MAKE_SEND_ONCE</code> (mint a one-shot from a receive right).
+These appear packed into <code>msgh_bits</code>.</p>
+
+<h2 id="message">3. The message on the wire</h2>
+
+<p>Every Mach message starts with the same header. From <code>src/libmach/include/mach/message.h</code>:</p>
+
+<pre><code>typedef struct {
+        mach_msg_bits_t   msgh_bits;          /* dispositions + COMPLEX flag  */
+        mach_msg_size_t   msgh_size;          /* total bytes                  */
+        mach_port_t       msgh_remote_port;   /* destination (going out)      */
+        mach_port_t       msgh_local_port;    /* reply port (going out)       */
+        mach_msg_size_t   msgh_voucher_port;  /* modern XNU; msgh_reserved on older */
+        mach_msg_id_t     msgh_id;            /* WHICH ROUTINE                */
+} mach_msg_header_t;</code></pre>
+
+<p>Note <code>msgh_id</code> — that single integer is how the server knows which function you meant.
+And note the header is <strong>24 bytes in userland but 32 in the kernel</strong>, because
+<code>mach_port_t</code> is a 4-byte name in userland and an 8-byte pointer in the kernel. The kernel
+fixes this up on copyin/copyout (<code>LEGACY_HEADER_SIZE_DELTA == 8</code>). If you ever hand-build a
+message, this is the first thing that will bite you.</p>
+
+<p>That header comment in our tree is itself a lesson in MIG version skew:</p>
+<blockquote><p><em>“<code>msgh_voucher_port</code> (modern XNU) and <code>msgh_reserved</code> (older XNU,
+pre-voucher) occupy the same 32-bit slot. MIG bootstrap_cmds-138 generates stubs that touch
+<code>-&gt;msgh_reserved</code>…”</em></p></blockquote>
+
+<h2 id="defs">4. The interface language: <code>.defs</code></h2>
+
+<p>Here is real code from our tree — <code>src/Libnotify/notify_ipc.defs</code>:</p>
+
+<pre><code>subsystem notify_ipc 1000;        &lt;-- name, and the BASE msgh_id
+userprefix _new_ipc_base;         &lt;-- prefix for generated client functions
+serverprefix _;                   &lt;-- prefix for generated server functions
+
+type notify_name = c_string[*:512] ctype : caddr_t;
+
+skip;                             &lt;-- burns an id slot; keeps numbering stable
+skip;
+
+routine _notify_server_check
+(
+        server : mach_port_t;     &lt;-- the destination port
+        token  : int;             &lt;-- in-parameter
+        out check  : int;         &lt;-- out-parameter (comes back in the reply)
+        out status : int;
+        ServerAuditToken audit : audit_token_t
+);</code></pre>
+
+<p>Four things worth absorbing:</p>
+
+<ul>
+  <li><strong><code>subsystem name base;</code></strong> — the base <code>msgh_id</code>. Routines are numbered
+    <code>base + index</code>, counting from zero in declaration order.</li>
+  <li><strong><code>skip;</code></strong> — reserves an id for a deleted routine. This is why you must never
+    delete a <code>routine</code> line: it renumbers everything after it and silently breaks every existing
+    client. <code>skip</code> is a tombstone.</li>
+  <li><strong><code>out</code></strong> marks reply data. Plain args go in the request.</li>
+  <li><strong><code>routine</code> vs <code>simpleroutine</code></strong> — <code>routine</code> waits for a
+    reply (synchronous RPC); <code>simpleroutine</code> is fire-and-forget, generates no reply, and never
+    blocks.</li>
+</ul>
+
+<h2 id="generated">5. What MIG generates</h2>
+
+<p>One <code>.defs</code> produces two C files:</p>
+
+<div class="grid">
+  <div>
+    <h4><code>fooUser.c</code> — the client</h4>
+    <p>Defines a real C function with your signature. Inside: build a request struct, fill the header,
+    get a reply port, call <code>mach_msg(SEND|RCV)</code>, check the reply, unpack out-params, return
+    the <code>kern_return_t</code>.</p>
+  </div>
+  <div>
+    <h4><code>fooServer.c</code> — the server</h4>
+    <p>Defines a demux function. Given a message, look up <code>msgh_id</code>, type-check the request,
+    unpack args, call <em>your</em> implementation, pack the reply.</p>
+  </div>
+</div>
+
+<p>The critical property: <strong>you write neither.</strong> Both come from the same source, so they agree
+about layout, padding and ids by construction. That guarantee is the entire value proposition. Hold onto
+that — it is exactly what has failed in our kernel stubs.</p>
+
+<h2 id="ids">6. Subsystems and <code>msgh_id</code></h2>
+
+<p>Each interface gets a numeric range. Ours, from the tree:</p>
+
+<pre><code>notify_ipc        1000        asl_ipc            114
+config           20000        wlan              30000
+ipconfig         20000        launchd job         400
+libdispatch         64        launchd internal 137000
+
+kernel subsystems (from the 2015 stubs):
+mach_port    3200-3235    task       3400-3442
+mach_host     200- 225    host_priv   400- 426
+mach_vm      4800-4820    vm_map     3800-3831</code></pre>
+
+<p>The server dispatches by simple arithmetic — literally
+<code>routine[msgh_id - 3200]</code> in our <code>mach_port_server.c</code>. Reply ids are
+<strong>request id + 100</strong> by convention, so 3217's reply is 3317.</p>
+
+<p><strong>This is where ordering becomes load-bearing.</strong> The id is positional. If two parties
+disagree about the order of routines in a subsystem, calls silently land on the wrong function with a
+mis-shaped message. Our kernel stubs diverge from XNU's ordering in the middle of the
+<code>mach_port</code> subsystem — <code>deallocate</code> is 3205 here but 3206 upstream — so about
+eleven routines would map wrong if anyone naively used Apple's <code>.defs</code>.</p>
+
+<h2 id="complex">7. Simple vs complex — the concept that bit us</h2>
+
+<p>Message data comes in two flavours, and the distinction is not stylistic.</p>
+
+<h3>Simple messages</h3>
+<p>Pure bytes. Integers, strings, structs — data the kernel copies verbatim without understanding it.
+Layout is just: header, then fields.</p>
+
+<h3>Complex messages</h3>
+<p>Contain things <strong>the kernel must interpret and translate</strong>:</p>
+<ul>
+  <li><strong>Port rights</strong> — the name must be translated between the sender's and receiver's
+    namespaces, and the right transferred per its disposition.</li>
+  <li><strong>Out-of-line memory</strong> — a pointer to a buffer, which the kernel maps into the
+    receiver rather than copying inline.</li>
+</ul>
+
+<p>A complex message sets <code>MACH_MSGH_BITS_COMPLEX</code> in <code>msgh_bits</code> and inserts a
+<code>mach_msg_body_t</code> — a 4-byte descriptor count — immediately after the header, followed by
+that many descriptors.</p>
+
+<pre><code>SIMPLE:   [ header 24 ][ NDR 8 ][ args... ]
+COMPLEX:  [ header 24 ][ body 4 ][ descriptors... ][ NDR 8 ][ args... ]
+                        ^^^^^^^^ this shifts everything after it</code></pre>
+
+<p><strong>The COMPLEX bit changes the byte layout of the whole message.</strong> A receiver expecting one
+shape and handed the other does not see "a slightly different message" — it sees garbage at every offset.
+That is why MIG type-checks it on arrival, and why disagreeing about it is fatal rather than cosmetic.</p>
+
+<h2 id="roundtrip">8. The round trip, step by step</h2>
+
+<pre><code>CLIENT                                                          SERVER
+  |
+  |  call foo(port, a, b)
+  |  ── MIG client stub ──────────────────────────────────
+  |  1. reply_port = mig_get_reply_port()   (cached per-thread)
+  |  2. build Request { header, NDR, a, b }
+  |  3. msgh_remote_port = port             (COPY_SEND)
+  |     msgh_local_port  = reply_port       (MAKE_SEND_ONCE)
+  |     msgh_id          = base + index
+  |  4. mach_msg(SEND|RCV, send_size, rcv_size, reply_port)
+  |         ──────────────── message ────────────────▶
+  |                                          5. dequeue, demux on msgh_id
+  |                                          6. type-check request
+  |                                          7. unpack a, b
+  |                                          8. call YOUR function
+  |                                          9. pack Reply { RetCode, outs }
+  |         ◀─────────────── reply ─────────────────
+  | 10. verify msgh_id == request_id + 100
+  | 11. if size == sizeof(mig_reply_error_t) &amp;&amp; RetCode != 0 → return RetCode
+  | 12. unpack out-params, return KERN_SUCCESS
+  ▼</code></pre>
+
+<p>Step 11 is the escape hatch worth knowing: a server that rejects your message replies with a bare
+<code>mig_reply_error_t</code>, and the client recognises it by <em>size</em>. So a malformed request comes
+back as a clean error code, not a hang. This is why our broken-client scenario would return
+<code>MIG_BAD_ARGUMENTS (-304)</code> deterministically rather than corrupting anything.</p>
+
+<h3>NDR — the byte-order record</h3>
+<p>The 8-byte <code>NDR_record_t</code> after the header declares endianness, char set and float format,
+so a big-endian client could in principle talk to a little-endian server. In practice everyone sets
+<code>NDR_record</code> and nobody checks it — our kernel server never validates it.</p>
+
+<h2 id="ours">9. How NextBSD uses MIG — and where it doesn't</h2>
+
+<p>This is the part that makes "should we use MIG?" a confusing question, because the answer is
+<em>already yes, extensively</em>.</p>
+
+<h3>Daemon interfaces: MIG, and it works</h3>
+<p>Seven of them — configd, notifyd, ipconfigd, wland, ASL, launchd, libdispatch. Both halves generated at
+build time by the in-tree <code>migcom</code>, from <code>.defs</code> files that live in the repo.
+They agree by construction. Nothing to think about.</p>
+
+<h3>Kernel interfaces: not MIG at all</h3>
+<p>Apple's <code>libsystem_kernel</code> calls the kernel via MIG — <code>mach_port_*</code>,
+<code>task_*</code>, <code>host_*</code> are all MIG clients sending to the task port. <strong>Our
+<code>libmach</code> instead uses direct syscalls</strong>, resolved at runtime through
+<code>sysctl mach.syscall.&lt;name&gt;</code>. Fourteen such traps exist today.</p>
+
+<p>The kernel's own source says so, in <code>mach_traps.c</code>:</p>
+<blockquote><p><em>“task_get_special_port / task_set_special_port — direct syscall wrappers, not
+Apple-imported (<strong>Apple delivers these over MIG to the task port</strong>).”</em></p></blockquote>
+
+<p>This is a real divergence from Apple. It was long described as a deliberate choice; it is more
+accurately an <em>absence</em>. Apple does not pick MIG <em>or</em> traps — <strong>MIG is the floor and
+traps are an accelerator layered on top of it</strong>, one that falls back to MIG when the trap is
+missing:</p>
+
+<pre><code>/* xnu/libsyscall/mach/mach_port.c */
+rv = _kernelrpc_mach_port_allocate_trap(task, right, name);
+
+if (rv == MACH_SEND_INVALID_DEST) {
+        rv = _kernelrpc_mach_port_allocate(task, right, name);   /* MIG */
+}</code></pre>
+
+<p>Routines that return variable-length arrays — <code>mach_port_names</code>,
+<code>mach_port_get_set_status</code> — have <strong>no trap at Apple at all</strong>, because you cannot
+return an array through a register interface. Checked against the 130 entries in XNU's
+<code>mach_trap_table</code>, <strong>9 of NextBSD's 12 traps match a real Apple trap</strong>; the three
+that do not (<code>host_set_special_port</code>, <code>task_get_special_port</code>,
+<code>task_set_special_port</code>) are exactly the ones the comment above flags.</p>
+
+<p>So the divergence is not that we have traps. It is that we have <em>only</em> traps, and everything
+that cannot be expressed as one was stubbed out to return <code>KERN_SUCCESS</code> without doing
+anything — about 18 entry points, including the one that keeps on-demand Mach launch dead. See the
+<a href="nextbsd-mach-port-mig-client-plan.html">mach_port MIG client plan</a>.</p>
+
+<h2 id="broken">10. Case study: the frozen server, and what we measured</h2>
+
+<p>Everything above sets up this one situation, which is worth understanding because it is a perfect
+illustration of what MIG's guarantee is <em>for</em>.</p>
+
+<p>The kernel <strong>does</strong> have MIG server stubs for <code>mach_port</code> — generated,
+compiled, registered, reachable, backed by a complete implementation. They were generated in
+<strong>2015, by a MIG we no longer have</strong>, and checked in as source. There is no
+<code>.defs</code> for them in either repo.</p>
+
+<p>Those 2015 stubs demand:</p>
+<pre class="warn-pre"><code>if (!(In0P-&gt;Head.msgh_bits &amp; MACH_MSGH_BITS_COMPLEX) ||
+    (In0P-&gt;msgh_body.msgh_descriptor_count != 0) ||
+    (In0P-&gt;Head.msgh_size != sizeof(__Request)))
+        return MIG_BAD_ARGUMENTS;</code></pre>
+
+<p>Read that carefully: <strong>COMPLEX, with zero descriptors.</strong> A message flagged as containing
+kernel-interpreted data, that contains none. Every routine in every kernel subsystem in our tree is
+generated this way.</p>
+
+<p>Our current <code>migcom</code> decides simple-vs-complex like this:</p>
+<pre><code>#define IS_KERN_PROC_DATA(x)  (!(x)-&gt;itInLine || (x)-&gt;itPortType)
+
+MACH_MSG_TYPE_PORT_NAME      15    &lt;-- what mach_port_name_t is
+MACH_MSG_TYPE_MOVE_RECEIVE   16    &lt;-- the floor for "counts as a port type"</code></pre>
+
+<p>15 &lt; 16. So a <code>mach_port_name_t</code> argument is <em>not</em> a port type, nothing in the
+routine is kernel-processed data, and the request is generated <strong>simple</strong> — 44 bytes, no
+<code>msgh_body</code>, no COMPLEX bit. This was confirmed by building <code>migcom</code> and running it,
+not merely by reading.</p>
+
+<p>So: <strong>the client we can generate and the server we already have disagree about the fundamental
+shape of the message.</strong> Not about a field — about whether there is a 4-byte body between the header
+and the payload, and about a flag bit that changes how the kernel interprets everything.</p>
+
+<h3>What that does <em>not</em> imply</h3>
+
+<p>An earlier version of this page concluded from the above that kernel MIG was unusable, and that a
+syscall trap was therefore the right answer. <strong>That conclusion was wrong</strong>, and it is worth
+seeing why, because the error is a common one: a true premise carried one step too far.</p>
+
+<p>The premise — <em>our <code>migcom</code> cannot produce a client matching the frozen server</em> — is
+correct. The leap was assuming we are obliged to match the frozen server. We are not. <strong>We can
+regenerate it too</strong>, at which point both ends come from the same compiler and agree by
+construction, which is the whole point of MIG.</p>
+
+<p>The second error was deferring a measurement. This page had assumed, from a stale comment in
+<span class="filename">mach_test.c</span>, that a cold kernel round-trip might panic. Two hand-built
+messages sent on real hardware settled it:</p>
+
+<pre class="shell"><code>reply msgh_id  = 3317   RetCode = 0   outCnt = 10
+  mps_pset=0 seqno=0 mscount=0 qlimit=5 MSGCOUNT=0        &lt;-- real kernel state
+RESULT: kernel MIG WORKS
+
+reply id=3314  size=56  complex=yes  desc_count=1
+membersCnt=1  ool.size=4  ool.address=0x1000
+  member[0] = 0x12 &lt;-- the port we inserted
+RESULT: OOL round-trip WORKS</code></pre>
+
+<p>The second probe is <code>mach_port_get_set_status</code> — the exact call libmach fakes — and it
+returns correctly, out-of-line memory and all. The kernel implementation was complete the whole time.
+Userland never asked it anything.</p>
+
+<div class="tldr">
+  <h3>The lesson</h3>
+  <p>MIG's value is that both ends are generated together and therefore agree. Here, one end was generated
+  in 2015 by a compiler we no longer have, and no <code>.defs</code> was ever checked in — so
+  <strong>the guarantee was never lost so much as never claimed.</strong> It is recoverable: reconstruct
+  the <code>.defs</code> from the generated stubs, regenerate both ends, and the guarantee comes back.</p>
+  <p>The wider lesson is about method rather than Mach. The blocking question was
+  <em>&ldquo;does the kernel receive path work at all?&rdquo;</em>, it was answerable in an afternoon with
+  a 60-line program that could not damage anything, and it was instead deferred behind a design argument
+  built on a stale code comment. <strong>Measure the thing that decides the architecture, first.</strong></p>
+</div>
+
+<h2 id="practical">11. Practical notes</h2>
+
+<h3>Adding a MIG interface (daemon-to-daemon — the normal case)</h3>
+<ol>
+  <li>Write <code>foo.defs</code>: pick an unused <code>subsystem</code> base, declare routines in a
+    <strong>fixed order</strong>.</li>
+  <li>Add a <code>run_mig</code> invocation in <code>build-userland.sh</code>.</li>
+  <li>Compile the generated <code>fooUser.c</code> into the client, <code>fooServer.c</code> into the server.</li>
+  <li>Server: implement the functions the server stub calls, and run its demux from your message loop.</li>
+</ol>
+
+<h3>Rules that will save you</h3>
+<ul>
+  <li><strong>Never delete a routine.</strong> Replace it with <code>skip;</code>. Deleting renumbers every
+    later routine and breaks every deployed client, silently.</li>
+  <li><strong>Never reorder routines.</strong> Same reason. Append only.</li>
+  <li><strong>Regenerate both ends together.</strong> A checked-in generated file whose <code>.defs</code>
+    is missing is a time bomb — this whole case study is that time bomb going off.</li>
+  <li><strong>Keep the <code>.defs</code> in the repo.</strong> It is the source of truth; the C is build output.</li>
+</ul>
+
+<h3>Reading generated code</h3>
+<ul>
+  <li><code>__Request__foo_t</code> / <code>__Reply__foo_t</code> — the wire structs. Read these to know the
+    exact layout.</li>
+  <li><code>__MIG_check__Request__foo_t</code> — the server's validation. Read this to know what it demands.</li>
+  <li><code>_Xfoo</code> — the server stub. Look here for the call into your implementation.</li>
+  <li><code>__DeclareRcvRpc(3217, "…")</code> — tells you the routine's actual <code>msgh_id</code>.</li>
+</ul>
+
+<h3>Debugging</h3>
+<ul>
+  <li><code>MIG_BAD_ID (-303)</code> — no routine for that <code>msgh_id</code>. Wrong subsystem base, or
+    ordering skew.</li>
+  <li><code>MIG_BAD_ARGUMENTS (-304)</code> — the request failed type-check. Almost always size or the
+    COMPLEX bit.</li>
+  <li><code>MIG_TYPE_ERROR (-300)</code> — reply didn't match. Often an alignment or count mismatch.</li>
+  <li>A <strong>hang</strong> usually means nobody is receiving — the job never started, or the reply port
+    was destroyed.</li>
+</ul>
+
+<h3>Where MIG sits relative to XPC</h3>
+<p>XPC is the modern, dynamically-typed layer — dictionaries of values over libdispatch Mach channels, no
+codegen. MIG is the older, statically-typed layer. Both ride on <code>mach_msg</code>. Our tree uses both:
+XPC for newer services, MIG for the classic daemon interfaces and every kernel subsystem.</p>
+
+<hr>
+<p class="subtitle">Companion to
+<a href="nextbsd-mach-mig-restoration-plan.html">Restoring MIG as NextBSD&rsquo;s kernel RPC substrate</a>,
+which applies all of this across seven kernel subsystems, and to the
+<a href="nextbsd-mach-port-mig-client-plan.html"><code>mach_port</code> sub-plan</a>, which is the one
+that is reconstructed and gate-verified.</p>
+
+</body>
+</html>

@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD mach_port MIG client — Apple’s layering, measured</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+          padding: 1rem 1.1rem; }
+  .card h4 { margin-top: 0; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .phase.done { border-left: 4px solid var(--ok); }
+  .phase.todo { border-left: 4px solid var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  blockquote { margin: 1rem 0; padding: .5rem 1rem; border-left: 3px solid var(--accent);
+               background: #fff8f3; color: #333; }
+  .footnote { font-size: .85rem; color: var(--muted); }
+  ol li, ul li { margin: .25rem 0; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .filename { color: var(--accent); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .risk { background: #fff5e6; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .risk strong { color: var(--warn); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .step-num { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; background: var(--accent); color: white; border-radius: 50%; font-weight: 700; font-size: .85em; margin-right: .35em; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#retract">What changed</a>
+  <a href="#history">Was this ever MIG?</a>
+  <a href="#xpc">Is MIG being retired?</a>
+  <a href="#experiment">The experiment</a>
+  <a href="#apple">What Apple actually does</a>
+  <a href="#audit">The audit</a>
+  <a href="#plan">Plan</a>
+  <a href="#risks">Risks</a>
+  <a href="#open">Open calls</a>
+</div>
+
+<h1>NextBSD <code>mach_port</code> MIG client <span class="pill info">kernel + libmach</span></h1>
+<p class="subtitle">Half of libmach&rsquo;s <code>mach_port</code> subsystem returns <code>KERN_SUCCESS</code> without doing anything. This is the plan to replace it with generated MIG stubs, in the layering Apple actually uses &mdash; written after two runtime probes overturned the previous draft.</p>
+
+<div class="resolved" style="margin-bottom:1.5rem">
+  <strong>This is the <code>mach_port</code> sub-plan.</strong> The wider programme &mdash; all seven kernel
+  subsystems, <code>.defs</code> ownership, the syscall-band arithmetic, sequencing and the ticket map &mdash;
+  lives in <a href="nextbsd-mach-mig-restoration-plan.html">Restoring MIG as NextBSD&rsquo;s kernel RPC
+  substrate</a>. Read that first; this page is the detail for the one subsystem that is reconstructed and
+  gate-verified.
+</div>
+
+<div class="tldr" id="tldr">
+  <h3>TL;DR &mdash; build the MIG client layer <span class="pill ok">measured, not reasoned</span></h3>
+  <p><strong>Kernel MIG works on NextBSD today.</strong> Two hand-built messages sent to <code>mach_task_self()</code> on <code>gershwin-on-nextbsd</code> both returned correct data &mdash; including a complex reply carrying out-of-line memory. The receive path is not broken, and <strong>no kernel change is required to make these calls function.</strong></p>
+  <p><strong>The defect is entirely in userland.</strong> <span class="filename">src/libmach/mach_traps.c</span> has 14 real syscall traps and <strong>~18 entry points that fabricate success</strong> &mdash; including <strong>both</strong> calls <code>mportset_callback()</code> needs &mdash; <code>mach_port_get_set_status</code> returns an empty member list and <code>mach_port_get_attributes</code> returns <code>KERN_RESOURCE_SHORTAGE</code> &mdash; which is why on-demand Mach launch in launchd is dead, and <code>mach_port_mod_refs</code>, which silently no-ops reference counting. <strong>These were never a retreat from MIG</strong>; no kernel <code>.defs</code> has ever existed in the tree. They are link-stage scaffolding from 2026-05-14 that was never revisited.</p>
+  <p><strong>The fix is to reconstruct <code>mach_port.defs</code> and regenerate both sides.</strong> Client and server then agree by construction &mdash; the entire purpose of MIG &mdash; and the tree gains a source of truth it currently lacks: <span class="filename">mach_port_server.c</span> is 5,720 lines of generated C that nobody can regenerate.</p>
+  <p><strong>The traps stay.</strong> 9 of NextBSD&rsquo;s 12 traps correspond to real entries in Apple&rsquo;s <code>mach_trap_table</code>. Apple&rsquo;s shape is not &ldquo;MIG <em>or</em> traps&rdquo; &mdash; it is <strong>MIG as the universal floor, with traps as an accelerator that falls back to MIG</strong>. NextBSD has this inverted.</p>
+</div>
+
+<h2 id="retract">What changed &mdash; and what the previous draft got wrong</h2>
+
+<p>An earlier version of this page recommended <strong>wiring a syscall trap</strong> and stated that a MIG client <em>&ldquo;cannot be generated.&rdquo;</em> That recommendation is withdrawn. The distinction matters, because one half of the claim was true and the other was not:</p>
+
+<table>
+<tr><th>Claim</th><th>Status</th></tr>
+<tr><td>Our in-tree <code>migcom</code> cannot emit a client matching the <em>existing frozen</em> server</td><td><strong>Still true.</strong> Verified by building <code>migcom</code>. <code>IS_KERN_PROC_DATA</code> (<span class="filename">routine.h:482</span>) makes <code>mach_port_name_t</code> a non-port type, so <code>rtSimpleRequest = TRUE</code> and the request carries no <code>msgh_body</code> &mdash; which the frozen server rejects.</td></tr>
+<tr><td>&hellip;therefore MIG is unusable here and a trap is required</td><td><strong>Wrong.</strong> A non-sequitur. We are not obliged to match the frozen server &mdash; we can regenerate <em>it</em> too, at which point both sides use <code>migcom</code>&rsquo;s form and agree.</td></tr>
+<tr><td>The kernel MIG receive path may panic on a cold round-trip</td><td><strong>Wrong.</strong> Inherited from a stale comment in <span class="filename">mach_test.c:12-26</span> (&ldquo;panics with <em>strange destination rights</em>&hellip; becomes a Phase C concern&rdquo;) and deferred rather than tested. It was tested. It works.</td></tr>
+</table>
+
+<p class="footnote">Recorded deliberately: the deferral was the actual error. A one-afternoon runtime probe would have settled the architecture before any of the design work around it, and the comment that caused the deferral describes a different code path.</p>
+
+<h2 id="history">Was this ever MIG? &mdash; checked, not assumed</h2>
+
+<p>A fair challenge before committing: <em>did we once use MIG for these calls and retreat to traps because
+making MIG work was too hard?</em> If so, this plan would be walking back into a known dead end. Searched
+across all 578 commits of <code>nextbsd-userland</code>:</p>
+
+<table>
+<tr><th>Question</th><th>Answer</th></tr>
+<tr><td>Has a <code>.defs</code> for any kernel subsystem ever existed &mdash; including deleted?</td><td><strong>No.</strong> <code>git log --all --diff-filter=AD</code> over <code>mach_port.defs</code>, <code>task.defs</code>, <code>host_priv.defs</code>, <code>mach_host.defs</code> returns nothing.</td></tr>
+<tr><td>Has a generated kernel MIG client ever existed?</td><td><strong>No.</strong> Same search over <code>*User.c</code> forms returns nothing.</td></tr>
+<tr><td>Where did the stubs come from, then?</td><td>The day launchd-842 was vendored verbatim (<code>2283518</code>), followed hours later by <code>a4af1d5</code> &mdash; <em>&ldquo;Phase&nbsp;I1c: link-stage round&nbsp;2&rdquo;</em>. Sibling commits are labelled <em>&ldquo;compile-clear stubs for HAVE_MACH&rdquo;</em>.</td></tr>
+</table>
+
+<p><strong>The traps were never a retreat from MIG &mdash; MIG was never tried here.</strong> The traps came
+first (<code>9917b83</code>, <em>&ldquo;libmach userland shim for the wired Mach trap family&rdquo;</em>), and
+the stubs were link-stage scaffolding to get the vendored launchd to build. They were never revisited.
+The one commit that superficially looks like a retreat &mdash; <code>176c543</code>,
+<em>&ldquo;drop the mach.ko trap multiplexor for dedicated syscalls&rdquo;</em> &mdash; is about syscall
+<em>slot allocation</em>, folding five ops out from behind one multiplexed slot. It does not mention MIG.</p>
+
+<div class="risk">
+  <strong>But there <em>was</em> a retreat &mdash; a different one.</strong> Commit <code>9fe3d79</code>
+  (2026-05-23) shows MIG out-of-line transfer being debugged end to end for <code>launchctl list</code>,
+  with lldb, a serial console and targeted kernel printfs. The resolution was a deliberate trade:
+  <strong><code>mig_deallocate</code> and <code>vm_deallocate</code> became no-ops with a bounded leak</strong>,
+  because the OOL pointer handed back is an interior offset into a kernel-mmap&rsquo;d message body rather
+  than a page base, so <code>free()</code> faults and <code>munmap()</code> would fail. The commit message
+  names the proper fix &mdash; <em>&ldquo;mmap-based <code>mig_allocate</code> + an OOL-receive path that
+  hands back a real base pointer and true mapped size&rdquo;</em> &mdash; and defers it
+  <em>&ldquo;for when the leak budget shows up as a real problem.&rdquo;</em> <strong>Phase&nbsp;3 is that
+  moment.</strong> See the risks below.
+</div>
+
+<h2 id="xpc">Is Apple retiring MIG in favour of XPC?</h2>
+
+<p>Not for this layer, and the distinction is worth stating precisely because the headline impression is
+the opposite.</p>
+
+<p><strong>Where the impression is right:</strong> XPC has largely displaced MIG for <em>new userland IPC</em>
+&mdash; app&harr;daemon and daemon&harr;daemon. That is what Apple documents for third parties, and where
+their own newer services go.</p>
+
+<p><strong>Where it does not apply:</strong> XPC is <em>layered on</em> Mach messaging, not a replacement for
+it, and <strong>there is no XPC path to the kernel.</strong> Kernel RPC &mdash; <code>mach_port_*</code>,
+<code>task_*</code>, <code>host_*</code>, <code>vm_*</code> &mdash; is MIG and remains MIG. So is exception
+handling (<code>exc.defs</code>, <code>mach_exc.defs</code>). Measured against Apple&rsquo;s current sources:</p>
+
+<ul>
+  <li><strong>Apple still ships and versions MIG itself</strong> &mdash; <code>bootstrap_cmds-138</code>, tagged 2025-04-30.</li>
+  <li><strong>Current XNU carries 46 <code>.defs</code> files</strong>, and <code>mach_port.defs</code> is listed in <code>MIG_DEFS</code> in <span class="filename">osfmk/mach/Makefile</span> &mdash; so <strong>Apple generates <code>mach_port_server.c</code> from it at build time.</strong> Path&nbsp;A restores precisely Apple&rsquo;s arrangement rather than inventing one.</li>
+  <li><strong>Apple keeps adding MIG interfaces</strong>, not just maintaining old ones: <code>mach_eventlink.defs</code>, <code>arcade_register.defs</code>, <code>memory_error_notification.defs</code>, <code>mach_voucher*.defs</code>, <code>iocompressionstats_notification.defs</code> are all modern additions.</li>
+</ul>
+
+<p>So this is not investment in a deprecated technology. It is the one layer XPC does not reach.</p>
+
+<h3>And in our own tree, the two already coexist &mdash; by design</h3>
+
+<p><strong>MIG and XPC are not alternatives, and getting MIG working does not make <code>libxpc</code>
+droppable.</strong> They sit at different layers and answer different questions. MIG is compile-time-typed
+RPC whose interface is fixed in a <code>.defs</code>; XPC is dynamically typed, self-describing dictionaries
+with no interface definition at all. <code>xpc_dictionary_get_string(msg, key)</code> for an arbitrary
+runtime key is not expressible in MIG, by construction.</p>
+
+<p>The tree already carries <strong>24 <code>.defs</code> files</strong> &mdash; configd, ipconfigd, notifyd,
+ASL, WLAN, kext_tools, libdispatch&rsquo;s firehose, and <strong>seven for launchd alone</strong>
+(<code>job.defs</code>, <code>job_forward.defs</code>, <code>job_reply.defs</code>,
+<code>protocol_jobmgr.defs</code>, <code>helper.defs</code>, <code>internal.defs</code>,
+<code>notify.defs</code>). That same launchd holds <strong>178 XPC references</strong>
+(<code>xpc_domain</code>, <code>xpc_service</code>, <code>xpc_bootstrapper</code>,
+<code>xpc_singleton_domain</code>). The XPC layer rides on the MIG control protocol, exactly as it does at
+Apple. <code>src/libxpc</code> is the iXsystems 2014&ndash;15 implementation, ~13k LOC, serialising
+<code>nvlist</code>s over raw <code>mach_msg</code> &mdash; a real implementation with real consumers
+(syslog&nbsp;84 references, Libnotify&nbsp;58), not a stub layer.</p>
+
+<div class="resolved">
+  <strong>The two efforts converge rather than compete.</strong> <code>aslmanager</code> &mdash; today the
+  only consumer of on-demand Mach launch, and therefore the acceptance test for this whole plan &mdash;
+  registers itself with <code>xpc_connection_create_mach_service("com.apple.aslmanager", &hellip;)</code>.
+  <strong>libxpc is what will exercise the MIG fix.</strong> Dropping it would remove the thing that proves
+  the work.
+</div>
+
+<div class="resolved">
+  <strong>Phase&nbsp;1 is better supplied than expected.</strong> The MIG type vocabulary a reconstructed
+  <code>mach_port.defs</code> needs is <em>already in the tree</em> at
+  <span class="filename">src/libmach/include/mach/</span>: <code>mach_port_name_t</code> and
+  <code>mach_port_name_array_t</code> in <code>std_types.defs</code>; <code>mach_port_flavor_t</code>,
+  <code>ipc_space_t</code> and <code>mach_port_info_t</code> in <code>mach_types.defs</code>. The last of
+  these reads <code>array[*:17] of integer_t</code>, which matches the frozen server&rsquo;s
+  <code>port_info_out[17]</code> exactly &mdash; an independent check that the reconstruction is on the
+  right track before a line of it is written.
+</div>
+
+<h2 id="experiment">The experiment</h2>
+
+<p>Two C programs, compiled natively on the VM with <code>/usr/local/bin/clang19</code> against <code>/usr/lib/system/libsystem_kernel.so.0</code>. No kernel build, no reboot, nothing that could damage the host &mdash; worst case the test process dies.</p>
+
+<h3>Probe 1 &mdash; simple reply</h3>
+<p><code>mach_port_get_attributes</code>, <code>msgh_id</code> 3217, <code>MACH_PORT_RECEIVE_STATUS</code>. The message is hand-built to the shape the frozen server demands, which is the inverse of modern MIG output: <strong><code>MACH_MSGH_BITS_COMPLEX</code> set with a descriptor count of zero.</strong></p>
+<pre class="shell"><code>sizeof(Request) = 48   (server expects 48 from userland)
+allocated probe port: 0x11
+sending msgh_id=3217 COMPLEX, desc_count=0, size=48 ...
+mach_msg returned 0x0 (0)
+reply msgh_id  = 3317   (expect 3317)
+RetCode        = 0
+outCnt         = 10
+  mps_pset=0 seqno=0 mscount=0 qlimit=5 MSGCOUNT=0
+
+RESULT: kernel MIG WORKS</code></pre>
+<p><code>qlimit=5</code> is <code>MACH_PORT_QLIMIT_DEFAULT</code> &mdash; real kernel state, not a zeroed buffer. That distinction is what makes this a result rather than a coincidence.</p>
+
+<h3>Probe 2 &mdash; complex reply with out-of-line memory</h3>
+<p><code>mach_port_get_set_status</code>, <code>msgh_id</code> 3214 &mdash; <strong>the exact call libmach fakes.</strong> A port set is populated with a known member via the real <code>mach_port_move_member</code> trap, then the kernel is asked for its membership back. This exercises <code>vm_map_copyin</code> in the kernel and the OOL copyout into our address space, which probe 1 did not.</p>
+<pre class="shell"><code>pset=0x11  member=0x12
+move_member -> 0x0 (ok)
+sending msgid 3214 for pset 0x11 ...
+mach_msg -> 0x0
+reply id=3314  size=56  complex=yes  desc_count=1
+membersCnt=1  ool.size=4  ool.address=0x1000
+  member[0] = 0x12 &lt;-- the port we inserted
+
+RESULT: OOL round-trip WORKS -- kernel returned the real member</code></pre>
+
+<div class="resolved">
+  <strong>Settled.</strong> The kernel implementation at <span class="filename">src-overlay/sys/compat/mach/ipc/mach_port.c:985</span> is complete and correct &mdash; it walks the port set via <code>mach_port_gst_helper</code>, allocates, and copies out. The kernel has been able to answer this question all along. Userland simply never asked.
+</div>
+
+<h2 id="apple">What Apple actually does</h2>
+
+<p>The guiding requirement is to use MIG <em>where Apple does</em>. Apple&rsquo;s own sources answer this precisely, and the answer is not &ldquo;everywhere&rdquo;.</p>
+
+<h3>MIG is the floor; traps are an accelerator</h3>
+<p>Every <code>mach_port</code> routine in <code>libsyscall</code> has a generated MIG client named <code>_kernelrpc_mach_port_*</code>. Some routines <em>additionally</em> have a trap, which is tried first and <strong>falls back to MIG on failure</strong>:</p>
+<pre><code>/* xnu/libsyscall/mach/mach_port.c */
+mach_port_allocate(ipc_space_t task, mach_port_right_t right, mach_port_name_t *name)
+{
+        kern_return_t rv;
+
+        rv = _kernelrpc_mach_port_allocate_trap(task, right, name);
+
+        if (rv == MACH_SEND_INVALID_DEST) {
+                rv = _kernelrpc_mach_port_allocate(task, right, name);   /* MIG */
+        }
+
+        return rv;
+}</code></pre>
+
+<h3>Routines returning arrays are pure MIG &mdash; necessarily</h3>
+<p><code>mach_port_names</code> and <code>mach_port_get_set_status</code> have <strong>no trap at all</strong> at Apple. You cannot return a variable-length array through a register-based trap interface. This is precisely why our stub had to invent an empty list rather than do something useful:</p>
+<pre><code>mach_port_get_set_status(ipc_space_t task, mach_port_name_t name,
+    mach_port_name_array_t *members, mach_msg_type_number_t *membersCnt)
+{
+        kern_return_t rv;
+
+        rv = _kernelrpc_mach_port_get_set_status(task, name, members, membersCnt);
+
+        return rv;      /* MIG only. No trap exists. */
+}</code></pre>
+
+<h3>Apple has run our exact situation, and chose MIG</h3>
+<p>In <code>mach_port_get_attributes</code>, Apple handles a kernel whose trap does not exist yet by mapping the failure onto <code>MACH_SEND_INVALID_DEST</code> so control falls through to MIG:</p>
+<pre class="warn-pre"><code>rv = _kernelrpc_mach_port_get_attributes_trap(task, name, flavor,
+    port_info_out, port_info_outCnt);
+
+#ifdef __x86_64__
+/* REMOVE once XBS kernel has new trap */
+if (rv == ((1 &lt;&lt; 24) | 40)) {   /* see mach/i386/syscall_sw.h */
+        rv = MACH_SEND_INVALID_DEST;
+}
+#endif
+
+if (rv == MACH_SEND_INVALID_DEST) {
+        rv = _kernelrpc_mach_port_get_attributes(task, name, flavor,
+            port_info_out, port_info_outCnt);
+}</code></pre>
+<p><strong>MIG is the always-correct path. The trap is an optimisation that is permitted to be absent.</strong> A NextBSD that has traps but no MIG has built the fast lane without the road.</p>
+
+<h2 id="audit">The audit</h2>
+
+<h3>Every NextBSD trap, checked against Apple&rsquo;s real trap table</h3>
+<p>Compared against the 130 entries in <span class="filename">xnu/osfmk/kern/syscall_sw.c</span>. Bare-name matching gives false negatives here &mdash; Apple names the <code>mach_port</code> entries <code>_kernelrpc_&hellip;_trap</code> &mdash; so the comparison below matches both forms.</p>
+<table>
+<tr><th>NextBSD trap (<span class="filename">mach_traps.c</span>)</th><th>Apple</th><th>Action</th></tr>
+<tr><td><code>mach_msg_trap</code></td><td>trap</td><td rowspan="4">Keep as-is. Genuine Mach traps at Apple too.</td></tr>
+<tr><td><code>task_self_trap</code></td><td>trap</td></tr>
+<tr><td><code>host_self_trap</code></td><td>trap</td></tr>
+<tr><td><code>thread_self_trap</code></td><td>trap</td></tr>
+<tr><td><code>mach_port_allocate</code></td><td><code>_kernelrpc_mach_port_allocate_trap</code></td><td rowspan="5">Keep, but reshape into Apple&rsquo;s trap-first / MIG-fallback form.</td></tr>
+<tr><td><code>mach_port_deallocate</code></td><td><code>_kernelrpc_mach_port_deallocate_trap</code></td></tr>
+<tr><td><code>mach_port_insert_right</code></td><td><code>_kernelrpc_mach_port_insert_right_trap</code></td></tr>
+<tr><td><code>mach_port_move_member</code></td><td><code>_kernelrpc_mach_port_move_member_trap</code></td></tr>
+<tr><td><code>mach_port_request_notification</code></td><td><code>_kernelrpc_mach_port_request_notification_trap</code></td></tr>
+<tr><td><code>host_set_special_port</code></td><td><strong>MIG only</strong></td><td rowspan="3"><strong>Convert to MIG.</strong> These are NextBSD inventions with no counterpart in Apple&rsquo;s trap table.</td></tr>
+<tr><td><code>task_get_special_port</code></td><td><strong>MIG only</strong></td></tr>
+<tr><td><code>task_set_special_port</code></td><td><strong>MIG only</strong></td></tr>
+</table>
+
+<h3>The stubs that fabricate success</h3>
+<p>Roughly 18 entry points in <span class="filename">mach_traps.c</span> return <code>KERN_SUCCESS</code> having done nothing. The <code>mach_port</code> ones:</p>
+<pre class="warn-pre"><code>mach_port_get_set_status   &lt;-- kills on-demand Mach launch in launchd
+mach_port_type             &lt;-- Apple traps this, with MIG fallback
+mach_port_mod_refs         &lt;-- silently no-ops reference counting
+mach_port_set_mscount
+mach_port_get_context
+mach_port_set_context
+mach_port_construct
+mach_port_destruct</code></pre>
+<p>The current <code>get_set_status</code>, in full &mdash; this is the whole reason on-demand launch is dead:</p>
+<pre><code>mach_port_get_set_status(mach_port_name_t task, mach_port_name_t name,
+    mach_port_name_array_t *members, mach_msg_type_number_t *membersCnt)
+{
+        (void)task; (void)name;
+        if (members != NULL)
+                *members = NULL;
+        if (membersCnt != NULL)
+                *membersCnt = 0;
+        return KERN_SUCCESS;
+}</code></pre>
+
+<h3>Nothing currently speaks this wire format</h3>
+<p>A code search for <code>MACH_MSGH_BITS_COMPLEX</code> across <code>nextbsd-userland</code> returns <strong>zero hits</strong>. No userland code hand-builds messages to the <code>mach_port</code> subsystem, so <strong>regenerating the server cannot break an existing caller.</strong> This is what makes a kernel-side regeneration tractable rather than reckless.</p>
+
+<h2 id="plan">Plan</h2>
+
+<div class="phase done">
+  <h3><span class="step-num">0</span>Measure <span class="pill ok">done</span></h3>
+  <p>Two runtime probes, above. Outcome: kernel MIG works for both simple and complex-with-OOL replies; no kernel change is needed for correctness. Probes retained at <span class="filename">migprobe.c</span> / <span class="filename">migprobe2.c</span> and built on the VM at <code>/tmp/migprobe{,2}</code> so any later regression is one command away from being caught.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">1</span>Reconstruct <code>mach_port.defs</code> <span class="pill warn">no build required</span></h3>
+  <p>Recover the IDL for all 36 routines from the frozen <span class="filename">mach_port_server.c</span>. Signatures are directly readable from the dispatch bodies, e.g. <span class="filename">:3453</span> gives <code>mach_port_get_attributes(task, name, flavor, port_info_out, port_info_outCnt)</code>.</p>
+  <p><strong>Apple&rsquo;s <code>mach_port.defs</code> cannot be used as-is.</strong> NextBSD&rsquo;s <code>msgh_id</code> map diverges from XNU mid-subsystem &mdash; 3217 is <code>get_attributes</code> here, and Apple&rsquo;s ordering differs &mdash; so the reconstruction must preserve NextBSD&rsquo;s order, using <code>skip;</code> for gaps.</p>
+  <p><strong>Verification gate:</strong> run the in-tree <code>migcom</code> on the reconstruction and diff the generated server against the frozen one, routine by routine. The dispatch table (<code>3200</code>&ndash;<code>3236</code>, <code>routine[36]</code>) must come out identical. The only systematic difference should be the <code>msgh_body</code> in requests. <em>Anything else is a transcription error and must be resolved before proceeding.</em></p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">2</span>Kernel PR &mdash; merge first</h3>
+  <p>Add <code>mach_port.defs</code> to the tree as the source of truth and replace <span class="filename">mach_port_server.c</span> with generated output. Per the standing requirement, kernel changes land and merge before userland depends on them.</p>
+  <p>Belongs in <span class="filename">src-overlay/</span>, not <span class="filename">patches/</span> &mdash; this is NextBSD&rsquo;s own code, not a FreeBSD delta.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">3</span>Userland PR &mdash; the MIG client layer</h3>
+  <p>Generate <code>mach_portUser.c</code> into libmach and replace the fabricating <code>mach_port</code> stubs with real generated clients.</p>
+  <p><strong>On-demand launch is broken twice over, and both breaks sit in the same eleven lines.</strong>
+  <code>mportset_callback()</code> (<span class="filename">src/launchd/src/runtime.c:541</span>) is the
+  per-event dispatcher for the demand port set:</p>
+  <pre class="warn-pre"><code>mach_port_get_set_status(mach_task_self(), demand_port_set, &amp;members, &amp;membersCnt)
+        &rarr; stub returns membersCnt = 0     &rArr; the loop body never executes
+
+for (i = 0; i &lt; membersCnt; i++) {
+        mach_port_get_attributes(..., MACH_PORT_RECEIVE_STATUS, &amp;status, &amp;statusCnt)
+                &rarr; stub returns KERN_RESOURCE_SHORTAGE   &rArr; continue, every member skipped
+        if (status.mps_msgcount) { ...dispatch the job... }
+}
+
+vm_deallocate(mach_task_self(), (vm_address_t)members, ...)
+        &rarr; no-op                            &rArr; leaks once get_set_status is real</code></pre>
+  <p><strong>Fixing <code>get_set_status</code> alone would not revive on-demand launch</strong> &mdash;
+  <code>get_attributes</code> returns <code>KERN_RESOURCE_SHORTAGE</code> and every member is skipped
+  regardless. Both must land together. Conveniently, those are exactly the two routines Phase&nbsp;0 probed,
+  and both are proven working against the kernel.</p>
+  <p>This phase therefore also depends on the OOL deallocation fix &mdash; see risks.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">4</span>Adopt Apple&rsquo;s layering</h3>
+  <p>Reshape the 9 surviving traps into trap-first / MIG-fallback. Today <code>resolve_syscall()</code> failure returns <code>KERN_RESOURCE_SHORTAGE</code>; under Apple&rsquo;s shape that is exactly where control should fall through to the MIG client. Convert the 3 non-Apple traps (<code>host_set_special_port</code>, <code>task_get_special_port</code>, <code>task_set_special_port</code>) to MIG.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">5</span>Verify on hardware</h3>
+  <p>Re-run both probes; confirm <code>aslmanager</code> &mdash; today the only consumer of on-demand Mach launch &mdash; actually spawns on demand; multiple reboot cycles; <code>launchctl list</code> diffed against a pre-change baseline for regressions.</p>
+</div>
+
+<h2 id="risks">Risks</h2>
+
+<div class="risk">
+  <strong>Turning <code>mach_port_mod_refs</code> real is a behavioural change, not a bug fix.</strong> It currently no-ops. Once it actually drops references, any latent over-release or missing-retain in the tree stops being harmless and starts destroying ports. This is the single most likely source of new instability and should land in its own commit, separable from the rest.
+</div>
+
+<div class="risk">
+  <strong>The OOL leak is a hard dependency, not a follow-up.</strong> <code>vm_deallocate</code> in libmach
+  is a no-op. Once <code>mach_port_get_set_status</code> returns real out-of-line memory, every demand-port
+  event maps a fresh page that is never released &mdash; and <code>mportset_callback</code> is the hot path,
+  firing on every on-demand Mach message. <strong>It cannot simply be un-no-op&rsquo;d:</strong> there are
+  12+ call sites in <code>libsystem_asl</code> relying on current semantics, and the 2026-05-23 commit
+  documents why na&iuml;ve <code>munmap</code> fails on an interior pointer. The correct fix is the one that
+  commit specifies &mdash; make the OOL receive path hand back a true base and mapped size, then make
+  <code>vm_deallocate</code> real. Probe&nbsp;2 is mildly encouraging here (<code>ool.address=0x1000</code>
+  is page-aligned), but that is one observation on one routine and settles nothing on its own.
+</div>
+
+<div class="risk">
+  <strong>Regenerating a server that demonstrably works.</strong> The frozen server is 11 years old and may carry hand-edits that pure MIG output will not reproduce. Mitigated by the Phase&nbsp;1 diff gate, and by the fact that nothing on the wire depends on it today &mdash; but the gate is not optional.
+</div>
+
+<div class="risk">
+  <strong><code>msgh_id</code> drift.</strong> IDs are subsystem base plus <code>.defs</code> index. A single misplaced or omitted <code>skip;</code> silently renumbers every routine after it, and the failure mode is calling the wrong kernel function rather than an error. The dispatch-table diff catches this; nothing else will.
+</div>
+
+<h2 id="open">Open calls</h2>
+
+<div class="open-q">
+  <strong>1. Scope of the regeneration.</strong> All 36 <code>mach_port</code> routines at once, or only those with live callers? Whole-subsystem is cleaner and matches &ldquo;measure ten times, cut once&rdquo;, but widens the Phase&nbsp;1 transcription surface.
+</div>
+<div class="open-q">
+  <strong>2. Do the other subsystems follow?</strong> <code>task</code> and <code>host</code> have the same frozen-server / stubbed-client split, and three of the traps above are <code>task</code>/<code>host</code> routines. Same treatment, or a separate effort once <code>mach_port</code> proves the pattern?
+</div>
+<div class="open-q">
+  <strong>3. Trap fast paths we do not have.</strong> Apple traps <code>mach_port_type</code>, <code>mod_refs</code>, <code>construct</code>, <code>destruct</code>, <code>insert_member</code>, <code>extract_member</code>, <code>guard</code>, <code>unguard</code> and <code>get_attributes</code>; we do not. Once MIG works these are pure optimisation. Deferred unless something measures slow.
+</div>
+
+<hr>
+<p class="footnote">Measured on <code>gershwin-on-nextbsd</code>. Apple sources: <code>apple-oss-distributions/xnu</code>, <span class="filename">libsyscall/mach/mach_port.c</span> and <span class="filename">osfmk/kern/syscall_sw.c</span>. Claims from measurement are marked apart from claims from reasoning throughout; where this page contradicts an earlier draft, the earlier draft is wrong and &sect;&ldquo;What changed&rdquo; says why.</p>
+
+</body>
+</html>

@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD Mach MIG restoration — the program</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 980px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.warn-pre { border-left-color: var(--warn); background: #fff5e6; }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  .grid { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; margin: 1rem 0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+          padding: 1rem 1.1rem; }
+  .card h4 { margin-top: 0; }
+  .phase { background: var(--card); border: 1px solid var(--rule); border-radius: 6px;
+           padding: 1.2rem 1.4rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .phase.done { border-left: 4px solid var(--ok); }
+  .phase.todo { border-left: 4px solid var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  blockquote { margin: 1rem 0; padding: .5rem 1rem; border-left: 3px solid var(--accent);
+               background: #fff8f3; color: #333; }
+  .footnote { font-size: .85rem; color: var(--muted); }
+  ol li, ul li { margin: .25rem 0; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .filename { color: var(--accent); font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  .verdict { font-weight: 600; }
+  .verdict.go    { color: var(--ok); }
+  .verdict.maybe { color: var(--warn); }
+  .verdict.no    { color: var(--bad); }
+  hr { border: 0; border-top: 1px dashed var(--rule); margin: 2rem 0; }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .risk { background: #fff5e6; border-left: 4px solid var(--warn); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .risk strong { color: var(--warn); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .step-num { display: inline-block; width: 1.6em; height: 1.6em; line-height: 1.6em; text-align: center; background: var(--accent); color: white; border-radius: 50%; font-weight: 700; font-size: .85em; margin-right: .35em; }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#proved">What we proved</a>
+  <a href="#scope">The real scope</a>
+  <a href="#why">Why MIG, not traps</a>
+  <a href="#own">Who owns the .defs</a>
+  <a href="#gate">The gating problem</a>
+  <a href="#phases">Phases</a>
+  <a href="#tickets">Tickets &amp; PRs</a>
+  <a href="#risks">Risks</a>
+</div>
+
+<h1>Restoring MIG as NextBSD&rsquo;s kernel RPC substrate <span class="pill info">program plan &middot; v2</span></h1>
+<p class="subtitle">Seven kernel subsystems ship 27,455 lines of generated C that nobody can regenerate, and roughly eighteen libmach entry points return <code>KERN_SUCCESS</code> without doing anything. This is the plan to fix the cause rather than the symptoms &mdash; ordered so it can be executed straight through.</p>
+
+<div class="tldr" id="tldr">
+  <h3>TL;DR <span class="pill ok">measured</span></h3>
+  <p><strong>Kernel MIG works on NextBSD today.</strong> Two hand-built messages on real hardware returned correct data, including a complex reply carrying out-of-line memory. <strong>No kernel change is required for correctness.</strong></p>
+  <p><strong>The whole defect is a missing source of truth.</strong> Seven kernel MIG servers were generated in 2015 by a compiler we no longer have and checked in as source, with no <code>.defs</code> beside them. Userland then papered over the gap with stubs that fabricate success.</p>
+  <p><strong><code>mach_port</code> is reconstructed and verified.</strong> Dispatch table 36/36 identical to the frozen server; generated client and generated server agree 35/35 &mdash; MIG&rsquo;s guarantee, restored by construction.</p>
+  <p><strong>MIG also relieves the syscall-slot pressure</strong> that forced us to patch FreeBSD&rsquo;s <code>lkmnosys</code> band from 10 slots to 58. MIG costs <em>zero</em> slots; the trap approach would need ~156.</p>
+  <p><strong>Nothing downstream is trustworthy until CI actually gates</strong> (<a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/81">#81</a>). That lands first.</p>
+</div>
+
+<h2 id="proved">What we proved</h2>
+
+<h3>The runtime probes</h3>
+<p>Compiled natively on <code>gershwin-on-nextbsd</code>, sent to <code>mach_task_self()</code>. Both messages hand-built to the shape the frozen server demands &mdash; <code>MACH_MSGH_BITS_COMPLEX</code> set with a descriptor count of zero.</p>
+<pre class="shell"><code>probe 1  mach_port_get_attributes (3217)
+  reply 3317  RetCode=0  outCnt=10
+  mps_pset=0 seqno=0 mscount=0 qlimit=5 MSGCOUNT=0     &lt;-- qlimit=5 is MACH_PORT_QLIMIT_DEFAULT:
+                                                            real kernel state, not a zeroed buffer
+
+probe 2  mach_port_get_set_status (3214)   &lt;-- the exact call libmach fakes
+  reply 3314  size=56  complex=yes  desc_count=1
+  membersCnt=1  ool.size=4  ool.address=0x1000
+  member[0] = 0x12                                     &lt;-- the port we had just inserted</code></pre>
+<p>Probe 2 exercises <code>vm_map_copyin</code> in the kernel and the OOL copyout into our address space. The kernel implementation was complete all along; userland simply never asked it anything.</p>
+
+<h3>The reconstruction gate</h3>
+<p><code>mach_port.defs</code> was rebuilt from the frozen server&rsquo;s dispatch table, using Apple&rsquo;s open-source declarations for signatures, and run through <code>migcom</code> built from our own tree (<code>bootstrap_cmds-138-freebsd</code>).</p>
+<table>
+<tr><th>Check</th><th>Result</th></tr>
+<tr><td>Subsystem base / end</td><td>3200 / 3236 &mdash; identical</td></tr>
+<tr><td>Slot count, including the <code>skip;</code> tombstone at 3225</td><td>36 / 36 &mdash; identical</td></tr>
+<tr><td>Dispatch entries (routine name <em>and</em> argument count)</td><td><strong>36 / 36 identical</strong></td></tr>
+<tr><td>Wire structs vs frozen server</td><td>4 identical, 31 differ <em>only</em> by <code>msgh_body</code>, <strong>0 unexplained</strong></td></tr>
+<tr><td><strong>Generated server vs generated client</strong></td><td><strong>35 / 35 exact</strong></td></tr>
+</table>
+<p>That last row is the point of the exercise. Every <code>msgh_id</code> is preserved, and the two ends agree because they came from one description.</p>
+
+<h2 id="scope">The real scope</h2>
+
+<p>This was scoped as one stubbed routine. It is seven subsystems.</p>
+<table>
+<tr><th>Generated server (kernel, checked in)</th><th>Lines</th><th>Base</th><th>Slots</th><th>Reconstructs today?</th></tr>
+<tr><td><code>mach_port_server.c</code></td><td>5,720</td><td>3200</td><td>36</td><td><strong>yes &mdash; verified</strong></td></tr>
+<tr><td><code>task_server.c</code></td><td>6,376</td><td>3400</td><td>42</td><td>needs <code>mach_zone_name_array_t</code></td></tr>
+<tr><td><code>vm_map_server.c</code></td><td>4,444</td><td>3800</td><td>31</td><td>needs <code>vm_map_t</code> + macro-wrapped names</td></tr>
+<tr><td><code>host_priv_server.c</code></td><td>4,022</td><td>400</td><td>26</td><td>needs <code>vm_map_t</code></td></tr>
+<tr><td><code>mach_host_server.c</code></td><td>3,199</td><td>200</td><td>25</td><td>needs <code>clock_id_t</code></td></tr>
+<tr><td><code>mach_vm_server.c</code></td><td>3,028</td><td>4800</td><td>20</td><td>needs <code>vm_map_t</code> + macro-wrapped names</td></tr>
+<tr><td><code>clock_server.c</code></td><td>666</td><td>1000</td><td>3</td><td>needs <code>clock_serv_t</code></td></tr>
+<tr><td><strong>total</strong></td><td><strong>27,455</strong></td><td></td><td><strong>183</strong></td><td></td></tr>
+</table>
+
+<div class="resolved">
+  <strong>Nothing is blocked.</strong> Every routine we need exists in Apple&rsquo;s open-source <code>.defs</code>. The six remaining failures are shallow: a missing type vocabulary (the same gap that required writing <code>mach_debug_types.defs</code> from scratch) and routine names wrapped in <code>PREFIX(KERNEL_SERVER_SUFFIX(&hellip;))</code> macros that only resolve after the C preprocessor runs. <code>mach_port</code> was simply the one subsystem without that pattern.
+</div>
+
+<div class="risk">
+  <strong>But they are not free.</strong> Each of the six needs its own type-vocabulary extension, its own routine matching, and its own diff gate. This is six more units of real work, not a rounding error on the first one.
+</div>
+
+<h2 id="why">Why MIG and not traps &mdash; the syscall band settles it</h2>
+
+<p>The kernel carries a FreeBSD patch, <code>patches/0001-NextBSD-widen-lkmnosys-dynamic-syscall-band-to-58-sl.patch</code>, whose own commit message reads:</p>
+<blockquote><p>&ldquo;Append 48 lkmnosys slots (599&ndash;646)&hellip; lkmnosys slots (210-219) are <strong>exhausted by the Mach trap set</strong>.&rdquo;</p></blockquote>
+
+<p>Stock FreeBSD offers <strong>10</strong> dynamic syscall slots. We widened it to <strong>58</strong>. About <strong>14</strong> are in use.</p>
+
+<div class="grid">
+  <div class="card">
+    <h4>MIG</h4>
+    <p><strong>Zero slots, forever.</strong> Every routine rides <code>mach_msg_trap</code> &mdash; one already-wired syscall. Restoring all seven subsystems (~156 routines) consumes <strong>nothing</strong> from the band.</p>
+  </div>
+  <div class="card">
+    <h4>Traps</h4>
+    <p><strong>One slot per routine.</strong> 156 routines would need 156 slots &mdash; nearly triple the widened band and 15&times; stock FreeBSD. It does not scale, and never could.</p>
+  </div>
+</div>
+
+<p>So the 10&rarr;58 widening was not a fix; it was a symptom of an approach with no ceiling. This also retroactively settles closing kernel <a href="https://github.com/nextbsd-redux/nextbsd-kernel/pull/123">#123</a>: it would have spent a scarce slot on something Apple does over MIG.</p>
+
+<p><strong>The traps mostly stay, though.</strong> Checked against the 130 entries in XNU&rsquo;s <code>mach_trap_table</code>, <strong>9 of our 12 match a real Apple trap</strong> and should remain &mdash; reshaped into Apple&rsquo;s layering, where the trap is tried first and falls back to MIG:</p>
+<pre><code>rv = _kernelrpc_mach_port_allocate_trap(task, right, name);
+if (rv == MACH_SEND_INVALID_DEST)
+        rv = _kernelrpc_mach_port_allocate(task, right, name);   /* MIG */</code></pre>
+<p>The three with no Apple counterpart &mdash; <code>host_set_special_port</code>, <code>task_get_special_port</code>, <code>task_set_special_port</code> &mdash; convert to MIG and <em>free</em> slots. Long term this could shrink or retire patch 0001 entirely: one fewer FreeBSD divergence to carry.</p>
+
+<h2 id="own">Who owns the <code>.defs</code>, and what gets committed</h2>
+
+<p>Apple settles both questions. XNU owns <code>osfmk/mach/*.defs</code> and <strong>installs them</strong> &mdash; 28 ship in the macOS SDK under <code>/usr/include/mach/</code>, <code>mach_port.defs</code> among them &mdash; and Libsyscall generates its clients from that single copy.</p>
+
+<table>
+<tr><th></th><th>Committed to git?</th><th>Where</th></tr>
+<tr><td><code>*.defs</code> (hand-authored source)</td><td><strong>yes</strong></td><td>kernel repo, for the 7 kernel interfaces; installed to the sysroot for userland to build against</td></tr>
+<tr><td><code>*_server.c</code> / <code>*User.c</code> (generated)</td><td><strong>no</strong></td><td>regenerated every build; already covered by <code>.gitignore</code></td></tr>
+</table>
+
+<p><strong><code>nextbsd-userland</code> already does this correctly</strong> &mdash; 24 <code>.defs</code> committed, 0 generated files committed, and <code>.gitignore</code> lists <code>*Server.c</code>, <code>*User.c</code>, <code>.mig/</code>, <code>*-mig/</code>. Those 24 stay exactly where they are: they describe userland&harr;userland protocols (configd, launchd, notifyd, ASL, firehose, WLAN) with no kernel side at all.</p>
+
+<p><strong><code>nextbsd-kernel</code> is the anomaly</strong>: 7 committed generated servers, 0 <code>.defs</code>. Only the seven <em>kernel-interface</em> descriptions move there.</p>
+
+<div class="resolved">
+  <strong>Headers stay duplicated; wire descriptions must not be.</strong> Both repos already keep their own <code>mach_types.h</code>, <code>port.h</code>, <code>message.h</code>, and those are deliberately different views &mdash; the kernel&rsquo;s <code>port.h</code> is 451 lines against userland&rsquo;s 98, carrying internal types. That is correct and matches Apple. But a <code>.defs</code> describes the wire, and two descriptions of one wire is precisely the failure this whole effort exists to remove.
+</div>
+
+<h2 id="gate">The gating problem &mdash; why this is step one</h2>
+
+<div class="risk">
+  <strong>Green CI currently proves almost nothing.</strong> <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/81">#81</a>: the QEMU boot test is non-gating, and <em>a boot with zero daemons reports success</em>. All four open userland PRs are green. So was the tree while on-demand Mach launch was completely dead and <code>/var/log/asl</code> was never rotated.
+</div>
+
+<p>Until the boot test fails when the system is broken, every result below &mdash; including the MIG work &mdash; is unverified by construction. <strong>#81 lands first.</strong> Everything else inherits its trustworthiness from it.</p>
+
+<h2 id="phases">Phases</h2>
+
+<div class="phase todo">
+  <h3><span class="step-num">0</span>Make CI mean something <span class="pill bad">blocks everything</span></h3>
+  <p>Fix <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/81">#81</a>: the boot test must assert that daemons actually came up, not merely that <code>login:</code> appeared. Then land the four green, verified PRs behind it &mdash; <a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/76">#76</a> (the enumeration root cause, verified before/after on hardware), <a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/77">#77</a> (restore Apple&rsquo;s boot sequence, closes #70), then <a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/73">#73</a> and <a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/74">#74</a>.</p>
+</div>
+
+<div class="phase done">
+  <h3><span class="step-num">1</span>Reconstruct <code>mach_port.defs</code> <span class="pill ok">done &mdash; gate passed</span></h3>
+  <p>36/36 dispatch, 35/35 client&harr;server. Also produced <code>mach_debug_types.defs</code>, which the tree&rsquo;s own <code>ipc_info.h</code> has referred to for years without it ever existing.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">2</span>Kernel PR &mdash; wire <code>migcom</code> into the build</h3>
+  <p>Commit <code>mach_port.defs</code> + <code>mach_debug_types.defs</code> to <span class="filename">src-overlay/</span>, build <code>migcom</code> as a bootstrap host tool, generate <code>mach_port_server.c</code> at build time, delete the checked-in copy, and install the <code>.defs</code> into the sysroot. Merges before any userland work depends on it.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">3</span>Fix OOL deallocation <span class="pill warn">hard dependency</span></h3>
+  <p><code>vm_deallocate</code> in libmach is a no-op. The moment <code>mach_port_get_set_status</code> returns real out-of-line memory, <code>mportset_callback</code> leaks a page per demand-port event &mdash; on the hot path. It cannot simply be un-no-op&rsquo;d: 12+ call sites in <code>libsystem_asl</code> depend on current semantics, and commit <code>9fe3d79</code> documents why na&iuml;ve <code>munmap</code> fails on an interior pointer. That commit also names the fix: an OOL-receive path that hands back a true base and mapped size.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">4</span>Userland PR &mdash; the libmach MIG client</h3>
+  <p>Generate <code>mach_portUser.c</code>; replace the fabricating stubs. <strong>On-demand launch is broken twice over and both breaks are in the same loop</strong> &mdash; <code>get_set_status</code> returns zero members <em>and</em> <code>get_attributes</code> returns <code>KERN_RESOURCE_SHORTAGE</code>, so fixing either alone changes nothing. Closes <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/79">#79</a>, unblocks <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/80">#80</a>.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">5</span>Adopt Apple&rsquo;s layering</h3>
+  <p>Reshape the 9 surviving traps to trap-first / MIG-fallback; convert the 3 non-Apple traps to MIG. Today <code>resolve_syscall()</code> failure returns <code>KERN_RESOURCE_SHORTAGE</code>; that is exactly where control should fall through to MIG.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">6</span>syslogd and ASL</h3>
+  <p><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/78">#78</a> (deadlock at boot in <code>notify_register_check</code> &mdash; untimed Mach RPC) and <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/80">#80</a> (<code>aslmanager</code> never runs). #80 is downstream of on-demand launch; #78 is independent and can run in parallel.</p>
+</div>
+
+<div class="phase todo">
+  <h3><span class="step-num">7</span>The remaining six subsystems</h3>
+  <p><code>task</code>, <code>vm_map</code>, <code>host_priv</code>, <code>mach_host</code>, <code>mach_vm</code>, <code>clock</code> &mdash; one PR each, same method, same gate. Sequenced last because each is mechanical once Phase 2 proves the build wiring.</p>
+</div>
+
+<h2 id="tickets">Tickets and PRs</h2>
+
+<h3>Keep &mdash; these are the spine</h3>
+<table>
+<tr><th>Item</th><th>Disposition</th></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/81">#81</a> CI boot test non-gating</td><td><strong>Phase 0</strong> &mdash; promote to blocker</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/79">#79</a> on-demand Mach launch dead</td><td>closed by Phase 4; update &mdash; it is <em>two</em> stubs, not one</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/78">#78</a> syslogd boot deadlock</td><td>Phase 6</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/80">#80</a> aslmanager never runs</td><td>Phase 6, downstream of Phase 4</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/70">#70</a> two concurrent boot loaders</td><td>closed by PR #77</td></tr>
+<tr><td>PRs #76, #77, #73, #74</td><td>green + verified &mdash; merge in Phase 0 order</td></tr>
+<tr><td>kernel <a href="https://github.com/nextbsd-redux/nextbsd-kernel/pull/124">#124</a> (skill)</td><td>revise then merge &mdash; it teaches trap-wiring as the default; it must teach MIG-first with traps as an accelerator</td></tr>
+</table>
+
+<h3>New tickets to open</h3>
+<ol>
+  <li><strong>Epic:</strong> restore MIG as the kernel RPC substrate &mdash; 7 subsystems, 27,455 unregenerable lines</li>
+  <li>Wire <code>migcom</code> into the kernel build; commit <code>.defs</code>, drop generated C, install to sysroot</li>
+  <li>libmach MIG client layer &mdash; replace the ~18 fabricating stubs</li>
+  <li>OOL deallocation: <code>vm_deallocate</code> is a no-op (blocks #79&rsquo;s fix from being leak-free)</li>
+  <li>Adopt Apple&rsquo;s trap-first / MIG-fallback layering; convert the 3 non-Apple traps</li>
+  <li>Reconstruct the remaining six subsystems (one child ticket each)</li>
+</ol>
+
+<h3>Close</h3>
+<ul>
+  <li>userland <a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/53">#53</a> (draft, linuxfs mount) &mdash; out of scope for this program; the design question survives as <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/54">#54</a></li>
+  <li>kernel <a href="https://github.com/nextbsd-redux/nextbsd-kernel/pull/123">#123</a> &mdash; already closed; the syscall-band arithmetic above confirms it should stay closed</li>
+</ul>
+
+<h2 id="risks">Risks</h2>
+
+<div class="risk">
+  <strong>Making <code>mach_port_mod_refs</code> real is a behavioural change, not a bug fix.</strong> It currently no-ops. Once it actually drops references, any latent over-release or missing-retain in the tree stops being harmless and starts destroying ports. Land it in its own commit, separable from the rest.
+</div>
+<div class="risk">
+  <strong><code>msgh_id</code> drift.</strong> IDs are base + index. One misplaced <code>skip;</code> silently renumbers every routine after it, and the failure mode is calling the <em>wrong kernel function</em> rather than an error. The dispatch-table diff is the only thing that catches this; it is not optional for any of the seven.
+</div>
+<div class="risk">
+  <strong>Regenerating servers that demonstrably work.</strong> These are 11 years old and may carry hand-edits pure MIG output will not reproduce. Mitigated by the gate, and by there being <strong>zero</strong> userland code that hand-builds messages to these subsystems &mdash; so no existing caller can break.
+</div>
+
+<hr>
+<p class="footnote">Supersedes the withdrawn v1, which recommended a syscall trap on the strength of a true premise (our <code>migcom</code> cannot match the <em>frozen</em> server) carried one step too far into a false conclusion (therefore MIG is unusable) &mdash; when the frozen server could simply be regenerated too. Detailed <code>mach_port</code> sub-plan: <a href="nextbsd-mach-port-mig-client-plan.html">the mach_port MIG client</a>. Background: <a href="mach-mig-explained.html">MIG explained</a>. Measured on <code>gershwin-on-nextbsd</code>; Apple sources from <code>apple-oss-distributions/xnu</code> and <code>bootstrap_cmds-138</code>.</p>
+
+</body>
+</html>

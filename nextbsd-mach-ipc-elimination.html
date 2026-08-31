@@ -66,7 +66,7 @@
 </table>
 <p>Each <code>syslog -s</code> performs ~27&ndash;32 Mach RPCs. Solving <code>1-(1-p)^27 = 0.04</code> gives <strong>p &asymp; 0.0015</strong>: roughly <strong>one RPC in 700 hangs</strong>, and it can be any of them. This was never a logging bug &mdash; which is why every path-specific fix measured exactly nothing.</p>
 
-<h2>2. Six mechanisms, measured clean</h2>
+<h2>2. Mechanisms measured clean</h2>
 <p>These are not arguments. Each is a counter compiled into the kernel and read against a workload that reproduced the failure.</p>
 <table>
 <tr><th>mechanism</th><th>counter</th><th>result</th></tr>
@@ -94,12 +94,38 @@
 <tr><td>7</td><td>Handoff wakeup lost</td><td>posted/received balance shows no gap</td></tr>
 </table>
 
-<h2>4. What is left</h2>
-<p>The request is delivered and received; no wakeup is lost; nothing is dropped or stranded. The client waits anyway. The reply is itself a Mach message, so it would be counted &mdash; <strong>unless it was delivered somewhere other than the client&rsquo;s reply port</strong>.</p>
+<h2>4. Located: a message stranded on the server, not the reply path</h2>
 <div class="callout callout-warn">
-<p><strong>Misrouting is the last candidate consistent with every measurement</strong>, and it points back at port-name resolution. Note carefully how that conclusion was reached: by <em>elimination</em>, not by the traffic-decay inference that motivated the namespace plan and was later retracted. Same suspect, different and better evidence.</p>
-<p>It is still a hypothesis. The probe that would test it &mdash; recording whether a wedged client&rsquo;s reply port ever received anything at all &mdash; is written but has not yet produced a reading.</p>
+<p><strong>Section 4 previously said misrouting of the reply was the last candidate. That is now disproved.</strong> The reply path was never the problem: the request never gets processed, so no reply is ever generated. Every instrument up to that point had been aimed at the client&rsquo;s reply port &mdash; the wrong end of the RPC, which is exactly why they all read clean.</p>
 </div>
+
+<h3>What a live wedge looks like</h3>
+<p>A client caught mid-hang is parked in the kernel, not in userland:</p>
+<pre><code>392  I  thread_b  syslog -s -l Notice VALIDATE-PROBE
+  thread_block+0x44 ipc_mqueue_receive+0x3c0 mach_msg_receive+0xd8 sys_mach_msg_trap+0x40</code></pre>
+<p>It sat there for 226 seconds and <strong>completed the instant one unrelated request was sent to the same service</strong>. The request had been sitting on the <em>server&rsquo;s</em> port the whole time; the later message re-triggered the wakeup and drained both.</p>
+
+<h3>The stranded port, named</h3>
+<p><code>mach.port_backlog</code> walks every space and reports each port holding an undelivered message, with the process owning the receive right. During a live wedge:</p>
+<pre><code>pid  comm    name  port              msgcount pset waiters rights recv-right-owner
+131  syslog  20    ffffa000c40bf680         1  yes      no      S notifyd[31]
+32   syslogd 22    ffffa000c40bf680         1  yes      no      S notifyd[31]
+31   notifyd 19    ffffa000c40bf680         1  yes      no      R notifyd[31]
+1    launchd 28    ffffa000c40bf680         1  yes      no      S notifyd[31]</code></pre>
+<p>One port, one message, four spaces. <strong>notifyd holds the receive right</strong> &mdash; and notifyd has no thread in <code>ipc_mqueue_receive</code> at all. Its Mach traffic is serviced entirely through <code>EVFILT_MACHPORT</code> on a kqueue.</p>
+
+<h3>Why the epidemiology finally makes sense</h3>
+<table>
+<tr><th>Observation</th><th>Explanation</th></tr>
+<tr><td>Vanishes under tracing</td><td>Tracing perturbs timing <em>and</em> adds traffic that re-triggers the wakeup</td></tr>
+<tr><td>Zero failures under concurrency</td><td>Concurrent sends continuously nudge each other</td></tr>
+<tr><td>Rate-sensitive (4/60 vs 1/60)</td><td>The slower the traffic, the longer a stranded request sits</td></tr>
+<tr><td>Flat ~4%, never converging</td><td>A race on an idle path, not a resource that degrades</td></tr>
+</table>
+<p>An isolated send on an idle system is precisely the one that strands, because nothing follows it to knock the server loose.</p>
+
+<h3>A second, permanent instance</h3>
+<p><code>aslmanager</code>&rsquo;s service port holds an undelivered message <strong>from boot, on every boot</strong>, across six kernels. Same signature: kqueue-serviced, no Mach receive thread. It requires no race to observe, which makes it the only deterministic test available &mdash; and it is the verification criterion for <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/165">#165</a>.</p>
 
 <h2>5. Corrections to the record</h2>
 <p>Recorded because each of these was stated with more confidence than it deserved.</p>
@@ -110,7 +136,24 @@
 <li><strong>notifyd&rsquo;s causality did not generalise.</strong> A clean A/B on one userland; no effect at all on another.</li>
 <li><strong><code>MACH_SEND_INVALID_DEST</code> in launchd is benign.</strong> Filed as a fork/Mach-state bug, then closed: PID 1 nulls its own <code>bootstrap_port</code> deliberately, in vendored Apple code, and the forked child inherits the NULL.</li>
 <li><strong>Five predicted fixes each addressed a real defect and moved the number by nothing</strong> (#126, #129, #130, #144, and the generation counter).</li>
+<li><strong>&sect;4 of this page was wrong.</strong> It named reply misrouting as the last surviving candidate, reached by elimination. The request never reaches the server&rsquo;s handler, so there is no reply to misroute.</li>
+<li><strong><code>lost_wakeups_bare</code> answers a narrower question than its name.</strong> It samples <code>ip_msgcount</code> <em>before</em> parking, under the same lock as the queue check above it, so it can only see a message that was already there. A message enqueued after a thread parks is invisible to it, and its zero readings never excluded that case.</li>
+<li><strong>Two further fixes were written, measured, and reverted</strong> &mdash; <code>fix/pset-scan-stale-msgcount</code> and <code>fix/pset-signal-kqwakeup</code>. Both looked correct from code reading; both had counters that came back zero. One of them passed its strand test purely by luck while provably never executing.</li>
 </ul>
+
+<h3>Eight mechanisms now excluded by counter</h3>
+<p>Each measured on a run that reproduced the failure:</p>
+<table>
+<tr><th>Mechanism</th><th>Reading</th></tr>
+<tr><td>Send-path blocking</td><td>0 entries in 150 sends</td></tr>
+<tr><td>Threads stuck parked</td><td>enter/exit balanced</td></tr>
+<tr><td>Scan missing a queued message</td><td>0 finds across 3118 second passes</td></tr>
+<tr><td>Wakeup not delivered</td><td>897 sleepers found, 897 woken, of 901 enqueues</td></tr>
+<tr><td>Port-set identity (recycled name)</td><td>0 mismatches in 1823 evaluations</td></tr>
+<tr><td>Name translation failure</td><td>0</td></tr>
+<tr><td>Notification&rsquo;s port name wrong or null</td><td>0 nulls in 920 notifications; <code>ip_rcvname</code> matches the entry name</td></tr>
+<tr><td>Dead-port and circular drops</td><td>0</td></tr>
+</table>
 
 <h2>6. Method: what worked and what did not</h2>
 <div class="callout callout-bad">
@@ -127,9 +170,11 @@
 
 <h2>7. Where to pick up</h2>
 <ol>
-<li><strong>Finish the reply-port probe.</strong> Does a wedged client&rsquo;s reply port show <code>ip_delivered == 0</code>? That single number decides between &ldquo;misrouted or never sent&rdquo; and &ldquo;arrived but the counters are lying&rdquo;.</li>
-<li><strong>Do not resume the namespace-separation plan on its original rationale.</strong> That rationale is retracted. If it resumes, it should be on the elimination argument in &sect;4.</li>
-<li><strong>Keep the counters.</strong> They are cheap, off by default, and are the only things in this investigation that have not had to be walked back.</li>
+<li><strong><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/165">#165</a> &mdash; the attach-time gap.</strong> At boot, ~70% of <code>ipc_pset_signal()</code> calls hit <code>KNLIST_EMPTY</code> and do nothing (36/51, 38/53, 33/48), versus &lt;0.5% in steady state. A message arriving before a daemon registers its knote is signalled to an empty list, and nothing re-checks it at registration. This explains the <em>permanent</em> aslmanager case, and may be a different bug from the intermittent 4%.
+<br><em>Verify first:</em> whether this base tree&rsquo;s <code>kqueue_register()</code> evaluates <code>f_event</code> after a successful <code>f_attach</code>. If it does, the hypothesis is wrong. That file is not in <code>src-overlay</code> and was not read.</li>
+<li><strong>Keep <code>mach.port_backlog</code>.</strong> It is the only instrument that named the culprit outright, and it made the difference between &ldquo;a message is stranded somewhere&rdquo; and &ldquo;notifyd holds the receive right on this port.&rdquo;</li>
+<li><strong>Do not resume the namespace-separation plan on its original rationale.</strong> That rationale is retracted, and the elimination argument that replaced it is now also retracted &mdash; port-set identity and name translation both measured clean.</li>
+<li><strong>Weight the aslmanager row over the failure rate.</strong> Rates of 2, 3, 6, 8 and 11 per 150 were all observed on kernels that changed nothing relevant. The frozen row is a state, not a sample.</li>
 </ol>
 
 </div>

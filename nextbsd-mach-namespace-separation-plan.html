@@ -57,6 +57,26 @@
 <p><strong>Priority.</strong> Mach IPC drops messages non-deterministically. Every daemon inherits it, and it makes every other component&rsquo;s behaviour unreproducible &mdash; every userland measurement taken so far was contaminated by it. This outranks further userland porting.</p>
 </div>
 
+<h2>0. Progress</h2>
+<table>
+<tr><th>Stage</th><th>Ticket</th><th>State</th><th>Measured</th></tr>
+<tr><td>1 prereq &mdash; <code>ipc_pset_alloc_name</code> init</td><td>#146</td><td class="good">merged</td><td>&mdash;</td></tr>
+<tr><td>1 &mdash; EVFILT_MACHPORT off the fd table</td><td>#147</td><td class="good">merged</td><td>35/100 (unchanged, as predicted)</td></tr>
+<tr><td>2 / C0 &mdash; reverse hash off <code>is_table</code></td><td>#148</td><td class="good">merged</td><td>&mdash;</td></tr>
+<tr><td>userland &mdash; <code>MACH_PORT_INDEX</code> corrected</td><td>userland#131</td><td class="good">merged</td><td>&mdash;</td></tr>
+<tr><td>2 / C1 &mdash; locking discipline</td><td>#149</td><td class="warn">folded into C2b</td><td>&mdash;</td></tr>
+<tr><td>2 / C2a, C2b, C3&ndash;C6</td><td>#150&ndash;#155</td><td>open</td><td>&mdash;</td></tr>
+</table>
+
+<div class="callout callout-good">
+<p><strong>Stage 1 is done and is behaviour-neutral, which is the correct result.</strong> Kernel <code>20260831-021508</code> on arm64 measured <strong>35/100</strong> &mdash; identical to the pre-fix baseline and to #144. It removes the kqueue filter&rsquo;s dependence on file descriptors; it does not change what a name is, so it cannot fix a stale-name bug. What matters is what did <em>not</em> happen: <code>f_isfd = 0</code> boots, every service reports status 0, and the two changes that would have surfaced as a use-after-free or a &ldquo;recursed on non-recursive mutex&rdquo; panic are holding under a real launchd/libdispatch workload.</p>
+</div>
+
+<div class="callout callout-warn">
+<p><strong>A userland change had to land first, and it was not obvious.</strong> Kernel CI boots against the <em>published</em> userland, so a kernel-only generation change would pass its own smoke-test and still break the box: launchd sized <code>mig_cb_table</code> by the raw port name, and a generationed name would ask PID&nbsp;1 for hundreds of megabytes. userland#131 fixes that and is deliberately a no-op today (generation bits are zero, so <code>MACH_PORT_INDEX(name) == name</code>), so it lands safely on its own and makes the kernel change possible afterwards.</p>
+<p>It also repaired a latent bug: <code>MACH_PORT_INDEX</code> was <code>(name) &amp; ~0xff</code>, which returns <strong>zero for every port</strong> this kernel allocates &mdash; so launchd&rsquo;s <code>HASH_PORT</code> and libdispatch&rsquo;s <code>VL_HASH</code> put every port in bucket zero.</p>
+</div>
+
 <h2>1. What we are fixing</h2>
 <p>In XNU a port name is an index into the task&rsquo;s <code>ipc_space</code> entry table plus a generation counter, and the Mach namespace is entirely separate from the BSD file-descriptor namespace. In this port names <em>are</em> file descriptors, allocated by <code>kern_fdalloc(td, 16, &amp;fd)</code> (<code>ipc_entry.c:453</code>) &mdash; lowest-free-at-or-above-16 &mdash; and the generation machinery is compiled out (<code>sys/mach/port.h:219</code>, <code>MACH_PORT_GEN(name)</code> is <code>(0)</code>).</p>
 <p>Consequence: a name freed by one RPC is handed back <strong>bit-identical</strong> to the next, and nothing can tell that a cached name now denotes a different object. <code>ipc_object_copyin()</code> then wraps <em>any</em> non-Mach fd into a synthetic port with <code>ip_receiver</code> set and nobody receiving on it, so the send succeeds and the message is swallowed.</p>

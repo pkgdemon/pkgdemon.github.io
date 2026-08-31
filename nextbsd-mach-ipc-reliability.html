@@ -73,6 +73,26 @@ syslog  RET   lkmnosys 268451845/0x10004005   &lt;- MACH_RCV_INTERRUPTED, from o
 
 <p>The decay-then-stick pattern is the most diagnostic property: whatever is wrong is exhausted or outgrown by allocation, and is rebuilt when a daemon&rsquo;s port table is rebuilt.</p>
 
+<h2>1b. The failure count is a fixed budget, not a rate</h2>
+<div class="callout callout-bad">
+<p><strong>Exactly 35 failures. Every time. Then zero, forever.</strong></p>
+</div>
+<p>Measured across four different kernels, each with a completely different distribution:</p>
+<pre><code>arm            per-block                        total
+baseline       [4, 6, 3, 7, 6, 6, 3, 0, 0, 0]   35
++#144          [7, 9, 8, 5, 6, 0, 0, 0, 0, 0]   35
++Stage 1       [4, 3, 4, 5, 6, 10, 3, 0, 0, 0]  35
++alloc_name    [8, 7, 10, 10, 0, 0, 0, 0, 0, 0] 35</code></pre>
+<p>Then confirmed directly, 25 blocks of 10 from a cold boot:</p>
+<pre><code>block 1..6   3, 8, 8, 6, 5, 5   cumulative 35
+block 7..25  0 every block      cumulative still 35
+TOTAL: 35 failures out of 250 sends</code></pre>
+<p>The counter reaches 35 and does not move for a further 190 sends. This is not a probability &mdash; it is a <strong>fixed budget</strong> that gets consumed and is then gone.</p>
+<h3>Why this matters</h3>
+<p>Every arm previously reported as &ldquo;35/100, unchanged&rdquo; was read as <em>this change did nothing</em>. The stronger reading is that <strong>something with a capacity of ~35 is consumed, and none of these changes touches it</strong> &mdash; they only redistribute when the failures land.</p>
+<p>It also means the percentage framing used in the earlier arms was misleading. &ldquo;35/100 = 35%&rdquo; invites comparison against 0%; the honest statement is &ldquo;35 failures, then clean&rdquo;, and the denominator was a choice of how many sends to make, not a property of the system.</p>
+<p>The shape fits everything else: traffic-driven rather than time-driven (each send consumes budget), unaffected by idling, and reset by a daemon restart &mdash; because the restart re-creates whatever the budget is made of.</p>
+
 <h2>2. What has been ruled out</h2>
 <p>Each of these was a live hypothesis, tested and eliminated. They are recorded because knowing where the bug is <em>not</em> is most of the value.</p>
 <table>
@@ -87,7 +107,11 @@ syslog  RET   lkmnosys 268451845/0x10004005   &lt;- MACH_RCV_INTERRUPTED, from o
 <tr><td>Mach syscall slot wiring</td><td class="warn">No evidence</td><td>slots are dynamically allocated and resolved via <code>sysctlbyname("mach.syscall.&lt;name&gt;")</code>; ktrace printing <code>lkmnosys</code> is cosmetic (unnamed slot)</td></tr>
 </table>
 
-<h2>3. Root cause: port names have no generation counter</h2>
+<h2>3. Root cause candidate: port names have no generation counter</h2>
+<div class="callout callout-warn">
+<p><strong>Status: strongly supported by reading, NOT confirmed by measurement.</strong> The generation counter was implemented and merged, and the resulting kernel <em>did not boot</em> (see the plan&rsquo;s progress section) &mdash; so it has never actually run. Until it does, this section is the best available explanation, not a demonstrated cause. The fixed-budget result in &sect;1b is a fact; this is the hypothesis that fits it.</p>
+</div>
+
 <p>Confirmed by reading, in <code>src-overlay/sys/sys/mach/port.h</code>:</p>
 <pre><code>#else	/* NO_PORT_GEN */
 #define	MACH_PORT_INDEX(name)		(name)

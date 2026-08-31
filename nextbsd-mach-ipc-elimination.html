@@ -127,6 +127,20 @@
 <h3>A second, permanent instance</h3>
 <p><code>aslmanager</code>&rsquo;s service port holds an undelivered message <strong>from boot, on every boot</strong>, across every kernel measured. Same signature: kqueue-serviced, no Mach receive thread. It requires no race to observe, which makes it the best starting point for the remaining work.</p>
 
+<h2>4c. Fixed, and re-measured: 22/80 &rarr; 80/80</h2>
+<p>The cause was one flag in userland. <code>dispatch_kevent.c</code> registered the <code>EVFILT_MACHPORT</code> readiness knote <code>EV_ADD | EV_CLEAR</code>, while the Phase 3 <code>ERROR_EVENTS</code> skip assumed level-triggered semantics &mdash; its own comment says <em>&ldquo;the next ordinary poll delivers it&rdquo;</em>. With <code>EV_CLEAR</code> the kernel consumes the readiness when it hands the event over (<code>kern_event.c:2270</code>), and nothing re-arms it, so the message waited on the port for unrelated traffic. Dropping <code>EV_CLEAR</code> makes the assumption true (<a href="https://github.com/nextbsd-redux/nextbsd-userland/pull/136">PR #136</a>).</p>
+<table>
+<tr><th>test</th><th>before</th><th>after</th></tr>
+<tr><td>original 8-boot harness</td><td>22/80</td><td><strong>80/80</strong></td></tr>
+<tr><td>aslmanager frozen at boot</td><td>every kernel measured</td><td>gone</td></tr>
+<tr><td><code>syslog -s</code> failures</td><td>9, 12, 5, 5 per 150</td><td>0, 0, 0 per 150</td></tr>
+<tr><td>indefinite strand, 60 attempts</td><td>caught at 2&ndash;31</td><td>none</td></tr>
+</table>
+<div class="callout callout-warn">
+<p><strong>The raw harness reads 72/80, and that understates it.</strong> Every boot scored exactly 9/10 &mdash; not the shape of a random 4&ndash;5% fault. Per-send timing showed the first send after boot takes <strong>~13.5s and succeeds</strong>, with the message confirmed in <code>system.log</code>; the harness&rsquo;s 10s timeout was simply shorter than a slow cold start. That residual is a separate deterministic latency bug, filed as <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/137">userland #137</a>. Delivery is 80/80.</p>
+</div>
+<p><strong>A criterion set in advance failed, and it was the criterion that was wrong.</strong> The commit required the kernel-side notify/drain gap to collapse toward 0; it rose from 10/12/11/6 to 26/24/29. Level-triggering re-reports the same readiness until drained, so <code>rcvlarge_notify</code> now counts re-notifications &mdash; <code>psetport_drained</code> is flat (~897 &rarr; ~907) while <code>notify</code> rose ~27. Nothing is lost; the metric stopped measuring loss. The deterministic aslmanager test and the failure counts are what carry the result, and both were fixed in advance.</p>
+
 <h2>4b. Resolved: the kernel notifies, userland does not always read</h2>
 <p>Two counters settle where the loss happens. <code>rcvlarge_notify</code> counts &ldquo;a message is waiting on port N&rdquo; events handed to userland; those do <em>not</em> dequeue anything, since <code>filt_machport()</code> returns with the message still queued and leaves userland to issue its own <code>mach_msg()</code>. <code>psetport_drained</code> counts messages actually taken off a port-set member port.</p>
 <table>

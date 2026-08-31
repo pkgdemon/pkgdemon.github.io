@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD Mach IPC reliability &mdash; findings</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+    .callout-bad { border-left-color:var(--bad); background:#f7e8e8; }
+    td.bad { color:var(--bad); font-weight:600; white-space:nowrap; }
+    td.warn { color:var(--warn); font-weight:600; white-space:nowrap; }
+    td.good { color:var(--good); font-weight:600; white-space:nowrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; companion to <a href="nextbsd-mach-mig-restoration-plan.html">MIG restoration</a>, <a href="nextbsd-evfilt-machport-native-plan.html">EVFILT_MACHPORT</a>, <a href="launchd-research.html">launchd&nbsp;&rarr;&nbsp;Mach</a></p>
+
+<h1>Mach IPC reliability</h1>
+<p class="lede">Mach messages are lost non-deterministically on NextBSD. A client&rsquo;s send succeeds, the server never receives it, and the client blocks forever. This page records what was measured on hardware, what was <em>ruled out</em>, and what is left.</p>
+<p class="meta">2026-08-30. All measurements on arm64 hardware (192.168.1.216), NextBSD kernel 20260830. Every claim below is either measured on that machine or cited to file:line; hypotheses are labelled as such.</p>
+
+<div class="callout callout-bad">
+<p><strong>Priority.</strong> This is a defect in the IPC substrate itself, not in any one daemon. Every Mach service inherits it. It should be fixed before further userland porting, because it makes every other component&rsquo;s behaviour unreproducible.</p>
+</div>
+
+<h2>1. The failure, precisely</h2>
+<p>A client calls <code>mach_msg(SEND|RCV)</code>. ktrace of a wedged client shows the trap entered and never returning:</p>
+<pre><code>syslog  CALL  lkmnosys(0x332f99d21368,0x3,0x24,0x40,0x12,0)
+syslog  RET   lkmnosys 268451845/0x10004005   &lt;- MACH_RCV_INTERRUPTED, from our SIGKILL</code></pre>
+<p>Args decode as <code>option=0x3</code> (SEND|RCV), <code>send_size=36</code>, <code>rcv_size=64</code>, <code>rcv_name=0x12</code>. The send half succeeds; the client then sits in <code>ipc_mqueue_receive</code> indefinitely.</p>
+
+<table>
+<tr><th>Property</th><th>Established by</th></tr>
+<tr><td>Genuine permanent wedge, not slowness</td><td>90-second timeout changes nothing; 5 of 13 sends burned the full 90s</td></tr>
+<tr><td>Bimodal &mdash; sub-second success or never</td><td>timed probes; no intermediate durations observed</td></tr>
+<tr><td>Server never sees the message</td><td>marker never appears in the log; search method validated against a <em>successful</em> send</td></tr>
+<tr><td>Client and server both blocked simultaneously</td><td><code>procstat -kk</code>: client in <code>ipc_mqueue_receive</code>, server thread also parked in <code>ipc_mqueue_receive</code></td></tr>
+<tr><td><strong>Traffic-driven decay</strong></td><td>fresh boot 40&ndash;60% wedge; after ~70&ndash;80 cumulative sends &rarr; 0, and stays 0</td></tr>
+<tr><td><strong>Time does not help</strong></td><td>10 minutes idle, zero sends &rarr; still 15/30 wedged</td></tr>
+<tr><td>Resets when <em>either</em> daemon restarts</td><td>warm (0/20) &rarr; restart syslogd &rarr; 4/20; re-warm &rarr; restart notifyd &rarr; 10/20</td></tr>
+</table>
+
+<p>The decay-then-stick pattern is the most diagnostic property: whatever is wrong is exhausted or outgrown by allocation, and is rebuilt when a daemon&rsquo;s port table is rebuilt.</p>
+
+<h2>2. What has been ruled out</h2>
+<p>Each of these was a live hypothesis, tested and eliminated. They are recorded because knowing where the bug is <em>not</em> is most of the value.</p>
+<table>
+<tr><th>Hypothesis</th><th>Verdict</th><th>Evidence</th></tr>
+<tr><td>notifyd crashing mid-RPC</td><td class="bad">Refuted</td><td>0 aborts during a burst where 10/12 sends failed; PID stable. The 18 logged aborts were historical &mdash; the log spans two days and is never truncated.</td></tr>
+<tr><td>libnotify <code>shm_base</code> NULL causing RPC fallback</td><td class="bad">Refuted</td><td>that path returns <code>NOTIFY_STATUS_SHM_BASE_NULL</code>; it cannot hang</td></tr>
+<tr><td>notifyd has no shm slots (<code>nslots==0</code>)</td><td class="bad">Refuted</td><td>segment exists, 4096 bytes, <code>1024 slots (current id 39)</code> from notifyd&rsquo;s own status dump</td></tr>
+<tr><td>EVFILT_MACHPORT bridge missing wakeups</td><td class="bad">Refuted</td><td>notifyd-only RPCs: 1 wedge in 55. During a wedge notifyd is fully idle and healthy. The wedged path used a <em>raw blocking</em> <code>mach_msg_receive</code>, not the kqueue bridge.</td></tr>
+<tr><td>launchd does not hold the MachService receive right upfront</td><td class="bad">Refuted</td><td><code>machservice_setup()</code> (called from plist parsing) &rarr; <code>machservice_new()</code> &rarr; <code>launchd_mport_create_recv()</code>, <code>ms-&gt;recv = true</code>, <code>ms-&gt;upfront = true</code>. Apple&rsquo;s semantics are implemented.</td></tr>
+<tr><td>It is really just slowness, manufactured by short timeouts</td><td class="bad">Refuted</td><td>90s timeout &mdash; 15&times; the original &mdash; changes nothing</td></tr>
+<tr><td>libxpc is the root cause</td><td class="bad">Not on the failing path</td><td><code>asl.c</code>, the client send path, has <strong>zero</strong> XPC call sites; traces show pure MIG/Mach</td></tr>
+<tr><td>Mach syscall slot wiring</td><td class="warn">No evidence</td><td>slots are dynamically allocated and resolved via <code>sysctlbyname("mach.syscall.&lt;name&gt;")</code>; ktrace printing <code>lkmnosys</code> is cosmetic (unnamed slot)</td></tr>
+</table>
+
+<h2>3. Root cause: port names have no generation counter</h2>
+<p>Confirmed by reading, in <code>src-overlay/sys/sys/mach/port.h</code>:</p>
+<pre><code>#else	/* NO_PORT_GEN */
+#define	MACH_PORT_INDEX(name)		(name)
+#define	MACH_PORT_GEN(name)		(0)
+#define	MACH_PORT_MAKE(index, gen)	(index)
+#endif	/* NO_PORT_GEN */</code></pre>
+<p>Classic Mach encodes a <strong>generation count</strong> in every port name precisely so that a reused name is detectably stale. Here it is compiled out. <code>IE_BITS_GEN</code> survives in <code>ipc_entry.h</code> but appears in exactly one <code>.c</code> file &mdash; inside a debug <code>printf</code>.</p>
+<p>Names are raw file descriptors from <code>kern_fdalloc(td, 16, &amp;fd)</code> (<code>ipc_entry.c:453</code>) &mdash; lowest-free-at-or-above-16 &mdash; and every free resets the search downward (<code>ipc_entry.c:893-894</code>). A name released at the end of one RPC is handed back <strong>bit-identical</strong> on the next, and nothing in the kernel or userland can tell that a cached name now denotes a different object.</p>
+
+<h3>Why this produces exactly the observed decay</h3>
+<p>Two confirmed leaks march the fd low-water mark monotonically upward:</p>
+<ul>
+<li><strong><code>ipc_entry_alloc_name()</code> allocates the fd twice</strong> (<code>ipc_entry.c:559-582</code>). It reserves fd == <code>name</code>, installs a <code>falloc_noinstall</code> placeholder with <code>badfileops</code> there, then calls <code>ipc_entry_get()</code>, which ignores the requested name and allocates a <em>different</em> fd. The placeholder is never dropped, so that name is burned for the life of the process &mdash; and the returned entry&rsquo;s real name differs from the one later stamped into <code>port-&gt;ip_receiver_name</code>.</li>
+<li><strong>User-reference counts are aliased onto <code>fp-&gt;f_count</code> with an inconsistent +1</strong> (<code>ipc_entry.c:618-622</code>). A one-uref send right has <code>f_count == 2</code>, so the final-release branch in <code>ipc_right_dealloc</code> (<code>ipc_right.c:809</code>) is unreachable: <code>mach_port_deallocate</code> on a send right never frees the name.</li>
+</ul>
+<p>Early in a daemon&rsquo;s life the recycled band and the live band overlap, so collisions are common. As the leaks push the low-water mark up, the bands separate and collisions stop &mdash; <em>permanently</em>, because fds never go back down. Restarting a daemon resets the table to 16 and recreates the dense band. Elapsed time is irrelevant because the driver is cumulative <em>allocation</em>, not time.</p>
+<p>That accounts for every measured property in &sect;1: traffic-driven, time-independent, bimodal, resets on daemon restart.</p>
+
+<h3>The mechanism that produces the exact symptom</h3>
+<p><code>ipc_object_copyin()</code> wraps <strong>any non-Mach fd</strong> into a synthetic port rather than returning an error (<code>ipc_object.c:411-412</code>, <code>ipc_entry.c:355-386</code>): it allocates a special port, sets <code>ip_receiver</code>, and returns success. A recycled name that now denotes a vnode or socket silently becomes a port <em>with nobody receiving on it</em>. The send succeeds, the server never sees the message, and the client blocks forever awaiting a reply &mdash; which is precisely the observed state.</p>
+
+<h2>3b. A second, independent defect: lost wakeup on bare-port receive</h2>
+<p><code>ipc_mqueue_deliver()</code> consulted only one of the two thread pools:</p>
+<pre><code>receiver = NULL;
+/* first we check the the port and portset for waiters */
+if (pset != NULL) {
+        receiver = thread_pool_get_act((ipc_object_t)pset, 0);
+} else if (receiver == NULL) {          /* dead branch */
+        receiver = thread_pool_get_act((ipc_object_t)port, 0);
+}</code></pre>
+<p><code>receiver</code> was set NULL immediately above, so the second arm was just <code>else</code>: <strong>a port belonging to a set never had its own pool checked</strong>, and the <code>#369</code> re-check block below repeated the omission. The fallback <code>ipc_pset_signal()</code> only activates <code>EVFILT_MACHPORT</code> knotes and, per its own comment, &ldquo;since #256 it never wakes pool receivers.&rdquo;</p>
+<p>Our userland creates exactly the triggering shape: <code>libmach/dispatch_kevent.c:272</code> allocates a port set and <code>:279</code> moves service ports into it, while syslogd&rsquo;s <code>database_server</code> thread receives on the <strong>bare port name</strong>. Fixed in nextbsd-kernel PR&nbsp;#144. This is unconditional and real, but it does <em>not</em> explain the traffic decay &mdash; the generation counter does.</p>
+
+<h2>4. Verified defects worth fixing regardless</h2>
+<p>Found by a four-way audit of libnotify/notifyd; each verified independently against the code or the running machine. None of these is the wedge, but all are real.</p>
+<table>
+<tr><th>Defect</th><th>Consequence</th></tr>
+<tr><td><code>os_atomic_inc/dec</code> map to <code>atomic_fetch_add/sub</code>, returning the <em>pre</em>-op value where Apple&rsquo;s return <em>post</em>-op (<code>freebsd-shims/os/atomic_private.h:13-14</code>)</td><td>Every refcount release in libnotify is off by one. <code>notify_cancel()</code> never actually cancels; nodes are never freed; a genuine over-release now <em>passes</em> the assert meant to catch it and frees a live node.</td></tr>
+<tr><td><code>SYS_initgroups</code> defined as 81 &mdash; which is <code>getpgrp</code> on this system (verified against <code>/usr/include/sys/syscall.h</code>: <code>getgroups</code>=595, <code>setgroups</code>=596)</td><td>notifyd silently never restores its supplementary groups; drifts to the last client&rsquo;s credentials.</td></tr>
+<tr><td><code>pthread_setugid_np</code> is a no-op returning success</td><td>notifyd&rsquo;s only path access-control check is defeated; <code>stat()</code> runs as root, so any client can watch any file.</td></tr>
+<tr><td><code>sandbox_check_by_audit_token</code> returns 0 (allowed) unconditionally</td><td>Fails open on three security decisions, including one used as a sandbox <em>detector</em>.</td></tr>
+<tr><td><code>O_SYMLINK</code> mapped to <code>O_NOFOLLOW</code></td><td>Opposite operations &mdash; symlink watches can never work.</td></tr>
+<tr><td><code>NOTIFY_INTERNAL_CRASH</code> is a returning no-op</td><td>Four <code>kern_return_t</code> MIG routines fall off the end and return garbage to the demux.</td></tr>
+<tr><td>Every registration on the running system is <code>plain</code>; <code>memory 0</code> (notifyd status dump)</td><td>No registration is shared-memory backed, so every <code>notify_check</code> is an RPC. This is a <em>consequence</em> of RPCs not completing, not a cause.</td></tr>
+</table>
+
+<h2>5. Corrections to the record</h2>
+<p>Recorded so the same ground is not re-covered.</p>
+<ul>
+<li><strong>The measurement harness was wrong.</strong> Its <code>reached_server</code> column grepped a never-truncated log by the current syslogd PID &mdash; and syslogd gets the same PID every boot, so the count accumulated across the whole run and read as a rising per-send tally. It is a per-boot 0/1 flag. Fixed: the log is now truncated before each reboot. The <code>ok/attempted</code> totals were never affected.</li>
+<li><strong>Every arm was measured inside the transient.</strong> The harness sends 10 messages per boot &mdash; entirely within the failing window. The recorded rates (baseline 75%, +#127 25%, +#126 30%, +#129 27.5%, +#130 43.75%) therefore measure <em>warm-up behaviour</em>, not steady-state reliability. Steady state on all of them appears to be zero wedges.</li>
+<li><strong>Three predicted fixes did not work</strong> (#126, #129, #130). Each was a real improvement to real code; none addressed the substrate.</li>
+<li><strong>An instrument was invalid.</strong> <code>vm.uma.ipc_kmsg_zone</code> reads zero during a wedge &mdash; but its <code>allocs</code> counter also stays zero through real traffic, so this kernel does not route messages through that zone. The reading proved nothing.</li>
+</ul>
+
+<h2>6. Recommended order</h2>
+<ol>
+<li><strong>Restore generation counting on port names.</strong> This is the root cause. The machinery already exists in <code>ipc_entry.h</code>; it needs stamping in <code>ipc_entry_get()</code> and checking in <code>ipc_entry_lookup()</code>. Until a reused name is detectably stale, Mach IPC on this system is not deterministic.</li>
+<li><strong>Land the bare-port lost-wakeup fix</strong> (PR&nbsp;#144) &mdash; independent, unconditional, verified.</li>
+<li><strong>Fix the two name leaks</strong> (&sect;3): the double <code>fdalloc</code> in <code>ipc_entry_alloc_name()</code> and the <code>f_count</code>/uref off-by-one. Note these currently <em>mask</em> the collision window by pushing the fd band upward &mdash; fixing them without (1) will make the failure <strong>more</strong> frequent, not less. Sequence matters.</li>
+<li><strong>Make <code>ipc_object_copyin()</code> reject non-Mach fds</strong> instead of wrapping them in a receiverless port.</li>
+<li><strong>Re-baseline every userland arm</strong> with a harness that measures steady state, not the first ten sends.</li>
+<li><strong>Then</strong> the shim defects in &sect;4, starting with <code>os_atomic_inc/dec</code>.</li>
+</ol>
+<div class="callout callout-warn">
+<p><strong>Ordering warning.</strong> Item&nbsp;3 must not land before item&nbsp;1. The leaks are what currently drive the failure rate to zero after ~70&ndash;80 calls; removing them while names are still ungenerationed would keep the recycling band dense indefinitely and make the wedge permanent rather than transient.</p>
+</div>
+
+<h2>7. On reverting to older Darwin, and on libxpc</h2>
+<p>Both were considered. Neither is supported by the evidence as a fix for <em>this</em> bug:</p>
+<ul>
+<li>libxpc is <strong>not on the failing path</strong> (<code>asl.c</code>: zero XPC call sites). Removing it is a legitimate debt-reduction goal &mdash; our libxpc is 7,143 LoC of FreeBSD <code>nvlist</code>-based reimplementation, not Apple&rsquo;s &mdash; but it would not fix this.</li>
+<li>Reverting notifyd/ASL to 10.6-era drops would not touch a kernel IPC defect. Note also that 10.6 removes XPC but <em>not</em> libdispatch, which shipped in 10.6.</li>
+<li>The generational seam is real, though: 2003&ndash;2005 service designs (notifyd 10.3, ASL and launchd 10.4) wrapped in 2011+ plumbing. Most audit findings live in that wrapping layer, not the service logic, which is repeatedly pristine vendored Apple code.</li>
+</ul>
+
+<h2>8. Prior art</h2>
+<ul>
+<li><a href="freebsd-mach-kmod-syscall-slots-impl-plan.html">mach.ko syscall slots &mdash; implementation plan</a> &mdash; the widened <code>lkmnosys</code> band (slots 599&ndash;646). The XNU-style separate trap table is already scoped and deferred there.</li>
+<li><a href="nextbsd-mach-builtin-plan.html">mach.ko &rarr; kernel built-in</a></li>
+<li><a href="nextbsd-evfilt-machport-native-plan.html">EVFILT_MACHPORT native filter</a></li>
+<li><a href="nextbsd-mach-mig-restoration-plan.html">MIG restoration</a></li>
+</ul>
+
+</div>
+</body>
+</html>

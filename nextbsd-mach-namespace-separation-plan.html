@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mach namespace separation &mdash; plan</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+</style>
+<style>
+    .callout-bad { border-left-color:var(--bad); background:#f7e8e8; }
+    td.bad { color:var(--bad); font-weight:600; }
+    td.warn { color:var(--warn); font-weight:600; }
+    td.good { color:var(--good); font-weight:600; }
+    .stage { background:#fff; border:1px solid var(--border); border-radius:4px; padding:4px 18px 14px; margin:0 0 18px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; implements the fix identified in <a href="nextbsd-mach-ipc-reliability.html">Mach IPC reliability</a> &middot; see also <a href="nextbsd-evfilt-machport-native-plan.html">EVFILT_MACHPORT</a>, <a href="launchd-research.html">Launchd&nbsp;&rarr;&nbsp;Mach</a></p>
+
+<h1>Mach namespace separation</h1>
+<p class="lede">Stop Mach port names being file descriptors. This is the single deviation from XNU that causes non-deterministic Mach message loss on NextBSD, and undoing it is a two-stage kernel project.</p>
+<p class="meta">2026-08-31. Change maps produced by two scoping agents against <code>nextbsd-kernel@7ccd489</code>, with every load-bearing claim re-verified by hand. Line numbers cite <code>main</code>. See &sect;11 for a methodology correction that affects how parts of the agent output should be read.</p>
+
+<div class="callout callout-bad">
+<p><strong>Priority.</strong> Mach IPC drops messages non-deterministically. Every daemon inherits it, and it makes every other component&rsquo;s behaviour unreproducible &mdash; every userland measurement taken so far was contaminated by it. This outranks further userland porting.</p>
+</div>
+
+<h2>1. What we are fixing</h2>
+<p>In XNU a port name is an index into the task&rsquo;s <code>ipc_space</code> entry table plus a generation counter, and the Mach namespace is entirely separate from the BSD file-descriptor namespace. In this port names <em>are</em> file descriptors, allocated by <code>kern_fdalloc(td, 16, &amp;fd)</code> (<code>ipc_entry.c:453</code>) &mdash; lowest-free-at-or-above-16 &mdash; and the generation machinery is compiled out (<code>sys/mach/port.h:219</code>, <code>MACH_PORT_GEN(name)</code> is <code>(0)</code>).</p>
+<p>Consequence: a name freed by one RPC is handed back <strong>bit-identical</strong> to the next, and nothing can tell that a cached name now denotes a different object. <code>ipc_object_copyin()</code> then wraps <em>any</em> non-Mach fd into a synthetic port with <code>ip_receiver</code> set and nobody receiving on it, so the send succeeds and the message is swallowed.</p>
+
+<h3>Measured on arm64 hardware</h3>
+<table>
+<tr><th>Property</th><th>Evidence</th></tr>
+<tr><td>Permanent wedge, not slowness</td><td>90-second timeout expires unchanged; 5 of 13 sends burned the full 90s</td></tr>
+<tr><td>Bimodal</td><td>sub-second success or never; no intermediate durations</td></tr>
+<tr><td>Client and server both blocked at once</td><td><code>procstat -kk</code>: client in <code>ipc_mqueue_receive</code>, server thread also parked in <code>ipc_mqueue_receive</code></td></tr>
+<tr><td>Traffic-driven decay</td><td>40&ndash;60% wedge from cold boot &rarr; 0 after ~70&ndash;80 sends, then stays 0</td></tr>
+<tr><td>Time-independent</td><td>10 minutes idle, zero sends &rarr; still 15/30 wedged</td></tr>
+<tr><td>Resets on daemon restart</td><td>warm 0/20 &rarr; restart syslogd &rarr; 4/20; re-warm &rarr; restart notifyd &rarr; 10/20</td></tr>
+</table>
+<p>The decay is the diagnostic property: two name leaks (&sect;7) push the fd low-water mark monotonically upward, so the recycled band and the live band separate and collisions stop &mdash; permanently, because fds never go back down. A daemon restart resets the table to 16 and recreates the dense band.</p>
+
+<h2>2. nextbsd#369 was closed for the wrong reason</h2>
+<div class="callout callout-warn">
+<p><code>nextbsd#369</code> &mdash; <em>&ldquo;Flaky amd64 boot tests: notifyd/syslogd ASL round-trips stall in mach_msg_receive under TCG emulation&rdquo;</em> &mdash; is this bug, and it was <strong>closed as emulator flakiness</strong>. It is not: it reproduces on real arm64 hardware, survives a 90-second timeout, and has an identified cause in <code>ipc_entry</code>. Emulation only made it easier to hit. That misattribution is why it went unfixed.</p>
+</div>
+
+<h2>3. Why it is two stages</h2>
+<p>The obvious fix &mdash; turn the generation counter on &mdash; does not work in isolation, and this was verified by writing it. <code>machport_filtops</code> has <code>.f_isfd = 1</code> (<code>ipc_pset.c:537</code>), so FreeBSD&rsquo;s kqueue core calls <code>fget(kev.ident)</code> <em>before</em> the filter attaches. libmach registers <code>EVFILT_MACHPORT</code> with the port <strong>name</strong> as the ident (<code>dispatch_kevent.c:434</code>). Put generation bits in a name and that <code>fget</code> returns <code>EBADF</code> &mdash; EVFILT_MACHPORT registration dies, taking libdispatch&rsquo;s Mach bridge with it.</p>
+<p>The written patch is preserved on <code>fix/port-name-generation</code>, committed with a message stating it must not be merged. It becomes correct once Stage&nbsp;1 lands.</p>
+
+<h2>4. Stage 1 &mdash; make the kqueue filter stop depending on fds</h2>
+<p>Goal: the filter resolves the port set from the calling task&rsquo;s <code>ipc_space</code>, with no dependence on the fd table. Names are still fds after Stage&nbsp;1; nothing may yet change what a name <em>is</em>. Behaviour should be unchanged &mdash; this stage only removes the dependency.</p>
+
+<h3>4.1 Change map</h3>
+<table>
+<tr><th>Site</th><th>Today</th><th>After</th></tr>
+<tr><td><code>ipc_pset.c:537</code></td><td><code>.f_isfd = 1</code></td><td><code>.f_isfd = 0</code>. This one token flips five kqueue-core behaviours at once: lookup, expand, storage, fdclose, refcount.</td></tr>
+<tr><td><code>ipc_pset.c:625</code></td><td><code>kn-&gt;kn_fp = entry-&gt;ie_fp;</code></td><td><code>kn-&gt;kn_hook = pset;</code> and <strong>retain</strong> the reference taken above rather than releasing it. Do not write an <code>fp*</code> into the union slot &mdash; with <code>f_isfd = 0</code> nothing will <code>fdrop</code> it.</td></tr>
+<tr><td><code>ipc_pset.c:651</code> (detach)</td><td>reaches the pset via <code>kn_fp-&gt;f_data-&gt;ie_object</code></td><td><code>pset = kn-&gt;kn_hook;</code>, then <code>knlist_remove</code> if still listed, then release the reference on <strong>every</strong> exit path.</td></tr>
+<tr><td><code>ipc_pset.c:666</code> (event)</td><td><code>entry = kn-&gt;kn_fp-&gt;f_data;</code> &mdash; unconditional, before the <code>EV_EOF</code> early-out</td><td>seed <code>pset</code> from <code>kn-&gt;kn_hook</code>. <strong>Must be seeded, not NULL</strong> &mdash; see R2.</td></tr>
+<tr><td><code>ipc_entry.c:606</code></td><td>comment: <em>&ldquo;we deliberately skip closing the knote so that it will have the last reference to the fp&rdquo;</em></td><td>False after Stage&nbsp;1. Pset destruction moves earlier; rewrite the comment.</td></tr>
+<tr><td><code>ipc_entry.c:675</code> / <code>:686</code></td><td><code>knote_fdclose()</code> reaps the knote on exec</td><td><strong>Add explicit teardown.</strong> <code>knote_fdclose</code> only walks <code>kq_knlist[fd]</code>; with <code>f_isfd = 0</code> the knote lives in <code>kq_knhash</code> and can never be found.</td></tr>
+</table>
+<p><strong>libdispatch needs no changes</strong> &mdash; verified by sweep: no mach source uses <code>_dispatch_unote_create_with_fd</code>, and the muxnote bucket hash already special-cases <code>EVFILT_MACHPORT</code>. libmach needs no code change either; its ident is already a name, not an fd.</p>
+
+<h3>4.2 Prerequisite</h3>
+<p><code>ipc_pset_alloc_name</code> never calls <code>sx_init</code> / <code>knlist_init</code>, unlike <code>ipc_pset_alloc</code>. A pset created that way has an uninitialised <code>ips_note</code>, and <code>knlist_add</code> would write into garbage. Latent today; <strong>live after Stage&nbsp;1</strong>. Land the init first, on its own.</p>
+
+<h3>4.3 Risks</h3>
+<ol>
+<li><strong>R1 &mdash; reintroducing the PR&nbsp;#250 UAF, worse.</strong> Today <code>ips_reference</code> is released immediately after <code>knlist_add</code>, and the pset survives because kqueue&rsquo;s <code>fp</code> reference pins it. Remove <code>f_isfd</code> and nothing holds it. The reference must become the knote&rsquo;s, released in detach. Flipping the flag while leaving the reference as a matched pair moves the write-after-free from a narrow window to the whole knote lifetime &mdash; presenting as the same <code>page fault write 0x70</code>.</li>
+<li><strong>R2 &mdash; non-recursive mutex panic.</strong> <code>ipc_object_translate</code> only takes <code>io_lock</code> when the caller did not pre-seed <code>*objectp</code>, and <code>io_lock</code> is <code>MTX_DEF</code>. The natural-looking edit (<code>pset = IPS_NULL</code>) panics on the later re-lock. Will not show in a smoke test &mdash; needs real message delivery.</li>
+<li><strong>R3 &mdash; detach on a foreign space.</strong> <code>kqueue_drain</code> runs in whatever thread does the last <code>fdrop</code> of the kq, which for a passed kq is another process. Detach must use the cached pointer and must never re-resolve by name.</li>
+<li><strong>R4 &mdash; pset destruction moves earlier</strong>, exposing three <code>KNOTE(EV_EOF)</code> sites in <code>ipc_right.c</code> that have never fired at live knotes before.</li>
+<li><strong>R5 &mdash; Capsicum posture change.</strong> The kqueue path&rsquo;s <code>cap_event_rights</code> is replaced by the lookup&rsquo;s <code>CAP_KQUEUE_EVENT|CAP_KQUEUE_CHANGE</code>.</li>
+</ol>
+<p>The whole set must land as <strong>one atomic commit</strong>. <code>.f_isfd = 0</code> without the event fix is an immediate NULL deref; without the attach-side reference it is a UAF on the first pset destroy.</p>
+
+<h2>5. Stage 2 &mdash; names become table indices</h2>
+<p>Confirmed starting state: <code>is_table</code> is <strong>not</strong> a name-indexed table. It is a chained hash keyed on the object pointer, <strong>7 buckets</strong>, and it <strong>never grows</strong> &mdash; <code>ipc_entry_grow_table</code> does not exist in this tree.</p>
+
+<h3>5.1 Sub-stages</h3>
+<div class="stage"><h4>C0 &mdash; prep, no semantic change</h4>
+<p>Resize the table progression for a pointer array; add a separate reverse-hash array and retarget <code>ipc_hash.c</code> to it; merge the duplicate <code>ipc_entry_hash_delete</code>; delete dead <code>fd_last_used</code>. <code>is_table</code> becomes allocated-but-unused.</p></div>
+<div class="stage"><h4>C1 &mdash; locking discipline <span class="pill pill-bad">high risk</span></h4>
+<p>Make <code>ipc_entry_lookup</code> require the space lock. Today it takes none, and it <strong>ignores its <code>space</code> argument entirely</strong>, reading <code>curthread</code>&rsquo;s fd table (<code>ipc_entry.c:321</code>) &mdash; so a task operating on another task&rsquo;s space silently searches its own. Fixing that is a correctness win in its own right. Do this before the table, while lookups are still cheap. This is where a deadlock surfaces if one exists.</p></div>
+<div class="stage"><h4>C2a &mdash; user-reference counts off <code>f_count</code></h4>
+<p><code>ipc_entry_refs()</code> returns <code>entry-&gt;ie_fp-&gt;f_count</code> (<code>ipc_entry.c:619</code>). A fresh entry has <code>f_count == 1</code> from the fd-table slot, so urefs and fd references share a counter with different zero points &mdash; and the code disagrees with itself about which. Net effect: <code>mach_port_deallocate</code> on a send right takes the <code>&gt; 1</code> branch, never decrements <code>ip_srights</code>, and <strong>two calls are needed to release one right</strong>. <code>fork()</code> compounds it: <code>fdcopy()</code> holds every inherited Mach fp, adding +1 per fork per port. ~35 call sites in <code>ipc_right.c</code>, each needing individual review against XNU &mdash; not a mechanical substitution.</p></div>
+<div class="stage"><h4>C2b &mdash; the pivot <span class="pill pill-bad">large, unavoidably</span></h4>
+<p>New <code>ipc_entry_get</code> / <code>alloc</code> / <code>alloc_name</code> / <code>lookup</code> / <code>close</code> / <code>dealloc</code>; a new <code>ipc_entry_grow_table</code>; the new name encoding; per-slot generations. The name encoding, the table, and the lookup have to change together &mdash; <strong>there is no way to split this further and keep the tree bootable.</strong> Compensate with test coverage, not artificial splitting.</p></div>
+<div class="stage"><h4>C3 &mdash; remove the fd backing (requires Stage 1)</h4>
+<p>Delete <code>ie_fp</code>, <code>mach_fileops</code>, and ~150 lines of copied FreeBSD fd internals. <strong>Move <code>mach_port_close</code>&rsquo;s teardown body somewhere first &mdash; do not lose it.</strong> Delete the implicit fileport path (&sect;6). Add a per-space entry cap.</p></div>
+<div class="stage"><h4>C4 &mdash; fork/exec semantics</h4>
+<p>Rewrite <code>ipc_entry_list_close</code>, preserving both out-of-tree guards (non-Mach and Linux-ABI processes &mdash; each a real crash fix). Decide fork inheritance and exec reset deliberately. <strong>This is where daemon-level regressions surface</strong>; budget a full bring-up.</p></div>
+<div class="stage"><h4>C5 &mdash; userland</h4>
+<p>Fix <code>libmach/include/mach/port.h</code>, whose macros currently disagree with the kernel&rsquo;s. Retire the <code>launchd/src/runtime.c</code> workaround that exists because <code>MACH_PORT_INDEX</code> always returns 0. <strong>Must land close in time to C2b</strong>, not months later &mdash; with the new encoding, leaving it in place would size a launchd table by raw name.</p></div>
+<div class="stage"><h4>C6 &mdash; introspection restoration</h4>
+<p>Re-enable <code>mach_port_names</code> and <code>mach_port_space_info</code>, both currently disabled and both written assuming a name-indexed table. Recovers what &sect;6 loses.</p></div>
+
+<h3>5.2 Name encoding: adopt Apple&rsquo;s layout</h3>
+<pre><code>#define	MACH_PORT_INDEX(name)		((name) &gt;&gt; 8)
+#define	MACH_PORT_GEN(name)		(((name) &amp; 0xff) &lt;&lt; 24)
+#define	MACH_PORT_MAKE(index, gen)	(((index) &lt;&lt; 8) | ((gen) &gt;&gt; 24))</code></pre>
+<p>The reason the tree deviated &mdash; that an index must remain a valid fd &mdash; is exactly what Stage&nbsp;2 removes. Userland already ships Apple&rsquo;s shape and currently disagrees with the kernel; taking Apple&rsquo;s layout reconciles them and retires the launchd workaround.</p>
+
+<h3>5.3 <code>ipc_hash</code> survives</h3>
+<p>The indexed table is <em>name&nbsp;&rarr;&nbsp;entry</em>; <code>ipc_hash</code> is <em>object&nbsp;&rarr;&nbsp;name</em>. Opposite directions; neither subsumes the other. Without it, receiving a second send right to a port you already hold would mint a new name instead of coalescing &mdash; and <strong><code>mach_task_self()</code> would return a different name on every call</strong>, leaking an entry each time.</p>
+
+<h2>6. What else breaks</h2>
+<ul>
+<li><strong>fork inheritance is currently accidental.</strong> The child gets a fresh empty <code>ipc_space</code>, yet can still use the parent&rsquo;s names because <code>fdcopy()</code> duplicated the fds and lookup resolves through <code>curthread</code>&rsquo;s fd table. Parent and child share <code>ipc_entry</code> structs across two spaces with conflated refcounts. After Stage&nbsp;2 the child&rsquo;s namespace is genuinely empty. <strong>This must be decided, not discovered.</strong></li>
+<li><strong>An undeclared implicit fileport.</strong> <code>ipc_object_copyin</code> wraps any ordinary fd passed where a port name is expected into a special port with <code>CAP_ALL1</code> rights &mdash; no API, no guard. Structurally impossible after Stage&nbsp;2. Userland&rsquo;s <code>fileport_*</code> are already <code>ENOSYS</code> stubs and all consumers handle the failure path, so delete rather than preserve.</li>
+<li><strong>Ports disappear from <code>fstat(2)</code>, <code>procstat -f</code>, and <code>lsof</code>.</strong> A real introspection loss; C6 is the replacement.</li>
+<li><strong>Resource limits.</strong> <code>RLIMIT_NOFILE</code> implicitly caps port allocation today. Afterwards nothing does, and <code>ipc_entry_alloc_name</code> makes the index user-controlled &mdash; an uncapped grow-to-cover is a memory-amplification vector. Add an explicit cap; refuse rather than grow above a threshold.</li>
+<li><strong>fd-passing.</strong> A port name can currently be sent via <code>SCM_RIGHTS</code>, and <code>close(2)</code> on one destroys the port. Both stop working.</li>
+</ul>
+
+<h2>7. The ordering trap</h2>
+<div class="callout callout-bad">
+<p><strong>Fixing the two name leaks before Stage&nbsp;2 makes the system worse, not better.</strong> Those leaks &mdash; the double-<code>fdalloc</code> in <code>ipc_entry_alloc_name</code> and the <code>f_count</code>/uref off-by-one &mdash; are what currently push the fd band upward and drive the failure rate to zero after ~70&ndash;80 calls. Restore correct free semantics while names are still ungenerationed and the recycling band stays dense indefinitely: a transient startup wedge becomes a <strong>permanent</strong> one. It would look like the fix caused a catastrophic regression.</p>
+<p>Fold both into Stage&nbsp;2. Bug (a) is not independently fixable anyway &mdash; a correct <code>alloc_name</code> requires a real table.</p>
+</div>
+
+<h2>8. Test plan</h2>
+<p>In-kernel tests via the existing sysctl-handler pattern:</p>
+<ul>
+<li><strong>name recycle</strong> &mdash; allocate/free N names; assert indices are reused, generation advances per slot, and a saved stale name fails lookup. <em>This is the test the current design cannot pass</em> and the primary regression guard.</li>
+<li><strong>alloc_name</strong> &mdash; assert the returned entry actually carries the requested name; assert no leaked slot. Guards bug (a).</li>
+<li><strong>urefs</strong> &mdash; copy out a send right, deallocate <em>once</em>, assert the entry is gone and <code>ip_srights</code> decremented. Guards bug (b).</li>
+<li><strong>table growth</strong> &mdash; assert names still resolve after each growth step and entry pointers held across growth stay valid.</li>
+<li><strong>reverse hash</strong> &mdash; <code>mach_task_self()</code> twice must return the same name.</li>
+<li><strong>cross-space</strong> &mdash; allocate in space A from a thread owning space B; assert it lands in A.</li>
+</ul>
+<p>Namespace-separation assertions: after boot <code>procstat -f 1</code> shows no port fds; <code>close(port_name)</code> returns <code>EBADF</code>; an ordinary fd passed as a port name returns <code>KERN_INVALID_NAME</code>.</p>
+<p><strong>Acceptance:</strong> boot to launchd with syslogd, configd, notifyd and mDNSResponder running, plus a libdispatch workload driving <code>EVFILT_MACHPORT</code> &mdash; then the cold-boot wedge measurement (10 blocks &times; 10 sends) at <strong>0/100</strong>. The pre-fix baseline is 35/100, and PR&nbsp;#144 measured 35/100.</p>
+
+<h2>9. What is <em>not</em> claimed</h2>
+<div class="callout callout-warn">
+<p>Stages&nbsp;1 and 2 are <strong>expected</strong> to fix the wedge; that is not demonstrated. The root-cause analysis is verified by reading, but four predicted fixes during this investigation (#126, #129, #130, #144) each addressed a real defect and <strong>none moved the measured rate</strong>. Treat the outcome as unproven until the acceptance measurement says otherwise.</p>
+</div>
+
+<h2>10. Open questions</h2>
+<ol>
+<li>Does anything in userland use a port name as an fd (<code>close</code>, <code>dup</code>, <code>SCM_RIGHTS</code>)? <code>libmach</code> is clean; launchd, libdispatch, CoreFoundation, configd, syslogd and mDNSResponder were <strong>not</strong> audited. Needs a dedicated sweep before C3.</li>
+<li>Fork inheritance policy &mdash; who depends on the current accident? <code>mach_task_fork_bsport</code> suggests full inheritance was tried and panicked.</li>
+<li>Pointer array vs XNU&rsquo;s flat array. A pointer array keeps entry addresses stable across growth, which matters because this tree passes <code>ipc_entry_t</code> across lock drops constantly. Flat-array fidelity would make C1 a correctness prerequisite rather than hygiene.</li>
+<li>Per-space entry cap value.</li>
+<li>Is <code>ipc_right_lookup</code>&rsquo;s lookup-then-lock ordering deliberate (avoiding recursion) or accidental? C1 hinges on it.</li>
+<li>Does anything run Mach under <code>cap_enter()</code>? Stage&nbsp;2 removes the only Capsicum check on ports.</li>
+</ol>
+
+<h2>11. Methodology note</h2>
+<p>Both scoping agents were run against a working tree that still had an experimental generation-counter patch applied. Both consequently reported that generations were already live and that <code>EVFILT_MACHPORT</code> was already broken for 63 of every 64 names. <strong>That is false for <code>main</code> and for the deployed kernel</strong>; it described the uncommitted patch. Each agent flagged the discrepancy in its own open questions, which is how it was caught.</p>
+<p>Everything cited here has been re-verified against clean <code>main</code>, and line numbers re-derived. The agents&rsquo; findings in files not touched by that patch &mdash; <code>ipc_pset.c</code>, <code>ipc_hash.c</code>, <code>ipc_object.c</code>, <code>ipc_right.c</code>, <code>ipc_table.c</code>, <code>task.c</code> &mdash; are unaffected. Their independent derivation of the <code>fget(ident)</code> blocker, reached without knowing it had been predicted, is corroboration rather than contamination.</p>
+
+<h2>12. Tickets</h2>
+<p>Umbrella: <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/145">nextbsd-kernel#145</a>.</p>
+<table>
+<tr><th>#</th><th>Stage</th><th>Note</th></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/146">146</a></td><td>1 prereq</td><td><code>ipc_pset_alloc_name</code> init &mdash; land first, alone</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/147">147</a></td><td>1</td><td>EVFILT_MACHPORT resolves through <code>ipc_space</code> &mdash; atomic commit</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/148">148</a></td><td>2 / C0</td><td>reverse hash off <code>is_table</code> &mdash; no semantic change</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/149">149</a></td><td>2 / C1</td><td>lookup takes the space lock, and honours <code>space</code></td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/150">150</a></td><td>2 / C2a</td><td class="bad">urefs off <code>f_count</code> &mdash; do not land alone</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/151">151</a></td><td>2 / C2b</td><td>the pivot &mdash; cannot be split further</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/152">152</a></td><td>2 / C3</td><td>delete the fd backing</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/153">153</a></td><td>2 / C4</td><td>fork/exec semantics &mdash; where daemon regressions surface</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/154">154</a></td><td>2 / C5</td><td>userland macros &mdash; must land near C2b</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/155">155</a></td><td>2 / C6</td><td>restore introspection</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/156">156</a></td><td>verify</td><td>test harness; acceptance is 0/100 cold-boot</td></tr>
+<tr><td><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/144">144</a></td><td>related</td><td>bare-port lost wakeup &mdash; real, but measured 35/100, identical to pre-fix</td></tr>
+</table>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mach IPC: what has been eliminated</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+</style>
+<style>
+    .callout-bad { border-left-color:var(--bad); background:#f7e8e8; }
+    td.bad { color:var(--bad); font-weight:600; }
+    td.good { color:var(--good); font-weight:600; }
+    td.warn { color:var(--warn); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; supersedes the mechanism sections of <a href="nextbsd-mach-ipc-reliability.html">Mach IPC reliability</a> &middot; see also <a href="nextbsd-mach-namespace-separation-plan.html">namespace separation</a></p>
+
+<h1>Mach IPC: what has been eliminated</h1>
+<p class="lede">Six mechanisms measured clean, seven hypotheses dead, and a bug that is still open. This is the negative-results page &mdash; it exists so the next person does not re-tread ground that has already been settled by measurement.</p>
+<p class="meta">2026-08-31. All figures from the arm64 UTM VM with both repos at main. Every claim here is a measurement, not a reading; where something is inferred it says so.</p>
+
+<h2>1. The bug, as currently characterised</h2>
+<p>A synchronous Mach round trip hangs, permanently, at a low rate.</p>
+<table>
+<tr><th>property</th><th>evidence</th></tr>
+<tr><td>Rate</td><td>~4&ndash;5%. Of 120 sends: 110 ok, <strong>10 hung</strong>, 0 other failures.</td></tr>
+<tr><td>Genuine hangs</td><td>every failure is <code>rc=124</code> at exactly 6s; an earlier run survived a <strong>90-second</strong> timeout unchanged</td></tr>
+<tr><td>Flat, never converges</td><td>30 blocks &times; 10: <code>0 1 0 2 1 2 0 0 1 2 0 1 1 0 0 0 2 0 0 0 1 1 0 0 1 0 0 0 1 0</code></td></tr>
+<tr><td>Rate-sensitive</td><td>back-to-back <strong>4/60</strong> vs 1s apart <strong>1/60</strong></td></tr>
+<tr><td>Concurrency does not hurt</td><td>4 parallel workers, 60 sends, <strong>0 failures</strong></td></tr>
+<tr><td>Vanishes under tracing</td><td>ktrace and <code>LAUNCHD_TRACE</code> runs both stopped reproducing it</td></tr>
+<tr><td>Not notifyd</td><td>with notifyd <strong>0/40</strong>, without notifyd <strong>0/40</strong></td></tr>
+</table>
+<p>Each <code>syslog -s</code> performs ~27&ndash;32 Mach RPCs. Solving <code>1-(1-p)^27 = 0.04</code> gives <strong>p &asymp; 0.0015</strong>: roughly <strong>one RPC in 700 hangs</strong>, and it can be any of them. This was never a logging bug &mdash; which is why every path-specific fix measured exactly nothing.</p>
+
+<h2>2. Six mechanisms, measured clean</h2>
+<p>These are not arguments. Each is a counter compiled into the kernel and read against a workload that reproduced the failure.</p>
+<table>
+<tr><th>mechanism</th><th>counter</th><th>result</th></tr>
+<tr><td>Lost wakeup, port-set receive</td><td><code>mach.lost_wakeups</code></td><td class="good">0 (four runs)</td></tr>
+<tr><td>Lost wakeup, bare-port receive</td><td><code>mach.lost_wakeups_bare</code></td><td class="good">0</td></tr>
+<tr><td>Silent drop, inactive destination</td><td><code>mach.send_dead_port</code></td><td class="good">0</td></tr>
+<tr><td>Silent drop, circular message</td><td><code>mach.send_circular</code></td><td class="good">0</td></tr>
+<tr><td>Handoff wakeup lost</td><td><code>handoff_posted</code> vs <code>handoff_received</code></td><td class="good">no positive gap</td></tr>
+<tr><td>Delivery accounting</td><td><code>deliver_calls</code> / <code>_handoff</code> / <code>_enqueue</code></td><td class="good">1050+309 vs 1357 &mdash; reconciles</td></tr>
+</table>
+<p>The last one matters as a control: it shows the counters themselves are trustworthy, because the two arms add up to the call count.</p>
+
+<h3>Why the first two were less conclusive than they looked</h3>
+<p><code>mach.lost_wakeups</code> instruments only <code>ipc_mqueue_pset_receive()</code>. The client waits for its reply on a <strong>bare</strong> port, so three clean runs of it said nothing about where the hang manifests. That is why <code>lost_wakeups_bare</code> exists. Both are blind by construction to the <em>direct handoff</em> path, where <code>ipc_mqueue_run()</code> takes the message off the queue and into the receiver&rsquo;s <code>ith_kmsg</code> &mdash; which is why the posted/received balance exists. Each counter was added to close a blind spot in the previous one.</p>
+
+<h2>3. Seven hypotheses, each killed</h2>
+<table>
+<tr><th>#</th><th>hypothesis</th><th>killed by</th></tr>
+<tr><td>1</td><td>notifyd is causal</td><td>with/without both 0/40 on main. It <em>was</em> causal on the old userland &mdash; that result did not generalise.</td></tr>
+<tr><td>2</td><td>EVFILT_MACHPORT bridge misses wakeups</td><td>notifyd-only RPCs: 1 hang in 55; notifyd idle during a wedge</td></tr>
+<tr><td>3</td><td>launchd lacks upfront MachService receive rights</td><td>source: <code>machservice_setup()</code> creates them at plist-parse time</td></tr>
+<tr><td>4</td><td>Port names recycled without generations (decay model)</td><td>the decay signature was an artifact of a bad userland; on main nothing converges</td></tr>
+<tr><td>5</td><td>Bare-port receiver on a set member never woken (#144)</td><td><code>database_server</code> receives on the <strong>set</strong>, so the precondition never holds</td></tr>
+<tr><td>6</td><td>Send silently dropped to a dead port</td><td><code>send_dead_port = 0</code> over 120 sends</td></tr>
+<tr><td>7</td><td>Handoff wakeup lost</td><td>posted/received balance shows no gap</td></tr>
+</table>
+
+<h2>4. What is left</h2>
+<p>The request is delivered and received; no wakeup is lost; nothing is dropped or stranded. The client waits anyway. The reply is itself a Mach message, so it would be counted &mdash; <strong>unless it was delivered somewhere other than the client&rsquo;s reply port</strong>.</p>
+<div class="callout callout-warn">
+<p><strong>Misrouting is the last candidate consistent with every measurement</strong>, and it points back at port-name resolution. Note carefully how that conclusion was reached: by <em>elimination</em>, not by the traffic-decay inference that motivated the namespace plan and was later retracted. Same suspect, different and better evidence.</p>
+<p>It is still a hypothesis. The probe that would test it &mdash; recording whether a wedged client&rsquo;s reply port ever received anything at all &mdash; is written but has not yet produced a reading.</p>
+</div>
+
+<h2>5. Corrections to the record</h2>
+<p>Recorded because each of these was stated with more confidence than it deserved.</p>
+<ul>
+<li><strong>Every kernel measurement before this page was taken on a known-bad userland.</strong> The box was left on <code>test/78-notifyd-plus-127</code>, an experimental arm measured at 25&ndash;30% and explicitly recommended against merging. The absolute figures from those arms are not a baseline.</li>
+<li><strong>The &ldquo;fixed budget of 35&rdquo; was not an invariant of the system.</strong> It held across four kernels, which is why it looked like one; it was a property of that userland and is absent on main.</li>
+<li><strong>The ordering warning on the two name leaks is retracted.</strong> It rested entirely on the decay model.</li>
+<li><strong>notifyd&rsquo;s causality did not generalise.</strong> A clean A/B on one userland; no effect at all on another.</li>
+<li><strong><code>MACH_SEND_INVALID_DEST</code> in launchd is benign.</strong> Filed as a fork/Mach-state bug, then closed: PID 1 nulls its own <code>bootstrap_port</code> deliberately, in vendored Apple code, and the forked child inherits the NULL.</li>
+<li><strong>Five predicted fixes each addressed a real defect and moved the number by nothing</strong> (#126, #129, #130, #144, and the generation counter).</li>
+</ul>
+
+<h2>6. Method: what worked and what did not</h2>
+<div class="callout callout-bad">
+<p><strong>Every instrument that encoded an assumption went silent and taught nothing. Every instrument that just counted was right.</strong></p>
+</div>
+<ul>
+<li>Predicting #144 without grepping the receive name &mdash; the precondition never held.</li>
+<li>A burst experiment built on &ldquo;one message per send&rdquo; &mdash; the real number was ~27, so the discriminator was meaningless.</li>
+<li>A probe gated on an assumed <code>ith_state</code> and object type &mdash; produced nothing across two confirmed hangs.</li>
+<li>Three separate readings of the enqueue/wakeup handoff that each looked airtight and were each wrong.</li>
+</ul>
+<p>Against that: six counters, six unambiguous answers, all of which remain true regardless of what the bug turns out to be.</p>
+<p>Two pieces of tooling also proved decisive and did not exist at the start: a <strong>serial console</strong> (TCP 127.0.0.1:1234; arm64 needs <code>console="eficom,efi"</code>, not the x86 <code>comconsole</code>), and <strong>hardware verification before merge</strong> &mdash; CI&rsquo;s boot smoke-test passed a kernel that then failed to boot the machine.</p>
+
+<h2>7. Where to pick up</h2>
+<ol>
+<li><strong>Finish the reply-port probe.</strong> Does a wedged client&rsquo;s reply port show <code>ip_delivered == 0</code>? That single number decides between &ldquo;misrouted or never sent&rdquo; and &ldquo;arrived but the counters are lying&rdquo;.</li>
+<li><strong>Do not resume the namespace-separation plan on its original rationale.</strong> That rationale is retracted. If it resumes, it should be on the elimination argument in &sect;4.</li>
+<li><strong>Keep the counters.</strong> They are cheap, off by default, and are the only things in this investigation that have not had to be walked back.</li>
+</ol>
+
+</div>
+</body>
+</html>

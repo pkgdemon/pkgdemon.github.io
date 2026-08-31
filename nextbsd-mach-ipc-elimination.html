@@ -125,7 +125,22 @@
 <p>An isolated send on an idle system is precisely the one that strands, because nothing follows it to knock the server loose.</p>
 
 <h3>A second, permanent instance</h3>
-<p><code>aslmanager</code>&rsquo;s service port holds an undelivered message <strong>from boot, on every boot</strong>, across six kernels. Same signature: kqueue-serviced, no Mach receive thread. It requires no race to observe, which makes it the only deterministic test available &mdash; and it is the verification criterion for <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/165">#165</a>.</p>
+<p><code>aslmanager</code>&rsquo;s service port holds an undelivered message <strong>from boot, on every boot</strong>, across every kernel measured. Same signature: kqueue-serviced, no Mach receive thread. It requires no race to observe, which makes it the best starting point for the remaining work.</p>
+
+<h2>4b. Resolved: the kernel notifies, userland does not always read</h2>
+<p>Two counters settle where the loss happens. <code>rcvlarge_notify</code> counts &ldquo;a message is waiting on port N&rdquo; events handed to userland; those do <em>not</em> dequeue anything, since <code>filt_machport()</code> returns with the message still queued and leaves userland to issue its own <code>mach_msg()</code>. <code>psetport_drained</code> counts messages actually taken off a port-set member port.</p>
+<table>
+<tr><th>run</th><th>notifications</th><th>read</th><th>gap</th><th>client failures</th></tr>
+<tr><td>1</td><td>919</td><td>909</td><td><strong>10</strong></td><td>9</td></tr>
+<tr><td>2</td><td>901</td><td>889</td><td><strong>12</strong></td><td>12</td></tr>
+<tr><td>3</td><td>906</td><td>895</td><td><strong>11</strong></td><td>5</td></tr>
+<tr><td>4</td><td>901</td><td>895</td><td><strong>6</strong></td><td>5</td></tr>
+</table>
+<div class="callout callout-warn">
+<p><strong>The gap is always positive: userland is told about ~1% more messages than it reads.</strong> Because the knote is <code>EV_CLEAR</code>, nothing re-arms it, so an unread message waits for unrelated traffic to signal the set &mdash; which is exactly the nudge behaviour that opened this investigation.</p>
+<p>The gap is the same order as the failure count but <strong>not</strong> a strict 1:1 &mdash; run 3 is 11 against 5. An undrained notification only becomes an observed hang when a client is waiting on that particular reply. The defensible claim is the weaker one.</p>
+</div>
+<p>Carried to <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/135">userland #135</a>. The kernel side is finished.</p>
 
 <h2>5. Corrections to the record</h2>
 <p>Recorded because each of these was stated with more confidence than it deserved.</p>
@@ -138,6 +153,8 @@
 <li><strong>Five predicted fixes each addressed a real defect and moved the number by nothing</strong> (#126, #129, #130, #144, and the generation counter).</li>
 <li><strong>&sect;4 of this page was wrong.</strong> It named reply misrouting as the last surviving candidate, reached by elimination. The request never reaches the server&rsquo;s handler, so there is no reply to misroute.</li>
 <li><strong><code>lost_wakeups_bare</code> answers a narrower question than its name.</strong> It samples <code>ip_msgcount</code> <em>before</em> parking, under the same lock as the queue check above it, so it can only see a message that was already there. A message enqueued after a thread parks is invisible to it, and its zero readings never excluded that case.</li>
+<li><strong>Two tickets filed during this work were corrected by their own tests.</strong> #165 (an attach-time gap) was falsified within the hour &mdash; <code>kqueue_register()</code> does call <code>f_event</code> after <code>f_attach</code>, which was the check the ticket itself named. #166 (a missing in-flux guard) measured 0 occurrences and is recorded as latent rather than as the cause.</li>
+<li><strong>The knote-state dump could not answer what it was built to answer.</strong> <code>EV_CLEAR</code> clears <code>KN_ACTIVE|KN_QUEUED</code> after a <em>successful</em> report exactly as after a zero return, so <code>status=0x0</code> is consistent with both &ldquo;told&rdquo; and &ldquo;not told&rdquo;. It did reveal <code>EV_CLEAR</code>, which is what made the notify-vs-drain count the right next measurement.</li>
 <li><strong>Two further fixes were written, measured, and reverted</strong> &mdash; <code>fix/pset-scan-stale-msgcount</code> and <code>fix/pset-signal-kqwakeup</code>. Both looked correct from code reading; both had counters that came back zero. One of them passed its strand test purely by luck while provably never executing.</li>
 </ul>
 
@@ -170,11 +187,11 @@
 
 <h2>7. Where to pick up</h2>
 <ol>
-<li><strong><a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/165">#165</a> &mdash; the attach-time gap.</strong> At boot, ~70% of <code>ipc_pset_signal()</code> calls hit <code>KNLIST_EMPTY</code> and do nothing (36/51, 38/53, 33/48), versus &lt;0.5% in steady state. A message arriving before a daemon registers its knote is signalled to an empty list, and nothing re-checks it at registration. This explains the <em>permanent</em> aslmanager case, and may be a different bug from the intermittent 4%.
-<br><em>Verify first:</em> whether this base tree&rsquo;s <code>kqueue_register()</code> evaluates <code>f_event</code> after a successful <code>f_attach</code>. If it does, the hypothesis is wrong. That file is not in <code>src-overlay</code> and was not read.</li>
-<li><strong>Keep <code>mach.port_backlog</code>.</strong> It is the only instrument that named the culprit outright, and it made the difference between &ldquo;a message is stranded somewhere&rdquo; and &ldquo;notifyd holds the receive right on this port.&rdquo;</li>
-<li><strong>Do not resume the namespace-separation plan on its original rationale.</strong> That rationale is retracted, and the elimination argument that replaced it is now also retracted &mdash; port-set identity and name translation both measured clean.</li>
-<li><strong>Weight the aslmanager row over the failure rate.</strong> Rates of 2, 3, 6, 8 and 11 per 150 were all observed on kernels that changed nothing relevant. The frozen row is a state, not a sample.</li>
+<li><strong><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/135">userland #135</a> &mdash; libdispatch&rsquo;s <code>EVFILT_MACHPORT</code> consumer.</strong> Start from <code>aslmanager</code>&rsquo;s permanently frozen port: no race needed, present on every boot, never resolves. Check whether the handler always issues the follow-up <code>mach_msg()</code> for the reported port, whether an error from it is swallowed, and whether anything re-arms after <code>EV_CLEAR</code> if the receive does not fully drain.</li>
+<li><strong><a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/127">userland #127</a> is now on the critical path</strong>, not a cost reduction. <code>_asl_evaluate_send</code> drives ~27 RPCs through this exact path per log line; cutting them shrinks the exposure proportionally before any real fix.</li>
+<li><strong>Keep <code>mach.port_backlog</code>.</strong> It named the culprit outright when nine counters had only excluded things.</li>
+<li><strong>Do not resume the namespace-separation plan.</strong> Its original rationale was retracted, and the elimination argument that replaced it is retracted too &mdash; port-set identity and name resolution both measured clean.</li>
+<li><strong>Weight states over rates.</strong> Failure rates of 2, 3, 4, 6, 8, 9 and 11 per 150 were all observed on kernels that changed nothing relevant. The frozen aslmanager row is a state; the rate is a noisy sample.</li>
 </ol>
 
 </div>

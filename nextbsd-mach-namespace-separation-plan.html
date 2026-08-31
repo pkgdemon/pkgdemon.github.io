@@ -65,6 +65,8 @@
 <tr><td>2 / C0 &mdash; reverse hash off <code>is_table</code></td><td>#148</td><td class="good">merged</td><td>&mdash;</td></tr>
 <tr><td>userland &mdash; <code>MACH_PORT_INDEX</code> corrected</td><td>userland#131</td><td class="good">merged</td><td>&mdash;</td></tr>
 <tr><td>2 / C1 &mdash; locking discipline</td><td>#149</td><td class="warn">folded into C2b</td><td>&mdash;</td></tr>
+<tr><td>generation counter (partial C2b)</td><td>#160</td><td class="bad">merged, then REVERTED &mdash; does not boot</td><td>n/a</td></tr>
+<tr><td>fileport generation guard</td><td>#161</td><td class="warn">open, inert until generations return</td><td>&mdash;</td></tr>
 <tr><td>2 / C2a, C2b, C3&ndash;C6</td><td>#150&ndash;#155</td><td>open</td><td>&mdash;</td></tr>
 </table>
 
@@ -73,8 +75,18 @@
 </div>
 
 <div class="callout callout-warn">
-<p><strong>A userland change had to land first, and it was not obvious.</strong> Kernel CI boots against the <em>published</em> userland, so a kernel-only generation change would pass its own smoke-test and still break the box: launchd sized <code>mig_cb_table</code> by the raw port name, and a generationed name would ask PID&nbsp;1 for hundreds of megabytes. userland#131 fixes that and is deliberately a no-op today (generation bits are zero, so <code>MACH_PORT_INDEX(name) == name</code>), so it lands safely on its own and makes the kernel change possible afterwards.</p>
+<p><strong>A userland change had to land first, and it was not obvious.</strong> Kernel CI boots against the <em>published</em> userland, so a kernel-only generation change would pass its own smoke-test and still break the box: launchd sized <code>mig_cb_table</code> by the raw port name, and a generationed name would ask PID&nbsp;1 for hundreds of megabytes. userland#131 fixes that and is deliberately a no-op today (generation bits are zero, so <code>MACH_PORT_INDEX(name) == name</code>).</p>
 <p>It also repaired a latent bug: <code>MACH_PORT_INDEX</code> was <code>(name) &amp; ~0xff</code>, which returns <strong>zero for every port</strong> this kernel allocates &mdash; so launchd&rsquo;s <code>HASH_PORT</code> and libdispatch&rsquo;s <code>VL_HASH</code> put every port in bucket zero.</p>
+</div>
+
+<div class="callout callout-bad">
+<p><strong>The generation counter passed CI and did not boot on hardware.</strong> Merged as #160, deployed as <code>20260831-025635</code>; the machine never came back &mdash; no ssh, no ping, and a clean stop/start did not help. Recovered via LiveCD by restoring the Stage&nbsp;1 kernel, which came back in 10 seconds with every service healthy. Reverted in #162 because <code>main</code> otherwise ships an unbootable kernel.</p>
+<p><strong>Two process failures, each worth more than the patch:</strong></p>
+<ol>
+<li><strong>A green CI smoke-test is not authorization to deploy.</strong> It boots a self-assembled image under qemu/TCG; the box is an arm64 UTM VM with different disk layout, device set and timing. Something in that gap is fatal here and invisible there. Kernel changes of this class need hardware verification <em>before</em> merge, on a branch.</li>
+<li><strong>There is no serial console, so the failure is silent.</strong> <code>utmctl attach</code> is not implemented &mdash; it prints a warning and echoes the controlling terminal. No panic was recoverable, so a panic cannot be distinguished from a hang, and every failed boot costs a full LiveCD recovery cycle that teaches us nothing. <strong>Getting a console is now a prerequisite for C2b, not a nicety.</strong></li>
+</ol>
+<p><strong>Prime suspect, unverified:</strong> <code>ipc_entry_alloc_name()</code> is reachable from <code>ipc_object_copyout_name()</code> on the live <code>mach_msg</code> path and already double-allocates, returning a name that does not match the one requested. #160 called that &ldquo;pre-existing, not made worse&rdquo; &mdash; probably wrong. Under generations the mismatch also carries a generation mismatch, so lookups that previously limped along on the placeholder entry fail outright, breaking early-boot IPC while leaving the narrower qemu path unaffected. If so, the fix is to make <code>alloc_name</code> honour the requested name &mdash; which is exactly C2b, and confirms it cannot be fixed independently of the table.</p>
 </div>
 
 <h2>1. What we are fixing</h2>

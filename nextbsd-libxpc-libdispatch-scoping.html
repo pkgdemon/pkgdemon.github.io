@@ -71,8 +71,45 @@
 <tr><th>Component</th><th>Upstream status</th><th>Maintenance cost here</th></tr>
 <tr><td><strong>libxpc</strong></td><td class="bad">Never open-sourced by Apple</td><td>Entirely ours. No upstream to track, no reference to diff against.</td></tr>
 <tr><td><strong>libdispatch</strong></td><td class="warn">Open source, but ported</td><td>Upstream carries no <code>HAVE_MACH</code> for this platform; the Mach path here is original work.</td></tr>
-<tr><td><strong>libmach</strong></td><td class="bad">Reimplementation</td><td>Unavoidable &mdash; it is the project.</td></tr>
+<tr><td><strong>libmach</strong></td><td class="warn">Partially trackable</td><td>Two layers with no upstream ever; headers and error tables have one. See <a href="#libmach-upstream">&sect;2b</a>.</td></tr>
 </table>
+<h2 id="libmach-upstream">2b. Correction: libmach has an upstream &mdash; it is just not called libmach</h2>
+<div class="callout callout-bad">
+<p><strong>Correction.</strong> The table above previously classified libmach as a reimplementation whose maintenance cost was &ldquo;unavoidable &mdash; it is the project,&rdquo; putting it in the same bucket as libxpc. <strong>That was wrong.</strong> libxpc has no upstream at any vintage. libmach has a real, licence-compatible one that simply is not published under that name &mdash; and nobody is tracking it.</p>
+</div>
+
+<p><em>Verified</em> (survey, 2026-09-01): a search of <code>apple-oss-distributions</code> returns <strong>zero repositories named libmach</strong>. There is no Apple project by that name and never was; the name descends from CMU Mach&nbsp;3.0 and NeXTSTEP. But the Mach <em>userland</em> is open source and always has been &mdash; it lives in <strong><code>xnu/libsyscall/mach</code></strong> (67 files, built into <code>libsystem_kernel.dylib</code>) with its header vocabulary in <strong><code>xnu/osfmk/mach</code></strong>.</p>
+
+<p>Licensing is a non-issue: <code>mach_error_string.c</code> and <code>mig_reply_setup.c</code> carry dual <strong>APSL&nbsp;2.0 + Carnegie Mellon Mach</strong> headers, the three <code>.defs</code> already vendored into <code>src/libmach</code> carry APSL&nbsp;2.0, and <code>NOTICE.md</code> <em>already</em> records <code>libmach &rarr; libsystem_kernel, APSL-2.0</code> alongside bootstrap_cmds, configd, libIOKit, kext_tools, Libnotify and syslog. <strong>Adopting from libsyscall introduces no new licence family.</strong></p>
+
+<h3>The &ldquo;43 files&rdquo; figure was misleading</h3>
+<p>An earlier survey reported libmach as 40-of-43 files NextBSD-original. Arithmetically true, materially misleading: those 43 files are <strong>2 <code>.c</code> files</strong> (2,636 lines), 3 already-vendored Apple <code>.defs</code>, <strong>37 headers</strong>, a Makefile and a <code>.pc</code>. The hand-maintained <em>code</em> is concentrated in two files, and the header bulk &mdash; the larger part of the count &mdash; has an Apple upstream the survey missed.</p>
+
+<h3>What Apple gives away that we hand-stubbed</h3>
+<p>The standout is the <strong>error-table family</strong>. <code>include/mach/mach_error.h</code> currently ships this:</p>
+<pre><code>static __inline const char *
+mach_error_string(mach_error_t error_value)
+{
+	(void)error_value;
+	return "(mach error &mdash; see &lt;mach/kern_return.h&gt; for the code)";
+}</code></pre>
+<p><code>mach_error_type()</code> likewise returns <code>"(unknown)"</code>, and the header admits it: <em>&ldquo;We don&rsquo;t ship those tables&hellip; replace the inline with a real table-driven implementation.&rdquo;</em> Apple ships exactly that table &mdash; roughly 50&nbsp;KB across <code>mach_error_string.c</code>, <code>mach_error.c</code>, <code>error_codes.c</code>, <code>errorlib.h</code> and eight <code>.sub</code> tables (<code>err_ipc</code>, <code>err_mach_ipc</code>, <code>err_kern</code>, <code>err_vm</code>, <code>err_server</code>, <code>err_us</code>, <code>err_iokit</code>, <code>err_libkern</code>). <strong><code>mach_error_string.c</code> references only <code>_mach_errors</code> and <code>err_max_system</code> &mdash; zero port, task or syscall dependency</strong>, so it is a pure vendor-and-link with no exposure to the port-name divergence below. It upgrades every <code>mach_error_string()</code> call site in libbootstrap and launchd from a constant string to real diagnostics.</p>
+<p>Four smaller items are the same shape &mdash; Apple has them, we either hand-wrote or stubbed them, and none touch port representation: <code>mig_reply_setup.c</code> (six lines of field copying; <strong>not implemented here at all</strong>), <code>mig_strncpy.c</code> (hand-written at <code>mach_traps.c:937</code>), and <code>port_descriptions.c</code> / <code>slot_name.c</code> (right-type&rarr;string, nothing here). One larger: <code>mach_msg_server_once</code>, whose in-tree version returns <code>MACH_RCV_TIMED_OUT</code> unconditionally with the comment <em>&ldquo;for Phase I1c we don&rsquo;t run the helper-downcall path.&rdquo;</em> Apple&rsquo;s real one is in <code>mach_msg.c</code>.</p>
+
+<h3>The one header that must never be vendored</h3>
+<p>Port names are file descriptors here, and <code>include/mach/port.h</code> inverts Apple&rsquo;s bit layout deliberately:</p>
+<pre><code>#define MACH_PORT_INDEX_MASK	0x00ffffffU
+#define MACH_PORT_INDEX(name)	((mach_port_name_t)(name) &amp; MACH_PORT_INDEX_MASK)
+#define MACH_PORT_GEN(name)	((mach_port_name_t)(name) &amp; 0xff000000U)</code></pre>
+<p>The generation goes in the <em>high</em> byte and the index in the low 24 bits, <em>&ldquo;because a port name is currently also a file descriptor and the index half has to stay a valid fd number.&rdquo;</em> Apple&rsquo;s layout is the opposite. <strong>Taking Apple&rsquo;s <code>port.h</code> would not fail to compile &mdash; it would silently corrupt hashing</strong>, exactly the way the previously-wrong macro made <code>MACH_PORT_INDEX</code> return zero for every port and collapsed launchd&rsquo;s <code>HASH_PORT</code> and libdispatch&rsquo;s <code>VL_HASH</code> to linear scans. <code>port_obj.c</code> and <code>mach_right.c</code> inherit the same assumption and are equally unportable, as is <code>mach_traps.s</code> (XNU trap numbers in assembly, versus dynamic <code>sysctl mach.syscall.&lt;name&gt;</code> resolution here).</p>
+
+<h3>What stays ours permanently</h3>
+<p>The honest counterweight: <strong>the two files that actually cost maintenance are the two with no upstream.</strong> <code>dispatch_kevent.c</code> (1,069 lines) has <em>no Apple counterpart whatsoever</em> &mdash; XNU implements <code>EVFILT_MACHPORT</code> in the kernel, so there is nothing in libsyscall to port. And the trap and FreeBSD-glue halves of <code>mach_traps.c</code> (~1,130 lines: sysctl-backed <code>host_info</code>, <code>reboot(2)</code>, POSIX <code>sem_t</code>, <code>mmap</code>) are FreeBSD-shaped by construction. Adopting everything Apple offers leaves both untouched.</p>
+<p>So the realistic outcome is <strong>~16 files vendored-and-tracked</strong> &mdash; 12 of them <em>net-new capability</em> rather than replacements &mdash; <strong>~25 headers gaining an upstream to diff against</strong>, and <strong>~1,400 lines staying hand-maintained forever</strong>. Hand-written line count barely drops. The win is new capability at zero authorship cost, not deletion.</p>
+<div class="callout callout-warn">
+<p><strong>Not verified.</strong> The <code>osfmk/mach</code> directory listing came back truncated, so <code>vm_param.h</code>, <code>thread_status.h</code>, <code>vm_map.h</code> and <code>vm_statistics.h</code> are <em>unconfirmed</em> rather than known-absent. And the judgement that <code>mach_msg_destroy</code> / <code>mach_msg_server</code> are portable-with-voucher-paths-stripped is <em>inferred</em> from their stated dependencies, not verified line by line.</p>
+</div>
+
 <p>So &ldquo;revert to open-source components instead of reimplementations&rdquo; maps most cleanly onto <strong>libxpc</strong>: XPC did not exist before 10.7, so pre-10.7 launchd, syslogd, notifyd and ASL are genuine Apple open-source releases that never referenced it.</p>
 
 <h2>3. Where dispatch and XPC are used today</h2>

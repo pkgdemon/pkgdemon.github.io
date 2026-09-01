@@ -164,6 +164,31 @@ SCNetworkReachability.h:140  SCNetworkReachabilitySetDispatchQueue</code></pre>
 <p><em>Measured:</em> our launchd has <strong>8 files using dispatch and 5 using xpc</strong>, alongside 64 call sites into its own kqueue runtime. It is a hybrid.</p>
 <p><em>Assumed, needs checking:</em> launchd-258 (10.6) used its own <code>launchd_runtime.c</code> kqueue loop and did not use libdispatch &mdash; it could not, because libdispatch depends on launchd for bootstrap. If that holds, the dispatch and XPC call sites in our launchd are later additions with a documented pre-existing alternative already present in the tree.</p>
 
+<h2>5b. Correction: XPC adoption is far later than XPC&rsquo;s existence</h2>
+<div class="callout callout-bad">
+<p><strong>This page repeatedly said &ldquo;pre-10.7 releases are XPC-free by construction&rdquo; and treated 10.6 as the revert target. That is true but badly misleading.</strong> XPC shipped in 10.7; individual components adopted it years later. Resolving Apple&rsquo;s own <code>distribution-macOS</code> manifest gives the real boundary for Libnotify:</p>
+<pre><code>Libnotify 133.1.1  ->  OS X 10.10      0 xpc_ lines   &lt;- last pre-XPC
+Libnotify 149      ->  OS X 10.11     13 xpc_ lines   &lt;- first XPC</code></pre>
+<p>So a pre-XPC notifyd is a <strong>10.10</strong> release, not a 10.6 one &mdash; four major releases later than assumed. A &ldquo;wholesale 10.6 migration&rdquo; was never required to get an XPC-free notifyd.</p>
+</div>
+<p><em>Verified:</em> the local copy is <strong>Libnotify-348.100.7 &mdash; macOS 26.4</strong>, imported 2026-05-16 (the <code>VENDORED.md</code> SHA is exactly that upstream tag object, and the working tree is byte-identical to a pristine archive of it). A revert would be a 215-version, twelve-year jump backwards.</p>
+
+<h3>Remove in place beats reverting, for Libnotify at least</h3>
+<p>Every XPC reference is peripheral and <strong>already inert</strong>: the entitlement gates route through <code>xpc_copy_entitlement_for_token</code>, which returns NULL unconditionally on FreeBSD, and the event-publisher API is a set of <code>#define &hellip; (void)0</code> macros in <code>libxpc/xpc/private.h</code>, so the single handler that could reach <code>NOTIFY_TYPE_XPC_EVENT</code> is never even stored.</p>
+<table>
+<tr><th></th><th>Remove in place</th><th>Revert to 133.1.1</th></tr>
+<tr><td>Size</td><td class="good">~250 lines deleted</td><td>~1,300 lines re-derived</td></tr>
+<tr><td>#78 MIG demux fix</td><td class="good">Kept</td><td class="bad">Lost &mdash; patches code that does not exist in 2014</td></tr>
+<tr><td>#120 collections fix</td><td class="good">Kept</td><td class="bad">Lost</td></tr>
+<tr><td><code>os_map</code> shim</td><td class="good">Deleted &mdash; it is all XPC-event code</td><td>Deleted</td></tr>
+<tr><td><code>os_set</code> shim</td><td>Remains</td><td class="good">Deleted</td></tr>
+<tr><td>12 years of upstream fixes</td><td class="good">Kept</td><td class="bad">Discarded, unaudited</td></tr>
+</table>
+<p>The public API is identical across those twelve years &mdash; 13 symbols, zero delta &mdash; and <code>notify_register_plain</code> (syslogd&rsquo;s heaviest consumer, 13 call sites) exists in both. So the revert is <em>possible</em>; it is simply strictly worse. If the <code>os_set</code> shim is itself the burden, 133.1.1&rsquo;s self-contained <code>table.c</code> can be lifted on its own &mdash; a much smaller change than reverting the component.</p>
+<div class="callout callout-warn">
+<p><strong>The mixed-vintage risk points at ASL, not launchd.</strong> The syslog tree was vendored the same day as Libnotify and is its deliberate macOS 26-era counterpart. Pairing a 2026 syslogd with a 2014 notifyd would invert the one vintage pairing in this tree that is currently correct &mdash; and syslogd is libnotify&rsquo;s heaviest consumer, so a mismatch would most likely show up as a silent performance cliff rather than a build break.</p>
+</div>
+
 <h2>6. The plan: one PR, both libraries out, userland builds and runs</h2>
 <p class="lede">Scope as stated: remove libxpc and libdispatch together, fix every component enough to build and run functionally (tests excluded), then chase individual services afterwards only if something non-trivial breaks. Reverting components is a fallback, not the method.</p>
 

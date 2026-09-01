@@ -135,15 +135,30 @@ SCNetworkReachability.h:140  SCNetworkReachabilitySetDispatchQueue</code></pre>
 <h3>But this does not free libxpc on its own</h3>
 <p>Nothing in the tree depends on launchd&rsquo;s XPC <em>surface</em> &mdash; every daemon reaches launchd through MIG bootstrap. However, several daemons depend on libxpc&rsquo;s <strong>object model and connection layer</strong> (<code>xpc_connection_*</code>, <code>xpc_dictionary_*</code>); <code>syslog/aslmanager.tproj/aslmanager.c:374-405</code> is a live example. Dropping libxpc wholesale still breaks those consumers, so launchd is necessary but not sufficient.</p>
 
-<h2>4. The anchor is CoreFoundation</h2>
-<pre><code>CFRunLoop.c:  _dispatch_runloop_root_queue_create_4CF
-              _dispatch_runloop_root_queue_get_port_4CF
-              _dispatch_source_set_runloop_timer_4CF
-              _dispatch_runloop_root_queue_perform_4CF</code></pre>
-<p>Those are libdispatch&rsquo;s <strong>private SPI for CoreFoundation</strong>. CFRunLoop is built on a dispatch root queue, so removing libdispatch means rewriting CFRunLoop &mdash; and GNUstep sits on CoreFoundation. configd, by contrast, is a single file.</p>
-<div class="callout">
-<p><strong>Therefore the achievable goal is not &ldquo;remove libdispatch&rdquo; but &ldquo;get libdispatch and XPC off the boot path and out of the system daemons.&rdquo;</strong> That captures both failures above without touching CoreFoundation, and it is what pre-10.7 launchd/syslogd/notifyd would give.</p>
+<h2>4. CoreFoundation is <em>not</em> the anchor &mdash; correction</h2>
+<div class="callout callout-bad">
+<p><strong>An earlier version of this page said CoreFoundation was the blocker for dropping libdispatch, on the strength of four <code>_4CF</code> SPI declarations in <code>CFRunLoop.c</code>. That was wrong.</strong> Those are declarations; three are compiled out on this target and the fourth is never called.</p>
 </div>
+<table>
+<tr><th>SPI</th><th>Status on this build</th></tr>
+<tr><td><code>_dispatch_runloop_root_queue_create_4CF</code></td><td class="good">Compiled out &mdash; inside <code>USE_DISPATCH_SOURCE_FOR_TIMERS</code>, which is 0</td></tr>
+<tr><td><code>_dispatch_runloop_root_queue_get_port_4CF</code></td><td class="good">Compiled out &mdash; same guard</td></tr>
+<tr><td><code>_dispatch_runloop_root_queue_perform_4CF</code></td><td class="good">Compiled out &mdash; same guard</td></tr>
+<tr><td><code>_dispatch_source_set_runloop_timer_4CF</code></td><td class="good">Declared, <strong>never called anywhere</strong></td></tr>
+</table>
+<p>On the <code>TARGET_OS_BSD</code> path the run loop is already dispatch-free and Mach-free: <code>__CFPortSet</code> is <code>{ int kq; }</code> &mdash; a kqueue &mdash; ports are packed pipe fd pairs, wake is a byte written to the pipe, and timers are <code>EVFILT_TIMER</code>. The <code>mach_msg</code> service path is <code>TARGET_OS_MAC</code> and dead here.</p>
+<p>What genuinely remains in <code>CFRunLoop.c</code>: main-queue interop (one dispatch main-queue port inserted into the kqueue wait set, plus <code>_dispatch_main_queue_callback_4CF</code>), and a <code>dispatch_source_t</code> that is the only implementation of <code>CFRunLoopRunInMode</code>&rsquo;s <code>seconds</code> argument. <code>dispatch_once</code> across 20 other files costs <strong>nothing</strong> &mdash; CF already ships <code>_CF_dispatch_once</code> (<code>CFPlatform.c:1609</code>) and wires it when <code>__HAS_DISPATCH__</code> is 0.</p>
+<div class="callout callout-warn">
+<p><strong>The existing <code>__HAS_DISPATCH__=0</code> switch is not the answer.</strong> It wraps <em>entire files</em> &mdash; <code>CFRunLoop.c</code>, <code>CFSocket.c</code>, most of <code>CFStream.c</code>. Upstream built it for WASI, where there is no run loop by design. Setting it here gives CF with no run loop, no CFSocket and no stream scheduling, which is fatal for GNUstep.</p>
+</div>
+<p><em>Effort:</em> moderate &mdash; a few hundred lines, mostly deletion, with the portability scaffolding already present. <strong>The expensive question is not CF but every caller of <code>dispatch_get_main_queue()</code> elsewhere in the userland</strong>, because that API&rsquo;s semantics are the CF/GCD bridge. If libdispatch goes, something must re-implement the main queue, and CFRunLoop is the natural home (~100 lines, given the pipe/kqueue plumbing is already there).</p>
+
+<h3>Two pre-existing bugs found while verifying this</h3>
+<ul>
+<li><strong><code>CFRunLoop.c:690</code> &mdash; the BSD run loop never blocks.</strong> The function takes a <code>uint64_t timeout</code> parameter; the port-set branch then declares <code>struct timespec timeout = {0, 0}</code>, shadowing it, and passes that to <code>kevent()</code>. It polls with a zero timeout and busy-spins. <code>WARNS?=0</code> in the Makefile means <code>-Wshadow</code> never fired.</li>
+<li><strong><code>CFRunLoop.c:3259</code> &mdash; version-1 run loop sources never fire on FreeBSD.</strong> The Source1 arm is <code>#if TARGET_OS_MAC &hellip; #elif TARGET_OS_WIN32 || TARGET_OS_LINUX</code> with no BSD case. CFSocket is unaffected (it creates a version-0 source), but any port-backed source is dead.</li>
+</ul>
+<p>Together these suggest the BSD CFRunLoop has not been exercised under real load. Both are worth fixing regardless of what happens to libdispatch.</p>
 
 <h2>5. What is known about 10.6-era launchd</h2>
 <p><em>Measured:</em> our launchd has <strong>8 files using dispatch and 5 using xpc</strong>, alongside 64 call sites into its own kqueue runtime. It is a hybrid.</p>

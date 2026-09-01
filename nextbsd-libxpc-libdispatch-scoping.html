@@ -202,9 +202,36 @@ SCNetworkReachability.h:140  SCNetworkReachabilitySetDispatchQueue</code></pre>
 <p>notifyd&rsquo;s entire IPC substrate is <code>dispatch_workloop</code> + <code>dispatch_mach_create_f</code> + <code>dispatch_mach_connect</code>. That is a real rewrite onto the MIG/kqueue path, not a deletion.</p>
 <p><strong>Removing libdispatch would let those four disabled features come back</strong> &mdash; which is an argument <em>for</em> the effort, not against it.</p>
 
+<h3>6.3b Correction: launchd gates libxpc, and a stub cannot cover it</h3>
+<div class="callout callout-bad">
+<p><strong>An earlier version of this plan said &ldquo;libxpc first, entirely, mostly deletion.&rdquo; That is wrong for launchd.</strong> <code>launchd_runtime2()</code> &mdash; PID&nbsp;1&rsquo;s <em>only</em> main loop &mdash; receives every Mach message it ever handles through <code>xpc_pipe_try_receive()</code> (<code>runtime.c:1145</code>), implemented in <code>libxpc/xpc_misc.c:516</code>. Remove libxpc without rewriting that loop and PID&nbsp;1 has no event loop: unbootable at the first bootstrap message.</p>
+<p>A stub cannot cover it either. launchd needs a working boxed-type object model with refcounting, Mach wire serialization and audit-token plumbing &mdash; roughly 2,500 lines across <code>xpc_dictionary.c</code>, <code>xpc_array.c</code>, <code>xpc_type.c</code>, <code>xpc_misc.c</code> and <code>msgio.c</code>.</p>
+</div>
+<p><em>Measured directly:</em> after excluding the three blocks that are safe to delete outright (<code>xpc_domain_*</code>, <code>xpc_event_*</code>, <code>xpc_process_*</code>), <code>core.c</code> still makes about 40 real object-model calls &mdash; <code>xpc_object_t</code>&nbsp;&times;27, <code>xpc_release</code>&nbsp;&times;6, <code>xpc_get_type</code>&nbsp;&times;3, <code>xpc_dictionary_*</code>&nbsp;&times;5. So the work is <strong>~1,500 lines deleted plus ~300 rewritten</strong>, chiefly converting <code>LaunchEvents</code> storage from <code>xpc_object_t</code> to <code>launch_data_t</code>.</p>
+<p>Two independent surveys agree on those facts and <strong>disagree on the conclusion</strong>. One sizes launchd at 1.5&ndash;3 weeks with two boot-risky changes and recommends doing it; the other recommends not touching PID&nbsp;1 as the tail of a larger effort. Both are defensible; the disagreement is about risk appetite, not evidence.</p>
+
+<h3>6.3c The middle path: shrink libxpc rather than delete it</h3>
+<p>If launchd is left alone, libxpc still shrinks substantially and with no boot risk:</p>
+<table>
+<tr><th>Move</th><th>Lines</th><th>Effect</th></tr>
+<tr><td>Split <code>subr_nvlist.c</code> + <code>subr_nvpair.c</code> into a <code>libnv</code> target; relink libIOKit at base <code>-lnv</code></td><td>4,075</td><td>Reclassified from &ldquo;reimplementation&rdquo; to vendored FreeBSD <code>libnv</code></td></tr>
+<tr><td>Delete <code>xpc_connection.c</code> &mdash; <em>only</em> once syslog and Libnotify lose their XPC clients</td><td>585</td><td>~20% of the genuinely Apple-reimplemented XPC surface</td></tr>
+<tr><td>Delete <code>CFUtilities.c:11-15</code> (dead <code>__has_include</code> branch &mdash; the header does not exist in the tree)</td><td>5</td><td>Free</td></tr>
+</table>
+<p>That removes the misfiled 4,075 lines entirely from the &ldquo;no upstream to track&rdquo; column and a fifth of the real XPC code, <strong>without touching PID&nbsp;1</strong>.</p>
+
+<h3>6.3d Two facts that de-risk the syslog half considerably</h3>
+<ul>
+<li><strong>launchd does not consume ASL at all.</strong> <code>src/launchd/freebsd-shims/asl.h</code> is an intentionally empty shim; launchd-842 carries a vestigial <code>#include &lt;asl.h&gt;</code> but references no ASL symbol, and logging goes through <code>launchd_syslog()</code> backed by <code>syslog(3)</code>. <strong>A broken syslogd cannot break PID&nbsp;1&rsquo;s logging.</strong></li>
+<li><strong>The cross-component ASL and notify contracts are already 10.5/10.6-era.</strong> Everything called from outside <code>src/syslog</code> is the classic six (<code>asl_open/new/set/send/free/close</code>); everything called from outside <code>src/Libnotify</code> existed in 10.6. So a reverted daemon satisfies its consumers at the symbol level. <em>(Naming trap: launchd&rsquo;s <code>notify_server</code>/<code>notify_cb</code>/<code>notify_one</code>/<code>notify_all</code> are its Mach dead-name subsystem, unrelated to Darwin notify.)</em></li>
+</ul>
+<p><strong>And one precedent worth respecting:</strong> <code>src/libxpc/Makefile</code> records that when libxpc vendored a hand-rolled bootstrap check-in, &ldquo;launchd&rsquo;s MIG demux doesn&rsquo;t speak BST, so a single launchctl call panicked init.&rdquo; A client/launchd protocol mismatch has already taken down PID&nbsp;1 once in this tree.</p>
+
 <h3>6.4 Suggested order within the one PR</h3>
 <ol>
-<li><strong>libxpc first</strong>, entirely. Mostly deletion, no semantic replacement needed, and it independently removes the 30s stall class. If the PR had to stop here it would still be a win.</li>
+<li><strong>Make the boot test gate first.</strong> One working arm64 boot and a non-gating qemu CI is the wrong starting position for a PID-1-adjacent refactor. This is the highest-value single action in the plan.</li>
+<li><strong>Free wins, zero boot risk:</strong> split <code>libnv</code> out and relink libIOKit; delete the dead CF branch.</li>
+<li><strong>libxpc for everything except launchd</strong> &mdash; syslog, Libnotify and the dead surface. Mostly deletion, removes the 30s stall class. Prove the inventory first by building with <code>xpc_connection.c</code> dropped from SRCS: everything except syslog, Libnotify and their tests must still link.</li>
 <li><strong>The main queue</strong> in CFRunLoop. Everything else depends on this existing.</li>
 <li><strong>The already-clean and one-file components</strong>: libIOKit revert, DiskArbitration, mDNSResponder, IPConfiguration, hostnamed, launchd&rsquo;s trivial cases.</li>
 <li><strong>libSystemConfiguration</strong>, keeping its public headers intact.</li>

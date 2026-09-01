@@ -228,10 +228,15 @@ Libnotify 149      ->  OS X 10.11     13 xpc_ lines   &lt;- first XPC</code></pr
 <tr><th>Component</th><th>Last pre-XPC release</th><th>Revert verdict</th></tr>
 <tr><td>syslog</td><td>148.8 (10.8.5)</td><td class="bad">Impossible in practice &mdash; <code>libsystem_asl.tproj</code> and XPC arrived in the <em>same</em> release (217.1.4). Before it the client library lived in Apple&rsquo;s Libc, which NextBSD does not vendor, so syslogd would not link.</td></tr>
 <tr><td>Libnotify</td><td>133.1.1 (10.10)</td><td class="bad">~1,300 lines re-derived to save ~250 deleted; loses the #78 MIG demux and #120 collections fixes.</td></tr>
-<tr><td>launchd</td><td>Under research</td><td class="warn">Use 258&rsquo;s <code>launchd_runtime.c</code> as the <strong>reference</strong> for the main loop, and port that shape into 842.</td></tr>
+<tr><td>launchd</td><td>392.39 (10.7.5)</td><td class="warn">Use <strong>392.39</strong>&rsquo;s <code>launchd_runtime2()</code> as donor code for the main loop; delete the XPC slab from 842 in place.</td></tr>
 </table>
 <p>Note the pattern that corrects this page&rsquo;s original premise: <strong>components adopted XPC years after XPC shipped in 10.7</strong> &mdash; syslog in 10.9, Libnotify in 10.11. &ldquo;Pre-XPC&rdquo; never meant 10.6.</p>
-<p>For launchd specifically, an actual revert also fails on schema: the shipped plists use <code>EnableTransactions</code> and <code>POSIXSpawnType</code>, both 10.7 keys. A 10.6 launchd silently ignores keys it does not know, and syslogd&rsquo;s job starts only because <code>KeepAlive=true</code> makes it non-ondemand. Keeping launchd modern is the safe direction; 842 parses everything an older daemon ships, and the reverse is not true.</p>
+<div class="callout callout-bad">
+<p><strong>Correction.</strong> An earlier version of this page said a launchd revert &ldquo;fails on plist schema&rdquo; because <code>EnableTransactions</code> and <code>POSIXSpawnType</code> would be silently dropped. Verified, that was overstated on every point: unknown keys log a warning and continue in all releases; <code>EnablePressuredExit</code> and <code>PublishesEvents</code> are <em>already</em> silently ignored by the local 842 tree because closed-source libxpc handles them; <code>POSIXSpawnType</code> is inert today since <code>posix_spawnattr_setprocesstype_np</code> is a NextBSD no-op shim; and <code>KeepAlive</code> &mdash; the key syslogd&rsquo;s startup actually depends on &mdash; is byte-identical across 329, 392 and 842.</p>
+<p>The real regression runs the other way: 329 and 392 implement <code>EnableTransactions</code> through a <code>vm_allocate</code>&rsquo;d shared-page protocol, which a revert would <strong>reintroduce</strong> as a new porting liability, for a feature 842 provides as a free boolean.</p>
+</div>
+<p>The launchd revert is still the wrong choice, but for a plainer reason: ~860 lines of vendored-file edits would have to be re-found by hand in a file that diverges by 9,540 lines (392.39) or 12,200 (329.3.3), plus the shim set and three Makefiles for a different layout. The three NextBSD-original files &mdash; <code>launchd_plist_scan.c</code>, <code>launchd_early.c</code>, <code>forward_stubs.c</code> &mdash; do port cleanly, as does the <code>MACH_PORT_INDEX</code> fix.</p>
+<p><strong>Use 392.39&rsquo;s <code>launchd_runtime2()</code> as donor code for the main-loop rewrite</strong> (~150 lines of proven Apple <code>mach_msg</code>-on-a-port-set), and delete the XPC slab from 842 in place: <code>core.c:10367-11717</code> plus two smaller blocks, ~1,475 lines contiguous.</p>
 
 <h2>6b. XPC adoption timeline &mdash; the premise this page had wrong</h2>
 <p>XPC shipped in 10.7. Components adopted it years later, and several never did. Resolved against Apple&rsquo;s own <code>distribution-macOS</code> manifest, not inferred from version numbers:</p>
@@ -239,7 +244,7 @@ Libnotify 149      ->  OS X 10.11     13 xpc_ lines   &lt;- first XPC</code></pr
 <tr><th>Component</th><th>Last pre-XPC</th><th>First XPC</th><th>Local vintage</th><th>Real XPC today</th></tr>
 <tr><td>syslog / ASL</td><td>148.8 (10.8.5)</td><td>217.1.4 (<strong>10.9</strong>)</td><td>406 (macOS 26.4)</td><td>136 refs, 6 leaf files</td></tr>
 <tr><td>Libnotify</td><td>133.1.1 (10.10)</td><td>149 (<strong>10.11</strong>)</td><td>348.100.7 (macOS 26.4)</td><td>~10, all inert</td></tr>
-<tr><td>launchd</td><td colspan="2">under research</td><td>842.92.1 (10.9)</td><td>Load-bearing &mdash; PID&nbsp;1&rsquo;s loop</td></tr>
+<tr><td>launchd</td><td>392.39 (10.7.5)<br><span class="cite">last that does not link libxpc</span></td><td>442.21 (<strong>10.8</strong>)<br><span class="cite">first libxpc main loop</span></td><td>842.92.1 (10.9.5)</td><td>Load-bearing &mdash; PID&nbsp;1&rsquo;s loop</td></tr>
 <tr><td>mDNSResponder</td><td colspan="2">XPC confined to <code>mDNSMacOSX/</code>, never vendored</td><td>2881.0.25 (macOS 26.0)</td><td class="good">0 &mdash; macro with no callers</td></tr>
 <tr><td>configd</td><td colspan="2" class="good">Never adopted XPC &mdash; still MIG at macOS 26</td><td>NextBSD-original</td><td class="good">0</td></tr>
 <tr><td>libSystemConfiguration</td><td colspan="2">n/a</td><td>NextBSD-original</td><td class="good">0</td></tr>

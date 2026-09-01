@@ -284,9 +284,40 @@ reg_release_pset(mach_port_name_t pset)
 
 <p><strong>Under 50 lines, in one file, with no kernel change and no libdispatch change</strong> &mdash; which preserves the property that this tree builds unmodified Apple libdispatch.</p>
 
-<div class="callout callout-warn">
-<p><strong>One value would settle the last inference.</strong> The chain above is verified in source, but that <em>this particular core&rsquo;s</em> faulting kevent is that event is inferred. The <code>filter</code> field of <code>_dispatch_kevent_merge</code>&rsquo;s second argument decides it: <strong>&minus;16</strong> confirms the raw-native leak above; <strong>&minus;22</strong> would mean a synthesized event carrying a stale <code>udata</code> &mdash; a different bug needing a different fix. Cheaper than a debugger: <code>MACH_DEBUG_WRAP=1 scrltest</code> prints every synthesized delivery, and on a crashing run the fatal event will have <em>no</em> matching <code>[WRAP] deliver</code> line.</p>
+<div class="callout callout-good">
+<p><strong>Confirmed on hardware, 2026-09-01.</strong> The chain above was verified in source; the remaining inference was whether <em>this</em> crash is that chain. A fresh core on the CI-matching kernel settles it &mdash; <strong>every value predicted in advance matched.</strong></p>
 </div>
+
+<p>The faulting kevent, decoding <code>struct kevent_qos_s</code> (ident 0, filter 8, flags 10, qos 12, udata 16):</p>
+
+<pre><code>0x89692550: 0x0000000000000017   ident  = 23
+            0x000000008010fff0   filter = 0xfff0 = -16   ← EVFILT_MACHPORT_NATIVE
+                                 flags  = 0x8010         ← EV_EOF | EV_ONESHOT
+0x89692560: 0x000063efa4e01000   udata  = 0x63efa4e01000 ← identical to x0</code></pre>
+
+<p><strong>Filter &minus;16</strong> is the raw-native leak; <strong>&minus;22</strong> would have meant the sibling bug. <strong><code>EV_EOF | EV_ONESHOT</code></strong> is the exact signature <code>knlist_clear()</code> stamps on the knote in <code>ipc_pset_destroy()</code>. And the object libdispatch dereferenced:</p>
+
+<pre><code>0x63efa4e01000: 0x0000000000000000   "du_type"       → NULL   (freed list pointer)
+                0x0000000000000007   "du_owner_wref" → 7      (an fd)
+0x63efa4e01010: 0x0000000000000016   → 22
+                0x0000000000000017   → 23</code></pre>
+
+<p>Two port names in a struct libdispatch believes is a dispatch unote. The cross-check that closes it: <strong><code>0x16</code> is exactly the <code>ident</code> from that run&rsquo;s <code>MACH_DEBUG_WRAP</code> trace</strong> (<code>[WRAP] change kq=9 ident=0x16</code>), and <code>0x17</code> is this kevent&rsquo;s own ident &mdash; tying the freed allocation to the very registration traced being created and deleted. The fault itself:</p>
+
+<pre><code>&lt;+16&gt;: ldp  x10, x8, [x0]     ; x10 = word0 = 0,  x8 = word1 = 7
+&lt;+24&gt;: mvn  x9, x8            ; _dispatch_wref2ptr(du_owner_wref)
+&lt;+28&gt;: ldrb w8, [x10, #0x9]   ; ← FAULTS: byte at 0x0 + 9</code></pre>
+
+<p>A NULL+9 read &mdash; <code>dux_type(du)-&gt;dst_action</code>, <code>du_type</code> at offset 0. <strong>Fix A is the correct fix; the &minus;22 alternative is ruled out.</strong></p>
+
+<h3>What the kernel change did <em>not</em> do</h3>
+<p>The same measurement re-ran the crash rate across the kernel boundary:</p>
+<table>
+<tr><th>Kernel</th><th>Crashes / 30</th></tr>
+<tr><td><code>20260831-232019</code> &mdash; before #167 / #168</td><td class="bad">13</td></tr>
+<tr><td><code>20260901-032651</code> &mdash; with #167 / #168</td><td class="bad">9</td></tr>
+</table>
+<p>Statistically indistinguishable (z &asymp; 1.07, p &asymp; 0.28). <strong>#168 changed nothing measurable</strong>, confirming from the other direction what the bisect concluded from the dates. Note also that the crashing runs print <code>SC-RUNLOOP-OK</code> before dying &mdash; the test passes, then the manager thread faults at exit.</p>
 
 <h2 id="gnustep">10. The GNUstep question dissolves</h2>
 

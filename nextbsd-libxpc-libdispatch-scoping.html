@@ -260,6 +260,25 @@ Libnotify 149      ->  OS X 10.11     13 xpc_ lines   &lt;- first XPC</code></pr
 <p><strong>Methodology warning.</strong> <code>git grep -E '\bxpc_'</code> silently returns zero at every tag &mdash; git&rsquo;s POSIX ERE has no <code>\b</code>. Two surveys hit this independently. Any count of &ldquo;zero XPC references&rdquo; produced that way is a false negative. The zeroes recorded on this page were established by reading preprocessor conditions and Makefiles rather than by grep alone, but spot-check before treating any zero as licence to delete.</p>
 </div>
 
+<h2>6c. The vintage map, and where it actually bites</h2>
+<p>This tree spans roughly <strong>17 years</strong>. That is worth knowing before either plan starts moving components around.</p>
+<table>
+<tr><th>Component / part</th><th>Upstream</th><th>Release</th><th>Era</th></tr>
+<tr><td><code>kext_tools/compat/</code></td><td>xnu headers</td><td>unpinned</td><td>~2008</td></tr>
+<tr><td><code>kext_tools/kext.subproj</code></td><td>IOKitUser</td><td>907.100.13</td><td><strong>OS X 10.9</strong></td></tr>
+<tr><td><code>libmach/*.defs</code></td><td>xnu <code>osfmk/mach/</code></td><td>closest 3247.1.106</td><td>~10.9&ndash;10.11</td></tr>
+<tr><td><code>bootstrap_cmds</code> (mig)</td><td>bootstrap_cmds</td><td>136 &equiv; 138</td><td><strong>macOS 15 / 26</strong></td></tr>
+<tr><td><code>hostnamed/vendored/set-hostname.c</code></td><td>configd IPMonitor</td><td>1345&ndash;1405.120.5</td><td>macOS 15 / 26</td></tr>
+<tr><td><code>libCoreFoundation</code></td><td>swift-corelibs-foundation</td><td>SHA <code>0e20e4a7</code></td><td><strong>May 2026</strong></td></tr>
+<tr><td>libIOKit, libmach body, mach_kmod, WLAN, IPConfiguration, hostnamed body, DiskArbitration, configd, libSystemConfiguration</td><td colspan="2">NextBSD-original</td><td>2025&ndash;26</td></tr>
+</table>
+<div class="callout callout-bad">
+<p><strong>Mixed vintage has already caused one real failure, and it is the archetype.</strong> macOS 15/26-era <code>mig</code> generates stubs emitting <code>MACH_RCV_TRAILER_AV</code>, which this tree&rsquo;s ~10.9-era <code>libmach/include/mach/message.h</code> does not define. Every <code>bootstrap_look_up*</code> returned <code>MIG_TRAILER_ERROR (-309)</code>. Fixed in <code>5ebbe3d</code> by patching <code>user.c</code> to emit <code>MACH_RCV_TRAILER_AUDIT</code> instead.</p>
+<p>A 2024 generator against a 2013 header set. That is the shape to watch for &mdash; not ABI breakage between daemons, but a modern tool emitting something an older header has never heard of.</p>
+</div>
+<p><strong>Six of the nine components surveyed here are NextBSD-original</strong>, which closes the revert question for them outright: there is no older Apple version to go back to. And across all nine there are <strong>zero <code>xpc_*</code> API calls</strong> &mdash; the only libxpc coupling is libIOKit&rsquo;s <code>-lxpc</code>, which is for libnv. Dropping libxpc in this group means re-homing libnv, not de-XPC-ing anything.</p>
+<p><em>Documentation drift found while establishing this &mdash; six items, filed as <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/154">#154</a>:</em> <code>PROVENANCE.md</code> dates IOKitUser-907.100.13 to 10.8.5 when it is 10.9 (and 10.9 is the last pre-XPC IOKitUser, so the choice was better than documented); <code>NOTICE.md</code> lists wrong upstreams for libIOKit, libmach and IPConfiguration and omits WLAN, mach_kmod and bootstrap_cmds entirely.</p>
+
 <h2>7. Do this before either plan</h2>
 <ol>
 <li><strong>Make the boot test gate</strong> (<a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/87">#87</a>). CI has passed a kernel that bricked the box, and a userland PR while <code>SYSLOG-RUN</code> failed on both arches under <code>boot_soft</code>. Both plans&rsquo; risky phases are PID-1-adjacent.</li>

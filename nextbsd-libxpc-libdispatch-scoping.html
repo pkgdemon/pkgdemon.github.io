@@ -102,6 +102,25 @@ SCPreferences.h:246          SCPreferencesSetDispatchQueue
 SCNetworkReachability.h:140  SCNetworkReachabilitySetDispatchQueue</code></pre>
 <p>Three <strong>installed public headers</strong> declare <code>dispatch_queue_t</code> parameters. These are Apple public API; removing them breaks source compatibility with unmodified Apple code, which is the project&rsquo;s reason for existing. A minimal <code>dispatch_queue_t</code> shim would be needed even with libdispatch gone. The heaviest implementation site is <code>SCNotify.c:345-408</code>, a <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> source &mdash; the one place in this group that consumes libmach&rsquo;s EVFILT_MACHPORT bridge.</p>
 
+<h2>3b. For much of the tree, &ldquo;revert to 10.6&rdquo; is a category error</h2>
+<div class="callout callout-warn">
+<p><strong>The dispatch dependency in the IOKit/driver group was added by NextBSD, not inherited from Apple.</strong> Commit <code>05a674f</code> &mdash; <em>&ldquo;SCNotify + IOKitNotify: replace pthread+mach_msg loops with MACH_RECV dispatch sources&rdquo;</em> &mdash; moved these facades <em>onto</em> libdispatch from working pthread + <code>mach_msg</code> loops. The pre-dispatch implementation is in git history.</p>
+<p>So the lever here is <code>git revert</code>-shaped, not version-shaped. Reverting Apple vendor tags would not help: four of these six components contain <strong>zero Apple source</strong>.</p>
+</div>
+<p><em>Verified</em> survey of the IOKit / driver group (2026-09-01):</p>
+<table>
+<tr><th>Component</th><th>Real dispatch</th><th>Real xpc</th><th>Upstream</th><th>Verdict</th></tr>
+<tr><td>libIOKit</td><td class="warn">1 shipped file + public ABI</td><td class="good">0</td><td>NextBSD original</td><td>Needs work &mdash; prior pthread impl in git</td></tr>
+<tr><td>kext_tools</td><td class="good">0</td><td class="good">0</td><td>Apple IOKitUser-907.100.13 (10.8.5)</td><td>Already clean</td></tr>
+<tr><td>mach_kmod</td><td class="good">0 (all comments)</td><td class="good">0 (comment)</td><td>NextBSD original, tests only</td><td>Already clean</td></tr>
+<tr><td>WLAN</td><td class="good">0 (all comments)</td><td class="good">0</td><td>NextBSD original</td><td>Already clean</td></tr>
+<tr><td>mDNSResponder</td><td>1 file</td><td class="good">0 (dead macro)</td><td>Apple mDNSResponder-1661.x</td><td>Trivially cleanable</td></tr>
+<tr><td>DiskArbitration</td><td>1 file, 3 call sites</td><td class="good">0</td><td>NextBSD original</td><td>Trivially cleanable</td></tr>
+</table>
+<p><strong>Zero real XPC API calls across all six.</strong> The <code>-lxpc</code> on libIOKit is a false positive: <code>IOKitMatching.c</code> uses <code>nvlist_*</code> to decode the ioregistry property bag, and that lives in <code>src/libxpc/subr_nvlist.c</code> &mdash; a vendored fork of FreeBSD&rsquo;s own <code>libnv</code>. Dropping libxpc means repointing at base <code>-lnv</code>.</p>
+<p>The entire libdispatch surface for this group is <strong>two files</strong>: <code>libIOKit/IOKitNotify.c</code> and <code>mDNSResponder/mDNSPosix/mDNSConfigStore.c</code>. Everything else is comments, <code>__APPLE__</code>-guarded dead code, unshipped test binaries, or transitive linkage through libIOKit&rsquo;s public header.</p>
+<p>Boot-path risk in this group is materially lower than the syslogd precedent: four components are <code>RunAtLoad</code>, but none of the dispatch calls on those paths is a synchronous IPC or blocking wait &mdash; they are queue and source construction. mDNSResponder&rsquo;s is additionally non-fatal, with a routing-socket fallback.</p>
+
 <h2>4. The anchor is CoreFoundation</h2>
 <pre><code>CFRunLoop.c:  _dispatch_runloop_root_queue_create_4CF
               _dispatch_runloop_root_queue_get_port_4CF

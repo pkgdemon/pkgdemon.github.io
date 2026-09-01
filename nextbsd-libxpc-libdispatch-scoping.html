@@ -76,21 +76,33 @@
 <p>So &ldquo;revert to open-source components instead of reimplementations&rdquo; maps most cleanly onto <strong>libxpc</strong>: XPC did not exist before 10.7, so pre-10.7 launchd, syslogd, notifyd and ASL are genuine Apple open-source releases that never referenced it.</p>
 
 <h2>3. Where dispatch and XPC are used today</h2>
-<p><em>Measured</em> &mdash; files referencing <code>dispatch_</code> / <code>xpc_</code>, this tree:</p>
+<div class="callout callout-bad">
+<p><strong>Correction.</strong> An earlier version of this page gave file counts from a plain grep for <code>dispatch_</code> / <code>xpc_</code>. Those counts were <strong>mostly false positives</strong> &mdash; the grep matched prose in comments, and these files are heavily commented. The numbers below are after stripping comments and string literals. They are much smaller, and they change the conclusion in this section.</p>
+</div>
+<p><em>Verified</em> for the configd / networking / libmach group (survey, 2026-09-01):</p>
 <table>
-<tr><th>Component</th><th>dispatch</th><th>xpc</th></tr>
-<tr><td>libCoreFoundation</td><td class="bad">34</td><td>1</td></tr>
-<tr><td>Libnotify</td><td>31</td><td class="warn">10</td></tr>
-<tr><td>syslog / ASL</td><td>20</td><td class="warn">10</td></tr>
-<tr><td>libSystemConfiguration</td><td>9</td><td>0</td></tr>
-<tr><td>libmach</td><td>8</td><td>1</td></tr>
-<tr><td>launchd</td><td>8</td><td>5</td></tr>
-<tr><td>mDNSResponder</td><td>5</td><td>1</td></tr>
-<tr><td>configd</td><td>1</td><td>0</td></tr>
+<tr><th>Component</th><th>Raw grep</th><th>Real dispatch</th><th>Real xpc</th><th>Verdict</th></tr>
+<tr><td><strong>libmach</strong></td><td>9</td><td class="good">0</td><td class="good">0</td><td>Already clean</td></tr>
+<tr><td>configd</td><td>1</td><td class="good">0</td><td class="good">0</td><td>Already clean</td></tr>
+<tr><td>bootstrap / bootstrap_cmds</td><td>0</td><td class="good">0</td><td class="good">0</td><td>Already clean</td></tr>
+<tr><td>kext_tools</td><td>0</td><td class="good">0</td><td class="good">0</td><td>Already clean</td></tr>
+<tr><td>IPConfiguration</td><td>1</td><td>3 call sites, 1 file</td><td class="good">0</td><td>Trivially cleanable</td></tr>
+<tr><td>hostnamed</td><td>4</td><td>1 live file</td><td class="good">0</td><td>Trivially cleanable</td></tr>
+<tr><td>libSystemConfiguration</td><td>9</td><td class="warn">3 impl + 3 public headers</td><td class="good">0</td><td>Needs work &mdash; API surface</td></tr>
 </table>
-<p>XPC use is concentrated in three components and is small. Dispatch use is broad.</p>
+<p><strong>This entire group uses no XPC at all.</strong> The only <code>xpc_</code> hits are two comment lines in <code>libmach/include/mach/message.h</code>. Counts for launchd, syslog, Libnotify and CoreFoundation are still the raw grep figures and should be assumed inflated until their surveys land.</p>
 
-<h2>4. The anchor is CoreFoundation, not configd</h2>
+<h3>libmach bridges <em>for</em> libdispatch, not <em>on</em> it</h3>
+<p><code>dispatch_kevent.c</code> has 17 mentions of <code>dispatch_</code>, <strong>all in comments</strong>; its only non-comment reference includes its own header. It implements <code>kevent_qos()</code> and <code>struct kevent_qos_s</code> so unmodified Apple libdispatch compiles against Apple-shaped APIs. Its Makefile links <code>execinfo</code> and nothing else.</p>
+<p>The dependency runs one way: libdispatch needs libmach, not the reverse. Removing libdispatch would leave this file <em>unused</em>, not broken.</p>
+
+<h3>The binding constraint is public API, not implementation</h3>
+<pre><code>SCDynamicStore.h:249         SCDynamicStoreSetDispatchQueue
+SCPreferences.h:246          SCPreferencesSetDispatchQueue
+SCNetworkReachability.h:140  SCNetworkReachabilitySetDispatchQueue</code></pre>
+<p>Three <strong>installed public headers</strong> declare <code>dispatch_queue_t</code> parameters. These are Apple public API; removing them breaks source compatibility with unmodified Apple code, which is the project&rsquo;s reason for existing. A minimal <code>dispatch_queue_t</code> shim would be needed even with libdispatch gone. The heaviest implementation site is <code>SCNotify.c:345-408</code>, a <code>DISPATCH_SOURCE_TYPE_MACH_RECV</code> source &mdash; the one place in this group that consumes libmach&rsquo;s EVFILT_MACHPORT bridge.</p>
+
+<h2>4. The anchor is CoreFoundation</h2>
 <pre><code>CFRunLoop.c:  _dispatch_runloop_root_queue_create_4CF
               _dispatch_runloop_root_queue_get_port_4CF
               _dispatch_source_set_runloop_timer_4CF

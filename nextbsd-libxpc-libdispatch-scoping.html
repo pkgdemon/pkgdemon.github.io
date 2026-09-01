@@ -233,6 +233,28 @@ Libnotify 149      ->  OS X 10.11     13 xpc_ lines   &lt;- first XPC</code></pr
 <p>Note the pattern that corrects this page&rsquo;s original premise: <strong>components adopted XPC years after XPC shipped in 10.7</strong> &mdash; syslog in 10.9, Libnotify in 10.11. &ldquo;Pre-XPC&rdquo; never meant 10.6.</p>
 <p>For launchd specifically, an actual revert also fails on schema: the shipped plists use <code>EnableTransactions</code> and <code>POSIXSpawnType</code>, both 10.7 keys. A 10.6 launchd silently ignores keys it does not know, and syslogd&rsquo;s job starts only because <code>KeepAlive=true</code> makes it non-ondemand. Keeping launchd modern is the safe direction; 842 parses everything an older daemon ships, and the reverse is not true.</p>
 
+<h2>6b. XPC adoption timeline &mdash; the premise this page had wrong</h2>
+<p>XPC shipped in 10.7. Components adopted it years later, and several never did. Resolved against Apple&rsquo;s own <code>distribution-macOS</code> manifest, not inferred from version numbers:</p>
+<table>
+<tr><th>Component</th><th>Last pre-XPC</th><th>First XPC</th><th>Local vintage</th><th>Real XPC today</th></tr>
+<tr><td>syslog / ASL</td><td>148.8 (10.8.5)</td><td>217.1.4 (<strong>10.9</strong>)</td><td>406 (macOS 26.4)</td><td>136 refs, 6 leaf files</td></tr>
+<tr><td>Libnotify</td><td>133.1.1 (10.10)</td><td>149 (<strong>10.11</strong>)</td><td>348.100.7 (macOS 26.4)</td><td>~10, all inert</td></tr>
+<tr><td>launchd</td><td colspan="2">under research</td><td>842.92.1 (10.9)</td><td>Load-bearing &mdash; PID&nbsp;1&rsquo;s loop</td></tr>
+<tr><td>mDNSResponder</td><td colspan="2">XPC confined to <code>mDNSMacOSX/</code>, never vendored</td><td>2881.0.25 (macOS 26.0)</td><td class="good">0 &mdash; macro with no callers</td></tr>
+<tr><td>configd</td><td colspan="2" class="good">Never adopted XPC &mdash; still MIG at macOS 26</td><td>NextBSD-original</td><td class="good">0</td></tr>
+<tr><td>libSystemConfiguration</td><td colspan="2">n/a</td><td>NextBSD-original</td><td class="good">0</td></tr>
+<tr><td>DiskArbitration</td><td colspan="2">Client framework never adopted XPC</td><td>NextBSD-original</td><td class="good">0</td></tr>
+</table>
+<div class="callout callout-good">
+<p><strong>Apple never moved SCDynamicStore off MIG.</strong> Verified at <code>configd-1405.120.5</code> (macOS 26): <code>config.defs</code> still declares <code>subsystem config 20000</code>, all 18 MIG server implementations are XPC-free, and <code>SCDOpen.c</code> still does <code>bootstrap_look_up2</code>. Apple used XPC for the bulk read-only blobs layered <em>around</em> configd &mdash; reachability (10.8), dnsinfo/nwi (10.9), IPMonitor (10.12) &mdash; never for the store itself. NextBSD&rsquo;s design matches Apple&rsquo;s current one.</p>
+</div>
+<div class="callout callout-warn">
+<p><strong>Naming collision worth knowing.</strong> NextBSD&rsquo;s <code>libSystemConfiguration</code> is a port of Apple&rsquo;s <strong><code>SystemConfiguration.fproj</code></strong> (the framework). Apple <em>also</em> ships <code>configd/libSystemConfiguration/</code> &mdash; an entirely different XPC-native helper for dnsinfo and nwi blobs, which has <strong>no pre-XPC release</strong>, having been XPC-native from birth (<code>configd-596.12</code>, 10.9). Reasoning about &ldquo;libSystemConfiguration&rsquo;s XPC history&rdquo; from the upstream directory name reaches the opposite of the correct conclusion.</p>
+</div>
+<div class="callout callout-bad">
+<p><strong>Methodology warning.</strong> <code>git grep -E '\bxpc_'</code> silently returns zero at every tag &mdash; git&rsquo;s POSIX ERE has no <code>\b</code>. Two surveys hit this independently. Any count of &ldquo;zero XPC references&rdquo; produced that way is a false negative. The zeroes recorded on this page were established by reading preprocessor conditions and Makefiles rather than by grep alone, but spot-check before treating any zero as licence to delete.</p>
+</div>
+
 <h2>7. Do this before either plan</h2>
 <ol>
 <li><strong>Make the boot test gate</strong> (<a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/87">#87</a>). CI has passed a kernel that bricked the box, and a userland PR while <code>SYSLOG-RUN</code> failed on both arches under <code>boot_soft</code>. Both plans&rsquo; risky phases are PID-1-adjacent.</li>

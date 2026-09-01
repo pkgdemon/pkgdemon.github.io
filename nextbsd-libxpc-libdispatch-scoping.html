@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dropping libxpc and libdispatch: scoping</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  .cite { font-size:0.82em; color:var(--fg-muted); }
+</style>
+<style>
+    .callout-bad { border-left-color:var(--bad); background:#f7e8e8; }
+    td.bad { color:var(--bad); font-weight:600; }
+    td.good { color:var(--good); font-weight:600; }
+    td.warn { color:var(--warn); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; evidence in <a href="nextbsd-mach-ipc-elimination.html">Mach IPC &mdash; what has been eliminated</a></p>
+
+
+<h1>Dropping libxpc and libdispatch</h1>
+<p class="lede">Can NextBSD ship pre-XPC, open-source Apple components instead of maintaining reimplementations? Scoping, with the parts that are measured separated from the parts that are not.</p>
+<p class="meta">Drafted 2026-09-01, after the Mach IPC wedge was fixed. <strong>The component survey has not been run yet</strong> &mdash; Phase 0 below.</p>
+
+<div class="callout callout-warn">
+<p><strong>Status: this is a scoping document, not an approved plan.</strong> The per-component 10.6 survey that would make it actionable is Phase 0 and has not been done. Everything below marked <em>measured</em> comes from this tree or from today's debugging; everything marked <em>assumed</em> needs checking before anyone commits to it.</p>
+</div>
+
+<h2>1. Why this is on the table</h2>
+<p>Two boot-path failures were diagnosed today, and neither was a Mach defect:</p>
+<table>
+<tr><th>Failure</th><th>Cause</th><th>Layer</th></tr>
+<tr><td>amd64: no logging at all at boot</td><td><code>asl_trigger_aslmanager()</code> does a <strong>synchronous XPC</strong> round-trip to a launchd demand-launched service, waiting <code>XPC_SYNC_REPLY_TIMEOUT_NSEC</code> (30s), from <code>write_boot_log()</code> before <code>/var/run/log</code> exists</td><td>libxpc</td></tr>
+<tr><td>attempted fix killed syslogd outright</td><td><code>xpc_connection_send_message()</code> is <code>dispatch_async</code> onto the connection's send queue &mdash; from syslogd's <code>bsd_in</code> recv pthread, the pattern <code>asl_action.c:1765</code> already documents as SIGSEGVing</td><td>libdispatch</td></tr>
+</table>
+<p>The wedge that started the whole investigation was <em>not</em> libxpc &mdash; it was <code>EV_CLEAR</code> on a kqueue readiness knote in libmach. That matters: the case for this effort rests on the two boot-path failures above, not on the wedge.</p>
+
+<h2>2. What is actually a reimplementation</h2>
+<table>
+<tr><th>Component</th><th>Upstream status</th><th>Maintenance cost here</th></tr>
+<tr><td><strong>libxpc</strong></td><td class="bad">Never open-sourced by Apple</td><td>Entirely ours. No upstream to track, no reference to diff against.</td></tr>
+<tr><td><strong>libdispatch</strong></td><td class="warn">Open source, but ported</td><td>Upstream carries no <code>HAVE_MACH</code> for this platform; the Mach path here is original work.</td></tr>
+<tr><td><strong>libmach</strong></td><td class="bad">Reimplementation</td><td>Unavoidable &mdash; it is the project.</td></tr>
+</table>
+<p>So &ldquo;revert to open-source components instead of reimplementations&rdquo; maps most cleanly onto <strong>libxpc</strong>: XPC did not exist before 10.7, so pre-10.7 launchd, syslogd, notifyd and ASL are genuine Apple open-source releases that never referenced it.</p>
+
+<h2>3. Where dispatch and XPC are used today</h2>
+<p><em>Measured</em> &mdash; files referencing <code>dispatch_</code> / <code>xpc_</code>, this tree:</p>
+<table>
+<tr><th>Component</th><th>dispatch</th><th>xpc</th></tr>
+<tr><td>libCoreFoundation</td><td class="bad">34</td><td>1</td></tr>
+<tr><td>Libnotify</td><td>31</td><td class="warn">10</td></tr>
+<tr><td>syslog / ASL</td><td>20</td><td class="warn">10</td></tr>
+<tr><td>libSystemConfiguration</td><td>9</td><td>0</td></tr>
+<tr><td>libmach</td><td>8</td><td>1</td></tr>
+<tr><td>launchd</td><td>8</td><td>5</td></tr>
+<tr><td>mDNSResponder</td><td>5</td><td>1</td></tr>
+<tr><td>configd</td><td>1</td><td>0</td></tr>
+</table>
+<p>XPC use is concentrated in three components and is small. Dispatch use is broad.</p>
+
+<h2>4. The anchor is CoreFoundation, not configd</h2>
+<pre><code>CFRunLoop.c:  _dispatch_runloop_root_queue_create_4CF
+              _dispatch_runloop_root_queue_get_port_4CF
+              _dispatch_source_set_runloop_timer_4CF
+              _dispatch_runloop_root_queue_perform_4CF</code></pre>
+<p>Those are libdispatch&rsquo;s <strong>private SPI for CoreFoundation</strong>. CFRunLoop is built on a dispatch root queue, so removing libdispatch means rewriting CFRunLoop &mdash; and GNUstep sits on CoreFoundation. configd, by contrast, is a single file.</p>
+<div class="callout">
+<p><strong>Therefore the achievable goal is not &ldquo;remove libdispatch&rdquo; but &ldquo;get libdispatch and XPC off the boot path and out of the system daemons.&rdquo;</strong> That captures both failures above without touching CoreFoundation, and it is what pre-10.7 launchd/syslogd/notifyd would give.</p>
+</div>
+
+<h2>5. What is known about 10.6-era launchd</h2>
+<p><em>Measured:</em> our launchd has <strong>8 files using dispatch and 5 using xpc</strong>, alongside 64 call sites into its own kqueue runtime. It is a hybrid.</p>
+<p><em>Assumed, needs checking:</em> launchd-258 (10.6) used its own <code>launchd_runtime.c</code> kqueue loop and did not use libdispatch &mdash; it could not, because libdispatch depends on launchd for bootstrap. If that holds, the dispatch and XPC call sites in our launchd are later additions with a documented pre-existing alternative already present in the tree.</p>
+
+<h2>6. Phase 0 &mdash; the survey that has not been run</h2>
+<p>One pass per shipped component, each answering the same questions, producing a go/no-go table rather than an argument:</p>
+<ol>
+<li>Which Apple open-source release is the 10.6-era one, and is it still obtainable?</li>
+<li>Does that version reference XPC (expected: no) or dispatch (varies by component)?</li>
+<li>Which NextBSD-specific patches in our current copy would need re-applying, and do they even apply to a 10.6 codebase?</li>
+<li>What does the newer version provide that consumers here now depend on?</li>
+</ol>
+<p>Components: launchd, syslog/ASL, Libnotify, configd, mDNSResponder, IOKitUser, DiskArbitration, libSystemConfiguration.</p>
+
+<h2>7. Risks worth stating before committing</h2>
+<ul>
+<li><strong>Reverting is not free.</strong> Every NextBSD patch on a component has to be re-derived against a 15-year-older base. For syslogd alone that includes the hostname fix (#134) and today&rsquo;s boot-path change.</li>
+<li><strong>A 10.6 component may want a 10.6 counterpart.</strong> 10.6 syslogd expects a 10.6-era launchd job model; mixing vintages may cost more than it saves.</li>
+<li><strong>libdispatch stays regardless</strong> while CoreFoundation is in the picture, so this does not eliminate a dependency &mdash; it narrows where it runs.</li>
+<li><strong>The wedge was not caused by any of this.</strong> Fixing it required none of this work, which is evidence that &ldquo;remove the modern layers&rdquo; is not automatically the reliability answer.</li>
+</ul>
+
+<h2>8. Recommendation</h2>
+<ol>
+<li><strong>Do Phase 0 first.</strong> It is cheap and it converts this from a preference into a decision.</li>
+<li><strong>Treat libxpc removal as the primary goal</strong> &mdash; it is the only component with no upstream at all, its usage is concentrated in three places, and it caused today&rsquo;s boot failure.</li>
+<li><strong>Treat libdispatch as a boot-path question, not a removal question</strong>, until CoreFoundation has an answer.</li>
+<li><strong>Fix the known libdispatch defect regardless.</strong> <code>dispatch_async</code> from non-dispatch pthreads is documented in-tree as crashing and was demonstrated again today. That is a real bug with or without this effort.</li>
+</ol>
+
+</div>
+</body>
+</html>

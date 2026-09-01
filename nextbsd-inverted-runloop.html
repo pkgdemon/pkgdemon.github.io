@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Inverted Run Loop</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e8e8; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  td.bad { color:var(--bad); font-weight:600; }
+  td.good { color:var(--good); font-weight:600; }
+  td.warn { color:var(--warn); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; companion to <a href="nextbsd-libxpc-libdispatch-scoping.html">Dropping libxpc and libdispatch</a></p>
+
+<h1>The Inverted Run Loop</h1>
+<p class="lede">NextBSD builds <code>SCDynamicStoreCreateRunLoopSource</code> on top of libdispatch. Apple builds it on CFMachPort and has since before libdispatch existed. That inversion is measurable, and it is what crashes.</p>
+<p class="meta">Measured 2026-09-01 on arm64 hardware and against Apple&rsquo;s published <code>configd</code> sources. Three follow-on surveys are in flight &mdash; see <a href="#open">&sect;7</a>.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#history">When SCNotify started using libdispatch</a></li>
+<li><a href="#inversion">The inversion, stated plainly</a></li>
+<li><a href="#crash">What actually crashes</a></li>
+<li><a href="#cfmachport">CFMachPort: it exists, and it will not save us</a></li>
+<li><a href="#stack">The CoreFoundation constraint stack</a></li>
+<li><a href="#hidden">Why CI reported this green for days</a></li>
+<li><a href="#open">Open questions, and what is being surveyed</a></li>
+</ol>
+</div>
+
+<h2 id="history">1. When SCNotify started using libdispatch</h2>
+
+<p>Apple&rsquo;s <code>SCDNotifierInformViaCallback.c</code> is the file NextBSD&rsquo;s <code>SCNotify.c</code> is a port of. Two consecutive releases settle the question:</p>
+
+<table>
+<tr><th><code>SCDNotifierInformViaCallback.c</code></th><th>CFMachPort</th><th>CFRunLoopSource</th><th><code>dispatch_</code></th></tr>
+<tr><td><code>configd-212.2</code> &mdash; 10.5 Leopard</td><td>17</td><td>7</td><td class="good">0</td></tr>
+<tr><td><code>configd-289</code> &mdash; 10.6 Snow Leopard</td><td>22</td><td>7</td><td class="bad">23</td></tr>
+</table>
+
+<p><code>SCDynamicStoreSetDispatchQueue</code> is defined in 289 and absent in 212.2. So SCNotify adopted libdispatch in <strong>Mac OS X 10.6</strong> &mdash; the same release that introduced GCD. It has been dispatch-aware from the first day dispatch existed.</p>
+
+<div class="callout callout-good">
+<p><strong>But look at what did not change.</strong> CFMachPort references went <em>up</em> (17 &rarr; 22) and <code>CFRunLoopSource</code> stayed flat at 7. <strong>Apple added dispatch as a parallel delivery mode. They never replaced the run-loop path with it.</strong> Both coexist in that file to this day.</p>
+</div>
+
+<p>This is consistent with how that code is shaped generally. The 10.5 tree already shipped <strong>four independent delivery mechanisms</strong> as four separate files &mdash; <code>SCDNotifierInformViaCallback.c</code>, <code>SCDNotifierInformViaFD.c</code>, <code>SCDNotifierInformViaMachPort.c</code>, <code>SCDNotifierInformViaSignal.c</code>. Adding a fifth was the established pattern, not a migration.</p>
+
+<h2 id="inversion">2. The inversion, stated plainly</h2>
+
+<p>In Apple&rsquo;s stack the dependency runs one way:</p>
+
+<pre><code>Apple
+  SCDynamicStoreCreateRunLoopSource  ──&gt;  CFMachPort        (older, dispatch-free)
+  SCDynamicStoreSetDispatchQueue     ──&gt;  libdispatch       (newer, added 10.6)
+                                          two independent paths</code></pre>
+
+<p>In this tree it runs the other way:</p>
+
+<pre><code>NextBSD
+  SCDynamicStoreSetDispatchQueue     ──&gt;  libdispatch       (iter 2, built first)
+  SCDynamicStoreCreateRunLoopSource  ──&gt;  libdispatch       (iter 3, built ON the above)
+                                          one path, stacked</code></pre>
+
+<p><code>SCNotify.c</code> states the reason in its own header comment:</p>
+
+<blockquote><p><em>&ldquo;Apple also offers SCDynamicStoreCreateRunLoopSource, built on CFMachPort. This repo&rsquo;s libCoreFoundation does not compile CFMachPort (it is gated to <code>TARGET_OS_MAC</code>), so the run-loop-source variant is a later iteration.&rdquo;</em></p></blockquote>
+
+<p>Concretely: the dispatch path takes the caller&rsquo;s queue, while the run-loop path has no caller queue and so <code>__sc_notify_start</code> spins up a private serial one:</p>
+
+<pre><code>if (storePrivate-&gt;notifyStatus == Using_NotifierInformViaDispatch) {
+        q = storePrivate-&gt;dispatchQueue;
+} else {
+        storePrivate-&gt;notifyQueue =
+            dispatch_queue_create("com.apple.SCDynamicStore.notify", NULL);
+        q = storePrivate-&gt;notifyQueue;
+}</code></pre>
+
+<p>The run-loop path therefore carries <em>strictly more machinery</em> here than it does upstream, where it carries less. That is the whole finding, and it predicts which of the two tests fails.</p>
+
+<h2 id="crash">3. What actually crashes</h2>
+
+<p>Measured on arm64 hardware against the CI <code>main</code> userland: <code>scrltest</code> segfaults in <strong>13 of 30 runs</strong>. It <em>passes</em> under lldb, because the debugger&rsquo;s timing hides the race &mdash; so it had to be stressed bare and caught with a core.</p>
+
+<pre><code>thread #1, name = 'DispatchWorker', stop reason = signal SIGSEGV
+  frame #0: libsystem_dispatch.so`_dispatch_kevent_merge + 28
+  frame #1: libsystem_dispatch.so`_dispatch_kq_drain + 144
+  frame #2: libsystem_dispatch.so`_dispatch_mgr_invoke + 144
+  frame #3: libsystem_dispatch.so`_dispatch_mgr_thread + 164</code></pre>
+
+<p>And on another thread, libdispatch&rsquo;s own kevent <em>error reporter</em>, reached from knote teardown:</p>
+
+<pre><code>thread #3, name = 'DispatchWorker'
+  frame #7:  libsystem_dispatch.so`_dispatch_bug_kevent_client + 436
+  frame #8:  libsystem_dispatch.so`_dispatch_kq_drain + 244
+  frame #9:  libsystem_dispatch.so`_dispatch_kq_unote_update + 320
+  frame #10: libsystem_dispatch.so`_dispatch_unote_unregister_direct + 228
+  frame #11: libsystem_dispatch.so`_dispatch_source_invoke + 1052</code></pre>
+
+<div class="callout callout-bad">
+<p><strong>The crash is in libdispatch, not in SCNotify and not in CoreFoundation.</strong> A dispatch source is cancelled, libdispatch unregisters its <code>EVFILT_MACHPORT</code> knote, <strong>the kernel returns an error from that kevent operation</strong> &mdash; which is why <code>_dispatch_bug_kevent_client</code> is on the stack at all &mdash; and the manager thread then faults in <code>_dispatch_kevent_merge</code>.</p>
+</div>
+
+<p>Thread&nbsp;#2, the main thread, was already inside <code>exit()</code> &rarr; <code>__cxa_finalize</code>. <strong>The test itself had completed.</strong> The fault is asynchronous on the manager thread, so where the main thread happens to be when it lands is arbitrary &mdash; which is exactly why CI shows the segfault at a different point in the output than hardware does, and why <code>test_libdispatch_mach</code> was crashing in teardown too. Same path, same bug.</p>
+
+<p>Two hypotheses were killed by this backtrace, both of which had looked strong on inspection: that <code>__sc_source_cancel</code> was releasing the private queue it was running on, and that <code>CFRunLoopRunInMode</code>&rsquo;s internal timeout <code>dispatch_source_t</code> was racing its own cancel handler. Neither is on the faulting stack.</p>
+
+<h2 id="cfmachport">4. CFMachPort: it exists, and it will not save us</h2>
+
+<p>The obvious repair is to stop inverting the layering &mdash; build the run-loop source on CFMachPort the way Apple does. The provenance is better than expected and the conclusion is still negative.</p>
+
+<table>
+<tr><th>Question</th><th>Answer</th></tr>
+<tr><td>Did swift-corelibs-foundation ever ship <code>CFMachPort.c</code>?</td><td class="good">Yes &mdash; 9 commits at <code>CoreFoundation/RunLoop.subproj/CFMachPort.c</code>, through the Monterey merge</td></tr>
+<tr><td>Was it deleted?</td><td>The 2024-02-01 restructure <em>renamed</em> it to <code>Sources/CoreFoundation/</code>; it was removed later</td></tr>
+<tr><td>Is it there at our vendored SHA <code>0e20e4a7</code>?</td><td class="bad">No &mdash; HTTP 404. Same on upstream <code>main</code> today</td></tr>
+<tr><td>Is <code>CFMachPort.h</code> there?</td><td>Yes &mdash; HTTP 200, and vendored here</td></tr>
+<tr><td>Did NextBSD remove it?</td><td class="good">No. It was already gone upstream when the subtree was vendored</td></tr>
+<tr><td>Recoverable?</td><td class="good">Yes &mdash; 587 lines, Apache-2.0, no licence mixing</td></tr>
+</table>
+
+<p>So the header-without-implementation asymmetry in this tree is <strong>upstream&rsquo;s</strong>, faithfully mirrored. Nothing was dropped locally.</p>
+
+<div class="callout callout-warn">
+<p><strong>And then line 14 of the recovered file:</strong> <code>#include &lt;dispatch/dispatch.h&gt;</code>. Apple&rsquo;s CFMachPort has <strong>16 <code>dispatch_</code> references</strong> &mdash; a private <code>com.apple.CFMachPort</code> serial queue, <code>dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_SEND, &hellip;)</code>, <code>dispatch_get_main_queue()</code>, <code>dispatch_once</code>. <strong>Apple&rsquo;s CFMachPort is itself built on libdispatch.</strong> Porting SCNotify onto it would relocate the dependency, not remove it &mdash; and land it on the very code that is crashing.</p>
+</div>
+
+<h2 id="stack">5. The CoreFoundation constraint stack</h2>
+
+<p>Even setting the dispatch dependency aside, the CFMachPort route is blocked three deep:</p>
+
+<pre><code>SCNotify → CFMachPort route
+  ├─ CFMachPort.c absent from the vendored subtree (only 3 headers)
+  ├─ CFRunLoop compiles TARGET_OS_BSD, not Mach
+  │     CoreFoundation_Prefix.h:60 → #define TARGET_OS_MAC 0
+  │     __CFPortSet is { int kq; }; "ports" are packed pipe fd pairs
+  └─ #141 §2: version-1 (port-backed) sources are NEVER SERVICED on BSD
+        CFRunLoop.c:3259 has no TARGET_OS_BSD arm
+        ── and CFMachPort creates a version-1 source ──</code></pre>
+
+<p>So even with the file recovered and vendored, the source it creates would never fire. <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/141">#141</a> would have to land first, and <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/148">#148</a> notes that its own timer rework <em>also</em> fixes #141&rsquo;s busy-spin &mdash; the two are entangled.</p>
+
+<p>One clarification worth recording, because it is easy to conflate: <strong>SCNotify contains zero <code>xpc_</code> references.</strong> There is no libxpc to remove from it. The dependency under discussion is libdispatch alone, which puts this in the <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/153">#153</a> track and not <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/152">#152</a>.</p>
+
+<h2 id="hidden">6. Why CI reported this green for days</h2>
+
+<p>The crash is not new. Five consecutive <strong>green</strong> runs were re-examined and every one of them segfaulted:</p>
+
+<pre><code>33469759875  fix/boot-test-fast-fail        SEGFAULT (marker absent, run still GREEN)
+33468499755  fix/libnotify-drop-xpc-calls   SEGFAULT (marker absent, run still GREEN)
+33468041443  fix/syslog-drop-xpc            SEGFAULT (marker absent, run still GREEN)
+33468022815  fix/syslog-drop-xpc            SEGFAULT (marker absent, run still GREEN)
+33467636213  fix/syslog-drop-xpc            SEGFAULT (marker absent, run still GREEN)</code></pre>
+
+<p><code>boot_soft: true</code> made <code>continue-on-error</code> mask the step conclusion, so a missing marker never failed the job. Flipping it to <code>false</code> converted a long-standing silent failure into a visible one. That is the entire reason this is being looked at now.</p>
+
+<p>It also produced a false attribution worth recording. The libnotify XPC-removal PR was reverted on the belief that it caused this. It did not: the crash appears on <code>fix/libnotify-drop-xpc-calls</code> itself, on branches predating it, and on a <strong>comment-only</strong> PR with the revert already applied. Every changed line in that PR&rsquo;s <code>SCNotify.c</code> hunk is inside a comment block. <strong>Landing changes onto a red baseline is what made an innocent PR look guilty</strong> &mdash; while <code>main</code> is red, no PR&rsquo;s CI result is interpretable.</p>
+
+<h2 id="open">7. Open questions, and what is being surveyed</h2>
+
+<div class="callout callout-warn">
+<p><strong>Status: this page records measurements, not a decision.</strong> Three surveys are running to answer the questions below, and this section will be replaced with their findings.</p>
+</div>
+
+<ol>
+<li><strong>How does NextBSD&rsquo;s configd actually compare?</strong> Apple shipped four delivery mechanisms; this tree may have ported only the hardest one. If <code>InformViaFD</code> or <code>InformViaMachPort</code> were ported instead, the run-loop/dispatch problem might be sidestepped entirely rather than fixed.</li>
+<li><strong>What would CFMachPort + Mach-backed CFRunLoopSource mean alongside GNUstep?</strong> Swift CoreFoundation was chosen specifically to avoid that collision. The real options &mdash; two libraries, one library with selectable backends, a build flag &mdash; each have failure modes, and flipping <code>TARGET_OS_MAC</code> to 1 has a blast radius across CFRunLoop, CFSocket, CFStream and CFFileDescriptor on a system whose &ldquo;Mach ports&rdquo; are file descriptors with no generation counter.</li>
+<li><strong>Or is the answer simply to fix libdispatch?</strong> The backtrace points at <code>EVFILT_MACHPORT</code> knote teardown returning an error the manager thread mishandles. If that is a bounded fix &mdash; in the kernel filter, in <code>libmach/dispatch_kevent.c</code>, or in libdispatch&rsquo;s <code>EV_ERROR</code> handling &mdash; it may be far cheaper than any CoreFoundation re-architecture, and it would fix <code>test_libdispatch_mach</code> at the same time. Possibly the same root cause as kernel <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/169">#169</a>.</li>
+<li><strong>When did this last work?</strong> It must have passed at some point &mdash; the marker exists because it once printed. A CI bisect is walking the boot logs backwards to find the last run showing <code>SC-RUNLOOP-OK</code>, then correlating the boundary against commits in <em>both</em> <code>nextbsd-userland</code> and <code>nextbsd-kernel</code>. Two changes are prime suspects and will be weighed explicitly: userland <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/136">#136</a>, which made libmach&rsquo;s readiness knote level-triggered (<code>EV_ADD</code> without <code>EV_CLEAR</code>) &mdash; a level-triggered knote behaves very differently at <em>teardown</em> than an edge-triggered one &mdash; and kernel #168, which reworked <code>filt_machport</code> locking and added <code>EV_EOF | EV_ONESHOT</code> on one path.</li>
+</ol>
+
+<div class="callout callout-warn">
+<p><strong>A caution the bisect has to carry.</strong> The fault reproduces 13 times in 30 on hardware, so it is a race: <em>a single passing run does not prove the bug was absent.</em> The honest output is a statistical transition &mdash; intermittent, then consistent &mdash; not a sharp good/bad boundary. And because <code>boot_soft: true</code> masked the step conclusion for the whole period in question, <strong>job conclusion is useless as a signal; only the boot logs count.</strong></p>
+</div>
+
+<p>The honest framing is that option 3 is the only one that does not require adopting more code, and the backtrace points directly at it. Options 1 and 2 are worth scoping because they change what the <em>target architecture</em> should be, not because they are shortcuts to a green test.</p>
+
+<p class="footnote">Evidence: core dump and 30-run stress on arm64 hardware running the CI <code>main</code> userland (603 files, <code>dc635ddf</code>); Apple sources from <code>apple-oss-distributions/configd</code> tags <code>configd-212.2</code> and <code>configd-289</code>; <code>CFMachPort.c</code> recovered from <code>swiftlang/swift-corelibs-foundation</code> at <code>d8e8a8b92b</code>. The hardware kernel was <code>20260831-232019</code> and could not be brought to CI parity &mdash; the <code>nextbsd-kernel-arm64</code> CI artifact is a build-object tree with no linked kernel and no modules, which is its own defect.</p>
+
+</div>
+</body>
+</html>

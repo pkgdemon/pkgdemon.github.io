@@ -46,8 +46,8 @@
 <p class="back"><a href="index.html">&larr; Back</a> &middot; companion to <a href="nextbsd-libxpc-libdispatch-scoping.html">Dropping libxpc and libdispatch</a></p>
 
 <h1>The Inverted Run Loop</h1>
-<p class="lede">NextBSD builds <code>SCDynamicStoreCreateRunLoopSource</code> on top of libdispatch. Apple builds it on CFMachPort and has since before libdispatch existed. That inversion is measurable, and it is what crashes.</p>
-<p class="meta">Measured 2026-09-01 on arm64 hardware and against Apple&rsquo;s published <code>configd</code> sources. Three follow-on surveys are in flight &mdash; see <a href="#open">&sect;7</a>.</p>
+<p class="lede">NextBSD builds <code>SCDynamicStoreCreateRunLoopSource</code> on top of libdispatch. Apple builds it on CFMachPort and has since before libdispatch existed. That inversion is measurable &mdash; and it turned out <em>not</em> to be what crashes.</p>
+<p class="meta">Measured 2026-09-01 on arm64 hardware, against Apple&rsquo;s published <code>configd</code> sources, and across all 200 CI boot logs. <strong>Root cause identified</strong> &mdash; two independent surveys converged on the same code.</p>
 
 <div class="toc">
 <h2>Contents</h2>
@@ -58,7 +58,11 @@
 <li><a href="#cfmachport">CFMachPort: it exists, and it will not save us</a></li>
 <li><a href="#stack">The CoreFoundation constraint stack</a></li>
 <li><a href="#hidden">Why CI reported this green for days</a></li>
-<li><a href="#open">Open questions, and what is being surveyed</a></li>
+<li><a href="#open">The four surveys, answered</a></li>
+<li><a href="#bisect">When it last worked, and what broke it</a></li>
+<li><a href="#mechanism">The mechanism, end to end</a></li>
+<li><a href="#gnustep">The GNUstep question dissolves</a></li>
+<li><a href="#do">What follows</a></li>
 </ol>
 </div>
 
@@ -166,7 +170,7 @@
 <pre><code>SCNotify → CFMachPort route
   ├─ CFMachPort.c absent from the vendored subtree (only 3 headers)
   ├─ CFRunLoop compiles TARGET_OS_BSD, not Mach
-  │     CoreFoundation_Prefix.h:60 → #define TARGET_OS_MAC 0
+  │     CFTargetConditionals.h → TARGET_OS_MAC = TARGET_OS_DARWIN = 0
   │     __CFPortSet is { int kq; }; "ports" are packed pipe fd pairs
   └─ #141 §2: version-1 (port-backed) sources are NEVER SERVICED on BSD
         CFRunLoop.c:3259 has no TARGET_OS_BSD arm
@@ -190,24 +194,131 @@
 
 <p>It also produced a false attribution worth recording. The libnotify XPC-removal PR was reverted on the belief that it caused this. It did not: the crash appears on <code>fix/libnotify-drop-xpc-calls</code> itself, on branches predating it, and on a <strong>comment-only</strong> PR with the revert already applied. Every changed line in that PR&rsquo;s <code>SCNotify.c</code> hunk is inside a comment block. <strong>Landing changes onto a red baseline is what made an innocent PR look guilty</strong> &mdash; while <code>main</code> is red, no PR&rsquo;s CI result is interpretable.</p>
 
-<h2 id="open">7. Open questions, and what is being surveyed</h2>
+<h2 id="open">7. The four surveys, answered</h2>
 
-<div class="callout callout-warn">
-<p><strong>Status: this page records measurements, not a decision.</strong> Three surveys are running to answer the questions below, and this section will be replaced with their findings.</p>
+<table>
+<tr><th>Question</th><th>Answer</th></tr>
+<tr><td>When did it last work?</td><td class="good"><strong>81 of 81 runs passed</strong> until 2026-08-30T02:02Z. Cause identified &mdash; <a href="#bisect">&sect;8</a></td></tr>
+<tr><td>Where is the defect?</td><td class="bad"><code>libmach/dispatch_kevent.c</code>. Not the kernel, not libdispatch &mdash; <a href="#mechanism">&sect;9</a></td></tr>
+<tr><td>What about GNUstep?</td><td class="good">A non-problem. They never meet &mdash; <a href="#gnustep">&sect;10</a></td></tr>
+<tr><td>Should we adopt CFMachPort?</td><td class="bad">No. Its core semantics are unimplementable here &mdash; <a href="#gnustep">&sect;10</a></td></tr>
+</table>
+
+<div class="callout callout-good">
+<p><strong>Two surveys converged from opposite ends.</strong> A CI bisect over 200 boot logs identified the breaking change empirically, with no access to the mechanism. A source reading of libmach and libdispatch derived the mechanism, with no access to the CI history. <strong>They name the same code.</strong> That convergence is the strongest evidence in this document.</p>
 </div>
+
+<h2 id="bisect">8. When it last worked, and what broke it</h2>
+
+<p>All 200 <code>build.yml</code> runs from 2026-07-03 to 2026-09-01 had their boot logs downloaded and read. No artifacts had expired. <code>SC-RUNLOOP-FAIL</code> was <strong>never emitted in any run, ever</strong> &mdash; the segfault is this test&rsquo;s only failure mode.</p>
+
+<table>
+<tr><th>Window</th><th>SC-RUNLOOP-OK</th><th>Segfault</th></tr>
+<tr><td>2026-07-03T18:40Z &rarr; 2026-08-30T00:05Z</td><td class="good">81</td><td>0</td></tr>
+<tr><td>2026-08-30T02:02Z &rarr; 2026-09-01T04:57Z</td><td>3</td><td class="bad">17</td></tr>
+</table>
+
+<p>A category the brief did not anticipate: <strong>100 of the 200 runs never ran <code>scrltest</code> at all</strong>, because the suite aborted at an earlier marker. Those are inconclusive, not passes. Boot evidence also comes only from PR-branch runs &mdash; <code>ci-image-boot</code> is skipped on <code>main</code> pushes.</p>
+
+<h3>The transition is branch-correlated, not statistical</h3>
+
+<p>The first segfault <em>precedes</em> the last pass by 1h47m, which reads as a race until the trees are checked:</p>
+
+<table>
+<tr><th>Run &middot; SHA</th><th>Tree has the real pset release?</th><th>Result</th></tr>
+<tr><td>33289506874 &middot; <code>1a60ae21b</code></td><td>no</td><td class="good">OK &times;2</td></tr>
+<tr><td>33287019802 &middot; <code>0a2eb9665</code></td><td>yes</td><td class="bad">SEGV &times;2</td></tr>
+<tr><td>33291148223 &middot; <code>a8f47292e</code> &mdash; F2 disabled</td><td class="good">no, reverted to the no-op</td><td class="good">OK</td></tr>
+<tr><td>33292666690 &middot; <code>763f3b998</code> &mdash; un-member dropped</td><td>yes</td><td class="bad">SEGV</td></tr>
+</table>
+
+<p><strong>All three post-boundary passes are exactly the trees lacking the real release; all seventeen failures are trees that have it.</strong> A clean discriminator, not a coin flip.</p>
+
+<div class="callout callout-good">
+<p><strong>The kernel is controlled for.</strong> <code>build-arch.yml:170</code> pulls the kernel from an <em>unpinned</em> <code>continuous</code> release, so kernel changes do leak into userland CI. But kernel <code>main</code> had <strong>no commits between 2026-08-29T22:38Z and 2026-08-30T04:32Z</strong>, and all four decisive runs fall inside that gap. Same kernel binary, different userland.</p>
+</div>
+
+<h3>The change: userland #106, <code>reg_release_pset</code></h3>
+
+<pre><code>static void
+reg_release_pset(mach_port_name_t pset)
+{
+	(void)mach_port_mod_refs(mach_task_self(), pset,
+	    MACH_PORT_RIGHT_PORT_SET, -1);   /* was: mach_port_deallocate() — a no-op */
+}</code></pre>
+
+<p><code>mach_port_deallocate</code> returns <code>KERN_INVALID_RIGHT</code> on a port set, so <strong>nothing was ever actually destroyed before #106</strong>. The change made teardown happen for the first time. <code>reg_release_pset</code> on current <code>origin/main</code> is unchanged, so the trigger is still shipping.</p>
+
+<h3>Ranked suspects, and a correction</h3>
+
+<table>
+<tr><th>Change</th><th>Verdict</th></tr>
+<tr><td><strong>userland #106</strong> &mdash; real port-set release</td><td class="bad">HIGH &mdash; verified from boot logs with the kernel held constant; the project&rsquo;s own bisect branches isolate this half</td></tr>
+<tr><td><strong>kernel #147</strong> &mdash; <code>machport_filtops.f_isfd = 0</code></td><td class="warn">MEDIUM, unverified &mdash; <code>knote_fdclose()</code> can no longer reap these knotes and port names <em>are</em> fds. Postdates the boundary, so not the original cause, but a candidate second path (kernel <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/169">#169</a>)</td></tr>
+<tr><td><strong>userland #136</strong> &mdash; <code>EV_CLEAR</code> removal</td><td class="good">EXONERATED as introducer &mdash; the first segfault predates it by 44 hours and both Aug-30 failing runs still carry <code>EV_CLEAR</code></td></tr>
+<tr><td><strong>kernel #168</strong> &mdash; <code>filt_machport</code> locking</td><td class="good">LOW &mdash; postdates the boundary by 25h. A fix landed after the fact, not a cause</td></tr>
+</table>
+
+<div class="callout callout-bad">
+<p><strong>A correction worth recording.</strong> An earlier draft of this page ranked #136 as prime suspect, reasoning that a level-triggered knote behaves differently at teardown than an edge-triggered one. The reasoning was sound and the conclusion was wrong &mdash; the dates rule it out. Same lesson the Mach investigation produced: every instrument that encoded an assumption went silent; every instrument that just counted was right.</p>
+</div>
+
+<h2 id="mechanism">9. The mechanism, end to end</h2>
+
+<p>Independently of the bisect, reading the source produces the full chain. Every step below is verified in code.</p>
 
 <ol>
-<li><strong>How does NextBSD&rsquo;s configd actually compare?</strong> Apple shipped four delivery mechanisms; this tree may have ported only the hardest one. If <code>InformViaFD</code> or <code>InformViaMachPort</code> were ported instead, the run-loop/dispatch problem might be sidestepped entirely rather than fixed.</li>
-<li><strong>What would CFMachPort + Mach-backed CFRunLoopSource mean alongside GNUstep?</strong> Swift CoreFoundation was chosen specifically to avoid that collision. The real options &mdash; two libraries, one library with selectable backends, a build flag &mdash; each have failure modes, and flipping <code>TARGET_OS_MAC</code> to 1 has a blast radius across CFRunLoop, CFSocket, CFStream and CFFileDescriptor on a system whose &ldquo;Mach ports&rdquo; are file descriptors with no generation counter.</li>
-<li><strong>Or is the answer simply to fix libdispatch?</strong> The backtrace points at <code>EVFILT_MACHPORT</code> knote teardown returning an error the manager thread mishandles. If that is a bounded fix &mdash; in the kernel filter, in <code>libmach/dispatch_kevent.c</code>, or in libdispatch&rsquo;s <code>EV_ERROR</code> handling &mdash; it may be far cheaper than any CoreFoundation re-architecture, and it would fix <code>test_libdispatch_mach</code> at the same time. Possibly the same root cause as kernel <a href="https://github.com/nextbsd-redux/nextbsd-kernel/issues/169">#169</a>.</li>
-<li><strong>When did this last work?</strong> It must have passed at some point &mdash; the marker exists because it once printed. A CI bisect is walking the boot logs backwards to find the last run showing <code>SC-RUNLOOP-OK</code>, then correlating the boundary against commits in <em>both</em> <code>nextbsd-userland</code> and <code>nextbsd-kernel</code>. Two changes are prime suspects and will be weighed explicitly: userland <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/136">#136</a>, which made libmach&rsquo;s readiness knote level-triggered (<code>EV_ADD</code> without <code>EV_CLEAR</code>) &mdash; a level-triggered knote behaves very differently at <em>teardown</em> than an edge-triggered one &mdash; and kernel #168, which reworked <code>filt_machport</code> locking and added <code>EV_EOF | EV_ONESHOT</code> on one path.</li>
+<li><strong>The knote carries a libmach pointer.</strong> <code>dispatch_kevent.c:434,450</code> registers the native knote as <code>EV_SET(out, r-&gt;wrap_pset, EVFILT_MACHPORT_NATIVE, EV_ADD, 0, 0, r)</code> &mdash; <code>udata</code> is a <code>struct mach_kev_reg *</code>, <em>never</em> a libdispatch unote.</li>
+<li><strong>The registration is freed while the knote lives.</strong> <code>:402-412</code> submits <code>EV_DELETE</code> and then calls <code>reg_destroy(r)</code> <em>immediately</em> &mdash; before <code>__sys_kevent()</code> runs at <code>:947</code>.</li>
+<li><strong>Releasing the pset queues an event on it.</strong> <code>ipc_pset.c:490</code> does <code>KNOTE_LOCKED(&amp;pset-&gt;ips_note, EV_EOF)</code>; <code>filt_machport</code> returns 1, so the knote is activated. <code>:491</code> <code>knlist_clear()</code> sets <code>EV_EOF | EV_ONESHOT</code> and <strong>leaves the knote registered</strong>, still holding <code>udata == r</code>.</li>
+<li><strong>The kernel copies it verbatim.</strong> <code>kern_event.c:2220-2232</code> &mdash; for <code>EV_ONESHOT</code>, <code>*kevp = kn-&gt;kn_kevent;</code>. <code>f_event</code> is not called, so the kernel never touches the dead pset.</li>
+<li><strong>The wrapper forwards it unfiltered.</strong> <code>dispatch_kevent.c:1039-1057</code> &mdash; the lookup returns NULL because <code>r</code> was unlinked, and <strong>the <code>r == NULL</code> fallback does not test the filter</strong>. The raw native event is copied out with its freed <code>udata</code>.</li>
+<li><strong>libdispatch dereferences it.</strong> <code>event_kevent.c:389-394</code> is a bare cast, <code>(dispatch_unote_class_t)ke-&gt;udata</code>, with no validation. <code>:483</code> loads <code>du_type</code> at offset 0; <code>:490</code> does an atomic RMW through <code>du_owner_wref</code> at offset 8. On a freed <code>mach_kev_reg</code> those are a list pointer and an fd. <strong>SIGSEGV.</strong></li>
 </ol>
 
+<p>This also explains thread&nbsp;#3. <code>kern_event.c:1863</code> returns <strong><code>ENOENT</code></strong> for an <code>EV_DELETE</code> with no matching knote &mdash; which is what happens once the manager thread has already consumed the <code>EV_ONESHOT</code> event and dropped the knote. <strong>The two threads are two halves of one sequence, not two bugs.</strong> Thread&nbsp;#3 survives only because <code>_dispatch_kevent_print_error</code> refuses to dereference <code>udata</code> when <code>EV_DELETE</code> is set.</p>
+
+<h3>The fix</h3>
+
+<p><strong>A libmach-private filter number and a libmach-private <code>udata</code> must never cross the <code>kevent_qos()</code> boundary.</strong> The crash fix is an explicit filter test in place of the <code>r == NULL</code> fallback &mdash; on the order of three lines. A second, larger piece (~15-25 lines) removes the <code>EV_DELETE</code> on an already-freed port-set name, defers <code>reg_destroy</code> until after the syscall, and drops a sentinel that manufactures <code>ENOENT</code> on ident <code>(uintptr_t)-1</code>.</p>
+
+<p><strong>Under 50 lines, in one file, with no kernel change and no libdispatch change</strong> &mdash; which preserves the property that this tree builds unmodified Apple libdispatch.</p>
+
 <div class="callout callout-warn">
-<p><strong>A caution the bisect has to carry.</strong> The fault reproduces 13 times in 30 on hardware, so it is a race: <em>a single passing run does not prove the bug was absent.</em> The honest output is a statistical transition &mdash; intermittent, then consistent &mdash; not a sharp good/bad boundary. And because <code>boot_soft: true</code> masked the step conclusion for the whole period in question, <strong>job conclusion is useless as a signal; only the boot logs count.</strong></p>
+<p><strong>One value would settle the last inference.</strong> The chain above is verified in source, but that <em>this particular core&rsquo;s</em> faulting kevent is that event is inferred. The <code>filter</code> field of <code>_dispatch_kevent_merge</code>&rsquo;s second argument decides it: <strong>&minus;16</strong> confirms the raw-native leak above; <strong>&minus;22</strong> would mean a synthesized event carrying a stale <code>udata</code> &mdash; a different bug needing a different fix. Cheaper than a debugger: <code>MACH_DEBUG_WRAP=1 scrltest</code> prints every synthesized delivery, and on a crashing run the fatal event will have <em>no</em> matching <code>[WRAP] deliver</code> line.</p>
 </div>
 
-<p>The honest framing is that option 3 is the only one that does not require adopting more code, and the backtrace points directly at it. Options 1 and 2 are worth scoping because they change what the <em>target architecture</em> should be, not because they are shortcuts to a green test.</p>
+<h2 id="gnustep">10. The GNUstep question dissolves</h2>
+
+<p>The premise behind &ldquo;bring CFMachPort in side by side with GNUstep&rdquo; is that the two would collide. <strong>They never meet.</strong></p>
+
+<ul>
+<li><code>libs-corebase</code> &mdash; GNUstep&rsquo;s CoreFoundation &mdash; <strong>is not built or shipped by anyone here.</strong> Adding it was proposed and <em>closed unmerged</em>.</li>
+<li><code>gnustep-base</code> contains no CoreFoundation and links none. Its run loop is <code>poll(2)</code>/<code>select(2)</code>; there is not one <code>kqueue</code> or <code>kevent</code> reference in the tree. No Mach, no CF, no <code>CFRunLoopSource</code>.</li>
+<li>No Gershwin process loads <code>libCoreFoundation.so.6</code>. The one <code>/usr/lib/system</code> library it deliberately uses, <code>libdns_sd</code>, has no <code>LDADD</code> at all.</li>
+<li>The genuine shared-library conflict was always <strong>libdispatch, not CF</strong>, and it is already solved by renaming this tree&rsquo;s copies to <code>libsystem_dispatch.so</code> / <code>libsystem_blocks.so</code> so GNUstep&rsquo;s stock names stay free.</li>
+</ul>
+
+<p>There is exactly one real coupling, and it runs the <em>opposite</em> way from the proposal. <code>Foundation.h</code> ends with an <code>__has_include(&lt;CoreFoundation/CoreFoundation.h&gt;)</code>, and this tree installs precisely that path &mdash; so every Gershwin <code>.m</code> that imports Foundation already pulls in these headers. It is harmless today <em>because</em> <code>CFMachPort.h</code>&rsquo;s body is behind <code>TARGET_OS_MAC</code> and therefore empty. <strong>Enabling CFMachPort is what would inject Mach into every GNUstep translation unit on the box.</strong></p>
+
+<h3>And CFMachPort could not work here anyway</h3>
+
+<p>Beyond the constraint stack in &sect;5, one blocker is decisive: <code>mach_traps.c:542-591</code> makes <code>mach_port_request_notification</code> a <strong>boot-safe no-op returning <code>KERN_SUCCESS</code></strong>, because the kernel registers no such trap &mdash; returning an error makes launchd abort and panics PID&nbsp;1. CFMachPort&rsquo;s entire invalidation contract rides on dead-name notifications. <strong>A CFMachPort on this kernel would silently never invalidate.</strong> That is an API whose documented semantics cannot be implemented, not a missing optimisation.</p>
+
+<p>Flipping <code>TARGET_OS_MAC</code> is likewise not a config change but a source fork: it pulls in Darwin malloc zones (<code>CFBase.c</code> redefines <code>CFAllocator</code> to match <code>struct _malloc_zone_t</code>), Mach-O headers, <code>crt_externs</code>, vouchers, <code>mk_timer_*</code> traps, and <code>mach_port_insert_member</code>/<code>extract_member</code> &mdash; which libmach does not implement. It also registers <code>__CFMachPortClass</code>, a symbol with no definition in the tree: link failure on day one. And it silently breaks the version-1 <code>perform</code> calling convention, because the library gates arity on <code>TARGET_OS_MAC</code> while the public header gates it on <code>TARGET_OS_OSX || TARGET_OS_IPHONE</code>.</p>
+
+<h2 id="do">11. What follows</h2>
+
+<ol>
+<li><strong>Fix the wrapper</strong> &mdash; under 50 lines in <code>dispatch_kevent.c</code>. It fixes the crash for every Mach recv source in the system, not just <code>scrltest</code>.</li>
+<li><strong>Confirm cheaply first</strong> &mdash; revert <code>reg_release_pset()</code> to <code>mach_port_deallocate()</code> and rerun. If the marker returns, #106 is proven; if not, kernel #147/#169 is a live second cause.</li>
+<li><strong>Fix #141 separately</strong> &mdash; adding <code>|| TARGET_OS_BSD</code> to the <code>#elif</code> at <code>CFRunLoop.c:3258</code>. The registration side is <em>already</em> live on BSD and not Mach-gated; only the dispatch arm omits the platform. No type change, no header change, no SOVERSION bump, and upstreamable.</li>
+<li><strong>Do not port CFMachPort, and drop &ldquo;side by side with GNUstep&rdquo; as a constraint.</strong></li>
+<li><strong>Two upstream bugs worth filing at swift-corelibs</strong> &mdash; the shadowed <code>timeout</code> at <code>CFRunLoop.c:690</code> that makes every BSD run loop busy-spin, confirmed present upstream and <em>not</em> a local regression; and the 16-mode cap that crashes with <code>&ldquo;Unable to create timer Port&rdquo;</code>.</li>
+<li><strong>Gate <code>CFMessagePort.h</code> and <code>CFUserNotification.h</code></strong> &mdash; both installed and in the umbrella header with no <code>.c</code> behind them: a clean compile followed by an undefined-symbol link failure.</li>
+</ol>
+
+<p>A process note: <a href="https://github.com/nextbsd-redux/nextbsd-userland/issues/158">#158</a>, which tracked this crash, was <strong>closed 2026-09-01T04:46Z with no fix landed</strong> &mdash; and run 33471785512, eleven minutes later, still segfaults on both arches.</p>
 
 <p class="footnote">Evidence: core dump and 30-run stress on arm64 hardware running the CI <code>main</code> userland (603 files, <code>dc635ddf</code>); Apple sources from <code>apple-oss-distributions/configd</code> tags <code>configd-212.2</code> and <code>configd-289</code>; <code>CFMachPort.c</code> recovered from <code>swiftlang/swift-corelibs-foundation</code> at <code>d8e8a8b92b</code>. The hardware kernel was <code>20260831-232019</code> and could not be brought to CI parity &mdash; the <code>nextbsd-kernel-arm64</code> CI artifact is a build-object tree with no linked kernel and no modules, which is its own defect.</p>
 

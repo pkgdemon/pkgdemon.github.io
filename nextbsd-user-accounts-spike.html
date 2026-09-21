@@ -66,7 +66,7 @@
 <h2>Contents</h2>
 <ol>
 <li><a href="#reqs">The requirements</a></li>
-<li><a href="#options">The four design docs</a></li>
+<li><a href="#options">The five design docs</a></li>
 <li><a href="#table">Side by side</a></li>
 <li><a href="#odserver">Can open source alone make an Open Directory server a Mac will join?</a></li>
 <li><a href="#closed">Exactly what Apple kept closed</a></li>
@@ -93,13 +93,14 @@
 </ol>
 <p>The epic also vendors sudo and zsh into nextbsd-userland. All three docs checked the licences. sudo is ISC-style. zsh is MIT-style, but some files under <code>Functions/</code> are GPL and must be left out. Both are fine for base whichever option is chosen.</p>
 
-<h2 id="options">2. The four design docs</h2>
+<h2 id="options">2. The five design docs</h2>
 <div class="table-scroll"><table>
 <tr><th>Option</th><th>Design doc</th><th>One-line verdict</th></tr>
 <tr><td><strong>A</strong></td><td><a href="nextbsd-ua-directoryservice-port.html">Port Apple DirectoryService</a></td><td>This is the real Mac OS X 10.5/10.6 client architecture. It means 151,601 lines of 2011 C++ against Apple frameworks we only partly have. The daemon and its plugins are open, as are Apple&rsquo;s OpenLDAP and Kerberos builds. The setup tool <code>slapconfig</code>, the PasswordService daemon and Server Admin were not, so <code>promote</code> is new code either way (&sect;4).</td></tr>
 <tr><td><strong>B</strong></td><td><a href="nextbsd-ua-gershwin-ds-redesign.html">Gershwin DirectoryServices in C/CF</a></td><td>This is the shape and commands you already like, in about 7&ndash;8k lines. It is the fastest route to all seven requirements. Today&rsquo;s Gershwin code has serious security holes that the redesign has to fix.</td></tr>
 <tr><td><strong>C</strong></td><td><a href="nextbsd-ua-netinfo-port.html">Port NetInfo</a></td><td>This is the authentic NeXT and 10.0&ndash;10.4 stack, and it meets every requirement mechanically. It is insecure by design: every password hash is readable without authenticating, and trust is based on IP address. Hardening it removes the only reason to choose it.</td></tr>
 <tr><td><strong>D</strong></td><td><a href="nextbsd-ua-kerberos-plists.html">Plists + Kerberos + NFSv4, no LDAP, no daemon</a> (design document)</td><td>Local accounts work the way FreeBSD&rsquo;s <code>master.passwd</code> does, but as Apple-style plists read by NSS and PAM modules. Network passwords live only in the KDC, which is already in base. Records reach clients as a copy over NFSv4 with Kerberos, and servers are found with Bonjour. Nothing new runs as a daemon. Macs cannot join unless an LDAP export is added later.</td></tr>
+<tr><td><strong>E</strong></td><td><a href="nextbsd-ua-tls-plists.html">Plists + Bonjour + NFS over TLS, no Kerberos</a> (design document)</td><td>Option&nbsp;D without Kerberos. Only machines holding a certificate the server signed at join can mount. Network password hashes are synced root-only to each joined client and checked locally, so offline logins come free. One helper, started on demand, handles joins and password changes. It trusts joined machines: root on a client can read the synced hashes and any home.</td></tr>
 </table></div>
 
 <h2 id="table">3. Side by side</h2>
@@ -798,6 +799,7 @@ Permission denied (publickey,password).               # no service except sudo a
 <tr><td><strong>Option B</strong> (Gershwin redesign, proposed)</td><td><code>Users.plist</code> / <code>Groups.plist</code>, or per-record plists</td><td>A root-only <code>Shadow/</code> directory</td><td>bcrypt</td><td class="good">root only</td><td class="warn">TLS RPC; the server holds and checks hashes for clients</td></tr>
 <tr><td><strong>Option C</strong> (NetInfo port)</td><td><code>.nidb</code></td><td>The <code>passwd</code> property, or <code>;ShadowHash;</code> on the master</td><td>crypt-DES as shipped; <code>$6$</code> possible</td><td class="bad">Anyone, unless the read path is rewritten</td><td class="bad">SunRPC as above</td></tr>
 <tr><td><strong>Option D</strong> (<a href="nextbsd-ua-kerberos-plists.html">design doc</a>)</td><td>Per-record plists; on clients, a cached copy plus a compiled <code>ds.db</code> index with no secrets</td><td>Local: <code>Local/Shadow/&lt;GeneratedUID&gt;</code>. Network: <strong>the KDC only</strong>. Offline cache: a per-client verifier, written after a successful Kerberos login.</td><td>PBKDF2-SHA512 locally; Kerberos AES keys in the KDC</td><td class="good">root / KDC only</td><td class="good">No hash is ever on the wire. Records are copied over NFSv4 <code>krb5p</code>, and only joined machines can mount them.</td></tr>
+<tr><td><strong>Option E</strong> (<a href="nextbsd-ua-tls-plists.html">design doc</a>)</td><td>Per-record plists; clients hold a cached copy and <code>ds.db</code></td><td>Local: <code>Local/Shadow/</code>. Network: server <code>Shadow/</code>, copied to <code>Cache/Shadow/</code> on each joined client</td><td>PBKDF2-SHA512</td><td class="warn">root on the server and on every joined client</td><td class="good">NFS over TLS; only machines with a certificate from the directory CA can mount</td></tr>
 </table>
 </div>
 <p><strong>The pattern.</strong> Every system that kept verifiers in the records (NetInfo, Gershwin today) leaked them. Apple moved them out in 10.3, into a root-only shadow file, and then into a record only the daemon can read. For network users, Apple left the hash in the Password Server and the KDC and pointed at it from the record. Option&nbsp;D takes the last step: network users have no hash except the KDC&rsquo;s key.</p>

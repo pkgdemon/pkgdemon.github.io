@@ -50,13 +50,14 @@
 <h1>Linux ABI mounts</h1>
 <p class="lede">Who mounts <code>/proc</code>, <code>/sys</code>, <code>/dev/fd</code> and <code>/dev/shm</code> for Linux programs on NextBSD now that no <code>/etc/fstab</code> ships? The plan must also cover the case where the Linux root does not exist yet. The answer is a single boot-time LaunchDaemon that does what FreeBSD&rsquo;s <code>rc.d/linux</code> does. It creates the Linux root&rsquo;s mount points and always mounts them, whether or not a Linux userland has been installed.</p>
 <p class="meta">2026-09-21. Three research agents read FreeBSD <code>releng/15.0</code> (<code>rc.d/linux</code>, the Linuxulator, <code>vfs_lookup.c</code>, fdescfs, tmpfs), debootstrap 1.0.145 and the FreeBSD port&rsquo;s patches, dpkg, Chromium&rsquo;s shared-memory code, Apple launchd-258 through -842, and NextBSD&rsquo;s launchd at <code>main</code>. <strong>Nothing here has been run on a NextBSD box yet</strong>; &sect;7 lists the tests that would prove it. Planning only.</p>
+<div class="callout callout-good"><p><strong>Implemented (2026-09-21):</strong> <a href="https://github.com/nextbsd/nextbsd-userland/pull/244">nextbsd-userland#244</a>, fixing <a href="https://github.com/nextbsd/nextbsd-userland/issues/190">#190</a>. The mounts are made by <code>linux_abi_mounts()</code> inside <strong>launchctl bootstrap</strong>, next to the other boot-time mounts. That replaced the earlier draft of a one-shot LaunchDaemon plus a <code>/usr/libexec</code> tool, which would have shown up in <code>launchctl list</code>. CI proved it end to end on amd64 and arm64: <code>pkg install claude-code</code> into the pre-mounted <code>/compat/linux</code>, a Linux <code>uname -s</code>, and <code>claude --help</code>. That test was then removed to keep CI fast; a one-second boot check stays. Sections below are updated to match.</p></div>
 
 <div class="callout callout-good">
 <p><strong>The short answers.</strong></p>
 <ol>
-<li><strong>Always mount the compat set, and pre-create it.</strong> A one-shot LaunchDaemon, <code>org.nextbsd.linux</code>, runs <code>/usr/libexec/nextbsd-linux --compat</code> at boot. It creates <code>$emul/{proc,sys,dev}</code> and mounts all five filesystems, where <code>$emul</code> is <code>compat.linux.emul_path</code>, default <code>/compat/linux</code>. It does this even when no Linux userland is installed. This is exactly stock FreeBSD&rsquo;s behaviour with <code>linux_enable=YES</code>: <code>rc.d/linux</code> runs <code>mkdir -p</code> and mounts unconditionally (<code>rc.d/linux:17-26, 74-80</code>).</li>
-<li><strong>debootstrap works with the mounts in place, with one step afterwards.</strong> debootstrap does not require an empty target. It stacks its own devfs, fdescfs and linprocfs during stage 2 and removes them on exit. The catch is that it first unmounts <em>our</em> <code>$emul/proc</code>, so the wrapper re-runs <code>nextbsd-linux --compat</code> when debootstrap finishes (&sect;3).</li>
-<li><strong>No trigger is needed.</strong> Because the mounts always exist, a root that appears later (debootstrap, an untarred image, <code>linux_base</code>) is already mounted. The <code>apt</code> wrapper still re-runs the tool after bootstrapping. <code>launchctl start org.nextbsd.linux</code> is the manual re-run. <code>WatchPaths</code> is inert on this launchd, but restoring it is optional (&sect;5).</li>
+<li><strong>Always mount the compat set, and pre-create it.</strong> At every boot, launchctl bootstrap&rsquo;s <code>linux_abi_mounts()</code> (<code>support/launchctl.c</code>) creates <code>$emul/{proc,sys,dev,tmp}</code> and mounts all five filesystems plus a nullfs of <code>/tmp</code>. Here <code>$emul</code> is <code>compat.linux.emul_path</code>, default <code>/compat/linux</code>. It does this even when no Linux userland is installed, exactly as stock FreeBSD&rsquo;s <code>rc.d/linux</code> does with <code>linux_enable=YES</code> (<code>mkdir -p</code>, then mount, unconditionally, <code>rc.d/linux:17-26, 74-80</code>). There is no LaunchDaemon and no separate tool.</li>
+<li><strong>debootstrap works with the mounts in place, with one step afterwards.</strong> debootstrap does not require an empty target. It stacks its own devfs, fdescfs and linprocfs during stage 2 and removes them on exit. The catch is that it first unmounts <em>our</em> <code>$emul/proc</code>, so the <code>apt</code> wrapper remounts it (<code>mount -t linprocfs linprocfs $emul/proc</code>) when debootstrap finishes (&sect;3).</li>
+<li><strong>No trigger is needed.</strong> Because the mounts always exist, a root that appears later (debootstrap, an untarred image, <code>linux_base</code>) is already mounted; CI proved this with <code>pkg install claude-code</code>. <code>WatchPaths</code> is inert on this launchd, and restoring it is optional (&sect;5).</li>
 <li><strong>The native set is optional, not required.</strong> An empty but mounted <code>/compat/linux</code> gives every Linux process Linux-style <code>/proc</code>, <code>/sys</code>, <code>/dev/fd</code> and <code>/dev/shm</code> through the alt-root lookup. That includes static AppImage runtimes with no Linux userland at all. Mounting linprocfs on the real <code>/proc</code> is safe for native binaries but not needed (&sect;4).</li>
 </ol>
 </div>
@@ -71,7 +72,7 @@
 <li><a href="#trigger">Triggering, and restoring WatchPaths</a></li>
 <li><a href="#shm"><code>/dev/shm</code> sizing</a></li>
 <li><a href="#tests">Acceptance tests</a></li>
-<li><a href="#spec">Tool spec: <code>/usr/libexec/nextbsd-linux</code></a></li>
+<li><a href="#spec">Implementation: <code>linux_abi_mounts()</code></a></li>
 <li><a href="#tickets">What changes in the existing tickets</a></li>
 <li><a href="#open">Open questions</a></li>
 </ol>
@@ -119,7 +120,7 @@
 <tr><td>dpkg installs base packages</td><td><code>dpkg archives.c:896-903, 1065</code></td><td class="good">An existing directory is &ldquo;do nothing&rdquo;. base-files&rsquo; postinst never touches <code>proc</code>, <code>sys</code> or <code>dev</code>.</td></tr>
 <tr><td>Exit: unmounts <code>/proc</code>, <code>/dev/fd</code>, <code>/dev</code> (its own)</td><td><code>functions:1232-1263</code></td><td>Our <code>dev</code>, <code>dev/fd</code>, <code>dev/shm</code> and <code>sys</code> reappear; <strong><code>$emul/proc</code> stays unmounted.</strong></td></tr>
 </table></div>
-<div class="callout"><p><strong>Workaround:</strong> after debootstrap exits, whether it succeeded or failed, the wrapper runs <code>nextbsd-linux --compat</code>, which remounts only <code>proc</code>. No pre-unmount is needed. The tool keeps a <code>--pristine</code> fallback that unmounts first and remounts after, which is the Handbook&rsquo;s exact order. It is there in case some maintainer script misbehaves because linsysfs is visible at <code>$TARGET/sys</code> during bootstrap. Stock FreeBSD never has linsysfs mounted there during bootstrap.</p></div>
+<div class="callout"><p><strong>Workaround:</strong> after debootstrap exits, whether it succeeded or failed, the wrapper remounts <code>$emul/proc</code> with one <code>mount -t linprocfs</code>. No pre-unmount is needed. If a maintainer script ever misbehaves because linsysfs is visible at <code>$TARGET/sys</code> during bootstrap, the fallback is the Handbook&rsquo;s exact order: unmount first, bootstrap, then remount. Stock FreeBSD never has linsysfs mounted there during bootstrap.</p></div>
 <p><strong>Bootstrap in place.</strong> Do not bootstrap into a temporary directory and rename it into place: the root carries mounts, so it cannot be replaced by a rename. Bootstrapping in place is what makes B1 work.</p>
 
 <h2 id="native">4. The native set</h2>
@@ -129,12 +130,12 @@
 <li><strong>Visible changes:</strong> <code>ls /proc</code> looks like Linux, and <code>/dev/fd/N</code> shows as symlinks.</li>
 <li><strong><code>/sys</code> may be a dangling symlink</strong> to <code>usr/src/sys</code> from FreeBSD&rsquo;s <code>distribution</code> target. The tool must replace it rather than fail on <code>mkdir</code>.</li>
 </ul>
-<p><strong>Decision:</strong> ship it as <code>--native</code>, controlled by <code>native_mounts=</code> in the config and off by default. Under B1, Linux processes don&rsquo;t need it. Turn it on only if <code>/dev/fd/N</code> parity for native shells is wanted.</p>
+<p><strong>Decision:</strong> not mounted. Under B1, Linux processes don&rsquo;t need it. If <code>/dev/fd/N</code> parity for native shells is ever wanted, it is a few more lines in <code>linux_abi_mounts()</code>.</p>
 
 <h2 id="trigger">5. Triggering, and restoring WatchPaths</h2>
 <ul>
-<li><strong>Boot:</strong> <code>org.nextbsd.linux</code> with <code>RunAtLoad</code> and no <code>KeepAlive</code>. <code>load -D all</code> dispatches it after <code>mount -vat nonfs</code> and the <code>/tmp</code> and <code>/var/run</code> sweep, so admin fstab lines show as <code>already</code>. Optionally add <code>StartOnMount</code>, which is implemented in this launchd (<code>core.c:2489, 4009, 7204</code>). It re-runs the job on any mount, and the tool is idempotent.</li>
-<li><strong>After creating a root:</strong> the <code>apt</code>/debootstrap wrapper runs the tool directly. The manual re-run is <code>launchctl start org.nextbsd.linux</code> (<code>ipc.c:406-410</code>). There is no <code>kickstart</code> in the launchd-842 CLI.</li>
+<li><strong>Boot:</strong> launchctl bootstrap calls <code>linux_abi_mounts()</code> in <code>system_specific_bootstrap()</code>. It runs after <code>/etc/sysctl.conf</code> (so a moved <code>emul_path</code> is honoured), after <code>mount -vat nonfs</code> and the <code>/tmp</code> and <code>/var/run</code> sweep, and before <code>load -D all</code>, so every LaunchDaemon starts with the mounts in place. Each mount is skipped if that filesystem is already there (an admin fstab line), and <code>-o nocover</code> never stacks. This is where the vendored launchd-842 does its other boot mounts.</li>
+<li><strong>After creating a root:</strong> nothing is needed, because the mounts are already there. The one exception is debootstrap, which unmounts <code>proc</code>; the <code>apt</code> wrapper remounts it.</li>
 <li><strong><code>WatchPaths</code>, <code>QueueDirectories</code> and <code>KeepAlive.PathState</code> are inert.</strong> launchctl rewrites them into <code>com.apple.fsevents.matching</code> LaunchEvents (<code>launchctl.c:1611-1648</code>). No EventMonitor job exists, and libxpc&rsquo;s publisher API is stubbed (<code>libxpc/xpc/private.h:60-68</code>). The getty plist records that <code>PathState</code> is not implemented (<code>org.nextbsd.getty.ttyv0.plist:64-68</code>).</li>
 <li><strong>Restoring them is optional, and is its own ticket.</strong> Apple&rsquo;s last native implementation is launchd-392.39 (<code>launchd_core_logic.c</code>: <code>semaphoreitem_watch</code> 5135-5223, <code>semaphoreitem_callback</code> 5226-5291, <code>PATH_*</code> reasons 305-320). It watches the parent directory until the target appears, and falls back to a 3&nbsp;s poll on <code>ENOTSUP</code>. The backport is about 350&ndash;450 lines in <code>core.c</code>, plus removing <code>distill_fsevents()</code>. On FreeBSD, open the watch fds with <code>O_PATH</code>, because <code>O_EVTONLY</code> is shimmed to 0 and would pin the vnode (<code>open(2)</code> allows <code>EVFILT_VNODE</code> on <code>O_PATH</code>). Three things want it: nextbsd#278 &ldquo;Lever D&rdquo;, userland#54 option B, and the getty <code>PathState</code> guard. An EventMonitor daemon instead would need XPC plumbing NextBSD has deferred.</li>
 <li><strong>Rejected:</strong> autofs (not in the kernel), a pkg trigger as the primary mechanism (the root comes from debootstrap, not pkg), and a kernel &ldquo;first Linux exec&rdquo; event (none exists in <code>sys/compat/linux</code>).</li>
@@ -151,68 +152,48 @@
 <li>50% on installed systems, for Linux parity.</li>
 <li>25% on live media, detected by <code>/</code> being unionfs.</li>
 </ul>
-<p>It can be overridden with <code>shm_size=</code> in the config. With the native set on, mount <strong>one</strong> tmpfs and nullfs it to <code>/dev/shm</code>, so there is a single cap. A cap turns an OOM kill (#326) into ENOSPC inside the offending Linux process.</p>
+<p>There is no override today. A cap turns an OOM kill (#326) into ENOSPC inside the offending Linux process.</p>
 
-<h2 id="tests">7. Acceptance tests</h2>
-<div class="table-scroll"><table>
-<tr><th>#</th><th>Test</th><th>CI?</th></tr>
-<tr><td>T1</td><td>Fresh image, no userland: <code>mount -p</code> shows the five under <code>$emul</code> with <code>linrdlnk</code>, <code>mode=1777</code> and <code>size=</code>. A second <code>launchctl start</code> is a no-op that exits 0.</td><td class="good">yes, amd64 + arm64</td></tr>
-<tr><td>T2</td><td><code>--unmount</code> then <code>--compat</code> round trip; <code>--status --json</code></td><td class="good">yes</td></tr>
-<tr><td>T3</td><td>No userland, native set <strong>off</strong>: static busybox runs <code>cat /proc/self/maps</code>, <code>readlink /dev/fd/9</code> and <code>touch /dev/shm/x</code>. This tests the alt-root claim.</td><td class="good">yes (needs an asset)</td></tr>
-<tr><td>T4</td><td><code>debootstrap --variant=minbase</code> into the mounted root. Assert <code>$emul/proc</code> is unmounted afterwards, re-run the tool, assert all five are mounted, then <code>chroot</code> smoke.</td><td class="warn">nightly (network, minutes)</td></tr>
-<tr><td>T5</td><td>Chrome from the Debian root: <code>--version</code>, headless screenshot, then a window on X</td><td>manual</td></tr>
-<tr><td>T6</td><td>nullfs projection of <code>dev/shm</code>, <code>proc</code> and <code>dev/fd</code> to the native paths</td><td class="good">yes</td></tr>
-<tr><td>T7</td><td>claude-code in the root: <code>--version</code> and a prompt</td><td>manual</td></tr>
-<tr><td>T8</td><td>Live ISO: T1 and T3 on the union root, including mounts over lower-only directories</td><td class="good">yes (iso-test)</td></tr>
-<tr><td>T9</td><td>AppImage (lunduke-paint): <code>--appimage-extract</code> and a FUSE run, native set off and on</td><td>extract only</td></tr>
-<tr><td>T10</td><td>Pi 500+ boot with linsysfs mounted</td><td>manual</td></tr>
-<tr><td>T11</td><td><code>compat.linux.emul_path=/compat/debian</code> (unquoted) in <code>sysctl.conf</code>: after reboot the mounts are under it</td><td class="good">yes</td></tr>
-</table></div>
-
-<h2 id="spec">8. Tool spec: <code>/usr/libexec/nextbsd-linux</code></h2>
-<p><code>/bin/sh</code>, idempotent, and safe to run at every boot and at any time later. The whole run takes <code>lockf -k -t 60 /var/run/nextbsd-linux.lock</code>.</p>
-<p><strong>Actions:</strong> <code>--compat</code> (default), <code>--native</code>, <code>--all</code>, <code>--unmount [--native|--all] [--force]</code>, <code>--status [--json]</code> and <code>--check</code>. <code>--root PATH</code> overrides <code>emul_path</code> for one run.</p>
-<p><strong>Config</strong> is <code>/etc/nextbsd-linux.conf</code>:</p>
+<h2 id="tests">7. What CI proved</h2>
+<p>These ran on PR #244, on amd64 and arm64, in the userland CI image boot:</p>
 <ul>
-<li><code>native_mounts=NO</code></li>
-<li><code>shm_size=50%|25%|&lt;bytes&gt;</code></li>
-<li><code>shm_share=YES</code></li>
-<li><code>chroot_nullfs=""</code> (e.g. <code>/home</code>)</li>
-<li><code>fallback_brand=YES</code></li>
+<li><strong>Mounts on an empty root:</strong> after boot, <code>/compat/linux</code> held only <code>dev</code>, <code>proc</code>, <code>sys</code> and <code>tmp</code>, with all six mounts present.</li>
+<li><strong>pkg into the mounted root:</strong> <code>pkg install claude-code</code> installed <code>linux_base-rl9</code> 9.8, claude-code 2.1.268 and bash (581/555&nbsp;MiB) with no errors under <code>/compat/linux</code>. The mounts were intact afterwards.</li>
+<li><strong>Linux runs:</strong> <code>/compat/linux/bin/uname -s</code> printed <code>Linux</code>, and <code>claude --help</code> printed its usage. The port&rsquo;s wrapper had already checked linprocfs, fdescfs and <code>linrdlnk</code> itself.</li>
+<li><strong>Benign noise:</strong> <code>unsupported prctl option 1398164801</code> is <code>PR_SET_VMA</code>, unimplemented in the Linuxulator and ignored by Bun.</li>
 </ul>
-<p><strong>For each mount, in &sect;2&rsquo;s order:</strong></p>
+<p>That end-to-end test (<code>pkg</code> from the FreeBSD mirror, pinned to the release image&rsquo;s <code>FreeBSD:15:&lt;arch&gt;</code> ABI) was removed after it passed, to keep userland CI fast. What stays is the one-second <code>LINUX-MOUNTS</code> boot gate (&sect;8).</p>
+<p><strong>Still to prove</strong> (with #241): debootstrap into the mounted root and the <code>proc</code> remount; Chrome/Edge/VS Code windows; AppImages; the Pi 500+ with linsysfs.</p>
+
+<h2 id="spec">8. Implementation: <code>linux_abi_mounts()</code></h2>
+<p>This is C in <code>support/launchctl.c</code>, called from <code>system_specific_bootstrap()</code>. It is about 130 lines.</p>
 <ol>
-<li>If the path is missing, <code>mkdir -p</code> it (only for <code>proc</code>, <code>sys</code>, <code>dev</code> and the native <code>/proc</code> and <code>/sys</code>). On failure, <code>E_MKDIR</code>.</li>
-<li>If <code>statfs</code> shows the right filesystem already mounted: <code>already</code>.</li>
-<li>If a different filesystem is mounted there: <code>E_CONFLICT</code>. Don&rsquo;t stack; continue with the rest.</li>
-<li>Otherwise <code>mount -t fs -o nocover,&hellip;</code>. If that returns EBUSY, re-check with <code>statfs</code>: a concurrent run means <code>already</code>, anything else is <code>E_CONFLICT</code>.</li>
-</ol>
-<div class="table-scroll"><table>
-<tr><th>State</th><th><code>--compat</code></th></tr>
-<tr><td><code>$emul</code> absent, parent writable</td><td>create <code>{proc,sys,dev}</code>, mount five, exit 0</td></tr>
-<tr><td><code>$emul</code> absent, parent read-only or path invalid</td><td>exit 2 (an error, not a silent no-op)</td></tr>
-<tr><td>Root present, unmounted</td><td>mount five, exit 0</td></tr>
-<tr><td>All five mounted (second run, or admin fstab)</td><td>no-op, exit 0</td></tr>
-<tr><td>Only <code>proc</code> missing (after debootstrap)</td><td>mount <code>proc</code>, exit 0</td></tr>
-<tr><td>A foreign mount on a path</td><td>exit 3 for that path; the others are still processed</td></tr>
-<tr><td>Live union root</td><td>identical; the directories land in <code>/cow</code></td></tr>
-</table></div>
-<p><strong>Exit codes:</strong></p>
+<li>Read <code>compat.linux.emul_path</code>. If the sysctl doesn&rsquo;t exist, the kernel has no Linuxulator, so return.</li>
+<li>Create the root and <code>{proc,sys,dev,tmp}</code> (<code>mkdir</code> each path component), then <code>realpath()</code> it.</li>
+<li>For each of the following, skip it if <code>statfs</code> shows that filesystem already mounted exactly there; otherwise run <code>/sbin/mount -t &hellip; -o nocover,&hellip;</code> via <code>fwexec()</code>. On failure, log to the console and continue.
 <ul>
-<li>0: ok or no-op</li>
-<li>1: usage</li>
-<li>2: mkdir failed or the root is invalid</li>
-<li>3: conflict</li>
-<li>4: mount refused (message verbatim)</li>
-<li>5: busy on unmount</li>
-<li>6: lock timeout</li>
+<li>linprocfs on <code>proc</code></li>
+<li>linsysfs on <code>sys</code></li>
+<li>devfs on <code>dev</code></li>
+<li>fdescfs <code>linrdlnk</code> on <code>dev/fd</code></li>
+<li>tmpfs <code>mode=1777,size=&hellip;</code> on <code>dev/shm</code></li>
+<li>nullfs of <code>realpath("/tmp")</code> on <code>tmp</code></li>
+</ul></li>
+<li><code>dev/shm</code> is sized at <code>hw.physmem / 2</code>, or <code>/ 4</code> when <code>/</code> is unionfs (live media), with a 128&nbsp;MiB floor.</li>
+</ol>
+<p>Deliberately left out of the earlier tool draft:</p>
+<ul>
+<li>the config file and <code>--status</code>/<code>--unmount</code></li>
+<li>the native set</li>
+<li>the <code>fallback_brand</code> step (the kernel default is already 3)</li>
+<li>home-directory nullfs mounts (paths absent from the root fall back to the real filesystem)</li>
 </ul>
-<p>With several errors the highest code wins, and every path is still attempted. <code>--unmount</code> goes in reverse order, never uses <code>-f</code> unless <code>--force</code>, and never removes directories.</p>
+<p><strong>CI gate (<code>LINUX-MOUNTS</code>):</strong> all six mounts present after boot; <code>linrdlnk</code> checked by behaviour (<code>dev/fd/0</code> is a symlink); <code>dev/shm</code> capped below RAM.</p>
 
 <h2 id="tickets">9. What changes in the existing tickets</h2>
 <div class="table-scroll"><table>
 <tr><th>Ticket</th><th>Change</th></tr>
-<tr><td><a href="https://github.com/nextbsd/nextbsd-userland/issues/190">userland#190</a> (B2, parked)</td><td><strong>Done 2026-09-21:</strong> rewritten to this design and unparked (Ready).</td></tr>
+<tr><td><a href="https://github.com/nextbsd/nextbsd-userland/issues/190">userland#190</a> (B2, parked)</td><td><strong>Done:</strong> implemented in <a href="https://github.com/nextbsd/nextbsd-userland/pull/244">#244</a> (launchctl bootstrap, no LaunchDaemon, no tool).</td></tr>
 <tr><td><a href="https://github.com/nextbsd/nextbsd-userland/issues/189">userland#189</a> (B1, manual docs)</td><td>Shrinks to documenting the tool, <code>emul_path</code> (unquoted) and the <code>/tmp</code> rule. The fstab lines become the fallback for admins who want them.</td></tr>
 <tr><td><a href="https://github.com/nextbsd/nextbsd-userland/issues/54">userland#54</a></td><td>Moves from option H (manual) to option A (LaunchDaemon). The &ldquo;AppImages need the native set&rdquo; note awaits T3.</td></tr>
 <tr><td><a href="https://github.com/nextbsd/nextbsd-userland/issues/171">userland#171</a></td><td>Closes once #190 lands; its <code>/dev/shm</code> size question and Chrome test are &sect;6 and T5.</td></tr>
@@ -221,8 +202,7 @@
 
 <h2 id="open">10. Open questions</h2>
 <ol>
-<li>Is the native set on by default, or opt-in as recommended?</li>
-<li>Is <code>StartOnMount</code> worth the few extra no-op runs at boot?</li>
+<li><del>Is the native set on by default?</del> Resolved: not mounted (&sect;4).</li>
 <li>T3 decides whether AppImages really need anything beyond the compat set.</li>
 <li>Unverified: nullfs over linprocfs and fdescfs (T6), mounts over lower-only unionfs directories (T8), and whether <code>/sys</code> is a dangling symlink on NextBSD images.</li>
 </ol>

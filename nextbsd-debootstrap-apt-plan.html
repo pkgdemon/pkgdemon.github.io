@@ -55,7 +55,7 @@
 <p><strong>The short answers.</strong></p>
 <ol>
 <li><strong>Default distro: Devuan 6 &ldquo;Excalibur&rdquo;, <code>--variant=minbase</code>, into <code>/compat/linux</code>.</strong> It has the same Mesa 25.0.7 and libdrm 2.4.124 as Debian 13 trixie, built against kernel 6.12, an exact match for NextBSD&rsquo;s <code>drm-kmod 6.12-lts</code>. It has no systemd at all, and systemd&rsquo;s postinst is the one thing that has actually failed under the Linuxulator. Debian trixie <code>minbase</code> is an equally good second choice. Ubuntu LTS is opt-in.</li>
-<li><strong>debootstrap runs on NextBSD</strong> from the FreeBSD port on amd64 and arm64. Stage 2 runs Debian&rsquo;s <code>dpkg</code> under the Linuxulator, and debootstrap mounts what it needs itself. It goes straight into the already-mounted root; the wrapper then re-runs the mount tool (<a href="nextbsd-linux-abi-mounts-plan.html#debootstrap">mounts plan &sect;3</a>).</li>
+<li><strong>debootstrap runs on NextBSD</strong> from the FreeBSD port on amd64 and arm64. Stage 2 runs Debian&rsquo;s <code>dpkg</code> under the Linuxulator, and debootstrap mounts what it needs itself. It goes straight into the already-mounted root (launchctl bootstrap mounts it at every boot, #244); the wrapper then remounts <code>proc</code>, which debootstrap unmounts (<a href="nextbsd-linux-abi-mounts-plan.html#debootstrap">mounts plan &sect;3</a>).</li>
 <li><strong>One tool, <code>nextbsd-linux</code>, in NextBSD-userland, with <code>/usr/bin/apt</code> as a thin shim.</strong> <code>apt</code> runs <em>inside</em> a chroot, as root. Installed <em>programs</em> run directly through the Linuxulator&rsquo;s alt root, as the <code>linux-chrome</code> and <code>claude-code</code> ports already do. There is no <code>apt</code> in FreeBSD base, ports or Darwin, so the name is free.</li>
 <li><strong>GPU:</strong> Intel and AMD work in principle, with Mesa talking to the 6.12 drivers through DRM ioctl passthrough. <strong>NVIDIA acceleration for Linux programs is impossible on NextBSD as built</strong>, because the NVIDIA kext is compiled without its Linux ioctl bridge, whatever the distro. The Pi 5&rsquo;s GPU is invisible to Linux libdrm, because linsysfs only describes PCI display devices.</li>
 </ol>
@@ -131,7 +131,7 @@ The vendored Devuan script path has to write <code>00freebsd</code> itself.</li>
 </ul>
 
 <h2 id="wrapper">5. The wrapper</h2>
-<p><strong>What ships.</strong> <code>/usr/libexec/nextbsd-linux</code> (the same tool as the <a href="nextbsd-linux-abi-mounts-plan.html#spec">mount spec</a>), <code>/usr/bin/apt</code> as a shim to <code>nextbsd-linux apt</code>, and the <code>org.nextbsd.linux</code> plist. All three go in NextBSD-userland, whose package build lists every staged file automatically, so no packaging change is needed.</p>
+<p><strong>What ships.</strong> The <code>nextbsd-linux</code> command, and <code>/usr/bin/apt</code> as a shim to <code>nextbsd-linux apt</code>. Both go in NextBSD-userland, whose package build lists every staged file automatically, so no packaging change is needed. The Linux mounts themselves are not the wrapper&rsquo;s job: launchctl bootstrap makes them at every boot (<a href="nextbsd-linux-abi-mounts-plan.html#spec">mounts plan &sect;8</a>).</p>
 <div class="table-scroll"><table>
 <tr><th>Subcommand</th><th>Behaviour</th></tr>
 <tr><td><code>apt &lt;args&gt;</code></td><td>Root only. There is no <code>sudo</code> on a stock image, so print &ldquo;run as root&rdquo; rather than exec it. It ensures a root (bootstrapping on first use), refreshes the host files, then runs <code>chroot $root /usr/bin/apt "$@"</code> with apt&rsquo;s exit code passed through.</td></tr>
@@ -140,13 +140,13 @@ The vendored Devuan script path has to write <code>00freebsd</code> itself.</li>
 <tr><td><code>shell</code></td><td><code>chroot $root /bin/bash</code> as root.</td></tr>
 <tr><td><code>status</code></td><td>Distro and codename, arch, mounts, whether <code>emul_path</code> matches, and GPU notes (for example, &ldquo;NVIDIA: no Linux acceleration&rdquo;).</td></tr>
 <tr><td><code>destroy</code></td><td>Unmount (refuses if busy), then <code>rm -rfx</code>.</td></tr>
-<tr><td><code>--compat</code>, <code>--native</code>, <code>--unmount</code>, <code>--status</code></td><td>The mount actions from the mounts plan.</td></tr>
+<tr><td>(mounts)</td><td>None: launchctl bootstrap mounts the Linux ABI filesystems at every boot (#244). The wrapper only remounts <code>proc</code> after debootstrap.</td></tr>
 </table></div>
 <p><strong>What first use does:</strong></p>
 <ol>
 <li><strong>Find the root.</strong> It is <code>compat.linux.emul_path</code>. It counts as a valid root only if <code>etc/os-release</code>, <code>var/lib/dpkg/status</code> and the wrapper&rsquo;s own <code>.nextbsd-linux/state</code> all exist. An existing directory that fails this check is refused with exit 65, and the wrapper never deletes anything on the user&rsquo;s behalf. The empty pre-created mount skeleton is the one exception: bootstrapping into it is allowed.</li>
 <li><strong>Get consent.</strong> Show the plan and require <code>y</code> on a tty or <code>-y</code>. Without a tty and without <code>-y</code>, exit 64 with the exact command to run. On live media, refuse unless <code>--force</code>: <code>/cow</code> is RAM-backed and unswapped (#326), and a root plus Chrome is well over 600&nbsp;MB.</li>
-<li><strong>Bootstrap.</strong> Take <code>lockf</code>, then run <code>debootstrap --arch=… --variant=minbase --keyring=… &lt;codename&gt; $root &lt;mirror&gt;</code> <strong>in place</strong>. Afterwards, whatever the result, run <code>nextbsd-linux --compat</code> to restore <code>proc</code>. On failure, leave the root for inspection and point to <code>destroy</code>.</li>
+<li><strong>Bootstrap.</strong> Take <code>lockf</code>, then run <code>debootstrap --arch=… --variant=minbase --keyring=… &lt;codename&gt; $root &lt;mirror&gt;</code> <strong>in place</strong>. Afterwards, whatever the result, remount <code>$root/proc</code> (<code>mount -t linprocfs linprocfs $root/proc</code>), which debootstrap unmounted. On failure, leave the root for inspection and point to <code>destroy</code>.</li>
 <li><strong>Write state.</strong> Record distro, codename, arch, variant, date and debootstrap version in <code>.nextbsd-linux/state</code>. Write <code>00freebsd</code> and <code>host.conf</code> (<code>order hosts, bind</code>).</li>
 <li><strong>Refresh on every run:</strong> copy <code>/etc/resolv.conf</code> (IPConfiguration rewrites it, so copy rather than symlink) and <code>/etc/hosts</code>.</li>
 </ol>
@@ -191,7 +191,7 @@ The vendored Devuan script path has to write <code>00freebsd</code> itself.</li>
 <h2 id="tickets">9. Tickets (filed 2026-09-21)</h2>
 <div class="table-scroll"><table>
 <tr><th>Ticket</th><th>Epic</th></tr>
-<tr><td><a href="https://github.com/nextbsd/nextbsd-userland/issues/190">userland#190</a>: <code>nextbsd-linux</code> mount tool and <code>org.nextbsd.linux</code> plist (rewritten, unparked)</td><td>E15</td></tr>
+<tr><td><a href="https://github.com/nextbsd/nextbsd-userland/issues/190">userland#190</a>: the Linux ABI mounts, done in launchctl bootstrap (<a href="https://github.com/nextbsd/nextbsd-userland/pull/244">#244</a>)</td><td>E15</td></tr>
 <tr><td><a href="https://github.com/nextbsd/nextbsd-userland/issues/241">nextbsd-userland#241</a>: <code>nextbsd-linux bootstrap|apt|run|shell|status|destroy</code> plus the <code>/usr/bin/apt</code> shim; vendored Devuan script; shipped keyrings</td><td>E13</td></tr>
 <tr><td><a href="https://github.com/nextbsd/nextbsd-kernel/issues/247">nextbsd-kernel#247</a>: kernel, check for and backport 459ac3044b (alt-root absolute symlinks)</td><td>E13</td></tr>
 <tr><td><a href="https://github.com/nextbsd/nextbsd-kernel/issues/248">nextbsd-kernel#248</a>: kernel, linsysfs DRM nodes for platform-bus devices (Pi 5 vc4/v3d)</td><td>E13</td></tr>

@@ -57,6 +57,7 @@
 <li><a href="#reqs">The requirements</a></li>
 <li><a href="#options">The three design docs</a></li>
 <li><a href="#table">Side by side</a></li>
+<li><a href="#odserver">Can open source alone make an Open Directory server a Mac will join?</a></li>
 <li><a href="#fit">Requirement fit</a></li>
 <li><a href="#sudo">The sudo rule, which all three get wrong by default</a></li>
 <li><a href="#rec">Recommendation</a></li>
@@ -80,7 +81,7 @@
 <h2 id="options">2. The three design docs</h2>
 <table>
 <tr><th>Option</th><th>Design doc</th><th>One-line verdict</th></tr>
-<tr><td><strong>A</strong></td><td><a href="nextbsd-ua-directoryservice-port.html">Port Apple DirectoryService</a></td><td>This is the real Mac OS X 10.5/10.6 client architecture. It means 151,601 lines of 2011 C++ against Apple frameworks we only partly have. Promote has to be rebuilt, because slapconfig, PasswordServer and Server Admin were never open-sourced.</td></tr>
+<tr><td><strong>A</strong></td><td><a href="nextbsd-ua-directoryservice-port.html">Port Apple DirectoryService</a></td><td>This is the real Mac OS X 10.5/10.6 client architecture. It means 151,601 lines of 2011 C++ against Apple frameworks we only partly have. The daemon and its plugins are open, as are Apple&rsquo;s OpenLDAP and Kerberos builds. The setup tool <code>slapconfig</code>, the PasswordService daemon and Server Admin were not, so <code>promote</code> is new code either way (&sect;4).</td></tr>
 <tr><td><strong>B</strong></td><td><a href="nextbsd-ua-gershwin-ds-redesign.html">Gershwin DirectoryServices in C/CF</a></td><td>This is the shape and commands you already like, in about 7&ndash;8k lines. It is the fastest route to all seven requirements. Today&rsquo;s Gershwin code has serious security holes that the redesign has to fix.</td></tr>
 <tr><td><strong>C</strong></td><td><a href="nextbsd-ua-netinfo-port.html">Port NetInfo</a></td><td>This is the authentic NeXT and 10.0&ndash;10.4 stack, and it meets every requirement mechanically. It is insecure by design: every password hash is readable without authenticating, and trust is based on IP address. Hardening it removes the only reason to choose it.</td></tr>
 </table>
@@ -96,7 +97,7 @@
 <tr><td>Promote</td><td>New C tool: OpenLDAP from ports with Apple&rsquo;s schema, plus the MIT KDC in FreeBSD 15 base</td><td><code>dscli promote</code>: certificate, TLS listener, Bonjour, NFS exports</td><td><code>nidomain -m</code> and a <code>serves</code> entry</td></tr>
 <tr><td>Join</td><td>A C rewrite of <code>dsconfigldap</code> over the existing LDAPv3 plugin</td><td><code>dscli join [host]</code>: pins the server certificate on first use and gets a machine token</td><td>A static binding file, or broadcast binding</td></tr>
 <tr><td>Password security</td><td>Good once the 2010 hash blob is replaced with PBKDF2-SHA512; Kerberos on the network</td><td>Good after the redesign (bcrypt shadow hashes, TLS); <strong>bad today</strong></td><td><strong>Bad</strong>: crypt-DES hashes readable by anyone; the write credential is sent bit-inverted in the RPC credential</td></tr>
-<tr><td>Real Macs as clients</td><td>Yes (LDAP + Kerberos, Open Directory schema)</td><td>Later, through an LDAP/Kerberos front-end (phase 3)</td><td>Only NeXT and Mac OS X 10.0&ndash;10.4</td></tr>
+<tr><td>Real Macs as clients</td><td>Yes by design (LDAP + Kerberos, Apple&rsquo;s schema); untested</td><td>Later, through an LDAP/Kerberos front-end (phase 3)</td><td>Only NeXT and Mac OS X 10.0&ndash;10.4</td></tr>
 <tr><td>Effort</td><td><strong>9&ndash;12 engineer-months</strong></td><td><strong>6&ndash;8 weeks</strong> for Gershwin&rsquo;s features plus networking; +4&ndash;6 weeks for LDAP/Kerberos</td><td>5&ndash;6 weeks as-is; 9&ndash;10 weeks hardened</td></tr>
 <tr><td>Biggest risk</td><td>Building 2011 C++ against CF, SystemConfiguration, Security/CDSA and IOKit; MIG out-of-line data is broken on the kmod (nextbsd#66)</td><td>launchd Sockets check-in is unverified; an NFS server under launchd is untested; a PAM mistake can lock everyone out</td><td>The security model; LP64 cleanup (about 130 <code>unsigned long</code> sites); autofs is not in the NextBSD kernel today</td></tr>
 <tr><td>Apple-likeness</td><td><strong>7/10</strong> (client 8, server 5)</td><td><strong>5/10</strong> (6 with Apple attribute names)</td><td><strong>5/10</strong> (9 against NeXT/10.4, 1 against modern macOS)</td></tr>
@@ -104,21 +105,43 @@
 </div>
 <div class="callout"><p><strong>A correction between the docs.</strong> The option&nbsp;B doc first said FreeBSD base ships Heimdal Kerberos. The option&nbsp;A agent checked <code>releng/15.0</code>: FreeBSD 15 replaced Heimdal with <strong>MIT Kerberos</strong> (<code>krb5/libexec/{kdc,kadmind}</code>). That is also what Mac OS X 10.5/10.6 servers ran, so the Kerberos half of an Apple-shaped server is already in base. The option&nbsp;B page has been corrected.</p></div>
 
-<h2 id="fit">4. Requirement fit</h2>
+<h2 id="odserver">4. Can open source alone make an Open Directory server a Mac will join?</h2>
+<p><strong>Yes.</strong> Apple open-sourced DirectoryService, which is the client daemon and its plugins, not just NetInfo. It also open-sourced its builds of the two services an Open Directory master ran. What it kept closed was the software that set those services up, plus one server of its own, PasswordService. None of the closed parts is something a Mac needs from the server.</p>
+<div class="table-scroll">
+<table>
+<tr><th>Component</th><th>Status</th><th>What it did</th><th>What we do</th></tr>
+<tr><td><strong>DirectoryService</strong> (to 621.12, 10.6)</td><td class="good">open, APSL 2.0</td><td>The daemon, its API framework, and the Local, LDAPv3, BSD, Search, Cache and Configure plugins</td><td>Option&nbsp;A ports it; option&nbsp;B reuses its schema and its LDAPv3 client behaviour</td></tr>
+<tr><td><strong>DSTools</strong></td><td class="good">open</td><td><code>dscl</code>, <code>dseditgroup</code>, <code>dsconfigldap</code> and the other command-line tools</td><td>Reference for the join steps and a thin <code>dscl</code> read path</td></tr>
+<tr><td><strong>DSPasswordServerPlugin</strong></td><td class="good">open</td><td>The <em>client</em> side that checks passwords against a Password Server, plus its auth-file library</td><td>Not needed once Password Server is dropped</td></tr>
+<tr><td><strong>OpenLDAP</strong> (Apple&rsquo;s build)</td><td class="good">open</td><td>slapd, including <code>servers/slapd/schema/apple.schema</code> and <code>apple_auxillary.schema</code></td><td>slapd from ports (<code>net/openldap26-server</code>) loaded with Apple&rsquo;s schema files</td></tr>
+<tr><td><strong>Kerberos</strong>, <strong>KerberosHelper</strong></td><td class="good">open</td><td>The KDC; MIT on 10.5/10.6, Heimdal from 10.7</td><td>FreeBSD 15 base ships MIT Kerberos, the same family 10.5/10.6 servers used</td></tr>
+<tr><td><code>slapconfig</code></td><td class="bad">closed</td><td>The command-line tool behind &ldquo;make this Mac an Open Directory master&rdquo;. It configured slapd, created the containers and admin, and started the KDC and Password Server.</td><td>Our <code>promote</code> command does the same steps, about 3&ndash;5k lines of C</td></tr>
+<tr><td><code>kdcsetup</code>, <code>sso_util</code>, <code>kerberosautoconfig</code></td><td class="bad">closed</td><td>Created the Kerberos realm and wrote clients&rsquo; <code>krb5.conf</code></td><td>About 500 lines around <code>kdb5_util</code> and <code>kadmin.local</code></td></tr>
+<tr><td><strong>PasswordService</strong> daemon</td><td class="bad">never released</td><td>Apple&rsquo;s own password server on ports 106 and 3659</td><td><strong>Dropped.</strong> Kerberos for logins, and an LDAP password hash for plain LDAP bind.</td></tr>
+<tr><td>Server Admin, <code>servermgrd</code></td><td class="bad">closed</td><td>The GUI and its backend</td><td>Not needed; the command line is the admin interface</td></tr>
+<tr><td>Active Directory plugin</td><td class="bad">closed</td><td>Joining Windows domains</td><td>Out of scope</td></tr>
+<tr><td><code>opendirectoryd</code> (10.7+)</td><td class="bad">closed</td><td>The replacement for DirectoryService</td><td>Irrelevant: a Mac&rsquo;s own <code>opendirectoryd</code> is the client, and it talks plain LDAP and Kerberos</td></tr>
+</table>
+</div>
+<p><strong>Why a Mac will bind.</strong> Directory Utility binds to any LDAPv3 server. With Apple&rsquo;s schema loaded, its &ldquo;Open Directory Server&rdquo; mappings resolve. Those mappings start from the <code>cn=config</code> record under the search base, which <code>promote</code> writes. A user whose <code>authAuthority</code> is <code>;Kerberosv5;</code> logs in with a Kerberos ticket. For an authenticated (&ldquo;trusted&rdquo;) binding the Mac creates its own <code>cn=computers</code> record, which is ordinary LDAP data.</p>
+<p><strong>What dropping Password Server costs.</strong> Its extra authentication methods (CRAM-MD5, DIGEST-MD5, MS-CHAPv2, NTLM), which Apple&rsquo;s mail, VPN and Windows file-sharing services used. Its password-policy engine (<code>pwpolicy</code>). Its replica sync. Users are created with the Kerberos authority only. MIT Kerberos policies cover minimum length, history and lockout. Everything else can be added later as record attributes enforced by our daemon.</p>
+<div class="callout callout-warn"><p><strong>Untested.</strong> Nobody has yet bound a current macOS release to a server built this way from NextBSD. OpenLDAP-plus-Kerberos replacements for Open Directory are a known pattern, but this page reasons from the schema and the open DirectoryService code rather than a test. Home directories need care too. A Mac does not mount <code>/Network/Users</code> by itself: the server must publish mount records (<code>cn=mounts</code>) or home URLs that the Mac&rsquo;s automounter follows. That is why &ldquo;a real Mac binds and logs in&rdquo; is phase&nbsp;4&rsquo;s exit test.</p></div>
+
+<h2 id="fit">5. Requirement fit</h2>
 <div class="table-scroll">
 <table>
 <tr><th>#</th><th>A</th><th>B</th><th>C</th></tr>
 <tr><td>1 <code>/Local/Users</code></td><td class="good">Set in the record&rsquo;s home default</td><td class="good">Already Gershwin&rsquo;s layout</td><td class="good">Default set by a wrapper</td></tr>
 <tr><td>2 zsh</td><td class="good">Change the seed</td><td class="good">One-line default</td><td class="good">Default set by a wrapper</td></tr>
-<tr><td>3 sudo rule</td><td class="warn">New PAM module (&sect;5)</td><td class="warn">New PAM module (&sect;5)</td><td class="bad">Clashes with netinfod&rsquo;s &ldquo;Free Parking&rdquo; rule: a passwordless admin becomes an unauthenticated root of the whole domain</td></tr>
-<tr><td>4 promote</td><td class="warn">New tool; the Apple original was closed source</td><td class="good"><code>dscli promote</code> (hardened)</td><td class="good"><code>nidomain -m</code></td></tr>
+<tr><td>3 sudo rule</td><td class="warn">New PAM module (&sect;6)</td><td class="warn">New PAM module (&sect;6)</td><td class="bad">Clashes with netinfod&rsquo;s &ldquo;Free Parking&rdquo; rule: a passwordless admin becomes an unauthenticated root of the whole domain</td></tr>
+<tr><td>4 promote</td><td class="warn">New <code>promote</code> tool; <code>slapconfig</code> was closed, but slapd, the schema and the KDC are open (&sect;4)</td><td class="good"><code>dscli promote</code> (hardened)</td><td class="good"><code>nidomain -m</code></td></tr>
 <tr><td>5 join</td><td class="good">Existing LDAPv3 bind path</td><td class="good"><code>dscli join</code></td><td class="good">Binding file</td></tr>
 <tr><td>6 <code>/Network/Users</code></td><td class="good">NFSv4 mount</td><td class="good">NFS mount at join and at boot</td><td class="warn">Needs autofs, which the kernel lacks today</td></tr>
 <tr><td>7 replace passwd</td><td class="good"><code>master.passwd</code> keeps system users and a locked root for single-user mode</td><td class="good"><code>nsswitch files ds</code>; <code>dscli passwd root</code></td><td class="warn">Yes, but it adds a boot dependency on <code>netinfod</code></td></tr>
 </table>
 </div>
 
-<h2 id="sudo">5. The sudo rule, which all three get wrong by default</h2>
+<h2 id="sudo">6. The sudo rule, which all three get wrong by default</h2>
 <p>Requirement 3 sounds like a sudoers line, but it is not. <code>NOPASSWD</code> would skip the prompt even for admins who <em>have</em> a password. The rule has to depend on whether the account has a password, so it belongs in PAM.</p>
 <ul>
 <li><strong>Gershwin today</strong> gets the behaviour by accident. FreeBSD&rsquo;s <code>/etc/pam.d/system</code> uses <code>pam_unix &hellip; nullok</code>, so an empty hash passes. <code>system</code> is also included by <code>login</code>, <code>sshd</code> and <code>su</code>, so the same account can log in <em>with any password</em>, remotely too if sshd allows it.</li>
@@ -126,18 +149,18 @@
 <li><strong>The fix, common to A and B:</strong> a directory PAM module with an <code>allow_nopass</code> option. It appears only in <code>/etc/pam.d/sudo</code>, and only for members of <code>admin</code>. Every other service drops <code>nullok</code>. An account without a password can use sudo and the local console (the login window&rsquo;s auto-login), but can never log in over the network. Once <code>dscli passwd</code> sets a password, the prompt comes back automatically.</li>
 </ul>
 
-<h2 id="rec">6. Recommendation</h2>
+<h2 id="rec">7. Recommendation</h2>
 <div class="callout callout-good">
 <p><strong>Build option&nbsp;B, in Apple&rsquo;s vocabulary, with Apple&rsquo;s network protocols.</strong> Rewrite Gershwin DirectoryServices in C with CoreFoundation as the base, because it is your design and the fastest route to all seven requirements. Take three things from option&nbsp;A so the result has the Open Directory shape:</p>
 <ol>
 <li><strong>Apple&rsquo;s record and attribute names in the store and in <code>libds</code>.</strong> Use <code>RecordName</code>, <code>UniqueID</code>, <code>PrimaryGroupID</code>, <code>NFSHomeDirectory</code>, <code>UserShell</code>, <code>GeneratedUID</code>, <code>AuthenticationAuthority</code> and <code>ShadowHashData</code>. Store one plist per record, written atomically, as dslocal does, rather than one <code>Users.plist</code>. The commands stay friendly, while the data underneath looks like a Mac&rsquo;s. That raises B from 5/10 to about 7/10 at little cost.</li>
-<li><strong>LDAP and Kerberos as the network protocol</strong>, instead of making port 4721 the permanent wire. OpenLDAP comes from ports with Apple&rsquo;s schema, and the MIT KDC is already in base. This is exactly what an Open Directory master was, and it is the only route by which real Macs, Linux boxes and network applications (requirement 5) can use NextBSD accounts. B&rsquo;s TLS RPC can ship first, as the NextBSD-to-NextBSD path, while the LDAP server matures. The unauthenticated Gershwin protocol survives only behind an explicit <code>--legacy</code> flag.</li>
+<li><strong>LDAP and Kerberos as the network protocol</strong>, instead of making port 4721 the permanent wire. Use real slapd from ports loaded with Apple&rsquo;s open <code>apple.schema</code>, not a hand-written LDAP responder inside <code>dsd</code>: a Mac&rsquo;s trusted binding writes its own computer record, and users change passwords, so the server must accept writes. The MIT KDC is already in base. Section&nbsp;4 shows every piece is open except the setup tool, which <code>promote</code> replaces. This is exactly what an Open Directory master was, and it is the only route by which real Macs, Linux boxes and network applications (requirement 5) can use NextBSD accounts. B&rsquo;s TLS RPC can ship first, as the NextBSD-to-NextBSD path, while the LDAP server matures. The unauthenticated Gershwin protocol survives only behind an explicit <code>--legacy</code> flag.</li>
 <li><strong>Keep the <code>dscl</code> escape hatch, but not as the main interface.</strong> A thin <code>dscl</code>-compatible read path makes scripts and documentation written for Macs mostly work. The documented interface is <code>dscli</code>&rsquo;s verbs.</li>
 </ol>
-<p><strong>Don&rsquo;t port DirectoryService wholesale.</strong> It is 150k lines of C++ with a hard dependency on MIG out-of-line data, and the tools that turned a Mac into an Open Directory server (<code>slapconfig</code>, the PasswordService daemon, Server Admin) were never released. The daemon and its Local, LDAPv3, BSD, Search and Configure plugins are open; the Active Directory plugin is not. Most of its value is the schema and the LDAPv3 client behaviour, which item&nbsp;1 and item&nbsp;2 get without the port. <strong>Don&rsquo;t port NetInfo.</strong> Apple removed it in 10.5 for the same security reasons it would have here, and a hardened NetInfo is just a worse version of option&nbsp;B.</p>
+<p><strong>Don&rsquo;t port DirectoryService wholesale.</strong> It is 150k lines of C++ with a hard dependency on MIG out-of-line data, and <code>promote</code> has to be written new under either option, because <code>slapconfig</code> was closed (&sect;4). What the port would buy is the client daemon, and option&nbsp;B gets its useful parts (the schema and the LDAPv3 behaviour) without 150k lines of C++. Most of its value is the schema and the LDAPv3 client behaviour, which item&nbsp;1 and item&nbsp;2 get without the port. <strong>Don&rsquo;t port NetInfo.</strong> Apple removed it in 10.5 for the same security reasons it would have here, and a hardened NetInfo is just a worse version of option&nbsp;B.</p>
 </div>
 
-<h2 id="epic">7. What the epic would contain</h2>
+<h2 id="epic">8. What the epic would contain</h2>
 <table>
 <tr><th>Phase</th><th>Work</th><th>Estimate</th><th>Done when</th></tr>
 <tr><td>0. Vendoring</td><td>sudo and zsh into nextbsd-userland; <code>/etc/shells</code>, <code>/etc/zshrc</code>, <code>sudoers.d/nextbsd</code> with <code>%admin ALL=(ALL) ALL</code></td><td>1&ndash;2 weeks</td><td><code>/bin/zsh</code> and <code>/usr/bin/sudo</code> are in the image</td></tr>
@@ -148,7 +171,7 @@
 </table>
 <p>That totals about 3&ndash;4 months for one engineer, against 9&ndash;12 months for option&nbsp;A. Phase&nbsp;4 can move to its own epic if you want the shipping line drawn at phase&nbsp;3.</p>
 
-<h2 id="open">8. Open decisions</h2>
+<h2 id="open">9. Open decisions</h2>
 <ol>
 <li><strong>The UID range</strong> for directory users. Apple starts at 501; Gershwin&rsquo;s admin is 5000. Pick one before any installs exist.</li>
 <li><strong>Should the network protocol be LDAP from day one</strong>, skipping the TLS RPC? That is slower to ship but leaves nothing to deprecate later.</li>

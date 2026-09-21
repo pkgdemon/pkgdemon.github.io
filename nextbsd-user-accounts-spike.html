@@ -71,6 +71,7 @@
 <li><a href="#odserver">Can open source alone make an Open Directory server a Mac will join?</a></li>
 <li><a href="#closed">Exactly what Apple kept closed</a></li>
 <li><a href="#cli">Command-line examples for each task</a></li>
+<li><a href="#transport">Transport: MIG or a Unix socket</a></li>
 <li><a href="#fit">Requirement fit</a></li>
 <li><a href="#sudo">The sudo rule, which all three get wrong by default</a></li>
 <li><a href="#rec">Recommendation</a></li>
@@ -112,7 +113,7 @@
 <tr><td>Password security</td><td>Good once the 2010 hash blob is replaced with PBKDF2-SHA512; Kerberos on the network</td><td>Good after the redesign (bcrypt shadow hashes, TLS); <strong>bad today</strong></td><td><strong>Bad</strong>: crypt-DES hashes readable by anyone; the write credential is sent bit-inverted in the RPC credential</td></tr>
 <tr><td>Real Macs as clients</td><td>Yes by design (LDAP + Kerberos, Apple&rsquo;s schema); untested</td><td>Later, through an LDAP/Kerberos front-end (phase 3)</td><td>Only NeXT and Mac OS X 10.0&ndash;10.4</td></tr>
 <tr><td>Effort</td><td><strong>9&ndash;12 engineer-months</strong></td><td><strong>6&ndash;8 weeks</strong> for Gershwin&rsquo;s features plus networking; +4&ndash;6 weeks for LDAP/Kerberos</td><td>5&ndash;6 weeks as-is; 9&ndash;10 weeks hardened</td></tr>
-<tr><td>Biggest risk</td><td>Building 2011 C++ against CF, SystemConfiguration, Security/CDSA and IOKit; MIG out-of-line data is broken on the kmod (nextbsd#66)</td><td>launchd Sockets check-in is unverified; an NFS server under launchd is untested; a PAM mistake can lock everyone out</td><td>The security model; LP64 cleanup (about 130 <code>unsigned long</code> sites); autofs is not in the NextBSD kernel today</td></tr>
+<tr><td>Biggest risk</td><td>Building 2011 C++ against CF, SystemConfiguration, Security/CDSA and IOKit; MIG out-of-line data works but leaks until nextbsd#66 lands under E1 (&sect;7.2)</td><td>launchd Sockets check-in is unverified; an NFS server under launchd is untested; a PAM mistake can lock everyone out</td><td>The security model; LP64 cleanup (about 130 <code>unsigned long</code> sites); autofs is not in the NextBSD kernel today</td></tr>
 <tr><td>Apple-likeness</td><td><strong>7/10</strong> (client 8, server 5)</td><td><strong>5/10</strong> (6 with Apple attribute names)</td><td><strong>5/10</strong> (9 against NeXT/10.4, 1 against modern macOS)</td></tr>
 </table>
 </div>
@@ -729,13 +730,61 @@ Permission denied (publickey,password).               # no service except sudo a
 </table>
 </div>
 
-<h2 id="fit">7. Requirement fit</h2>
+<h2 id="transport">7. Transport: MIG or a Unix socket</h2>
+<p>How programs talk to the directory daemon is a separate choice from how records are stored. Either transport works with the per-record plists.</p>
+
+<h3>7.1 What Apple did, and why</h3>
+<p>DirectoryService-621.12 speaks MIG over Mach ports. It has three interfaces, all verified in <code>Server/</code>:</p>
+<ul>
+<li><code>DirectoryServiceMIG.defs</code>: the main client API. <code>api_call</code> sends an inline buffer of up to 16&nbsp;KiB and an out-of-line <code>pointer_t</code> for anything bigger (lines 80&ndash;82).</li>
+<li><code>DSlibinfoMIG.defs</code>: the path libc uses for <code>getpwnam()</code> and <code>getgrnam()</code>. It has a <code>Query</code> routine and a <code>Query_async</code> variant.</li>
+<li><code>DSmemberdMIG.defs</code>: group-membership checks.</li>
+</ul>
+<p>There were four reasons for choosing Mach over a Unix socket:</p>
+<ol>
+<li><strong>Every message says who sent it.</strong> Each <code>DSlibinfoMIG</code> request receives an <code>audit_token_t</code> from the kernel, and the caller cannot forge it. The client code decodes it in <code>APIFramework/CClientEndPoint.cpp:112-125</code>, and the server writes it into BSM audit records in <code>Server/CHandlers.cpp:962-990</code>. It carries the uid, gid, pid and audit session. A directory daemon decides who may read a password hash or change a user, so this matters. A Unix socket offers <code>getpeereid()</code> or <code>LOCAL_PEERCRED</code>, but only once per connection and without the audit session.</li>
+<li><strong>Large replies travel without copying.</strong> With an out-of-line reply, the kernel moves the memory pages into the client instead of copying bytes through a socket buffer. That suits results like &ldquo;list 5,000 users&rdquo;.</li>
+<li><strong>Services are found by name, and launchd starts them on demand.</strong> A client looks up a service name through the bootstrap server, and launchd launches the daemon on first use. There is no socket file whose path or permissions must be right. That matters for code inside libc: <code>getpwnam()</code> runs in every process, including chroots and very early in boot, where a socket path may not exist.</li>
+<li><strong>Apple was already built on Mach.</strong> lookupd before it used Mach. <code>opendirectoryd</code> after it (10.7+) uses XPC, which is Mach underneath.</li>
+</ol>
+<p>Mach was not the only transport. DirectoryService also had a TCP proxy (<code>Proxy/DSTCPEndpoint.cpp</code>) so Server Admin could manage a remote server&rsquo;s directory. That proxy is the only user of CDSA, and NextBSD would drop both.</p>
+
+<h3>7.2 Where NextBSD&rsquo;s Mach stands</h3>
+<div class="callout callout-warn"><p><strong>Correction.</strong> Earlier versions of these pages said MIG out-of-line data is <em>broken</em> on NextBSD&rsquo;s Mach kmod. It isn&rsquo;t: it works today, but it leaks memory. Commit <code>77487a5</code> made two bounded-leak trades to get <code>launchctl list</code> working:</p>
+<ul>
+<li>In libmach, <code>mig_deallocate</code> became a no-op, because it was freeing pointers into kernel-mapped message memory and crashing jemalloc.</li>
+<li>The kmod&rsquo;s <code>vm_map_copyin</code> now always copies through a kernel buffer instead of sharing pages.</li>
+</ul>
+<p>Transfers are correct, but they cost an extra copy, and a server leaks the memory it allocates for out-of-line replies. That is tolerable for launchctl. It is not tolerable for a directory daemon that sends large replies all day. The fix is <a href="https://github.com/nextbsd/nextbsd/issues/66">nextbsd#66</a> (an mmap-backed <code>mig_allocate</code> with real base pointers), under <a href="https://github.com/nextbsd/nextbsd/issues/434">E1: Mach &amp; MIG core</a>.</p></div>
+
+<h3>7.3 Trade-offs on NextBSD</h3>
+<div class="table-scroll">
+<table>
+<tr><th></th><th>MIG / XPC over Mach</th><th>Unix socket</th></tr>
+<tr><td>Caller identity</td><td class="good">An audit token on every message</td><td class="warn"><code>getpeereid()</code> once per connection; no audit session</td></tr>
+<tr><td>Large replies</td><td class="warn">Out-of-line pages: copied and leaked until #66, zero-copy after it</td><td class="good">Streamed through the socket; works today</td></tr>
+<tr><td>Finding the daemon</td><td class="good">By name through bootstrap; launchd starts it on demand (<code>MachServices</code>)</td><td class="warn">By socket path; launchd can start it on demand through the <code>Sockets</code> key, but that check-in is unverified on this launchd</td></tr>
+<tr><td>Inside libc (<code>nss_ds</code>)</td><td class="warn">Needs Mach to work in every process, including static binaries and early boot</td><td class="good">Needs only a path that exists</td></tr>
+<tr><td>Apple-likeness</td><td class="good">Same shape as DirectoryService and <code>opendirectoryd</code></td><td class="bad">Not how Apple did it</td></tr>
+<tr><td>Interop with existing Gershwin</td><td class="bad">None</td><td class="good">Gershwin&rsquo;s <code>dshelper</code> protocol is a Unix socket</td></tr>
+</table>
+</div>
+
+<h3>7.4 Recommendation</h3>
+<ol>
+<li><strong>Give <code>dsd</code> both.</strong> Register a Mach/XPC service, <code>org.nextbsd.ds</code>, for <code>libds</code>, <code>dscli</code> and applications. That is the Apple-shaped interface, and launchd can start the daemon on demand. Also listen on a root-owned Unix socket, which <code>nss_ds</code> and <code>pam_ds</code> use for the libc path.</li>
+<li><strong>Until #66 lands, keep Mach replies inline.</strong> Page large results, as DirectoryService&rsquo;s <code>dsGetRecordList</code> already does with continuation data, so nothing depends on out-of-line memory. Once #66 is done, raise the page size or switch to out-of-line replies. No interface changes.</li>
+<li><strong>Keep checking identity.</strong> Use the Mach audit token where the Mach path serves a request, and <code>getpeereid()</code> on the socket path. Never trust a uid sent in the message body.</li>
+</ol>
+<p>Finishing E1 fixes the Mach half of option&nbsp;A&rsquo;s risk. It does not fix the other half: building 150k lines of 2011 C++ against Security.framework, IOKit, libkern and CommonCrypto. Those still need shims, and NextBSD has no Security.framework at all.</p>
+
+<h2 id="fit">8. Requirement fit</h2>
 <div class="table-scroll">
 <table>
 <tr><th>#</th><th>A</th><th>B</th><th>C</th></tr>
 <tr><td>1 <code>/Local/Users</code></td><td class="good">Set in the record&rsquo;s home default</td><td class="good">Already Gershwin&rsquo;s layout</td><td class="good">Default set by a wrapper</td></tr>
 <tr><td>2 zsh</td><td class="good">Change the seed</td><td class="good">One-line default</td><td class="good">Default set by a wrapper</td></tr>
-<tr><td>3 sudo rule</td><td class="warn">New PAM module (&sect;8)</td><td class="warn">New PAM module (&sect;8)</td><td class="bad">Clashes with netinfod&rsquo;s &ldquo;Free Parking&rdquo; rule: a passwordless admin becomes an unauthenticated root of the whole domain</td></tr>
+<tr><td>3 sudo rule</td><td class="warn">New PAM module (&sect;9)</td><td class="warn">New PAM module (&sect;9)</td><td class="bad">Clashes with netinfod&rsquo;s &ldquo;Free Parking&rdquo; rule: a passwordless admin becomes an unauthenticated root of the whole domain</td></tr>
 <tr><td>4 promote</td><td class="warn">New <code>promote</code> tool; <code>slapconfig</code> was closed, but slapd, the schema and the KDC are open (&sect;4)</td><td class="good"><code>dscli promote</code> (hardened)</td><td class="good"><code>nidomain -m</code></td></tr>
 <tr><td>5 join</td><td class="good">Existing LDAPv3 bind path</td><td class="good"><code>dscli join</code></td><td class="good">Binding file</td></tr>
 <tr><td>6 <code>/Network/Users</code></td><td class="good">NFSv4 mount</td><td class="good">NFS mount at join and at boot</td><td class="warn">Needs autofs, which the kernel lacks today</td></tr>
@@ -743,7 +792,7 @@ Permission denied (publickey,password).               # no service except sudo a
 </table>
 </div>
 
-<h2 id="sudo">8. The sudo rule, which all three get wrong by default</h2>
+<h2 id="sudo">9. The sudo rule, which all three get wrong by default</h2>
 <p>Requirement 3 sounds like a sudoers line, but it is not. <code>NOPASSWD</code> would skip the prompt even for admins who <em>have</em> a password. The rule has to depend on whether the account has a password, so it belongs in PAM.</p>
 <ul>
 <li><strong>Gershwin today</strong> gets the behaviour by accident. FreeBSD&rsquo;s <code>/etc/pam.d/system</code> uses <code>pam_unix &hellip; nullok</code>, so an empty hash passes. <code>system</code> is also included by <code>login</code>, <code>sshd</code> and <code>su</code>, so the same account can log in <em>with any password</em>, remotely too if sshd allows it.</li>
@@ -751,7 +800,7 @@ Permission denied (publickey,password).               # no service except sudo a
 <li><strong>The fix, common to A and B:</strong> a directory PAM module with an <code>allow_nopass</code> option. It appears only in <code>/etc/pam.d/sudo</code>, and only for members of <code>admin</code>. Every other service drops <code>nullok</code>. An account without a password can use sudo and the local console (the login window&rsquo;s auto-login), but can never log in over the network. Once <code>dscli passwd</code> sets a password, the prompt comes back automatically.</li>
 </ul>
 
-<h2 id="rec">9. Recommendation</h2>
+<h2 id="rec">10. Recommendation</h2>
 <div class="callout callout-good">
 <p><strong>Build option&nbsp;B, in Apple&rsquo;s vocabulary, with Apple&rsquo;s network protocols.</strong> Rewrite Gershwin DirectoryServices in C with CoreFoundation as the base, because it is your design and the fastest route to all seven requirements. Take three things from option&nbsp;A so the result has the Open Directory shape:</p>
 <ol>
@@ -762,7 +811,7 @@ Permission denied (publickey,password).               # no service except sudo a
 <p><strong>Don&rsquo;t port DirectoryService wholesale.</strong> It is 150k lines of C++ with a hard dependency on MIG out-of-line data, and <code>promote</code> has to be written new under either option, because <code>slapconfig</code> was closed (&sect;4). What the port would buy is the client daemon, and option&nbsp;B gets its useful parts (the schema and the LDAPv3 behaviour) without 150k lines of C++. Most of its value is the schema and the LDAPv3 client behaviour, which item&nbsp;1 and item&nbsp;2 get without the port. <strong>Don&rsquo;t port NetInfo.</strong> Apple removed it in 10.5 for the same security reasons it would have here, and a hardened NetInfo is just a worse version of option&nbsp;B.</p>
 </div>
 
-<h2 id="epic">10. What the epic would contain</h2>
+<h2 id="epic">11. What the epic would contain</h2>
 <div class="table-scroll"><table>
 <tr><th>Phase</th><th>Work</th><th>Estimate</th><th>Done when</th></tr>
 <tr><td>0. Vendoring</td><td>sudo and zsh into nextbsd-userland; <code>/etc/shells</code>, <code>/etc/zshrc</code>, <code>sudoers.d/nextbsd</code> with <code>%admin ALL=(ALL) ALL</code></td><td>1&ndash;2 weeks</td><td><code>/bin/zsh</code> and <code>/usr/bin/sudo</code> are in the image</td></tr>
@@ -773,7 +822,7 @@ Permission denied (publickey,password).               # no service except sudo a
 </table></div>
 <p>That totals about 3&ndash;4 months for one engineer, against 9&ndash;12 months for option&nbsp;A. Phase&nbsp;4 can move to its own epic if you want the shipping line drawn at phase&nbsp;3.</p>
 
-<h2 id="open">11. Open decisions</h2>
+<h2 id="open">12. Open decisions</h2>
 <ol>
 <li><strong>The UID range</strong> for directory users. Apple starts at 501; Gershwin&rsquo;s admin is 5000. Pick one before any installs exist.</li>
 <li><strong>Should the network protocol be LDAP from day one</strong>, skipping the TLS RPC? That is slower to ship but leaves nothing to deprecate later.</li>

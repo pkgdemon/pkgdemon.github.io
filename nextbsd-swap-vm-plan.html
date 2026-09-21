@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD swap and paging without a partition — one extent layer, two filesystems</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.c { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  table.compact td, table.compact th { padding: .35rem .55rem; font-size: .88rem; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .gap { background: #fff5f5; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .gap strong { color: var(--bad); }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .risk { background: #fff5f5; border: 1px solid #e7b8bf; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .93rem; }
+  .risk strong { color: var(--bad); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .rec { background: #eef4f8; border: 1px solid #bcd4e2; border-left: 4px solid var(--accent2); padding: 1rem 1.25rem; margin: 1.25rem 0; border-radius: 6px; }
+  .rec strong { color: var(--accent2); }
+  .yesno { font-weight: 600; }
+  .yesno.yes { color: var(--ok); }
+  .yesno.no  { color: var(--bad); }
+  .yesno.partial { color: var(--warn); }
+</style>
+<style>
+  .dg-wrap { background: var(--card); border: 1px solid var(--rule); border-radius: 8px; padding: .75rem; margin: 1rem 0 .5rem; overflow-x: auto; }
+  svg.dg { display: block; width: 100%; min-width: 720px; height: auto; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  .dg-box { fill: var(--card); stroke: var(--rule); stroke-width: 1.5; }
+  .dg-key { stroke: var(--accent2); stroke-width: 2.25; }
+  .dg-bad { stroke: var(--bad); stroke-width: 2; }
+  .dg-h { font-size: 13.5px; font-weight: 700; fill: var(--fg); }
+  .dg-t { font-size: 11.5px; fill: var(--muted); }
+  .dg-t2 { font-size: 12.5px; fill: var(--fg); }
+  .dg-strong { font-weight: 700; fill: var(--fg); }
+  .dg-ar { stroke: var(--accent2); stroke-width: 1.75; fill: none; }
+  .dg-ar-bad { stroke: var(--bad); stroke-width: 1.75; fill: none; }
+  .dg-ar-ok { stroke: var(--ok); stroke-width: 1.75; fill: none; }
+  .dg-ln { stroke: var(--accent2); stroke-width: 1.75; fill: none; }
+  .dg-cyc { stroke: var(--bad); stroke-width: 1.75; stroke-dasharray: 6 4; fill: none; }
+  .dg-mk { fill: var(--accent2); } .dg-mk-bad { fill: var(--bad); } .dg-mk-ok { fill: var(--ok); }
+  .dg-lbl { font-size: 11px; fill: var(--accent2); font-style: italic; }
+  .dg-lbl-bad { fill: var(--bad); }
+  .dg-own-i { fill: var(--warn); } .dg-own-u { fill: var(--accent2); } .dg-own-k { fill: var(--accent); }
+  .dg-own-txt { font-size: 10px; font-weight: 600; fill: #fff; text-anchor: middle; }
+  .dg-col { font-size: 12px; font-weight: 700; letter-spacing: .04em; }
+  .dg-col-bad { fill: var(--bad); } .dg-col-ok { fill: var(--ok); }
+  .dg-fs { fill: #f6e4cb; stroke: var(--warn); stroke-width: 1; stroke-dasharray: 4 3; }
+  .dg-fs-lbl { font-size: 11px; font-weight: 700; letter-spacing: .12em; fill: var(--warn); }
+  .dg-res-bad { fill: #f5d0d6; stroke: var(--bad); stroke-width: 2; }
+  .dg-res-ok { fill: #d8efd8; stroke: var(--ok); stroke-width: 2; }
+  .dg-res-h { font-size: 14px; font-weight: 800; fill: var(--bad); letter-spacing: .06em; }
+  .dg-res-h-ok { font-size: 14px; font-weight: 800; fill: var(--ok); letter-spacing: .06em; }
+  .dg-foot { font-size: 12.5px; font-style: italic; fill: var(--accent2); }
+  .dg-legend { font-size: .85rem; color: var(--muted); margin: .25rem 0 1.25rem; }
+  .dg-sw { display: inline-block; width: .8em; height: .8em; border-radius: 3px; vertical-align: -1px; margin: 0 .3em 0 .9em; }
+  .dg-sw-i { background: var(--warn); } .dg-sw-u { background: var(--accent2); } .dg-sw-k { background: var(--accent); }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#today">Where we are</a>
+  <a href="#design">The design</a>
+  <a href="#phases">How it runs</a>
+  <a href="#dumps">Core dumps</a>
+  <a href="#zfs">ZFS</a>
+  <a href="#notreserve">Why not the reserve</a>
+  <a href="#ladder">Increments</a>
+  <a href="#sizing">Sizing</a>
+  <a href="#risks">Risks</a>
+  <a href="#open">Open questions</a>
+  <a href="#tickets">E14 tickets</a>
+  <a href="#refs">References</a>
+</nav>
+
+<h1>NextBSD swap and paging without a partition &mdash; one extent layer, two filesystems <span class="pill info">Research plan &middot; new sub-project</span></h1>
+
+<p class="subtitle"><strong>No swap partition, no dump partition, working crash dumps, and ZFS &mdash; all four at once, with one mechanism.</strong> The design is not novel: Apple and illumos arrived at it independently. <em>Pin the object's blocks, extract a physical extent map once, and at I/O time bypass the filesystem entirely, writing raw LBAs.</em> Neither writes through a copy-on-write filesystem; both make COW irrelevant by never dirtying the object through the FS after pinning. <strong>ZFS shipped this in production &mdash; illumos, 2008 to today.</strong> OpenZFS stripped it; FreeBSD never compiled it (FreeBSD 12's in-tree ZFS still carried the whole thing under <code>#ifdef illumos</code>). Restoring it is ~2&ndash;4k LOC and every hard primitive survives. The UFS half is much cheaper &mdash; ~500&ndash;800&nbsp;LOC &mdash; and is the same device path swap partitions already use. <strong>This also corrects <a href="freebsd-apple-userland-cmds-plan.html">freebsd-apple-userland-cmds</a>&nbsp;&sect;7:</strong> modern <code>dynamic_pager</code> is a 114-line shim that sets <code>vm.swapfileprefix</code>, <code>macx_swapon</code> returns <code>ENOTSUP</code>, and the Mach default pager was removed in 10.12 &mdash; so the port needs no Mach traps and buys almost nothing. Companion to <strong>EPIC&nbsp;E14</strong>.</p>
+
+<section id="tldr" class="tldr">
+  <h3>TL;DR</h3>
+  <ul>
+    <li><strong>One primitive serves swap, dumps and hibernation, on both filesystems:</strong> a pinned physical extent map plus an I/O path that bypasses the FS. Build it once.</li>
+    <li><strong>Core dumps: yes.</strong> FreeBSD's dumper contract needs <em>no</em> changes &mdash; netdump already registers <code>mediaoffset = 0, mediasize = 0</code> and ignores offsets entirely. A file wrapper splits writes at extent boundaries and calls the leaf <code>d_dump</code>.</li>
+    <li><strong>ZFS: yes, and it is restoration rather than invention.</strong> illumos' <code>zvol_dumpify</code> is a complete shipped precedent. Every primitive OpenZFS needs still exists and is <em>live</em> code: <code>dmu_buf_will_not_fill()</code> (<code>dbuf.c:2973</code>, called internally at 3153 and 3194), the DB_NOFILL write path asserting <code>checksum == OFF || NOPARITY</code> (5500), <code>ZIO_CHECKSUM_NOPARITY</code>, <code>traverse_dataset()</code>, and the <code>multi_vdev_crash_dump</code> feature still registered (<code>zfeature_common.c:383</code>).</li>
+    <li><strong>Swap and dumps share the bypass.</strong> In illumos, <code>zvol_strategy()</code> routes <em>all</em> I/O to a dumpified zvol through <code>zvol_dumpio</code> &mdash; no DMU, no tx, no ARC, no ZIL, <strong>no allocation</strong>. Removing allocation from the write path is exactly what kills the swap deadlock.</li>
+    <li><strong>Build the file route, not the zvol route.</strong> A zvol would be cheaper for dumps alone (~450&nbsp;LOC, no <code>dumpon</code>/<code>savecore</code> changes), but a no-partition design needs ZFS <em>swapfiles</em> anyway &mdash; and once swapify exists, dumps come nearly free on the same object. Zvol-only means building two mechanisms.</li>
+    <li><strong>Do not make a memory reserve the safety argument.</strong> illumos built the whole thing &mdash; <code>NOMEMWAIT()</code>, <code>KM_PUSHPAGE</code>, a ZFS-sized <code>pageout_reserve</code>, the ARC throttle &mdash; and still ships <code>pageout_deadman</code>, which <strong>panics after 90 seconds</strong> of stuck pageout. OpenZFS <a href="https://github.com/openzfs/zfs/issues/7734">#7734</a> is still open.</li>
+    <li><strong>On FreeBSD the reserve route is weaker still.</strong> <code>KM_PUSHPAGE</code> is <code>#define</code>d to plain <code>M_WAITOK</code> (<code>kmem.h:49</code>) and <code>arc_memory_throttle()</code> is <code>return (0);</code> (<code>arc_os.c:124</code>).</li>
+    <li><strong>NextBSD ships zero swap today</strong> while <code>build.sh</code> calls <code>/cow</code> &ldquo;swap-backed&rdquo;, and a swap entry in fstab would be inert anyway because launchd runs no <code>swapon -a</code> (<a href="https://github.com/nextbsd/nextbsd-userland/issues/171">#171</a>).</li>
+  </ul>
+</section>
+
+<h2 id="today">1. Where NextBSD actually is</h2>
+
+<table class="compact">
+<tr><th>Source</th><th>Says</th><th>Reality</th></tr>
+<tr><td><code>nextbsd/nextbsd build.sh</code> 801, 953</td><td><code>/cow</code> is &ldquo;tmpfs: dynamic, <strong>swap-backed</strong>&rdquo;</td><td><span class="pill bad">false</span> no swap configured anywhere</td></tr>
+<tr><td><a href="nextbsd-image-strategy-survey.html">image-strategy survey</a></td><td>live writes &ldquo;go to RAM (tmpfs/swap)&rdquo;</td><td><span class="pill bad">false</span> RAM only</td></tr>
+<tr><td><a href="freebsd-srclist-build-plan.html">srclist build plan</a></td><td><code>swapon</code> DEFER, <code>dumpon</code> DEFER, <code>savecore</code> DROP</td><td><span class="pill ok">accurate</span></td></tr>
+</table>
+
+<p>Measured consequence, <a href="https://github.com/nextbsd/nextbsd/issues/326">#326</a>: <code>/cow</code> at 97&nbsp;% of 7&nbsp;GB, <code>7032M Laundry</code>, <code>swapctl -l</code> empty, OOM-killer taking daemons.</p>
+
+<div class="risk"><strong>Sequencing trap.</strong> Nothing under launchd runs <code>swapon -a</code> or <code>dumpon</code>, so any fstab entry is dead text &mdash; the same failure as closed issue <a href="https://github.com/nextbsd/nextbsd/issues/358">#358</a>, where the installer wrote <code>/etc/myname</code> and nothing read it. The activation path must land before or with anything that creates swap.</div>
+
+<h2 id="design">2. The design &mdash; one extent layer, two feeders</h2>
+
+<div class="ascii-diagram"><pre>
+                    swap pager  /  dump wrapper
+                            |
+                   +--------+--------+
+                   |  physical extent |     built once, at swapon / pin time
+                   |       map        |     never consulted through the FS
+                   +--------+--------+
+                            |
+                     raw bio / d_dump   --->  GEOM provider
+                            |
+        +-------------------+-------------------+
+        |                                       |
+   UFS: ufs_bmaparray / VOP_BMAP        ZFS: swapified object's DVA list
+   ~500-800 LOC, low risk               ~2-4k LOC, moderate risk
+   (same path swap partitions use)      (illumos dumpify port)
+</pre></div>
+
+<p>After <code>swapon</code> the filesystem is <strong>not on the I/O path</strong>. That is the whole safety argument, and it is the same one Linux relies on (<code>swap_activate</code> &rarr; extent map &rarr; <code>submit_bio</code> straight to <code>sis-&gt;bdev</code>).</p>
+
+<h3>2.1 What has to change on the UFS side</h3>
+
+<p>FreeBSD refuses local swapfiles today. <code>sys/vm/swap_pager.c:2679</code>:</p>
+
+<pre class="c"><code>	} else if (vp-&gt;v_type == VREG &amp;&amp;
+	    (vp-&gt;v_mount-&gt;mnt_vfc-&gt;vfc_flags &amp; VFCF_NETWORK) != 0 &amp;&amp;
+	    (error = VOP_GETATTR(vp, &amp;attr, td-&gt;td_ucred)) == 0) {
+		/*
+		 * Allow direct swapping to NFS regular files in the same
+		 * way that nfs_mountroot() sets up diskless swapping.</code></pre>
+
+<p>So: relax that test for filesystems that can return a full, hole-free block map; walk <code>VOP_BMAP</code> at <code>swapon</code> as Linux's <code>generic_swapfile_activate()</code> does; store the extents in <code>struct swdevt</code>; add a <code>VV_SWAP</code> vnode flag that makes <code>ffs_write</code>, <code>ffs_truncate</code> and <code>ufs_remove</code> refuse with <code>ETXTBSY</code>, mirroring xnu's <code>VSWAP</code> and Linux's <code>S_SWAPFILE</code>; and teach <code>swapon(8)</code> to stop creating an <code>md(4)</code> device for local files.</p>
+
+<p>Preallocation on UFS is already correct if slow: FFS has no <code>vop_allocate</code> of its own, so <code>vop_stdallocate()</code> writes real zero blocks &mdash; no holes, which is exactly what the extent walk requires. Note also that <code>ffs_reallocblks</code> only ever relocates <em>dirty, not-yet-written</em> clusters, so a synced file does not move.</p>
+
+<h2 id="phases">3. How it runs &mdash; phase by phase</h2>
+
+<p>Everything below happens with <strong>no partition</strong>. The files live at the canonical Darwin path <code>/private/var/vm</code> &mdash; NextBSD ships <code>/var&nbsp;-&gt;&nbsp;private/var</code>, matching classic Mac OS X's <code>/private/var/vm/swapfile0</code>. On ZFS it is the <code>zroot/private/var/vm</code> dataset, which inherits that mountpoint with no override (&sect;5.1). (NextBSD has no <code>/System/Volumes</code>, so it models the pre-Big&nbsp;Sur layout, not Apple's separate VM volume.)</p>
+
+<h3>3.1 The lifecycle</h3>
+
+<div class="dg-wrap">
+<svg class="dg" viewBox="0 0 960 470" role="img" aria-labelledby="dg1t dg1d">
+<title id="dg1t">Swapfile lifecycle</title>
+<desc id="dg1d">Six phases. Install creates /private/var/vm. Boot pins and maps each file. Pageout writes through the extent map. Grow adds a file when swap runs low and returns to pageout. Reclaim removes a file when pressure ends, and the cycle returns to pageout on the next build. Panic can happen at any time and writes the dump through the same extent mechanism.</desc>
+<defs>
+  <marker id="dg1-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="dg-mk" d="M0,0 L10,5 L0,10 z"/></marker>
+  <marker id="dg1-ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="dg-mk-bad" d="M0,0 L10,5 L0,10 z"/></marker>
+</defs>
+
+<!-- 3 Grow (above 2) -->
+<rect class="dg-box" x="470" y="8" width="190" height="110" rx="6"/>
+<text class="dg-h" x="482" y="30">3 · Grow</text>
+<text class="dg-t" x="482" y="50">swap_pager_almost_full</text>
+<text class="dg-t" x="482" y="66">→ devctl VM/swap LOWSPACE</text>
+<text class="dg-t" x="482" y="82">next file, 256 MiB → 1 GiB</text>
+<rect class="dg-own-u" x="482" y="92" width="52" height="16" rx="8"/><text class="dg-own-txt" x="508" y="104">swapd</text>
+
+<!-- main row -->
+<rect class="dg-box" x="10" y="158" width="190" height="134" rx="6"/>
+<text class="dg-h" x="22" y="180">0 · Install</text>
+<text class="dg-t" x="22" y="202">create /private/var/vm</text>
+<text class="dg-t" x="22" y="218">ZFS: zroot/private/var/vm</text>
+<text class="dg-t" x="22" y="234">checksum+compress off</text>
+<text class="dg-t" x="22" y="250">no partition, no size</text>
+<rect class="dg-own-i" x="22" y="264" width="64" height="16" rx="8"/><text class="dg-own-txt" x="54" y="276">installer</text>
+
+<rect class="dg-box" x="240" y="158" width="190" height="134" rx="6"/>
+<text class="dg-h" x="252" y="180">1 · Boot: pin &amp; map</text>
+<text class="dg-t" x="252" y="202">preallocate — no holes</text>
+<text class="dg-t" x="252" y="218">swapon(2) on the file</text>
+<text class="dg-t" x="252" y="234">walk VOP_BMAP / DVAs</text>
+<text class="dg-t" x="252" y="250">set VV_SWAP — immutable</text>
+<rect class="dg-own-u" x="252" y="264" width="52" height="16" rx="8"/><text class="dg-own-txt" x="278" y="276">swapd</text>
+<rect class="dg-own-k" x="310" y="264" width="52" height="16" rx="8"/><text class="dg-own-txt" x="336" y="276">kernel</text>
+
+<rect class="dg-box dg-key" x="470" y="158" width="190" height="134" rx="6"/>
+<text class="dg-h" x="482" y="180">2 · Pageout</text>
+<text class="dg-t" x="482" y="202">pagedaemon → laundry</text>
+<text class="dg-t" x="482" y="218">swap_pager_putpages()</text>
+<text class="dg-t" x="482" y="234">extent map → raw bio</text>
+<text class="dg-t dg-strong" x="482" y="250">FS never entered</text>
+<rect class="dg-own-k" x="482" y="264" width="52" height="16" rx="8"/><text class="dg-own-txt" x="508" y="276">kernel</text>
+
+<rect class="dg-box" x="760" y="158" width="190" height="134" rx="6"/>
+<text class="dg-h" x="772" y="180">4 · Reclaim</text>
+<text class="dg-t" x="772" y="202">free swap high for N min</text>
+<text class="dg-t" x="772" y="218">swapoff(2) newest file</text>
+<text class="dg-t" x="772" y="234">pages back in — slow</text>
+<text class="dg-t" x="772" y="250">unlink; space returns</text>
+<rect class="dg-own-u" x="772" y="264" width="52" height="16" rx="8"/><text class="dg-own-txt" x="798" y="276">swapd</text>
+
+<!-- 5 Panic (below 2) -->
+<rect class="dg-box dg-bad" x="470" y="342" width="190" height="110" rx="6"/>
+<text class="dg-h" x="482" y="364">5 · Panic: dump</text>
+<text class="dg-t" x="482" y="384">doadump → wrapper dumper</text>
+<text class="dg-t" x="482" y="400">split at extent edges</text>
+<text class="dg-t" x="482" y="416">leaf d_dump — polled</text>
+<rect class="dg-own-k" x="482" y="426" width="52" height="16" rx="8"/><text class="dg-own-txt" x="508" y="438">kernel</text>
+
+<!-- arrows -->
+<line class="dg-ar" x1="200" y1="225" x2="238" y2="225" marker-end="url(#dg1-a)"/>
+<line class="dg-ar" x1="430" y1="225" x2="468" y2="225" marker-end="url(#dg1-a)"/>
+<line class="dg-ar" x1="660" y1="208" x2="758" y2="208" marker-end="url(#dg1-a)"/>
+<text class="dg-lbl" x="710" y="200" text-anchor="middle">pressure ends</text>
+<line class="dg-ar" x1="760" y1="244" x2="662" y2="244" marker-end="url(#dg1-a)"/>
+<text class="dg-lbl" x="710" y="262" text-anchor="middle">next build</text>
+<line class="dg-ar" x1="540" y1="158" x2="540" y2="120" marker-end="url(#dg1-a)"/>
+<text class="dg-lbl" x="533" y="143" text-anchor="end">swap low</text>
+<line class="dg-ar" x1="590" y1="118" x2="590" y2="156" marker-end="url(#dg1-a)"/>
+<text class="dg-lbl" x="597" y="143">resume</text>
+<line class="dg-ar-bad" x1="565" y1="292" x2="565" y2="340" marker-end="url(#dg1-ab)"/>
+<text class="dg-lbl dg-lbl-bad" x="573" y="321">panic — any time</text>
+</svg>
+</div>
+
+<p class="dg-legend"><span class="dg-sw dg-sw-i"></span>installer <span class="dg-sw dg-sw-u"></span>userland (<code>swapd</code>, launchd) <span class="dg-sw dg-sw-k"></span>kernel</p>
+
+<h3>3.2 The write path &mdash; why it cannot deadlock</h3>
+
+<p>This is the whole design in one picture. Both paths share everything down to <code>sw_strategy</code>; they differ only in what that pointer calls.</p>
+
+<div class="dg-wrap">
+<svg class="dg" viewBox="0 0 960 540" role="img" aria-labelledby="dg2t dg2d">
+<title id="dg2t">Swap write path, today versus E14</title>
+<desc id="dg2d">Both paths go from the pagedaemon through the laundry worker to swap_pager_putpages and sw_strategy. Today's md-backed swapfile then enters the filesystem, which allocates memory, sleeps in vm_wait waiting for the pagedaemon, and deadlocks because the pagedaemon is waiting on that same write. The E14 path translates the block through the extent map and issues a raw bio to the disk, never entering the filesystem, and completes.</desc>
+<defs>
+  <marker id="dg2-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="dg-mk" d="M0,0 L10,5 L0,10 z"/></marker>
+  <marker id="dg2-ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="dg-mk-bad" d="M0,0 L10,5 L0,10 z"/></marker>
+  <marker id="dg2-ao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="dg-mk-ok" d="M0,0 L10,5 L0,10 z"/></marker>
+</defs>
+
+<!-- shared trunk -->
+<rect class="dg-box" x="270" y="10" width="420" height="34" rx="6"/>
+<text class="dg-t2" x="480" y="32" text-anchor="middle">pagedaemon_wakeup() — free count below target</text>
+<line class="dg-ar" x1="480" y1="44" x2="480" y2="58" marker-end="url(#dg2-a)"/>
+<rect class="dg-box" x="270" y="60" width="420" height="34" rx="6"/>
+<text class="dg-t2" x="480" y="82" text-anchor="middle">vm_pageout_laundry_worker()  ·  curproc == pageproc</text>
+<line class="dg-ar" x1="480" y1="94" x2="480" y2="108" marker-end="url(#dg2-a)"/>
+<rect class="dg-box" x="270" y="110" width="420" height="50" rx="6"/>
+<text class="dg-t2 dg-strong" x="480" y="131" text-anchor="middle">swap_pager_putpages()</text>
+<text class="dg-t" x="480" y="150" text-anchor="middle">blist bitmap · preallocated swwbuf pbuf · M_NOWAIT — already allocation-free</text>
+<line class="dg-ar" x1="480" y1="160" x2="480" y2="174" marker-end="url(#dg2-a)"/>
+<rect class="dg-box dg-key" x="270" y="176" width="420" height="34" rx="6"/>
+<text class="dg-t2 dg-strong" x="480" y="198" text-anchor="middle">sp-&gt;sw_strategy(bp, sp)  —  the only thing that changes</text>
+
+<!-- fork -->
+<polyline class="dg-ln" points="480,210 480,226"/>
+<polyline class="dg-ln" points="250,226 725,226"/>
+<line class="dg-ar" x1="250" y1="226" x2="250" y2="254" marker-end="url(#dg2-a)"/>
+<line class="dg-ar" x1="725" y1="226" x2="725" y2="254" marker-end="url(#dg2-a)"/>
+<text class="dg-col dg-col-bad" x="62" y="248">TODAY — md(4) swapfile</text>
+<text class="dg-col dg-col-ok" x="522" y="248">E14 — extent-mapped</text>
+
+<!-- filesystem band, left only -->
+<rect class="dg-fs" x="30" y="292" width="420" height="92" rx="4"/>
+<text class="dg-fs-lbl" transform="translate(45,338) rotate(-90)" text-anchor="middle">FILESYSTEM</text>
+
+<!-- left column -->
+<rect class="dg-box" x="60" y="256" width="380" height="32" rx="5"/>
+<text class="dg-t2" x="250" y="277" text-anchor="middle">md kthread — not pageproc, no reserve</text>
+<line class="dg-ar" x1="250" y1="288" x2="250" y2="298" marker-end="url(#dg2-a)"/>
+<rect class="dg-box" x="60" y="300" width="380" height="32" rx="5"/>
+<text class="dg-t2" x="250" y="321" text-anchor="middle">vn_start_write · vn_lock</text>
+<line class="dg-ar" x1="250" y1="332" x2="250" y2="342" marker-end="url(#dg2-a)"/>
+<rect class="dg-box" x="60" y="344" width="380" height="32" rx="5"/>
+<text class="dg-t2" x="250" y="365" text-anchor="middle">VOP_WRITE → ffs_write → getblk / allocbuf</text>
+<line class="dg-ar-bad" x1="250" y1="376" x2="250" y2="398" marker-end="url(#dg2-ab)"/>
+<rect class="dg-box dg-bad" x="60" y="400" width="380" height="32" rx="5"/>
+<text class="dg-t2" x="250" y="421" text-anchor="middle">vm_wait() — sleeps until pages are freed</text>
+<line class="dg-ar-bad" x1="250" y1="432" x2="250" y2="446" marker-end="url(#dg2-ab)"/>
+<rect class="dg-res-bad" x="60" y="448" width="380" height="48" rx="6"/>
+<text class="dg-res-h" x="250" y="468" text-anchor="middle">DEADLOCK</text>
+<text class="dg-t2" x="250" y="486" text-anchor="middle">pagedaemon waits on this write; this write waits on pagedaemon</text>
+
+<!-- deadlock cycle back to the top -->
+<polyline class="dg-cyc" points="60,416 16,416 16,27 268,27" marker-end="url(#dg2-ab)"/>
+
+<!-- right column -->
+<rect class="dg-box" x="520" y="256" width="410" height="32" rx="5"/>
+<text class="dg-t2" x="725" y="277" text-anchor="middle">swapfile_strategy()</text>
+<line class="dg-ar" x1="725" y1="288" x2="725" y2="298" marker-end="url(#dg2-a)"/>
+<rect class="dg-box" x="520" y="300" width="410" height="32" rx="5"/>
+<text class="dg-t2" x="725" y="321" text-anchor="middle">extent map: b_blkno → physical block</text>
+<line class="dg-ar" x1="725" y1="332" x2="725" y2="342" marker-end="url(#dg2-a)"/>
+<rect class="dg-box" x="520" y="344" width="410" height="32" rx="5"/>
+<text class="dg-t2" x="725" y="365" text-anchor="middle">g_new_bio() — non-sleeping; ENOMEM, never blocks</text>
+<line class="dg-ar" x1="725" y1="376" x2="725" y2="398" marker-end="url(#dg2-a)"/>
+<rect class="dg-box" x="520" y="400" width="410" height="32" rx="5"/>
+<text class="dg-t2" x="725" y="421" text-anchor="middle">g_io_request() → disk driver (same path as a partition)</text>
+<line class="dg-ar-ok" x1="725" y1="432" x2="725" y2="446" marker-end="url(#dg2-ao)"/>
+<rect class="dg-res-ok" x="520" y="448" width="410" height="48" rx="6"/>
+<text class="dg-res-h-ok" x="725" y="468" text-anchor="middle">COMPLETES</text>
+<text class="dg-t2" x="725" y="486" text-anchor="middle">nothing on this path allocates → pages freed → waiters wake</text>
+
+<text class="dg-foot" x="480" y="524" text-anchor="middle">After swapon, the filesystem's only remaining job is to have told us where the blocks are.</text>
+</svg>
+</div>
+
+<h3>3.3 Step by step</h3>
+
+<table class="compact">
+<tr><th>Phase</th><th>Steps</th><th>Owner</th></tr>
+<tr><td><strong>0&nbsp;Install</strong></td><td>Create <code>/private/var/vm</code>. On ZFS, create <code>zroot/private/var/vm</code> (inheriting that mountpoint) with <code>checksum=off compression=off dedup=off copies=1 recordsize=128K</code>, no snapshots, no encryption. <strong>Do it early</strong>, while the pool is clean &mdash; a preallocation on a fragmented pool can gang, and gang blocks are fatal to the extent walk (<code>EFRAGS</code>). No partition. No size decision.</td><td>installer</td></tr>
+<tr><td><strong>1&nbsp;Boot</strong></td><td>launchd starts <code>swapd</code>. Per file: <code>open(O_CREAT, 0600)</code> &rarr; preallocate (UFS <code>vop_stdallocate</code> writes real zeros; ZFS <code>dmu_prealloc</code> allocates DVAs with DB_NOFILL) &rarr; <code>swapon(2)</code> on the path &rarr; kernel walks <code>VOP_BMAP</code> / <code>traverse_dataset</code> into <code>struct swdevt</code>, rejecting holes and gang blocks &rarr; sets <code>VV_SWAP</code> &rarr; registers <code>swapfile_strategy</code> on a GEOM consumer of the underlying provider &rarr; <code>blist_create</code>, <code>swapon_check_swzone</code>. The corefile is pinned the same way and registered with <code>dumper_insert</code>. <strong>Rebuilt every boot; never cached.</strong></td><td>swapd + kernel</td></tr>
+<tr><td><strong>2&nbsp;Pageout</strong></td><td>Free count drops below <code>vmd_free_target</code> &rarr; <code>pagedaemon_wakeup</code> &rarr; inactive scan moves dirty anon pages to laundry &rarr; <code>vm_pageout_laundry_worker</code> (in <code>pageproc</code>) &rarr; <code>vm_pageout_flush</code> &rarr; <code>swap_pager_putpages</code>: bitmap block allocation, preallocated pbuf, <code>M_NOWAIT</code> metadata &rarr; <code>swapfile_strategy</code> &rarr; extent lookup &rarr; <code>g_new_bio</code> &rarr; <code>g_io_request</code> &rarr; disk. Completion frees the pages.</td><td>kernel</td></tr>
+<tr><td><strong>3&nbsp;Grow</strong></td><td><code>swp_sizecheck</code> sees <code>swap_pager_avail &lt; nswap_lowat</code> (128 pages) &rarr; <code>EVENTHANDLER</code> &rarr; <code>devctl_notify("VM","swap","LOWSPACE")</code> &rarr; <code>swapd</code> creates the next file on xnu's ladder, then runs Phase&nbsp;1 for it. Back off 15&nbsp;s on <code>ENOSPC</code>. Refuse past <code>vm.swap_maxpages/2</code> (4&times;&nbsp;RAM) unless <code>kern.maxswzone</code> was raised.</td><td>swapd</td></tr>
+<tr><td><strong>4&nbsp;Reclaim</strong></td><td>Free swap above a high-water mark for N minutes &rarr; <code>swapoff(2)</code> the newest file &rarr; <code>swap_pager_swapoff</code> pages everything on it back in, synchronously &rarr; clear <code>VV_SWAP</code> &rarr; unlink. <strong>Expensive, and it can fail</strong> with <code>ENOMEM</code> if <code>vm_free_count + swap_pager_avail &lt; nblks + nswap_lowat</code>; never default to <code>SWAPOFF_FORCE</code>.</td><td>swapd</td></tr>
+<tr><td><strong>5&nbsp;Panic</strong></td><td><code>doadump</code> &rarr; <code>dumpsys</code> &rarr; wrapper <code>dumper</code> &rarr; locate extent, <strong>split at extent edges</strong> (arm64 minidump writes are unaligned) &rarr; leaf <code>d_dump</code> (e.g. <code>ndadump</code>) polls &mdash; no interrupts, no allocation &rarr; <code>(NULL,0,0)</code> flush fans out. Next boot, <code>savecore</code> in file mode <code>fstat()</code>s the corefile and extracts to <code>/private/var/crash</code>.</td><td>kernel</td></tr>
+</table>
+
+<div class="risk"><strong>The weak point is Phase 3 in userland.</strong> <code>swapd</code> must open and preallocate a file at exactly the moment memory is short; if it is paged out or blocks, growth stalls. Mitigate by <code>mlock</code>ing the daemon and always keeping one pre-created file of headroom so growth is never on the critical path. xnu's real answer is to create files <em>in the kernel</em> (<code>vm_swapfile_create_thread</code>) &mdash; that is Increment&nbsp;5's territory.</div>
+
+<h2 id="dumps">4. Core dumps &mdash; no contract change needed</h2>
+
+<p>The dumper contract is just &ldquo;a callback taking an absolute byte offset, block-aligned, plus a <code>(NULL,&nbsp;0,&nbsp;0)</code> flush&rdquo;. <code>mediaoffset</code>/<code>mediasize</code> are used only for bounds checking and header placement &mdash; and <strong>netdump already ignores them</strong>, in two places (<code>sys/netinet/netdump/netdump_client.c:584</code> and <code>:745</code>):</p>
+
+<pre class="c"><code>	dumper.mediaoffset = 0;
+	dumper.mediasize   = 0;</code></pre>
+
+<p>A file-backed wrapper therefore sets <code>mediaoffset = 0</code>, <code>mediasize</code> = file length, <code>blocksize = 4096</code>, <code>maxiosize</code> = min leaf <code>d_maxsize</code>, and on each write locates the extent, splits at extent boundaries, and calls the leaf <code>d_dump</code>. EKCD encryption and zstd compression layer above <code>dump_write</code> and need nothing. Splitting is mandatory, not optional: arm64 <code>minidump_machdep.c</code> emits writes that are not extent-aligned.</p>
+
+<p>Userland is small: <code>dumpon(8)</code> gains an <code>S_ISREG</code> path routing <code>DIOCSKERNELDUMP</code> through <code>VOP_IOCTL</code> (~100&nbsp;LOC); <code>savecore(8)</code> gains a file mode using <code>fstat()</code> in place of <code>DIOCGMEDIASIZE</code> (~150&nbsp;LOC).</p>
+
+<p>Apple's reference implementation is <code>kern_open_file_for_direct_io()</code> (<code>bsd/kern/kern_symfile.c</code>), run at <em>boot</em>: <code>vnode_setsize(IO_NOZEROFILL)</code>, <code>FSCTL_FREEZE_EXTENTS</code> (<code>fsctl.h</code>: <em>&ldquo;Mark file's extents as 'frozen' because someone has references to physical address&rdquo;</em>), <code>DKIOCLOCKPHYSICALEXTENTS</code>, <code>VNOP_BLOCKMAP(VNODE_WRITE)</code>, <code>DKIOCGETPHYSICALEXTENT</code>. The same map backs hibernation.</p>
+
+<h3>3.1 Polled I/O on the real targets</h3>
+
+<table class="compact">
+<tr><th>Driver</th><th>Dump</th><th>Note</th></tr>
+<tr><td>NVMe (<code>nda</code>)</td><td><span class="pill ok">works</span></td><td><code>ndadump()</code> <code>nvme_da.c:583</code>, <code>d_dump</code> at 1011; polls via <code>cam_periph_runccb</code> when <code>dumping</code>. <strong>The Pi&nbsp;500+ boots from NVMe.</strong></td></tr>
+<tr><td>virtio-blk</td><td><span class="pill ok">works</span></td><td><code>vtblk_dump</code> &mdash; test the whole design in a VM first</td></tr>
+<tr><td>SDHCI</td><td><span class="pill ok">works</span></td><td><code>sdhci_generic_request</code> spins when <code>dumping</code></td></tr>
+<tr><td><code>dwmmc</code></td><td><span class="pill warn">~30 LOC</span></td><td>no <code>dumping</code> path; would hang</td></tr>
+<tr><td>USB (<code>umass</code>)</td><td><span class="pill warn">fragile</span></td><td>works in principle; historically least reliable at panic</td></tr>
+</table>
+
+<h2 id="zfs">5. ZFS &mdash; restoration, not invention</h2>
+
+<p>illumos does not make ZFS COW-safe. It makes COW <em>irrelevant</em>: once <code>ZVOL_DUMPIFIED</code> is set, <strong>every</strong> read and write bypasses the DMU, so nothing ever dirties the object again, so no block pointer is rewritten, so the captured DVAs stay valid.</p>
+
+<table class="compact">
+<tr><th>Step</th><th>illumos</th></tr>
+<tr><td>1. Discard</td><td><code>dmu_free_long_range</code> + <code>txg_wait_synced</code></td></tr>
+<tr><td>2. Freeze properties</td><td><code>compression=off checksum=off dedup=off refreservation=0</code>, 128&nbsp;K fixed blocks</td></tr>
+<tr><td>3. Preallocate</td><td><code>zvol_prealloc()</code> &rarr; <code>dmu_prealloc()</code> &rarr; <code>dmu_buf_will_not_fill()</code> per block &mdash; real DVAs, no data written (DB_NOFILL)</td></tr>
+<tr><td>4. Map</td><td><code>zvol_get_lbas()</code> &rarr; <code>traverse_dataset()</code>, coalesce adjacent DVAs, <strong>reject gang blocks</strong> (<code>EFRAGS</code> &mdash; <code>dumpadm</code>'s &ldquo;too fragmented&rdquo;)</td></tr>
+<tr><td>5. I/O</td><td><code>zvol_dumpio()</code> &rarr; <code>vdev_lookup_top</code> &rarr; <code>vdev_op_dumpio</code> &mdash; no DMU, no tx, no ARC, no ZIL, <strong>no allocation</strong></td></tr>
+</table>
+
+<p>Step 5 is why this solves swap and not only dumps. The deadlock <em>is</em> allocation-under-pressure; removing allocation from the write path removes the deadlock.</p>
+
+<p>The one difference from Apple: APFS does not checksum file data, so raw overwrites read back normally. ZFS does &mdash; hence <code>checksum=off</code>, which illumos already handled, and which the surviving DB_NOFILL assert still enforces.</p>
+
+<h3>4.1 Hazards illumos never faced</h3>
+
+<p>Each needs a refusal check at pin time, and these are the substance of the ZFS work beyond the port itself:</p>
+
+<table class="compact">
+<tr><td>device removal / indirect vdevs</td><td>DVAs get remapped &mdash; refuse, or re-walk</td></tr>
+<tr><td>raidz expansion</td><td>relocates data &mdash; refuse while pinned</td></tr>
+<tr><td>block cloning / BRT</td><td><code>FICLONE</code> on a pinned file must be refused</td></tr>
+<tr><td>dRAID</td><td>no <code>dumpio</code> precedent &mdash; unsupported</td></tr>
+<tr><td>encrypted datasets</td><td>illumos already refuses; encrypt in the pager instead, as xnu does</td></tr>
+<tr><td>snapshots / clones</td><td>a bypass write mutates the snapshot's view &mdash; refuse on the dump/swap dataset</td></tr>
+<tr><td>resilver</td><td>copies to the same offset; needs ordering against concurrent bypass writes <span class="pill warn">unverified</span></td></tr>
+</table>
+
+<h3>5.1 Dataset layout</h3>
+
+<p>NextBSD has no ZFS dataset hierarchy yet &mdash; the only name in use anywhere is the boot environment, <code>zroot/ROOT/default</code> (<a href="nextbsd-image-strategy-survey.html">image-strategy survey</a>). So this plan sets the precedent, and it should follow FreeBSD's own <code>bsdinstall</code> convention translated to the Darwin <code>/private</code> tree:</p>
+
+<pre class="shell"><code>zroot/ROOT/default         mountpoint=/                  &lt;- boot environment
+zroot/private              mountpoint=/private  canmount=off
+zroot/private/var          canmount=off          (inherits /private/var)
+zroot/private/var/vm       real dataset          (inherits /private/var/vm)
+zroot/private/var/crash    real dataset          (inherits /private/var/crash)</code></pre>
+
+<p><strong>The dataset name matches the real path</strong>, so one explicit <code>mountpoint</code> on <code>zroot/private</code> places everything beneath it. <code>zroot/var/vm</code> would name the <code>/var</code> symlink rather than the directory &mdash; the same mistake as writing <code>/var/vm</code>.</p>
+
+<p><strong><code>canmount=off</code> parents keep the boot environment intact.</strong> They exist to provide the naming and mountpoint hierarchy without mounting anything, so <code>/private/etc</code> and the bulk of <code>/private/var</code> stay <em>inside</em> <code>zroot/ROOT/default</code> and roll back with it; only <code>vm</code> and <code>crash</code> are split out. This is exactly <code>bsdinstall</code>'s <code>zroot/var</code> + <code>zroot/var/crash</code>/<code>log</code> pattern. The pinned dataset must live outside <code>ROOT</code> in any case &mdash; <code>bectl</code> snapshots the boot environment, and a pinned dataset under it would be hit on every BE create.</p>
+
+<p><strong><code>vm</code> and <code>crash</code> are deliberately separate.</strong> The pinned corefile lives in <code>vm</code> with <code>checksum=off</code>; <code>savecore</code> extracts it into <code>crash</code> as an ordinary file that <em>should</em> be checksummed, and that takes <code>bsdinstall</code>'s <code>exec=off setuid=off</code>.</p>
+
+<p>Properties on <code>zroot/private/var/vm</code>: <code>checksum=off compression=off dedup=off copies=1 recordsize=128K</code>, no encryption, and <code>com.sun:auto-snapshot=false</code> (which the OpenZFS FAQ already recommends for swap).</p>
+
+<div class="risk"><strong>Recursive snapshots are atomic.</strong> <code>zfs snapshot -r zroot/private@backup</code> is all-or-nothing, so if Z4 simply <em>refused</em> a snapshot of the pinned child, the entire recursive snapshot would fail &mdash; silently breaking backup scripts, <code>sanoid</code> and <code>zfs-auto-snapshot</code>. Z4 must instead <strong>skip</strong> pinned datasets during recursive snapshot and <code>send -R</code>, and refuse only a snapshot aimed at the pinned dataset directly. This is the real reason Apple keeps VM on a separate volume: it is excluded from Data's snapshots by construction. Nesting it gives the right name and path, at the cost of handling that exclusion explicitly.</div>
+
+<h2 id="notreserve">6. Why not the memory-reserve route</h2>
+
+<p>It is the obvious idea, it is what xnu appears to do, and <strong>it is not the safety argument.</strong></p>
+
+<p>xnu's <code>TH_OPT_VMPRIV</code> is real &mdash; an exclusive page reserve that only privileged threads may drain, with privileged waiters woken first. But it is only sufficient <em>because</em> preallocation and <code>VSWAP</code> remove allocation from the pageout path in the first place. The privilege cannot help if the swap thread blocks on a lock held by an unprivileged thread parked in <code>vm_page_wait()</code>.</p>
+
+<p>illumos built the full reserve design for ZFS &mdash; <code>NOMEMWAIT()</code>, <code>KM_PUSHPAGE</code>, <code>pageout_reserve</code> sized &ldquo;at least 4MB for use by ZFS&rdquo;, the <code>arc_memory_throttle</code> pageout branch &mdash; and still ships <code>pageout_deadman</code>, which <strong>panics after 90 seconds</strong> of stuck pageout. That is what &ldquo;narrows but does not close&rdquo; looks like in production.</p>
+
+<p>On FreeBSD it is weaker again:</p>
+
+<pre class="c"><code>/* include/os/freebsd/spl/sys/kmem.h */
+#define	KM_SLEEP		M_WAITOK
+#define	KM_PUSHPAGE		M_WAITOK   /* the illumos reserve semantic is gone */
+
+/* module/os/freebsd/zfs/arc_os.c:124 */
+arc_memory_throttle(spa_t *spa, uint64_t reserve, uint64_t txg)
+{
+	return (0);
+}</code></pre>
+
+<p>And a structural point no privilege can fix: <strong>with any DMU write the data stays dirty in ARC until txg sync</strong>, so a swap write through the DMU cannot free memory faster than txg sync.</p>
+
+<div class="rec">Take only the cheap parts as defence in depth: a <code>TDP_VMPRIV</code> per-thread flag (~300&ndash;500&nbsp;LOC in <code>sys/vm</code>) to replace the blunt <code>curproc == pageproc</code> identity check, synchronous dispatch for swap objects, and the <code>arc_memory_throttle</code> pageout branch. Do not let any of it carry the correctness argument. Tracked as <a href="nextbsd-e14-tickets.html#k8">K8</a>.</div>
+
+<div class="risk"><strong>Pre-existing exposure, no swap required.</strong> <code>zfs_putpages</code> takes a rangelock and <em>then</em> calls <code>dmu_tx_assign(tx, DMU_TX_WAIT)</code> in pageout context for dirty mmap'd pages &mdash; and <code>zfs_vnops_os.c:131&ndash;155</code> documents that precise pattern as the deadlock shape in its own header comment. Every NextBSD system on ZFS root has this today. Worth its own ticket upstream.</div>
+
+<h2 id="ladder">7. Increments</h2>
+
+<table class="compact">
+<tr><th></th><th>Increment</th><th>Effort</th><th>Buys</th></tr>
+<tr><td><strong>1</strong></td><td>Extent-map swap pager + native file <code>swapon</code> on UFS; <code>VV_SWAP</code> guard; <code>swapon(8)</code> drops the md detour</td><td>~500&ndash;800 LOC</td><td>safe swapfiles on UFS, no partition, same device path partitions already use</td></tr>
+<tr><td><strong>2</strong></td><td>File-backed dumper wrapper + <code>dumpon</code>/<code>savecore</code> file mode</td><td>~400 kernel<br>~250 userland</td><td>crash dumps with no dump device; reuses Increment&nbsp;1's map</td></tr>
+<tr><td><strong>3</strong></td><td>ZFS swapify: <code>vdev_op_dumpio</code> for geom/mirror/raidz, reinstate <code>dmu_prealloc</code>, extent walk, DSL guards</td><td>~2&ndash;4k LOC</td><td>the same two features on ZFS root</td></tr>
+<tr><td><strong>4</strong></td><td>Userland <code>swapd</code>: grow/reclaim files on pressure, xnu size ladder, 15&nbsp;s backoff, GC</td><td>1&ndash;2 wk</td><td>dynamic sizing; the <code>dynamic_pager</code> behaviour, minus Mach</td></tr>
+<tr><td><strong>5</strong></td><td>Decouple reclaim from swap-I/O completion (compressor-style staging)</td><td>research</td><td>a stalled swap write slows the system instead of wedging the pagedaemon</td></tr>
+<tr><td><span class="pill bad">skip</span></td><td>Full Mach external pager</td><td>months</td><td>nothing &mdash; xnu abandoned it in 10.12</td></tr>
+</table>
+
+<h2 id="sizing">8. What happens to the sizing question</h2>
+
+<p><strong>It mostly dissolves.</strong> With files grown on demand there is no install-time number to get wrong &mdash; which is the real lesson of the Debian incident where 384&nbsp;GB of RAM on a 512&nbsp;GB SSD produced a 400&nbsp;GB swap partition. The installer creates a dataset or directory, not a sized slice.</p>
+
+<p>Two bounds remain, and <code>swapd</code> must respect both:</p>
+
+<ul>
+  <li><strong>The swzone ceiling.</strong> <code>swap_maxpages = 8 &times; physical pages</code> by default, and <code>swapon_check_swzone()</code> warns above half that &mdash; i.e. <strong>more than 4&nbsp;&times;&nbsp;RAM</strong> of configured swap. Raise <code>kern.maxswzone</code> in <code>loader.conf</code> if more is wanted; the zone is KVA-reserved, so it is cheap on arm64.</li>
+  <li><strong>Free space.</strong> Keep a floor, as Apple does (<code>free_space_to_leave</code>), and back off 15&nbsp;s after <code>ENOSPC</code>.</li>
+</ul>
+
+<p>For reference, FreeBSD's own installer never used a RAM multiple: <code>part_wizard.c:54</code> is <code>MIN(available/20, 4&nbsp;GB)</code>, disk only. The Handbook's &ldquo;double the size of physical memory&rdquo; and <code>tuning(7)</code>'s page-scanner claim are contradicted by that code and cite no mechanism.</p>
+
+<h2 id="risks">9. Risks</h2>
+
+<div class="risk"><strong>R1 &mdash; fragmentation at pin time.</strong> A preallocation on a fragmented pool can gang, and gang blocks are fatal to the extent walk. Create the dump/swap objects early, at install, while the pool is clean.</div>
+<div class="risk"><strong>R2 &mdash; ZFS self-healing is lost for swap data.</strong> <code>checksum=off</code> is mandatory for bypass writes. Acceptable for swap and dumps; must be documented, and confined to a dedicated dataset so nothing else inherits it.</div>
+<div class="risk"><strong>R3 &mdash; the extent map must never outlive its validity.</strong> Re-derive it every boot, as illumos re-runs <code>zvol_get_lbas</code> on <code>DKIOCDUMPINIT</code>. Never cache it across boots.</div>
+<div class="risk"><strong>R4 &mdash; resilver ordering is unverified.</strong> Resilver copies to the same offset; how illumos orders that against concurrent bypass writes was not established. Settle before ZFS swap is enabled on redundant pools.</div>
+<div class="risk"><strong>R5 &mdash; raidz needs parity-aware physio.</strong> illumos writes data columns and no parity, which is why <code>checksum=noparity</code> exists. Port carefully, or restrict to single/mirror top-levels first; NextBSD's realistic targets are single NVMe or a mirror.</div>
+<div class="risk"><strong>R6 &mdash; activation still does not exist.</strong> None of this matters until something under launchd applies fstab, <code>swapon</code> and <code>dumpon</code>. That work is not in this plan's tracks; it is <a href="https://github.com/nextbsd/nextbsd-userland/issues/171">#171</a>'s.</div>
+<div class="risk"><strong>R7 &mdash; the first target runs soft-updates.</strong> <code>virt-10-0</code> mounts <code>/dev/ufs/NEXTBSD</code> with <code>soft-updates</code>. The file is fully allocated and synced before pinning, and bypass writes touch no metadata, so SU should hold no pending dependencies on it &mdash; but that interaction, and SU+J's, is <span class="pill warn">unverified</span>. Trace it before K1 ships.</div>
+
+<h2 id="open">10. Open questions</h2>
+
+<div class="resolved"><strong>Resolved &mdash; the path is <code>/private/var/vm</code>.</strong> NextBSD ships <code>/var&nbsp;-&gt;&nbsp;private/var</code> (verified on <code>virt-10-0</code>) and has no <code>/System/Volumes</code>, so it follows the classic Mac OS X layout (<code>/private/var/vm/swapfile0</code>) rather than Big&nbsp;Sur's separate VM volume. Swapfiles and the corefile share it; on ZFS it is the <code>zroot/private/var/vm</code> dataset (&sect;5.1). Stored paths (<code>vm.swapfileprefix</code>, fstab) use the canonical form, not the symlink.</div>
+<div class="open-q"><strong>Q2.</strong> Pager-level encryption: port xnu's per-segment AES, or accept unencrypted swap initially? geli cannot cover a sub-range of a provider, so the usual FreeBSD answer does not apply here.</div>
+<div class="open-q"><strong>Q6.</strong> The rest of the NextBSD ZFS hierarchy is undefined. &sect;5.1 fixes <code>zroot/private</code>, <code>zroot/private/var</code>, <code>vm</code> and <code>crash</code>; whether <code>log</code>, <code>tmp</code>, <code>audit</code> and <code>/private/tmp</code> get datasets is an installer decision beyond this plan, but it should be made once, with this layout as the template.</div>
+<div class="open-q"><strong>Q3.</strong> Does <code>nextbsd-kernel</code> carry local changes to <code>swap_pager.c</code> or <code>md.c</code>? Not audited against <code>stable/15</code>.</div>
+<div class="open-q"><strong>Q4.</strong> Is the pre-existing <code>zfs_putpages</code> exposure worth an upstream OpenZFS report before any of this lands?</div>
+<div class="open-q"><strong>Q5.</strong> Does OpenZFS' <code>zfs_prop.c</code> still accept <code>noparity</code> as a <code>checksum</code> index? Only matters if raidz is supported.</div>
+
+<h2 id="tickets">11. E14 ticket map</h2>
+
+<p><strong>EPIC E14 &mdash; VM, paging &amp; filesystems</strong>, label <code>area:vm</code> (new, in four repos). <strong>Full bodies for every ticket are on the <a href="nextbsd-e14-tickets.html">E14 ticket drafts</a> page</strong>, which is generated from the same source as this table. None of them has been filed yet.</p>
+
+<table class="compact">
+<tr><th>#</th><th>Ticket</th><th>Repo</th><th>Depends on</th></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#k1">K1</a></td><td>Extent-map swap pager: accept local VREG swapon on filesystems with a real VOP_BMAP</td><td>nextbsd-kernel</td><td>&mdash;</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#k2">K2</a></td><td>VV_SWAP: refuse write, truncate and unlink on a pinned swap or dump file</td><td>nextbsd-kernel</td><td>K1</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#k3">K3</a></td><td>swapon(8): stop creating an md(4) device for local swapfiles</td><td>nextbsd-freebsd-compat</td><td>K1</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#k4">K4</a></td><td>File-backed kernel dumper: write crash dumps through a pinned file&#x27;s extent map</td><td>nextbsd-kernel</td><td>K1</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#k5">K5</a></td><td>dumpon(8)/savecore(8): regular-file mode</td><td>nextbsd-freebsd-compat</td><td>K4</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#k6">K6</a></td><td>g_part: allow GEOM::kerneldump on freebsd-ufs/freebsd-zfs partitions for the file dumper</td><td>nextbsd-kernel</td><td>K4</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#k7">K7</a></td><td>Swap low-space event: surface swp_sizecheck transitions to userland via devctl</td><td>nextbsd-kernel</td><td>&mdash;</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#k8">K8</a></td><td>Defence-in-depth VM privileges: TDP_VMPRIV, sync dispatch for swap objects, ARC pageout throttle</td><td>nextbsd-kernel</td><td>K1</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#z1">Z1</a></td><td>vdev_op_dumpio for vdev_geom, mirror and raidz</td><td>nextbsd-kernel</td><td>K6</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#z2">Z2</a></td><td>Reinstate dmu_prealloc()</td><td>nextbsd-kernel</td><td>&mdash;</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#z3">Z3</a></td><td>Swapify: pin a ZFS file object -- property freeze, preallocation, DVA extent walk, DMU bypass</td><td>nextbsd-kernel</td><td>Z1, Z2</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#z4">Z4</a></td><td>DSL guards for pinned objects -- and skip, not fail, them in recursive snapshot/send</td><td>nextbsd-kernel</td><td>Z3</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#z5">Z5</a></td><td>Pager-level swap encryption (geli cannot cover a sub-range of a provider)</td><td>nextbsd-kernel</td><td>K1</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#p1">P1</a></td><td>rpi5: verify NVMe polled crash dump on the Pi 500+</td><td>nextbsd-kernel</td><td>K4</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#p2">P2</a></td><td>dwmmc: add a dumping path so d_dump does not hang</td><td>nextbsd-kernel</td><td>&mdash;</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#p3">P3</a></td><td>CI: virtio-blk crash-dump harness so the dump path is tested before hardware</td><td>nextbsd</td><td>K4</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#u1">U1</a></td><td>swapd: grow and reclaim swapfiles under memory pressure</td><td>nextbsd-userland</td><td>K1, K7</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#u2">U2</a></td><td>installer: create /private/var/vm (ZFS: zroot/private/var/vm) -- no partition, no sizing</td><td>nextbsd-userland</td><td>U1</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#u3">U3</a></td><td>vm_stat / pagesize report real numbers from vm.stats instead of the &#x27;feature not available&#x27; stub</td><td>nextbsd-userland</td><td>&mdash;</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#s1">S1</a></td><td>Spike: decouple page reclaim from swap-I/O completion (compressor-style staging)</td><td>nextbsd-kernel</td><td>K1</td></tr>
+<tr><td><a href="nextbsd-e14-tickets.html#x1">X1</a></td><td>Report upstream: zfs_putpages calls dmu_tx_assign(DMU_TX_WAIT) in pageout context</td><td>nextbsd</td><td>&mdash;</td></tr>
+</table>
+
+<p><strong>Order:</strong> Preconditions (Q3, R7, labels) -&gt; K1 -&gt; K2 / K3 / K4 / K7 -&gt; K5 / K6 -&gt; U1 -&gt; U2. Z2 and Z1 (after K6) in parallel, then Z3 -&gt; Z4. K8, Z5, S1 follow K1. P2, U3, X1 and the #393 migration are independent.</p>
+
+<p><strong>Migrate:</strong> <a href="https://github.com/nextbsd/nextbsd/issues/393">#393</a> (wired memory). <strong>Link, do not migrate:</strong> <a href="https://github.com/nextbsd/nextbsd/issues/326">nextbsd#326</a>, <a href="https://github.com/nextbsd/nextbsd/issues/329">nextbsd#329</a>, <a href="https://github.com/nextbsd/nextbsd-userland/issues/171">nextbsd-userland#171</a>, <a href="https://github.com/nextbsd/nextbsd-userland/issues/54">nextbsd-userland#54</a>, <a href="https://github.com/nextbsd/nextbsd/issues/410">nextbsd#410</a>, <a href="https://github.com/nextbsd/nextbsd/issues/428">nextbsd#428</a>, <a href="https://github.com/nextbsd/nextbsd/issues/66">nextbsd#66</a>, <a href="https://github.com/nextbsd/nextbsd/issues/350">nextbsd#350</a>.</p>
+
+<h2 id="refs">12. References and confidence</h2>
+
+<p>FreeBSD from <code>freebsd/freebsd-src</code> <code>main</code>/<code>stable/15</code>; ZFS from <code>openzfs/zfs</code> <code>master</code>; illumos from <code>illumos/illumos-gate</code>; xnu from <code>apple-oss-distributions/xnu</code>.</p>
+
+<p><strong>Verified directly from source while writing this:</strong> <code>swap_pager.c:2679</code> (VFCF_NETWORK), <code>netdump_client.c:584,745</code> (mediaoffset/mediasize zero), <code>nvme_da.c:583,1011</code> (<code>ndadump</code>), <code>dbuf.c:2973,5500</code> (<code>dmu_buf_will_not_fill</code> + NOPARITY assert), <code>zfeature_common.c:383</code> (<code>multi_vdev_crash_dump</code>), <code>kmem.h:49</code> (<code>KM_PUSHPAGE</code>), <code>arc_os.c:124</code> (throttle stub), <code>zfs_vnops_os.c:131&ndash;155</code> (the documented deadlock pattern), <code>part_wizard.c:54</code>, <code>rc.d/growfs:66</code>, <code>RPI.conf</code>.</p>
+
+<p><strong>Observed on hardware:</strong> macOS&nbsp;27.0 &mdash; <code>vm.swapfileprefix = /System/Volumes/VM/swapfile</code>, VM is APFS volume <code>disk3s6</code> (<code>noexec,noatime,nobrowse</code>), <code>vm.swapusage</code> 0.00M <code>(encrypted)</code> with <code>vm.compressor_bytes_used</code> 4.07&nbsp;GB, <code>dynamic_pager</code> usage <code>[-F filename]</code>. <code>virt-10-0</code> &mdash; NextBSD arm64, 4&nbsp;GB, 62&nbsp;GB UFS root, <code>swapinfo</code> empty, no <code>dynamic_pager</code>.</p>
+
+<p><strong>Unverified &mdash; do not rely on without checking:</strong> APFS internals (closed source; <code>FSCTL_FREEZE_EXTENTS</code> semantics inferred from the XNU call sequence and <code>fsctl.h</code>, and HFS does <em>not</em> implement it); how illumos orders resilver against concurrent <code>dumpio</code> writes; illumos mirror/raidz <code>vdev_op_dumpio</code> details; whether OpenZFS' <code>zfs_prop.c</code> still accepts <code>noparity</code>; whether the mmc bus layer is dump-safe on all arm64 hosts; FreeBSD wiki and Bugzilla (PR&nbsp;181565, 254721) are behind anti-bot protection and were read only via search snippets; <code>nextbsd-kernel</code>'s diff against <code>stable/15</code> was not audited.</p>
+
+<ul>
+  <li><a href="https://man.freebsd.org/cgi/man.cgi?query=dumpon&amp;sektion=8">dumpon(8)</a> &middot; <a href="https://man.freebsd.org/cgi/man.cgi?query=netdump&amp;sektion=4">netdump(4)</a> &middot; <a href="https://docs.freebsd.org/en/books/handbook/config/#adding-swap-space">Handbook: Adding Swap Space</a></li>
+  <li><a href="https://github.com/illumos/illumos-gate/blob/master/usr/src/uts/common/fs/zfs/zvol.c">illumos zvol.c</a> (dumpify) &middot; <a href="https://github.com/openzfs/zfs/issues/7734">OpenZFS #7734</a> &middot; <a href="https://openzfs.github.io/openzfs-docs/man/master/7/zpool-features.7.html">zpool-features(7)</a></li>
+  <li><a href="https://opensource.apple.com/source/xnu/xnu-7195.60.75/bsd/kern/kern_symfile.c.auto.html">xnu kern_symfile.c</a> &middot; <a href="https://lwn.net/Articles/479675/">Swap-over-NFS without deadlocking (LWN)</a></li>
+  <li>Companion plans: <a href="freebsd-apple-userland-cmds-plan.html">freebsd-apple-userland-cmds</a> &middot; <a href="nextbsd-unionfs-inode-collision-fix-plan.html">unionfs inode collisions</a> &middot; <a href="nextbsd-image-strategy-survey.html">image/install strategy</a> &middot; <a href="launchd-research.html">Launchd Research</a></li>
+</ul>
+
+</body>
+</html>

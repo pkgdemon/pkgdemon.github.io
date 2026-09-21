@@ -1,0 +1,1177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E14 ticket drafts — VM, paging and filesystems</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.c { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  table.compact td, table.compact th { padding: .35rem .55rem; font-size: .88rem; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .gap { background: #fff5f5; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .gap strong { color: var(--bad); }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .risk { background: #fff5f5; border: 1px solid #e7b8bf; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .93rem; }
+  .risk strong { color: var(--bad); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .rec { background: #eef4f8; border: 1px solid #bcd4e2; border-left: 4px solid var(--accent2); padding: 1rem 1.25rem; margin: 1.25rem 0; border-radius: 6px; }
+  .rec strong { color: var(--accent2); }
+  .yesno { font-weight: 600; }
+  .yesno.yes { color: var(--ok); }
+  .yesno.no  { color: var(--bad); }
+  .yesno.partial { color: var(--warn); }
+</style>
+<style>
+  .tk { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2); border-radius: 6px; padding: .9rem 1.1rem .4rem; margin: 1.25rem 0; }
+  .tk h3 { margin-top: .1rem; }
+  .tk .meta { font-size: .88rem; margin: .25rem 0 .6rem; border-collapse: collapse; }
+  .tk .meta td { padding: .15rem .8rem .15rem 0; vertical-align: top; }
+  .tk .meta td:first-child { color: var(--muted); white-space: nowrap; }
+  .tk pre { white-space: pre-wrap; word-wrap: break-word; }
+  .tk-epic { border-left-color: var(--accent); }
+</style>
+</head><body>
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#before">Before filing</a>
+  <a href="#label">Label</a>
+  <a href="#epic">Epic</a>
+  <a href="#index">Index</a>
+  <a href="#tickets">Tickets</a>
+  <a href="#existing">Existing issues</a>
+  <a href="#recreate">Recreating</a>
+</nav>
+<h1>E14 ticket drafts &mdash; VM, paging and filesystems <span class="pill warn">Drafts &middot; not yet filed</span></h1>
+<p class="subtitle"><strong>Every issue for EPIC&nbsp;E14, written out in full so it can be filed in GitHub later.</strong> This page is the companion to <a href="nextbsd-swap-vm-plan.html">NextBSD swap and paging without a partition</a>. It records the epic, the new <code>area:vm</code> label, all 21 child tickets and one migration: title, target repo, labels, dependencies, and the exact Markdown body for each. <strong>Nothing here has been filed.</strong> The design changed three times while it was being researched, so the issues are held back until it has been reviewed again. The plan's ticket map is generated from the same source as this page, so the two cannot drift apart.</p>
+
+<section id="tldr" class="tldr">
+  <h3>TL;DR</h3>
+  <ul>
+    <li><strong>21 child tickets</strong> across four repos, plus the epic, the <code>area:vm</code> label, and the migration of <a href="https://github.com/nextbsd/nextbsd/issues/393">#393</a>.</li>
+    <li><strong>Tracks:</strong> K&nbsp;= kernel swap pager and dumper &middot; Z&nbsp;= ZFS swapify &middot; P&nbsp;= platform dump paths &middot; U&nbsp;= userland &middot; S/X&nbsp;= spike and upstream report.</li>
+    <li><strong>Three preconditions before filing</strong> &mdash; see <a href="#before">Before filing</a>. The first two could reshape K1, which everything else depends on.</li>
+    <li><strong>Order:</strong> Preconditions (Q3, R7, labels) -&gt; K1 -&gt; K2 / K3 / K4 / K7 -&gt; K5 / K6 -&gt; U1 -&gt; U2. Z2 and Z1 (after K6) in parallel, then Z3 -&gt; Z4. K8, Z5, S1 follow K1. P2, U3, X1 and the #393 migration are independent.</li>
+    <li><strong>Machine-readable:</strong> every field on this page is also embedded as JSON (<code>&lt;script id=&quot;e14-data&quot;&gt;</code>), so the issues can be recreated by script as well as by hand.</li>
+  </ul>
+</section>
+
+<h2 id="before">Before filing</h2>
+<div class="open-q"><strong>1. Q3 &mdash; audit <code>nextbsd-kernel</code>.</strong> Check its patches for local changes to <code>sys/vm/swap_pager.c</code> or <code>sys/dev/md/md.c</code> against <code>stable/15</code>. If they exist, K1's scope changes.</div>
+<div class="open-q"><strong>2. R7 &mdash; trace soft-updates.</strong> <code>virt-10-0</code> mounts <code>/dev/ufs/NEXTBSD</code> with soft-updates. Confirm that bypass writes to a fully allocated, synced file leave no pending SU (or SU+J) dependencies.</div>
+<div class="open-q"><strong>3. Labels in four repos.</strong> <code>nextbsd-freebsd-compat</code> has <strong>no <code>area:*</code> labels at all</strong> (checked 2026-09-20), and K3 and K5 are filed there. Create <code>area:vm</code> in every repo below before filing any ticket.</div>
+
+<h2 id="label">Label</h2>
+<table class="compact">
+<tr><td>Name</td><td><code>area:vm</code></td></tr>
+<tr><td>Description</td><td>Virtual memory, swap, paging, memory pressure, crash dumps, and the filesystems they back</td></tr>
+<tr><td>Colour</td><td><code>#5319e7</code></td></tr>
+<tr><td>Create in</td><td><a href="https://github.com/nextbsd/nextbsd">nextbsd</a>, <a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a>, <a href="https://github.com/nextbsd/nextbsd-userland">nextbsd-userland</a>, <a href="https://github.com/nextbsd/nextbsd-freebsd-compat">nextbsd-freebsd-compat</a></td></tr>
+</table>
+
+<h2 id="epic">Epic</h2>
+<div class="tk tk-epic" id="e14">
+<h3>EPIC: E14 VM, paging &amp; filesystems</h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd">nextbsd</a></td></tr>
+<tr><td>Labels</td><td><code>epic</code> <code>area:vm</code></td></tr>
+</table>
+<pre><code>## Summary
+
+Swap and crash dumps for NextBSD with **no swap partition and no dump partition**, on both UFS and ZFS.
+
+One primitive serves both: pin an object&#x27;s blocks, extract a physical extent map once, and bypass the filesystem at I/O time. After `swapon` the filesystem is off the write path, so swapfiles perform like a partition and cannot deadlock the way `md(4)`&#x27;s `VOP_WRITE` path does.
+
+**Read first:** https://pkgdemon.github.io/nextbsd-swap-vm-plan.html
+**Ticket drafts:** https://pkgdemon.github.io/nextbsd-e14-tickets.html
+
+## Why
+
+- NextBSD ships **zero swap** today; `build.sh` calls `/cow` &quot;swap-backed&quot;, which is false.
+- #326: live ISO OOM-kills daemons (`/cow` 97% of 7 GB, `7032M Laundry`, `swapctl -l` empty).
+- nextbsd-userland#171: launchd runs no `rc.d`, so a swap entry in fstab is inert.
+
+## Tracks
+
+- **K** -- kernel: extent-map swap pager, `VV_SWAP`, file-backed dumper
+- **Z** -- ZFS: restore illumos dumpify as &quot;swapify&quot;
+- **P** -- platform: polled dump paths, CI harness
+- **U** -- userland: `swapd`, installer, `vm_stat`
+- **S/X** -- research spike and upstream report
+
+## Children
+
+Replace IDs with issue numbers once filed.
+
+- [ ] K1 Extent-map swap pager
+- [ ] K2 `VV_SWAP` immutability guard
+- [ ] K3 `swapon(8)` drops the md detour
+- [ ] K4 File-backed kernel dumper
+- [ ] K5 `dumpon`/`savecore` file mode
+- [ ] K6 `g_part` kerneldump on non-swap partitions
+- [ ] K7 Swap low-space event
+- [ ] K8 Defence-in-depth VM privileges
+- [ ] Z1 `vdev_op_dumpio`
+- [ ] Z2 Reinstate `dmu_prealloc()`
+- [ ] Z3 Swapify
+- [ ] Z4 DSL guards
+- [ ] Z5 Pager-level swap encryption
+- [ ] P1 NVMe polled dump on Pi 500+
+- [ ] P2 `dwmmc` dumping path
+- [ ] P3 virtio-blk dump CI harness
+- [ ] U1 `swapd`
+- [ ] U2 installer creates `/private/var/vm`
+- [ ] U3 `vm_stat` real numbers
+- [ ] S1 Spike: decouple reclaim from swap-I/O completion
+- [ ] X1 Upstream report: `zfs_putpages` exposure
+- [ ] #393 (migrated)
+
+## Linked, not migrated
+
+#326, #329 (E8) - nextbsd-userland#171, nextbsd-userland#54 (E13) - #410 (E2)</code></pre>
+</div>
+
+<h2 id="index">Index</h2>
+<table class="compact">
+<tr><th>ID</th><th>Ticket</th><th>Repo</th><th>Depends on</th><th>Status</th></tr>
+<tr><td><a href="#k1"><strong>K1</strong></a></td><td>Extent-map swap pager: accept local VREG swapon on filesystems with a real VOP_BMAP</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td>&mdash;</td><td><span class="pill warn">after Q3 / R7</span></td></tr>
+<tr><td><a href="#k2"><strong>K2</strong></a></td><td>VV_SWAP: refuse write, truncate and unlink on a pinned swap or dump file</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td><a href="#k1">K1</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#k3"><strong>K3</strong></a></td><td>swapon(8): stop creating an md(4) device for local swapfiles</td><td><a href="https://github.com/nextbsd/nextbsd-freebsd-compat">nextbsd-freebsd-compat</a></td><td><a href="#k1">K1</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#k4"><strong>K4</strong></a></td><td>File-backed kernel dumper: write crash dumps through a pinned file&#x27;s extent map</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td><a href="#k1">K1</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#k5"><strong>K5</strong></a></td><td>dumpon(8)/savecore(8): regular-file mode</td><td><a href="https://github.com/nextbsd/nextbsd-freebsd-compat">nextbsd-freebsd-compat</a></td><td><a href="#k4">K4</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#k6"><strong>K6</strong></a></td><td>g_part: allow GEOM::kerneldump on freebsd-ufs/freebsd-zfs partitions for the file dumper</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td><a href="#k4">K4</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#k7"><strong>K7</strong></a></td><td>Swap low-space event: surface swp_sizecheck transitions to userland via devctl</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td>&mdash;</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#k8"><strong>K8</strong></a></td><td>Defence-in-depth VM privileges: TDP_VMPRIV, sync dispatch for swap objects, ARC pageout throttle</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td><a href="#k1">K1</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#z1"><strong>Z1</strong></a></td><td>vdev_op_dumpio for vdev_geom, mirror and raidz</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td><a href="#k6">K6</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#z2"><strong>Z2</strong></a></td><td>Reinstate dmu_prealloc()</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td>&mdash;</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#z3"><strong>Z3</strong></a></td><td>Swapify: pin a ZFS file object -- property freeze, preallocation, DVA extent walk, DMU bypass</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td><a href="#z1">Z1</a>, <a href="#z2">Z2</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#z4"><strong>Z4</strong></a></td><td>DSL guards for pinned objects -- and skip, not fail, them in recursive snapshot/send</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td><a href="#z3">Z3</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#z5"><strong>Z5</strong></a></td><td>Pager-level swap encryption (geli cannot cover a sub-range of a provider)</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td><a href="#k1">K1</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#p1"><strong>P1</strong></a></td><td>rpi5: verify NVMe polled crash dump on the Pi 500+</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td><a href="#k4">K4</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#p2"><strong>P2</strong></a></td><td>dwmmc: add a dumping path so d_dump does not hang</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td>&mdash;</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#p3"><strong>P3</strong></a></td><td>CI: virtio-blk crash-dump harness so the dump path is tested before hardware</td><td><a href="https://github.com/nextbsd/nextbsd">nextbsd</a></td><td><a href="#k4">K4</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#u1"><strong>U1</strong></a></td><td>swapd: grow and reclaim swapfiles under memory pressure</td><td><a href="https://github.com/nextbsd/nextbsd-userland">nextbsd-userland</a></td><td><a href="#k1">K1</a>, <a href="#k7">K7</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#u2"><strong>U2</strong></a></td><td>installer: create /private/var/vm (ZFS: zroot/private/var/vm) -- no partition, no sizing</td><td><a href="https://github.com/nextbsd/nextbsd-userland">nextbsd-userland</a></td><td><a href="#u1">U1</a></td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#u3"><strong>U3</strong></a></td><td>vm_stat / pagesize report real numbers from vm.stats instead of the &#x27;feature not available&#x27; stub</td><td><a href="https://github.com/nextbsd/nextbsd-userland">nextbsd-userland</a></td><td>&mdash;</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="#s1"><strong>S1</strong></a></td><td>Spike: decouple page reclaim from swap-I/O completion (compressor-style staging)</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td><td><a href="#k1">K1</a></td><td><span class="pill info">spike</span></td></tr>
+<tr><td><a href="#x1"><strong>X1</strong></a></td><td>Report upstream: zfs_putpages calls dmu_tx_assign(DMU_TX_WAIT) in pageout context</td><td><a href="https://github.com/nextbsd/nextbsd">nextbsd</a></td><td>&mdash;</td><td><span class="pill ok">ready</span></td></tr>
+</table>
+
+<h2 id="tickets">Tickets</h2>
+<div class="tk" id="k1">
+<h3>K1 &middot; Extent-map swap pager: accept local VREG swapon on filesystems with a real VOP_BMAP <span class="pill warn">after Q3 / R7</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td>&mdash;</td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+FreeBSD refuses `swapon(2)` on a local regular file. `sys_swapon()` accepts `VREG` only when the mount is `VFCF_NETWORK` (NFS), so local swapfiles go through `md(4)`, whose vnode path deadlocks under memory pressure.
+
+Add a swapfile backend that resolves the file to a physical extent map **at swapon time** and writes raw bios to the underlying GEOM provider. After `swapon`, the filesystem is not on the I/O path.
+
+## Why
+
+Today&#x27;s path: `mdstart_vnode` -&gt; `vn_start_write` -&gt; `vn_lock` -&gt; `VOP_WRITE` -&gt; `ffs_write` -&gt; `getblk`/`allocbuf` -&gt; `vm_wait`. The md kthread is not `pageproc`, so it gets no reserve and sleeps behind the pagedaemon, which is waiting on this very bio.
+
+## Design
+
+- `sys/vm/swap_pager.c:2679` -- relax the `VFCF_NETWORK` test for filesystems that return a full, hole-free block map.
+- At swapon, walk `VOP_BMAP` (UFS: `ufs_bmaparray`) as Linux&#x27;s `generic_swapfile_activate()` does. Reject holes.
+- Store the extents in `struct swdevt`.
+- New `sw_strategy_t swapfile_strategy()`: translate `bp-&gt;b_blkno` through the extent table, `g_new_bio()` (non-sleeping), `g_io_request()` on a GEOM consumer of the mount&#x27;s provider (`VFSTOUFS(mp)-&gt;um_cp` for UFS).
+- Everything upstream in `swap_pager_putpages()` is already allocation-free: `blist` bitmap, preallocated `swwbuf` pbuf, `M_NOWAIT` metadata. **Only `sw_strategy` changes.**
+
+## Scope
+
+~500-800 LOC. Low risk: the same device path swap partitions use today.
+
+## Before starting
+
+- [ ] **Q3:** audit `nextbsd-kernel` patches for local changes to `swap_pager.c` / `md.c` against `stable/15`
+- [ ] **R7:** trace the soft-updates (and SU+J) interaction -- `virt-10-0` mounts `/dev/ufs/NEXTBSD` with soft-updates
+
+## Acceptance
+
+- [ ] `swapon /private/var/vm/swapfile0` on UFS succeeds with no `mdconfig`
+- [ ] `swapinfo` lists the file
+- [ ] a larger-than-RAM allocation test pages out through the file without hanging
+- [ ] `swapon` rejects a file with holes
+
+## Refs
+
+Plan sections 2, 3. `sys/vm/swap_pager.c:2679`.</code></pre>
+</div>
+<div class="tk" id="k2">
+<h3>K2 &middot; VV_SWAP: refuse write, truncate and unlink on a pinned swap or dump file <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td><a href="#k1">K1</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+Once a file is pinned, its extents must never move or be freed -- the kernel holds raw block addresses. Add a vnode flag `VV_SWAP` (in `v_vflag`), set at swapon/pin time.
+
+## Design
+
+With `VV_SWAP` set, return `ETXTBSY` from:
+- `ffs_write`
+- `ffs_truncate` / `VOP_SETATTR(va_size)`
+- `ufs_remove`, rename
+- `vop_allocate` / `vop_deallocate`
+
+Mirrors xnu `VSWAP` (`bsd/sys/vnode_internal.h:301`) and Linux `S_SWAPFILE` (`-ETXTBSY` in `fs/read_write.c`, `fs/open.c`).
+
+Note: `ffs_reallocblks` only relocates *dirty, not-yet-written* clusters, so a fully synced file does not move.
+
+## Acceptance
+
+- [ ] write, truncate and unlink on a pinned file fail with `ETXTBSY`
+- [ ] after `swapoff` / unpin they succeed again</code></pre>
+</div>
+<div class="tk" id="k3">
+<h3>K3 &middot; swapon(8): stop creating an md(4) device for local swapfiles <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-freebsd-compat">nextbsd-freebsd-compat</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td><a href="#k1">K1</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+`swapon(8)` currently runs `mdconfig -a -t vnode -f` for file entries (`sbin/swapon/swapon.c:417`, `swap_on_off_md`; fstab form `md none swap sw,file=...`). With K1 in place, call `swapon(2)` on the path directly.
+
+`sbin/swapon` is currently **DEFER** in the srclist (&quot;no swap configured&quot;). This ticket brings it into the build.
+
+## Acceptance
+
+- [ ] an fstab entry for `/private/var/vm/swapfile0` activates via `swapon -a` with no md device
+- [ ] `mdconfig -l` is empty afterwards
+
+## Note
+
+This repo has **no `area:*` labels**. Create `area:vm` here before filing.</code></pre>
+</div>
+<div class="tk" id="k4">
+<h3>K4 &middot; File-backed kernel dumper: write crash dumps through a pinned file&#x27;s extent map <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td><a href="#k1">K1</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+Crash dumps without a dump device. **No `struct dumperinfo` change is needed**: netdump already registers `mediaoffset = 0`, `mediasize = 0` and ignores offsets entirely (`sys/netinet/netdump/netdump_client.c:584` and `:745`).
+
+## Design
+
+New `sys/kern/kern_dumpfile.c` (~400 LOC):
+
+- obtain the leaf `dumperinfo` plus `extent[]` through a new `VOP_DUMPCTL(PIN|UNPIN)` (illumos analogue)
+- register a wrapper with `dumper_insert(&amp;di, &quot;file:&lt;path&gt;&quot;, kda)`: `mediaoffset = 0`, `mediasize` = file length, `blocksize = 4096`, `maxiosize` = min leaf `d_maxsize`
+- the `dumper` callback locates the extent and **splits at extent boundaries** -- mandatory, because arm64 `minidump_machdep.c` writes unaligned chunks via `blk_write` -- then calls the leaf `d_dump` with `leaf.mediaoffset + phys`
+- the `(NULL, 0, 0)` flush fans out to every leaf
+- unregister on unmount
+
+EKCD encryption and zstd compression layer above `dump_write` and need no changes.
+
+## Acceptance
+
+- [ ] `dumpon /private/var/vm/kernelcore` registers
+- [ ] a panic in a VM (`sysctl debug.kdb.panic=1`) followed by `savecore` (K5) recovers a valid vmcore
+
+## Refs
+
+Apple reference design: `kern_open_file_for_direct_io()` in `bsd/kern/kern_symfile.c`.</code></pre>
+</div>
+<div class="tk" id="k5">
+<h3>K5 &middot; dumpon(8)/savecore(8): regular-file mode <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-freebsd-compat">nextbsd-freebsd-compat</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td><a href="#k4">K4</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+`savecore` requires `DIOCGMEDIASIZE`/`DIOCGSECTORSIZE` (`sbin/savecore/savecore.c:975-977`) and reads the trailing header at `mediasize - sectorsize`. Add a regular-file mode to both tools.
+
+`dumpon` is **DEFER** and `savecore` is **DROP** in the srclist -- this brings both back.
+
+## Design
+
+- `savecore`: `fstat()` for `st_size`; fixed 4096-byte sector size for `S_ISREG`; extract to `/private/var/crash` (~150 LOC)
+- `dumpon`: an `S_ISREG` path routes `DIOCSKERNELDUMP` through `VOP_IOCTL` (~100 LOC)
+- `savecore -c` clear-write must land in place: UFS `write(2)` is in place; ZFS must take the raw path (Z3)
+
+## Acceptance
+
+- [ ] full panic -&gt; `savecore` round trip on a UFS VM
+
+## Note
+
+This repo has **no `area:*` labels**. Create `area:vm` here before filing.</code></pre>
+</div>
+<div class="tk" id="k6">
+<h3>K6 &middot; g_part: allow GEOM::kerneldump on freebsd-ufs/freebsd-zfs partitions for the file dumper <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td><a href="#k4">K4</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+`sys/geom/part/g_part.c:2295-2316` refuses `GEOM::kerneldump` unless `G_PART_DUMPTO` passes, and `g_part_gpt_dumpto` (`g_part_gpt.c:803-811`) returns 1 only for swap-type GUIDs. The file dumper (K4) and ZFS dumpio (Z1) need the leaf `dumperinfo` of the partition that holds the root filesystem.
+
+## Design
+
+~15 LOC: permit the attribute when the requester is the file-dumper facility.
+
+## Acceptance
+
+- [ ] K4 registers on a `freebsd-ufs` partition
+- [ ] Z1 caches a leaf `dumperinfo` on a `freebsd-zfs` partition</code></pre>
+</div>
+<div class="tk" id="k7">
+<h3>K7 &middot; Swap low-space event: surface swp_sizecheck transitions to userland via devctl <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td>&mdash;</td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+`swp_sizecheck()` flips `swap_pager_almost_full` at `nswap_lowat` (128 pages) / `nswap_hiwat` (512 pages) and only `printf`s -- there is **no userland event**. Without one, `swapd` (U1) must poll.
+
+## Design
+
+- `EVENTHANDLER_DECLARE(swap_lowspace, ...)`, invoked on `swp_sizecheck()` transitions
+- deliver via `devctl_notify(&quot;VM&quot;, &quot;swap&quot;, &quot;LOWSPACE&quot;, ...)` (devd-consumable)
+- make `nswap_lowat` / `nswap_hiwat` sysctls
+- optional, Darwin-faithful: have `mach.ko` carry a `default_pager_space_alert`-shaped message to a registered port
+
+## Scope
+
+Days. Phase 3 (Grow) of the plan depends on it.
+
+## Acceptance
+
+- [ ] `devd` receives `LOWSPACE` when free swap crosses `nswap_lowat`</code></pre>
+</div>
+<div class="tk" id="k8">
+<h3>K8 &middot; Defence-in-depth VM privileges: TDP_VMPRIV, sync dispatch for swap objects, ARC pageout throttle <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td><a href="#k1">K1</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+The cheap parts of the memory-reserve route, taken as **defence in depth only** -- not as the correctness argument. The bypass design (K1, Z3) is what makes swap safe.
+
+## Why only the cheap parts
+
+illumos built the full reserve design (`NOMEMWAIT()`, `KM_PUSHPAGE`, a ZFS-sized `pageout_reserve`, the ARC throttle) and still ships `pageout_deadman`, which panics after 90 s of stuck pageout. On FreeBSD it is weaker again:
+
+- `KM_PUSHPAGE` is `#define`d to `M_WAITOK` (`include/os/freebsd/spl/sys/kmem.h:49`)
+- `arc_memory_throttle()` is `return (0);` (`module/os/freebsd/zfs/arc_os.c:124`)
+
+## Design
+
+- `TDP_VMPRIV` bit in `td_pflags` plus a `vm_thread_privileged()` inline (`curproc == pageproc || (td-&gt;td_pflags &amp; TDP_VMPRIV)`) at the ~10 existing `curproc == pageproc` sites (~300-500 LOC in `sys/vm`)
+- synchronous dispatch for swap objects (no taskq hop)
+- the `arc_memory_throttle` pageout branch, as Linux and illumos have
+
+## Acceptance
+
+- [ ] a thread marked `TDP_VMPRIV` allocates at `VM_ALLOC_SYSTEM` and waits pageproc-style</code></pre>
+</div>
+<div class="tk" id="z1">
+<h3>Z1 &middot; vdev_op_dumpio for vdev_geom, mirror and raidz <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td><a href="#k6">K6</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+OpenZFS removed the illumos dump I/O operation -- there is no `vdev_op_dumpio` in `include/sys/vdev_impl.h`. Restore it; it is the raw-I/O leaf that both swap (Z3) and dumps use.
+
+## Design
+
+- add `vdev_op_dumpio_t` to `vdev_ops_t`, `NULL` in every initializer (~40 LOC)
+- `vdev_geom_dumpio` in `module/os/freebsd/zfs/vdev_geom.c` (~150 LOC): cache the leaf `dumperinfo` via `g_io_getattr(&quot;GEOM::kerneldump&quot;)` at open (needs K6); add `VDEV_LABEL_START_SIZE`; at panic call the cached `di.dumper` directly (`g_up`/`g_down` are not running), otherwise `vdev_geom_io()`
+- mirror: port illumos `vdev_mirror.c:786-813` (~40 LOC)
+- raidz: port illumos `vdev_raidz.c:1680-1769` onto `raidz_row_t`, refuse during expansion (~120-200 LOC). **Can be deferred** -- single disk and mirror first.
+- dRAID: unsupported
+
+## Acceptance
+
+- [ ] dumpio round trip on a single-disk pool and a mirror pool in a VM</code></pre>
+</div>
+<div class="tk" id="z2">
+<h3>Z2 &middot; Reinstate dmu_prealloc() <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td>&mdash;</td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+~20 LOC, from illumos `dmu.c:1251-1269`: `dmu_buf_hold_array` plus `dmu_buf_will_not_fill()` on each dbuf. Allocates real DVAs **without writing data** (DB_NOFILL).
+
+## Why it is safe to restore
+
+The primitive is live code in OpenZFS, not a vestige:
+
+- `dmu_buf_will_not_fill()` at `module/zfs/dbuf.c:2973`, called internally at 3153 and 3194
+- the DB_NOFILL write path at `dbuf.c:5500-5501` still asserts `zp_checksum == ZIO_CHECKSUM_OFF || zp_checksum == ZIO_CHECKSUM_NOPARITY`
+
+## Acceptance
+
+- [ ] preallocating a 1 GiB object on a `checksum=off` dataset yields fully allocated, non-gang level-0 blocks</code></pre>
+</div>
+<div class="tk" id="z3">
+<h3>Z3 &middot; Swapify: pin a ZFS file object -- property freeze, preallocation, DVA extent walk, DMU bypass <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td><a href="#z1">Z1</a>, <a href="#z2">Z2</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+Port illumos dumpify to a ZPL file object, in a new `module/zfs/zfs_dump.c` (~600-800 LOC). This one mechanism feeds **both** K1 (swap) and K4 (dumps) on ZFS.
+
+## How illumos handles copy-on-write
+
+It does not make ZFS COW-safe; it makes COW irrelevant. While pinned, **every** read and write takes the dumpio bypass, so nothing ever dirties the object through the DMU, so no block pointer is rewritten, so the captured DVAs stay valid.
+
+## Design
+
+Port from `usr/src/uts/common/fs/zfs/zvol.c`:
+
+| illumos | lines |
+|---|---|
+| `zvol_dump_init` | 1908-2064 |
+| `zvol_dumpify` | 2067-2120 |
+| `zvol_get_lbas` | 315-334 |
+| `zvol_map_block` | 261-301 |
+| `zvol_dumpio` | 1134-1170 |
+
+- `ZVOL_OBJ` becomes `zp-&gt;z_id`
+- require dataset `zroot/private/var/vm` with `checksum=off compression=off dedup=off copies=1 recordsize=128K`, no encryption
+- `traverse_dataset` filtered on `zb_object`; coalesce adjacent DVAs; **reject `BP_IS_GANG`** (`EFRAGS`)
+- all I/O while pinned goes through dumpio -- no DMU, tx, ARC or ZIL -- which keeps the ARC coherent
+- extent array preallocated: no allocation at panic
+- rebuild the map every boot; never cache it across boots
+
+## Acceptance
+
+- [ ] `swapon` and `dumpon` a file in `zroot/private/var/vm`
+- [ ] larger-than-RAM paging test completes
+- [ ] VM panic round trip recovers a vmcore</code></pre>
+</div>
+<div class="tk" id="z4">
+<h3>Z4 &middot; DSL guards for pinned objects -- and skip, not fail, them in recursive snapshot/send <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td><a href="#z3">Z3</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+Operations that would move, share or reinterpret a pinned object&#x27;s blocks must be refused while it is pinned.
+
+## Refuse, with a clear error
+
+- a snapshot aimed **directly** at the pinned dataset
+- clone
+- device removal (indirect vdevs remap DVAs)
+- raidz expansion (relocates data)
+- block cloning / BRT (`FICLONE` on the pinned file)
+- `zfs destroy` of the dataset
+
+## Skip, do not fail
+
+`zfs snapshot -r` is atomic. If a pinned child refused, the **whole** recursive snapshot would fail -- silently breaking backup scripts, `sanoid` and `zfs-auto-snapshot`. So pinned datasets are **skipped** in recursive snapshot and `send -R`. Also set `com.sun:auto-snapshot=false` (the OpenZFS FAQ already recommends it for swap).
+
+## Open
+
+- **R4:** how resilver is ordered against concurrent bypass writes is unverified
+
+## Acceptance
+
+- [ ] each refused operation returns a clear error
+- [ ] `zfs snapshot -r zroot/private@x` succeeds and excludes `vm`</code></pre>
+</div>
+<div class="tk" id="z5">
+<h3>Z5 &middot; Pager-level swap encryption (geli cannot cover a sub-range of a provider) <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td><a href="#k1">K1</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+The usual FreeBSD encrypted-swap answer -- `geli onetime` on the swap device -- does not apply: geli cannot cover a sub-range of a provider, and an extent-mapped file is a set of sub-ranges. ZFS dataset encryption is incompatible with the bypass.
+
+## Design
+
+Encrypt in the pager, as xnu does (per-segment AES, `vm_swap_encrypt`): `crypto(9)` with an ephemeral per-boot key that is never persisted.
+
+## Open
+
+Plan Q2: port xnu&#x27;s approach, or accept unencrypted swap initially?
+
+## Acceptance
+
+- [ ] swap blocks on disk are ciphertext
+- [ ] the key does not survive reboot</code></pre>
+</div>
+<div class="tk" id="p1">
+<h3>P1 &middot; rpi5: verify NVMe polled crash dump on the Pi 500+ <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>area:vm</code> <code>area:rpi5</code> <code>needs-hardware</code></td></tr>
+<tr><td>Depends on</td><td><a href="#k4">K4</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+`ndadump()` (`sys/cam/nvme/nvme_da.c:583`, installed as `d_dump` at `:1011`) polls through `cam_periph_runccb` when `dumping` (`cam_periph.c:1273-1300`) -&gt; `nvme_sim_poll` -&gt; `nvme_ctrlr_poll`. The Pi 500+ boots from NVMe over PCIe -&gt; RP1.
+
+Confirm the PCIe/RP1 path needs no interrupts at panic time and that a K4 dump completes.
+
+## Acceptance
+
+- [ ] a panic on the Pi 500+ produces a recoverable vmcore</code></pre>
+</div>
+<div class="tk" id="p2">
+<h3>P2 &middot; dwmmc: add a dumping path so d_dump does not hang <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>bug</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td>&mdash;</td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+`dwmmc_request()` (`sys/dev/mmc/host/dwmmc.c:1237`, `msleep` at `:1279`) has no `dumping` path and would hang at panic. `sdhci` already spins when `dumping` (`sys/dev/sdhci/sdhci.c:2159-2164`). Mirror that.
+
+## Scope
+
+~30 LOC.
+
+## Acceptance
+
+- [ ] an `mmcsd` dump completes on a dwmmc host</code></pre>
+</div>
+<div class="tk" id="p3">
+<h3>P3 &middot; CI: virtio-blk crash-dump harness so the dump path is tested before hardware <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd">nextbsd</a></td></tr>
+<tr><td>Labels</td><td><code>area:vm</code> <code>area:ci</code></td></tr>
+<tr><td>Depends on</td><td><a href="#k4">K4</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+`vtblk_dump` (`sys/dev/virtio/block/virtio_blk.c:644-667`) supports polled dumps, so the whole design can be exercised in the CI VM.
+
+Add a stage: induce a panic, reboot, assert `savecore` recovers a vmcore. Pairs with #428 (iso-test/img-test declare PASS at the login prompt).
+
+## Acceptance
+
+- [ ] CI fails if a panic does not produce a recoverable dump</code></pre>
+</div>
+<div class="tk" id="u1">
+<h3>U1 &middot; swapd: grow and reclaim swapfiles under memory pressure <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-userland">nextbsd-userland</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td><a href="#k1">K1</a>, <a href="#k7">K7</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+A launchd daemon that owns `/private/var/vm`. It is also the **activation path**: nothing under launchd runs `swapon -a` (#171).
+
+## Design
+
+- **Boot:** pin existing files; pin the corefile and register it with `dumpon`
+- **Grow:** on `devctl` `VM/swap/LOWSPACE` (K7), create the next file on xnu&#x27;s ladder, 256 MiB -&gt; 1 GiB; back off 15 s on `ENOSPC`; refuse past `vm.swap_maxpages / 2` (4x RAM) unless `kern.maxswzone` was raised
+- **Reclaim:** free swap above a high-water mark for N minutes -&gt; `swapoff(2)` the newest file (handle `ENOMEM`; **never** default to `SWAPOFF_FORCE`) -&gt; unlink
+- `mlock` itself, and keep one pre-created file of headroom so growth is never on the critical path
+
+## Known weakness
+
+`swapd` must open and preallocate at exactly the moment memory is short. xnu&#x27;s real answer is in-kernel creation (`vm_swapfile_create_thread`) -- see S1.
+
+## Acceptance
+
+- [ ] a WebKit-scale build on a 4 GB VM grows swap under pressure and reclaims it afterwards</code></pre>
+</div>
+<div class="tk" id="u2">
+<h3>U2 &middot; installer: create /private/var/vm (ZFS: zroot/private/var/vm) -- no partition, no sizing <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-userland">nextbsd-userland</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code> <code>area:live-media</code></td></tr>
+<tr><td>Depends on</td><td><a href="#u1">U1</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+`src/nextbsd-installer/engine/do-install.sh`. No `freebsd-swap` partition and no size decision.
+
+## UFS
+
+`mkdir /private/var/vm`
+
+## ZFS
+
+```
+zroot/private              mountpoint=/private  canmount=off
+zroot/private/var          canmount=off
+zroot/private/var/vm       checksum=off compression=off dedup=off copies=1
+                           recordsize=128K  com.sun:auto-snapshot=false
+zroot/private/var/crash    exec=off setuid=off
+```
+
+The `canmount=off` parents keep `/private/etc` and most of `/private/var` inside `zroot/ROOT/default`, so they roll back with the boot environment.
+
+**Create these early**, while the pool is unfragmented -- gang blocks are fatal to the extent walk.
+
+Must work under both the mbr-fat (Pi) and gpt layouts.
+
+## Acceptance
+
+- [ ] a fresh install has the directory / datasets with the right properties
+- [ ] `gpart show` contains no swap partition</code></pre>
+</div>
+<div class="tk" id="u3">
+<h3>U3 &middot; vm_stat / pagesize report real numbers from vm.stats instead of the &#x27;feature not available&#x27; stub <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-userland">nextbsd-userland</a></td></tr>
+<tr><td>Labels</td><td><code>enhancement</code> <code>area:vm</code> <code>good first issue</code></td></tr>
+<tr><td>Depends on</td><td>&mdash;</td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+freebsd-apple-userland-cmds v3 stubs the Mach VM introspection family. `vm_stat`&#x27;s columns map cleanly onto `sysctl vm.stats.vm.*` and `vm.swap_*`. Ship a FreeBSD backend for `vm_stat` and `pagesize`; keep the graceful stub only for jetsam-only fields.
+
+## Acceptance
+
+- [ ] `vm_stat` on the live ISO matches `top` / `sysctl` within one sample interval</code></pre>
+</div>
+<div class="tk" id="s1">
+<h3>S1 &middot; Spike: decouple page reclaim from swap-I/O completion (compressor-style staging) <span class="pill info">spike</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd-kernel">nextbsd-kernel</a></td></tr>
+<tr><td>Labels</td><td><code>area:vm</code> <code>area:research</code></td></tr>
+<tr><td>Depends on</td><td><a href="#k1">K1</a></td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+xnu&#x27;s pageout stays robust independent of everything else because reclaim does not wait on swap writes: pages are freed by compressing them, and `vm_swapout_thread` drains already-compressed segments asynchronously (`vm_swap_put`). A stalled swap write slows the system rather than wedging the pagedaemon.
+
+## Questions
+
+- what would compressor-style staging look like on FreeBSD&#x27;s VM?
+- could in-kernel swapfile creation (`vm_swapfile_create_thread`) replace U1&#x27;s userland growth, closing its known weakness?
+
+## Deliverable
+
+A design note with scope and a recommendation.</code></pre>
+</div>
+<div class="tk" id="x1">
+<h3>X1 &middot; Report upstream: zfs_putpages calls dmu_tx_assign(DMU_TX_WAIT) in pageout context <span class="pill ok">ready</span></h3>
+<table class="meta">
+<tr><td>Repo</td><td><a href="https://github.com/nextbsd/nextbsd">nextbsd</a></td></tr>
+<tr><td>Labels</td><td><code>bug</code> <code>area:vm</code></td></tr>
+<tr><td>Depends on</td><td>&mdash;</td></tr>
+<tr><td>Parent</td><td><a href="#e14">E14</a></td></tr>
+</table>
+<pre><code>## Summary
+
+`module/os/freebsd/zfs/zfs_vnops_os.c` `zfs_putpages` takes `zfs_rangelock_enter` and **then** calls `dmu_tx_assign(tx, DMU_TX_WAIT)` in pageproc context, for dirty mmap&#x27;d pages. The file&#x27;s own header comment (lines 131-155) documents exactly this as the deadlock pattern.
+
+This exists on **every ZFS-root system today, with no swap involved**.
+
+Compounding factors on FreeBSD:
+- `KM_PUSHPAGE` is `#define`d to `M_WAITOK` (`include/os/freebsd/spl/sys/kmem.h:49`)
+- `arc_memory_throttle()` returns 0 (`module/os/freebsd/zfs/arc_os.c:124`)
+
+## Action
+
+Decide whether to file with OpenZFS (plan Q4), and with what reproduction.</code></pre>
+</div>
+<h2 id="existing">Existing issues</h2>
+<h3>Migrate under E14</h3>
+<table class="compact">
+<tr><th>Issue</th><th>Title</th><th>Action</th></tr>
+<tr><td><a href="https://github.com/nextbsd/nextbsd/issues/393">nextbsd#393</a></td><td>Wired memory usage (696 MB at idle)</td><td>Move under E14; add area:vm; remove area:desktop. It is a VM measurement task mislabelled as desktop, with no epic.</td></tr>
+</table>
+<h3>Link, do not migrate</h3>
+<p>These stay in their current epics. Cross-link them from E14 and add <code>area:vm</code> where it applies.</p>
+<table class="compact">
+<tr><th>Issue</th><th>Epic</th><th>Why it relates</th></tr>
+<tr><td><a href="https://github.com/nextbsd/nextbsd/issues/326">nextbsd#326</a></td><td>E8</td><td>Live ISO tmpfs overlay is swapless -- the measured OOM failure</td></tr>
+<tr><td><a href="https://github.com/nextbsd/nextbsd/issues/329">nextbsd#329</a></td><td>E8</td><td>Cap the tmpfs overlay at ~50% of RAM</td></tr>
+<tr><td><a href="https://github.com/nextbsd/nextbsd-userland/issues/171">nextbsd-userland#171</a></td><td>E13</td><td>launchd never runs mount -a -- the activation gap</td></tr>
+<tr><td><a href="https://github.com/nextbsd/nextbsd-userland/issues/54">nextbsd-userland#54</a></td><td>E13</td><td>Who mounts the Linux ABI filesystems -- constrains the activation design</td></tr>
+<tr><td><a href="https://github.com/nextbsd/nextbsd/issues/410">nextbsd#410</a></td><td>E2</td><td>Friendly kernel panic screen -- pairs with K4</td></tr>
+<tr><td><a href="https://github.com/nextbsd/nextbsd/issues/428">nextbsd#428</a></td><td>E10</td><td>Test gates pass at the login prompt -- pairs with P3</td></tr>
+<tr><td><a href="https://github.com/nextbsd/nextbsd/issues/66">nextbsd#66</a></td><td>E1</td><td>OOL receive VM fix -- nearest existing Mach-VM-on-FreeBSD work</td></tr>
+<tr><td><a href="https://github.com/nextbsd/nextbsd/issues/350">nextbsd#350</a></td><td>E13</td><td>ext4/btrfs -- the filesystems half of the epic title</td></tr>
+</table>
+
+<h2 id="recreate">Recreating in GitHub</h2>
+<p>File the epic first, so that each child can name its parent. Then file the children in dependency order, and replace the <code>K1</code>&hellip;<code>X1</code> placeholders in the epic's checklist with the real issue numbers.</p>
+<pre class="shell"><code># 1. the label, in all four repos
+gh label create area:vm --color 5319e7 \
+  --description &quot;Virtual memory, swap, paging, memory pressure, crash dumps, and the filesystems they back&quot; \
+  --repo nextbsd/nextbsd-freebsd-compat        # repeat for each repo
+
+# 2. any single ticket: copy its body from this page into a file
+gh issue create --repo nextbsd/nextbsd-kernel \
+  --title &quot;...&quot; --label enhancement,area:vm --body-file K1.md
+
+# 3. or all of them, from the embedded JSON
+curl -s https://pkgdemon.github.io/nextbsd-e14-tickets.html | python3 -c &#x27;
+import sys, re, json
+page = sys.stdin.read()
+m = re.search(r&quot;&lt;script type=\&quot;application/json\&quot; id=\&quot;e14-data\&quot;&gt;(.*?)&lt;/script&gt;&quot;, page, re.S)
+print(json.dumps(json.loads(m.group(1)), indent=1))&#x27; &gt; e14.json</code></pre>
+<p>A script working from <code>e14.json</code> needs only the fields shown on this page: <code>id</code>, <code>title</code>, <code>repo</code>, <code>labels</code>, <code>depends</code>, <code>body</code>.</p>
+<script type="application/json" id="e14-data">{
+ "generated": "2026-09-20",
+ "plan": "https://pkgdemon.github.io/nextbsd-swap-vm-plan.html",
+ "label": {
+  "name": "area:vm",
+  "description": "Virtual memory, swap, paging, memory pressure, crash dumps, and the filesystems they back",
+  "color": "5319e7",
+  "repos": [
+   "nextbsd/nextbsd",
+   "nextbsd/nextbsd-kernel",
+   "nextbsd/nextbsd-userland",
+   "nextbsd/nextbsd-freebsd-compat"
+  ]
+ },
+ "epic": {
+  "id": "E14",
+  "title": "EPIC: E14 VM, paging & filesystems",
+  "repo": "nextbsd/nextbsd",
+  "labels": [
+   "epic",
+   "area:vm"
+  ],
+  "body": "## Summary\n\nSwap and crash dumps for NextBSD with **no swap partition and no dump partition**, on both UFS and ZFS.\n\nOne primitive serves both: pin an object's blocks, extract a physical extent map once, and bypass the filesystem at I/O time. After `swapon` the filesystem is off the write path, so swapfiles perform like a partition and cannot deadlock the way `md(4)`'s `VOP_WRITE` path does.\n\n**Read first:** https://pkgdemon.github.io/nextbsd-swap-vm-plan.html\n**Ticket drafts:** https://pkgdemon.github.io/nextbsd-e14-tickets.html\n\n## Why\n\n- NextBSD ships **zero swap** today; `build.sh` calls `/cow` \"swap-backed\", which is false.\n- #326: live ISO OOM-kills daemons (`/cow` 97% of 7 GB, `7032M Laundry`, `swapctl -l` empty).\n- nextbsd-userland#171: launchd runs no `rc.d`, so a swap entry in fstab is inert.\n\n## Tracks\n\n- **K** -- kernel: extent-map swap pager, `VV_SWAP`, file-backed dumper\n- **Z** -- ZFS: restore illumos dumpify as \"swapify\"\n- **P** -- platform: polled dump paths, CI harness\n- **U** -- userland: `swapd`, installer, `vm_stat`\n- **S/X** -- research spike and upstream report\n\n## Children\n\nReplace IDs with issue numbers once filed.\n\n- [ ] K1 Extent-map swap pager\n- [ ] K2 `VV_SWAP` immutability guard\n- [ ] K3 `swapon(8)` drops the md detour\n- [ ] K4 File-backed kernel dumper\n- [ ] K5 `dumpon`/`savecore` file mode\n- [ ] K6 `g_part` kerneldump on non-swap partitions\n- [ ] K7 Swap low-space event\n- [ ] K8 Defence-in-depth VM privileges\n- [ ] Z1 `vdev_op_dumpio`\n- [ ] Z2 Reinstate `dmu_prealloc()`\n- [ ] Z3 Swapify\n- [ ] Z4 DSL guards\n- [ ] Z5 Pager-level swap encryption\n- [ ] P1 NVMe polled dump on Pi 500+\n- [ ] P2 `dwmmc` dumping path\n- [ ] P3 virtio-blk dump CI harness\n- [ ] U1 `swapd`\n- [ ] U2 installer creates `/private/var/vm`\n- [ ] U3 `vm_stat` real numbers\n- [ ] S1 Spike: decouple reclaim from swap-I/O completion\n- [ ] X1 Upstream report: `zfs_putpages` exposure\n- [ ] #393 (migrated)\n\n## Linked, not migrated\n\n#326, #329 (E8) - nextbsd-userland#171, nextbsd-userland#54 (E13) - #410 (E2)\n"
+ },
+ "tickets": [
+  {
+   "id": "K1",
+   "title": "Extent-map swap pager: accept local VREG swapon on filesystems with a real VOP_BMAP",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [],
+   "kind": "blocked-on-checks",
+   "body": "## Summary\n\nFreeBSD refuses `swapon(2)` on a local regular file. `sys_swapon()` accepts `VREG` only when the mount is `VFCF_NETWORK` (NFS), so local swapfiles go through `md(4)`, whose vnode path deadlocks under memory pressure.\n\nAdd a swapfile backend that resolves the file to a physical extent map **at swapon time** and writes raw bios to the underlying GEOM provider. After `swapon`, the filesystem is not on the I/O path.\n\n## Why\n\nToday's path: `mdstart_vnode` -> `vn_start_write` -> `vn_lock` -> `VOP_WRITE` -> `ffs_write` -> `getblk`/`allocbuf` -> `vm_wait`. The md kthread is not `pageproc`, so it gets no reserve and sleeps behind the pagedaemon, which is waiting on this very bio.\n\n## Design\n\n- `sys/vm/swap_pager.c:2679` -- relax the `VFCF_NETWORK` test for filesystems that return a full, hole-free block map.\n- At swapon, walk `VOP_BMAP` (UFS: `ufs_bmaparray`) as Linux's `generic_swapfile_activate()` does. Reject holes.\n- Store the extents in `struct swdevt`.\n- New `sw_strategy_t swapfile_strategy()`: translate `bp->b_blkno` through the extent table, `g_new_bio()` (non-sleeping), `g_io_request()` on a GEOM consumer of the mount's provider (`VFSTOUFS(mp)->um_cp` for UFS).\n- Everything upstream in `swap_pager_putpages()` is already allocation-free: `blist` bitmap, preallocated `swwbuf` pbuf, `M_NOWAIT` metadata. **Only `sw_strategy` changes.**\n\n## Scope\n\n~500-800 LOC. Low risk: the same device path swap partitions use today.\n\n## Before starting\n\n- [ ] **Q3:** audit `nextbsd-kernel` patches for local changes to `swap_pager.c` / `md.c` against `stable/15`\n- [ ] **R7:** trace the soft-updates (and SU+J) interaction -- `virt-10-0` mounts `/dev/ufs/NEXTBSD` with soft-updates\n\n## Acceptance\n\n- [ ] `swapon /private/var/vm/swapfile0` on UFS succeeds with no `mdconfig`\n- [ ] `swapinfo` lists the file\n- [ ] a larger-than-RAM allocation test pages out through the file without hanging\n- [ ] `swapon` rejects a file with holes\n\n## Refs\n\nPlan sections 2, 3. `sys/vm/swap_pager.c:2679`.\n"
+  },
+  {
+   "id": "K2",
+   "title": "VV_SWAP: refuse write, truncate and unlink on a pinned swap or dump file",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [
+    "K1"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\nOnce a file is pinned, its extents must never move or be freed -- the kernel holds raw block addresses. Add a vnode flag `VV_SWAP` (in `v_vflag`), set at swapon/pin time.\n\n## Design\n\nWith `VV_SWAP` set, return `ETXTBSY` from:\n- `ffs_write`\n- `ffs_truncate` / `VOP_SETATTR(va_size)`\n- `ufs_remove`, rename\n- `vop_allocate` / `vop_deallocate`\n\nMirrors xnu `VSWAP` (`bsd/sys/vnode_internal.h:301`) and Linux `S_SWAPFILE` (`-ETXTBSY` in `fs/read_write.c`, `fs/open.c`).\n\nNote: `ffs_reallocblks` only relocates *dirty, not-yet-written* clusters, so a fully synced file does not move.\n\n## Acceptance\n\n- [ ] write, truncate and unlink on a pinned file fail with `ETXTBSY`\n- [ ] after `swapoff` / unpin they succeed again\n"
+  },
+  {
+   "id": "K3",
+   "title": "swapon(8): stop creating an md(4) device for local swapfiles",
+   "repo": "nextbsd/nextbsd-freebsd-compat",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [
+    "K1"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\n`swapon(8)` currently runs `mdconfig -a -t vnode -f` for file entries (`sbin/swapon/swapon.c:417`, `swap_on_off_md`; fstab form `md none swap sw,file=...`). With K1 in place, call `swapon(2)` on the path directly.\n\n`sbin/swapon` is currently **DEFER** in the srclist (\"no swap configured\"). This ticket brings it into the build.\n\n## Acceptance\n\n- [ ] an fstab entry for `/private/var/vm/swapfile0` activates via `swapon -a` with no md device\n- [ ] `mdconfig -l` is empty afterwards\n\n## Note\n\nThis repo has **no `area:*` labels**. Create `area:vm` here before filing.\n"
+  },
+  {
+   "id": "K4",
+   "title": "File-backed kernel dumper: write crash dumps through a pinned file's extent map",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [
+    "K1"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\nCrash dumps without a dump device. **No `struct dumperinfo` change is needed**: netdump already registers `mediaoffset = 0`, `mediasize = 0` and ignores offsets entirely (`sys/netinet/netdump/netdump_client.c:584` and `:745`).\n\n## Design\n\nNew `sys/kern/kern_dumpfile.c` (~400 LOC):\n\n- obtain the leaf `dumperinfo` plus `extent[]` through a new `VOP_DUMPCTL(PIN|UNPIN)` (illumos analogue)\n- register a wrapper with `dumper_insert(&di, \"file:<path>\", kda)`: `mediaoffset = 0`, `mediasize` = file length, `blocksize = 4096`, `maxiosize` = min leaf `d_maxsize`\n- the `dumper` callback locates the extent and **splits at extent boundaries** -- mandatory, because arm64 `minidump_machdep.c` writes unaligned chunks via `blk_write` -- then calls the leaf `d_dump` with `leaf.mediaoffset + phys`\n- the `(NULL, 0, 0)` flush fans out to every leaf\n- unregister on unmount\n\nEKCD encryption and zstd compression layer above `dump_write` and need no changes.\n\n## Acceptance\n\n- [ ] `dumpon /private/var/vm/kernelcore` registers\n- [ ] a panic in a VM (`sysctl debug.kdb.panic=1`) followed by `savecore` (K5) recovers a valid vmcore\n\n## Refs\n\nApple reference design: `kern_open_file_for_direct_io()` in `bsd/kern/kern_symfile.c`.\n"
+  },
+  {
+   "id": "K5",
+   "title": "dumpon(8)/savecore(8): regular-file mode",
+   "repo": "nextbsd/nextbsd-freebsd-compat",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [
+    "K4"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\n`savecore` requires `DIOCGMEDIASIZE`/`DIOCGSECTORSIZE` (`sbin/savecore/savecore.c:975-977`) and reads the trailing header at `mediasize - sectorsize`. Add a regular-file mode to both tools.\n\n`dumpon` is **DEFER** and `savecore` is **DROP** in the srclist -- this brings both back.\n\n## Design\n\n- `savecore`: `fstat()` for `st_size`; fixed 4096-byte sector size for `S_ISREG`; extract to `/private/var/crash` (~150 LOC)\n- `dumpon`: an `S_ISREG` path routes `DIOCSKERNELDUMP` through `VOP_IOCTL` (~100 LOC)\n- `savecore -c` clear-write must land in place: UFS `write(2)` is in place; ZFS must take the raw path (Z3)\n\n## Acceptance\n\n- [ ] full panic -> `savecore` round trip on a UFS VM\n\n## Note\n\nThis repo has **no `area:*` labels**. Create `area:vm` here before filing.\n"
+  },
+  {
+   "id": "K6",
+   "title": "g_part: allow GEOM::kerneldump on freebsd-ufs/freebsd-zfs partitions for the file dumper",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [
+    "K4"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\n`sys/geom/part/g_part.c:2295-2316` refuses `GEOM::kerneldump` unless `G_PART_DUMPTO` passes, and `g_part_gpt_dumpto` (`g_part_gpt.c:803-811`) returns 1 only for swap-type GUIDs. The file dumper (K4) and ZFS dumpio (Z1) need the leaf `dumperinfo` of the partition that holds the root filesystem.\n\n## Design\n\n~15 LOC: permit the attribute when the requester is the file-dumper facility.\n\n## Acceptance\n\n- [ ] K4 registers on a `freebsd-ufs` partition\n- [ ] Z1 caches a leaf `dumperinfo` on a `freebsd-zfs` partition\n"
+  },
+  {
+   "id": "K7",
+   "title": "Swap low-space event: surface swp_sizecheck transitions to userland via devctl",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [],
+   "kind": "now",
+   "body": "## Summary\n\n`swp_sizecheck()` flips `swap_pager_almost_full` at `nswap_lowat` (128 pages) / `nswap_hiwat` (512 pages) and only `printf`s -- there is **no userland event**. Without one, `swapd` (U1) must poll.\n\n## Design\n\n- `EVENTHANDLER_DECLARE(swap_lowspace, ...)`, invoked on `swp_sizecheck()` transitions\n- deliver via `devctl_notify(\"VM\", \"swap\", \"LOWSPACE\", ...)` (devd-consumable)\n- make `nswap_lowat` / `nswap_hiwat` sysctls\n- optional, Darwin-faithful: have `mach.ko` carry a `default_pager_space_alert`-shaped message to a registered port\n\n## Scope\n\nDays. Phase 3 (Grow) of the plan depends on it.\n\n## Acceptance\n\n- [ ] `devd` receives `LOWSPACE` when free swap crosses `nswap_lowat`\n"
+  },
+  {
+   "id": "K8",
+   "title": "Defence-in-depth VM privileges: TDP_VMPRIV, sync dispatch for swap objects, ARC pageout throttle",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [
+    "K1"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\nThe cheap parts of the memory-reserve route, taken as **defence in depth only** -- not as the correctness argument. The bypass design (K1, Z3) is what makes swap safe.\n\n## Why only the cheap parts\n\nillumos built the full reserve design (`NOMEMWAIT()`, `KM_PUSHPAGE`, a ZFS-sized `pageout_reserve`, the ARC throttle) and still ships `pageout_deadman`, which panics after 90 s of stuck pageout. On FreeBSD it is weaker again:\n\n- `KM_PUSHPAGE` is `#define`d to `M_WAITOK` (`include/os/freebsd/spl/sys/kmem.h:49`)\n- `arc_memory_throttle()` is `return (0);` (`module/os/freebsd/zfs/arc_os.c:124`)\n\n## Design\n\n- `TDP_VMPRIV` bit in `td_pflags` plus a `vm_thread_privileged()` inline (`curproc == pageproc || (td->td_pflags & TDP_VMPRIV)`) at the ~10 existing `curproc == pageproc` sites (~300-500 LOC in `sys/vm`)\n- synchronous dispatch for swap objects (no taskq hop)\n- the `arc_memory_throttle` pageout branch, as Linux and illumos have\n\n## Acceptance\n\n- [ ] a thread marked `TDP_VMPRIV` allocates at `VM_ALLOC_SYSTEM` and waits pageproc-style\n"
+  },
+  {
+   "id": "Z1",
+   "title": "vdev_op_dumpio for vdev_geom, mirror and raidz",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [
+    "K6"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\nOpenZFS removed the illumos dump I/O operation -- there is no `vdev_op_dumpio` in `include/sys/vdev_impl.h`. Restore it; it is the raw-I/O leaf that both swap (Z3) and dumps use.\n\n## Design\n\n- add `vdev_op_dumpio_t` to `vdev_ops_t`, `NULL` in every initializer (~40 LOC)\n- `vdev_geom_dumpio` in `module/os/freebsd/zfs/vdev_geom.c` (~150 LOC): cache the leaf `dumperinfo` via `g_io_getattr(\"GEOM::kerneldump\")` at open (needs K6); add `VDEV_LABEL_START_SIZE`; at panic call the cached `di.dumper` directly (`g_up`/`g_down` are not running), otherwise `vdev_geom_io()`\n- mirror: port illumos `vdev_mirror.c:786-813` (~40 LOC)\n- raidz: port illumos `vdev_raidz.c:1680-1769` onto `raidz_row_t`, refuse during expansion (~120-200 LOC). **Can be deferred** -- single disk and mirror first.\n- dRAID: unsupported\n\n## Acceptance\n\n- [ ] dumpio round trip on a single-disk pool and a mirror pool in a VM\n"
+  },
+  {
+   "id": "Z2",
+   "title": "Reinstate dmu_prealloc()",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [],
+   "kind": "now",
+   "body": "## Summary\n\n~20 LOC, from illumos `dmu.c:1251-1269`: `dmu_buf_hold_array` plus `dmu_buf_will_not_fill()` on each dbuf. Allocates real DVAs **without writing data** (DB_NOFILL).\n\n## Why it is safe to restore\n\nThe primitive is live code in OpenZFS, not a vestige:\n\n- `dmu_buf_will_not_fill()` at `module/zfs/dbuf.c:2973`, called internally at 3153 and 3194\n- the DB_NOFILL write path at `dbuf.c:5500-5501` still asserts `zp_checksum == ZIO_CHECKSUM_OFF || zp_checksum == ZIO_CHECKSUM_NOPARITY`\n\n## Acceptance\n\n- [ ] preallocating a 1 GiB object on a `checksum=off` dataset yields fully allocated, non-gang level-0 blocks\n"
+  },
+  {
+   "id": "Z3",
+   "title": "Swapify: pin a ZFS file object -- property freeze, preallocation, DVA extent walk, DMU bypass",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [
+    "Z1",
+    "Z2"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\nPort illumos dumpify to a ZPL file object, in a new `module/zfs/zfs_dump.c` (~600-800 LOC). This one mechanism feeds **both** K1 (swap) and K4 (dumps) on ZFS.\n\n## How illumos handles copy-on-write\n\nIt does not make ZFS COW-safe; it makes COW irrelevant. While pinned, **every** read and write takes the dumpio bypass, so nothing ever dirties the object through the DMU, so no block pointer is rewritten, so the captured DVAs stay valid.\n\n## Design\n\nPort from `usr/src/uts/common/fs/zfs/zvol.c`:\n\n| illumos | lines |\n|---|---|\n| `zvol_dump_init` | 1908-2064 |\n| `zvol_dumpify` | 2067-2120 |\n| `zvol_get_lbas` | 315-334 |\n| `zvol_map_block` | 261-301 |\n| `zvol_dumpio` | 1134-1170 |\n\n- `ZVOL_OBJ` becomes `zp->z_id`\n- require dataset `zroot/private/var/vm` with `checksum=off compression=off dedup=off copies=1 recordsize=128K`, no encryption\n- `traverse_dataset` filtered on `zb_object`; coalesce adjacent DVAs; **reject `BP_IS_GANG`** (`EFRAGS`)\n- all I/O while pinned goes through dumpio -- no DMU, tx, ARC or ZIL -- which keeps the ARC coherent\n- extent array preallocated: no allocation at panic\n- rebuild the map every boot; never cache it across boots\n\n## Acceptance\n\n- [ ] `swapon` and `dumpon` a file in `zroot/private/var/vm`\n- [ ] larger-than-RAM paging test completes\n- [ ] VM panic round trip recovers a vmcore\n"
+  },
+  {
+   "id": "Z4",
+   "title": "DSL guards for pinned objects -- and skip, not fail, them in recursive snapshot/send",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [
+    "Z3"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\nOperations that would move, share or reinterpret a pinned object's blocks must be refused while it is pinned.\n\n## Refuse, with a clear error\n\n- a snapshot aimed **directly** at the pinned dataset\n- clone\n- device removal (indirect vdevs remap DVAs)\n- raidz expansion (relocates data)\n- block cloning / BRT (`FICLONE` on the pinned file)\n- `zfs destroy` of the dataset\n\n## Skip, do not fail\n\n`zfs snapshot -r` is atomic. If a pinned child refused, the **whole** recursive snapshot would fail -- silently breaking backup scripts, `sanoid` and `zfs-auto-snapshot`. So pinned datasets are **skipped** in recursive snapshot and `send -R`. Also set `com.sun:auto-snapshot=false` (the OpenZFS FAQ already recommends it for swap).\n\n## Open\n\n- **R4:** how resilver is ordered against concurrent bypass writes is unverified\n\n## Acceptance\n\n- [ ] each refused operation returns a clear error\n- [ ] `zfs snapshot -r zroot/private@x` succeeds and excludes `vm`\n"
+  },
+  {
+   "id": "Z5",
+   "title": "Pager-level swap encryption (geli cannot cover a sub-range of a provider)",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [
+    "K1"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\nThe usual FreeBSD encrypted-swap answer -- `geli onetime` on the swap device -- does not apply: geli cannot cover a sub-range of a provider, and an extent-mapped file is a set of sub-ranges. ZFS dataset encryption is incompatible with the bypass.\n\n## Design\n\nEncrypt in the pager, as xnu does (per-segment AES, `vm_swap_encrypt`): `crypto(9)` with an ephemeral per-boot key that is never persisted.\n\n## Open\n\nPlan Q2: port xnu's approach, or accept unencrypted swap initially?\n\n## Acceptance\n\n- [ ] swap blocks on disk are ciphertext\n- [ ] the key does not survive reboot\n"
+  },
+  {
+   "id": "P1",
+   "title": "rpi5: verify NVMe polled crash dump on the Pi 500+",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "area:vm",
+    "area:rpi5",
+    "needs-hardware"
+   ],
+   "depends": [
+    "K4"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\n`ndadump()` (`sys/cam/nvme/nvme_da.c:583`, installed as `d_dump` at `:1011`) polls through `cam_periph_runccb` when `dumping` (`cam_periph.c:1273-1300`) -> `nvme_sim_poll` -> `nvme_ctrlr_poll`. The Pi 500+ boots from NVMe over PCIe -> RP1.\n\nConfirm the PCIe/RP1 path needs no interrupts at panic time and that a K4 dump completes.\n\n## Acceptance\n\n- [ ] a panic on the Pi 500+ produces a recoverable vmcore\n"
+  },
+  {
+   "id": "P2",
+   "title": "dwmmc: add a dumping path so d_dump does not hang",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "bug",
+    "area:vm"
+   ],
+   "depends": [],
+   "kind": "now",
+   "body": "## Summary\n\n`dwmmc_request()` (`sys/dev/mmc/host/dwmmc.c:1237`, `msleep` at `:1279`) has no `dumping` path and would hang at panic. `sdhci` already spins when `dumping` (`sys/dev/sdhci/sdhci.c:2159-2164`). Mirror that.\n\n## Scope\n\n~30 LOC.\n\n## Acceptance\n\n- [ ] an `mmcsd` dump completes on a dwmmc host\n"
+  },
+  {
+   "id": "P3",
+   "title": "CI: virtio-blk crash-dump harness so the dump path is tested before hardware",
+   "repo": "nextbsd/nextbsd",
+   "labels": [
+    "area:vm",
+    "area:ci"
+   ],
+   "depends": [
+    "K4"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\n`vtblk_dump` (`sys/dev/virtio/block/virtio_blk.c:644-667`) supports polled dumps, so the whole design can be exercised in the CI VM.\n\nAdd a stage: induce a panic, reboot, assert `savecore` recovers a vmcore. Pairs with #428 (iso-test/img-test declare PASS at the login prompt).\n\n## Acceptance\n\n- [ ] CI fails if a panic does not produce a recoverable dump\n"
+  },
+  {
+   "id": "U1",
+   "title": "swapd: grow and reclaim swapfiles under memory pressure",
+   "repo": "nextbsd/nextbsd-userland",
+   "labels": [
+    "enhancement",
+    "area:vm"
+   ],
+   "depends": [
+    "K1",
+    "K7"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\nA launchd daemon that owns `/private/var/vm`. It is also the **activation path**: nothing under launchd runs `swapon -a` (#171).\n\n## Design\n\n- **Boot:** pin existing files; pin the corefile and register it with `dumpon`\n- **Grow:** on `devctl` `VM/swap/LOWSPACE` (K7), create the next file on xnu's ladder, 256 MiB -> 1 GiB; back off 15 s on `ENOSPC`; refuse past `vm.swap_maxpages / 2` (4x RAM) unless `kern.maxswzone` was raised\n- **Reclaim:** free swap above a high-water mark for N minutes -> `swapoff(2)` the newest file (handle `ENOMEM`; **never** default to `SWAPOFF_FORCE`) -> unlink\n- `mlock` itself, and keep one pre-created file of headroom so growth is never on the critical path\n\n## Known weakness\n\n`swapd` must open and preallocate at exactly the moment memory is short. xnu's real answer is in-kernel creation (`vm_swapfile_create_thread`) -- see S1.\n\n## Acceptance\n\n- [ ] a WebKit-scale build on a 4 GB VM grows swap under pressure and reclaims it afterwards\n"
+  },
+  {
+   "id": "U2",
+   "title": "installer: create /private/var/vm (ZFS: zroot/private/var/vm) -- no partition, no sizing",
+   "repo": "nextbsd/nextbsd-userland",
+   "labels": [
+    "enhancement",
+    "area:vm",
+    "area:live-media"
+   ],
+   "depends": [
+    "U1"
+   ],
+   "kind": "now",
+   "body": "## Summary\n\n`src/nextbsd-installer/engine/do-install.sh`. No `freebsd-swap` partition and no size decision.\n\n## UFS\n\n`mkdir /private/var/vm`\n\n## ZFS\n\n```\nzroot/private              mountpoint=/private  canmount=off\nzroot/private/var          canmount=off\nzroot/private/var/vm       checksum=off compression=off dedup=off copies=1\n                           recordsize=128K  com.sun:auto-snapshot=false\nzroot/private/var/crash    exec=off setuid=off\n```\n\nThe `canmount=off` parents keep `/private/etc` and most of `/private/var` inside `zroot/ROOT/default`, so they roll back with the boot environment.\n\n**Create these early**, while the pool is unfragmented -- gang blocks are fatal to the extent walk.\n\nMust work under both the mbr-fat (Pi) and gpt layouts.\n\n## Acceptance\n\n- [ ] a fresh install has the directory / datasets with the right properties\n- [ ] `gpart show` contains no swap partition\n"
+  },
+  {
+   "id": "U3",
+   "title": "vm_stat / pagesize report real numbers from vm.stats instead of the 'feature not available' stub",
+   "repo": "nextbsd/nextbsd-userland",
+   "labels": [
+    "enhancement",
+    "area:vm",
+    "good first issue"
+   ],
+   "depends": [],
+   "kind": "now",
+   "body": "## Summary\n\nfreebsd-apple-userland-cmds v3 stubs the Mach VM introspection family. `vm_stat`'s columns map cleanly onto `sysctl vm.stats.vm.*` and `vm.swap_*`. Ship a FreeBSD backend for `vm_stat` and `pagesize`; keep the graceful stub only for jetsam-only fields.\n\n## Acceptance\n\n- [ ] `vm_stat` on the live ISO matches `top` / `sysctl` within one sample interval\n"
+  },
+  {
+   "id": "S1",
+   "title": "Spike: decouple page reclaim from swap-I/O completion (compressor-style staging)",
+   "repo": "nextbsd/nextbsd-kernel",
+   "labels": [
+    "area:vm",
+    "area:research"
+   ],
+   "depends": [
+    "K1"
+   ],
+   "kind": "spike",
+   "body": "## Summary\n\nxnu's pageout stays robust independent of everything else because reclaim does not wait on swap writes: pages are freed by compressing them, and `vm_swapout_thread` drains already-compressed segments asynchronously (`vm_swap_put`). A stalled swap write slows the system rather than wedging the pagedaemon.\n\n## Questions\n\n- what would compressor-style staging look like on FreeBSD's VM?\n- could in-kernel swapfile creation (`vm_swapfile_create_thread`) replace U1's userland growth, closing its known weakness?\n\n## Deliverable\n\nA design note with scope and a recommendation.\n"
+  },
+  {
+   "id": "X1",
+   "title": "Report upstream: zfs_putpages calls dmu_tx_assign(DMU_TX_WAIT) in pageout context",
+   "repo": "nextbsd/nextbsd",
+   "labels": [
+    "bug",
+    "area:vm"
+   ],
+   "depends": [],
+   "kind": "now",
+   "body": "## Summary\n\n`module/os/freebsd/zfs/zfs_vnops_os.c` `zfs_putpages` takes `zfs_rangelock_enter` and **then** calls `dmu_tx_assign(tx, DMU_TX_WAIT)` in pageproc context, for dirty mmap'd pages. The file's own header comment (lines 131-155) documents exactly this as the deadlock pattern.\n\nThis exists on **every ZFS-root system today, with no swap involved**.\n\nCompounding factors on FreeBSD:\n- `KM_PUSHPAGE` is `#define`d to `M_WAITOK` (`include/os/freebsd/spl/sys/kmem.h:49`)\n- `arc_memory_throttle()` returns 0 (`module/os/freebsd/zfs/arc_os.c:124`)\n\n## Action\n\nDecide whether to file with OpenZFS (plan Q4), and with what reproduction.\n"
+  }
+ ],
+ "migrate": [
+  {
+   "issue": "nextbsd/nextbsd#393",
+   "title": "Wired memory usage (696 MB at idle)",
+   "action": "Move under E14; add area:vm; remove area:desktop. It is a VM measurement task mislabelled as desktop, with no epic."
+  }
+ ],
+ "link_only": [
+  {
+   "issue": "nextbsd/nextbsd#326",
+   "epic": "E8",
+   "why": "Live ISO tmpfs overlay is swapless -- the measured OOM failure"
+  },
+  {
+   "issue": "nextbsd/nextbsd#329",
+   "epic": "E8",
+   "why": "Cap the tmpfs overlay at ~50% of RAM"
+  },
+  {
+   "issue": "nextbsd/nextbsd-userland#171",
+   "epic": "E13",
+   "why": "launchd never runs mount -a -- the activation gap"
+  },
+  {
+   "issue": "nextbsd/nextbsd-userland#54",
+   "epic": "E13",
+   "why": "Who mounts the Linux ABI filesystems -- constrains the activation design"
+  },
+  {
+   "issue": "nextbsd/nextbsd#410",
+   "epic": "E2",
+   "why": "Friendly kernel panic screen -- pairs with K4"
+  },
+  {
+   "issue": "nextbsd/nextbsd#428",
+   "epic": "E10",
+   "why": "Test gates pass at the login prompt -- pairs with P3"
+  },
+  {
+   "issue": "nextbsd/nextbsd#66",
+   "epic": "E1",
+   "why": "OOL receive VM fix -- nearest existing Mach-VM-on-FreeBSD work"
+  },
+  {
+   "issue": "nextbsd/nextbsd#350",
+   "epic": "E13",
+   "why": "ext4/btrfs -- the filesystems half of the epic title"
+  }
+ ],
+ "order": "Preconditions (Q3, R7, labels) -> K1 -> K2 / K3 / K4 / K7 -> K5 / K6 -> U1 -> U2. Z2 and Z1 (after K6) in parallel, then Z3 -> Z4. K8, Z5, S1 follow K1. P2, U3, X1 and the #393 migration are independent."
+}</script>
+
+</body>
+</html>

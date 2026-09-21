@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NextBSD power management — pmconfigd as the root domain, over an in-kernel ACPI bridge</title>
+<style>
+  :root {
+    --bg: #fbfbf8;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #b03000;
+    --accent2: #0a4d68;
+    --ok: #1f7a1f;
+    --warn: #b06800;
+    --bad: #b00020;
+    --code-bg: #f0ece4;
+    --rule: #d6cfc0;
+    --card: #fff;
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0 auto; max-width: 1080px; padding: 2.5rem 1.5rem 6rem;
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+         color: var(--fg); background: var(--bg); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 .75rem; padding-bottom: .25rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 .5rem; color: var(--accent2); }
+  h4 { margin: 1.25rem 0 .35rem; }
+  .subtitle { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: .9em; }
+  pre { background: var(--code-bg); padding: .85rem 1rem; border-radius: 6px;
+        overflow-x: auto; font-size: .82rem; line-height: 1.45;
+        border-left: 3px solid var(--accent2); }
+  pre code { background: none; padding: 0; }
+  pre.shell { border-left-color: var(--ok); }
+  pre.c { border-left-color: var(--accent); }
+  a { color: var(--accent2); }
+  a:hover { color: var(--accent); }
+  .tldr { background: var(--card); border: 1px solid var(--rule); border-left: 4px solid var(--accent2);
+          padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 2rem; }
+  .tldr h3 { margin-top: 0; color: var(--accent2); }
+  .pill { display: inline-block; font-size: .72rem; padding: 1px 8px; border-radius: 999px;
+          background: #eee; color: #333; margin-left: .35rem; vertical-align: middle;
+          font-weight: 600; letter-spacing: .02em; }
+  .pill.ok   { background: #d8efd8; color: var(--ok); }
+  .pill.warn { background: #f6e4cb; color: var(--warn); }
+  .pill.bad  { background: #f5d0d6; color: var(--bad); }
+  .pill.info { background: #d6e6f3; color: var(--accent2); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { background: #eee5d6; }
+  tr:nth-child(even) td { background: #faf6ed; }
+  table.compact td, table.compact th { padding: .35rem .55rem; font-size: .88rem; }
+  .nav { position: sticky; top: 0; background: var(--bg); margin: -2.5rem -1.5rem 2rem;
+         padding: .75rem 1.5rem; border-bottom: 1px solid var(--rule);
+         font-size: .88rem; z-index: 10; }
+  .nav a { margin-right: .9rem; text-decoration: none; }
+  .gap { background: #fff5f5; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .gap strong { color: var(--bad); }
+  .resolved { background: #ecf7ec; border-left: 4px solid var(--ok); padding: .8rem 1rem; margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .resolved strong { color: var(--ok); }
+  .open-q { background: #fff8d6; border: 1px solid #e5d76b; padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .92rem; }
+  .open-q strong { color: #7a5e00; }
+  .risk { background: #fff5f5; border: 1px solid #e7b8bf; border-left: 4px solid var(--bad); padding: .8rem 1rem; margin: 1rem 0; border-radius: 6px; font-size: .93rem; }
+  .risk strong { color: var(--bad); }
+  .ascii-diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.3; white-space: pre; background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto; }
+  .rec { background: #eef4f8; border: 1px solid #bcd4e2; border-left: 4px solid var(--accent2); padding: 1rem 1.25rem; margin: 1.25rem 0; border-radius: 6px; }
+  .rec strong { color: var(--accent2); }
+  .yesno { font-weight: 600; }
+  .yesno.yes { color: var(--ok); }
+  .yesno.no  { color: var(--bad); }
+  .yesno.partial { color: var(--warn); }
+</style>
+
+<style>
+  .dg-wrap { background: var(--card); border: 1px solid var(--rule); border-radius: 8px; padding: .75rem; margin: 1rem 0 .5rem; overflow-x: auto; }
+  svg.dg { display: block; width: 100%; min-width: 720px; height: auto; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  .dg-box { fill: var(--card); stroke: var(--rule); stroke-width: 1.5; }
+  .dg-key { stroke: var(--accent2); stroke-width: 2.25; }
+  .dg-bad { stroke: var(--bad); stroke-width: 2; }
+  .dg-h { font-size: 13.5px; font-weight: 700; fill: var(--fg); }
+  .dg-t { font-size: 11.5px; fill: var(--muted); }
+  .dg-t2 { font-size: 12.5px; fill: var(--fg); }
+  .dg-strong { font-weight: 700; fill: var(--fg); }
+  .dg-ar { stroke: var(--accent2); stroke-width: 1.75; fill: none; }
+  .dg-ar-bad { stroke: var(--bad); stroke-width: 1.75; fill: none; }
+  .dg-ar-ok { stroke: var(--ok); stroke-width: 1.75; fill: none; }
+  .dg-ln { stroke: var(--accent2); stroke-width: 1.75; fill: none; }
+  .dg-cyc { stroke: var(--bad); stroke-width: 1.75; stroke-dasharray: 6 4; fill: none; }
+  .dg-mk { fill: var(--accent2); } .dg-mk-bad { fill: var(--bad); } .dg-mk-ok { fill: var(--ok); }
+  .dg-lbl { font-size: 11px; fill: var(--accent2); font-style: italic; }
+  .dg-lbl-bad { fill: var(--bad); }
+  .dg-own-i { fill: var(--warn); } .dg-own-u { fill: var(--accent2); } .dg-own-k { fill: var(--accent); }
+  .dg-own-txt { font-size: 10px; font-weight: 600; fill: #fff; text-anchor: middle; }
+  .dg-col { font-size: 12px; font-weight: 700; letter-spacing: .04em; }
+  .dg-col-bad { fill: var(--bad); } .dg-col-ok { fill: var(--ok); }
+  .dg-fs { fill: #f6e4cb; stroke: var(--warn); stroke-width: 1; stroke-dasharray: 4 3; }
+  .dg-fs-lbl { font-size: 11px; font-weight: 700; letter-spacing: .12em; fill: var(--warn); }
+  .dg-res-bad { fill: #f5d0d6; stroke: var(--bad); stroke-width: 2; }
+  .dg-res-ok { fill: #d8efd8; stroke: var(--ok); stroke-width: 2; }
+  .dg-res-h { font-size: 14px; font-weight: 800; fill: var(--bad); letter-spacing: .06em; }
+  .dg-res-h-ok { font-size: 14px; font-weight: 800; fill: var(--ok); letter-spacing: .06em; }
+  .dg-foot { font-size: 12.5px; font-style: italic; fill: var(--accent2); }
+  .dg-legend { font-size: .85rem; color: var(--muted); margin: .25rem 0 1.25rem; }
+  .dg-sw { display: inline-block; width: .8em; height: .8em; border-radius: 3px; vertical-align: -1px; margin: 0 .3em 0 .9em; }
+  .dg-sw-i { background: var(--warn); } .dg-sw-u { background: var(--accent2); } .dg-sw-k { background: var(--accent); }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="#tldr">TL;DR</a>
+  <a href="#today">Where we are</a>
+  <a href="#design">The design</a>
+  <a href="#sleep">Sleep and wake</a>
+  <a href="#events">ACPI events</a>
+  <a href="#sources">Power sources</a>
+  <a href="#assert">Assertions</a>
+  <a href="#shutdown">Shutdown</a>
+  <a href="#cpu">CPU policy</a>
+  <a href="#mig">The MIG decision</a>
+  <a href="#later">Kernel later</a>
+  <a href="#hw">Hardware</a>
+  <a href="#risks">Risks</a>
+  <a href="#open">Open questions</a>
+  <a href="#tickets">E17 tickets</a>
+  <a href="#refs">References</a>
+</nav>
+
+<h1>NextBSD power management &mdash; pmconfigd as the root domain, over an in-kernel ACPI bridge <span class="pill info">Research plan &middot; new sub-project</span></h1>
+
+<p class="subtitle"><strong>Darwin-shaped power management, built from Apple's own code.</strong> Apple's <code>pmconfigd</code> (shipped as <code>powerd</code>, PowerManagement-1846.120.8.0.1) runs as a launchd MachService and plays the role xnu's in-kernel <code>IOPMrootDomain</code> plays toward applications &mdash; the <code>kIOMessageCanSystemSleep</code> &rarr; <code>WillSleep</code> &rarr; <code>HasPoweredOn</code> sequence with per-client acknowledgements &mdash; over a small <strong>in-kernel bridge</strong> that publishes an <code>IOPMrootDomain</code> node and <code>IOPMPowerSource</code> nodes into the IORegistry NextBSD already runs in the kernel. <strong>One live bug comes first:</strong> FreeBSD's <code>acpi_ReqSleepState</code> enters S3 at once when nothing holds <code>/dev/devctl</code> open &mdash; &ldquo;If devd(8) is not running, immediately enter the sleep state&rdquo; &mdash; and devd is gone, so today every sleep request suspends with no process told. <strong>Hybrid by design:</strong> userspace now, shaped so the root domain can move into the kernel later, which turns out to be cheaper than assumed now that hwregd has been retired and the registry is in-kernel. Companion to <strong>EPIC&nbsp;E17</strong> &mdash; E16 was already taken by Bluetooth.</p>
+
+<section id="tldr" class="tldr">
+  <h3>TL;DR</h3>
+  <ul>
+    <li><strong>Nothing exists yet, and every prerequisite has landed.</strong> No plan, epic or ticket for power management existed; no Apple PowerManagement or Apple reboot/shutdown/halt is vendored. The in-kernel IORegistry, kernel-originated Mach notifications, notifyd, ASL, configd and launchd MachServices are all in place.</li>
+    <li><strong>Sleep bypasses userland today.</strong> With no <code>/dev/devctl</code> reader, <code>acpiconf -s 3</code>, a sleep button or a lid close suspends immediately, and no <code>Resume</code> event is ever sent. K1 fixes the gate.</li>
+    <li><strong>pmconfigd plays the root domain.</strong> Apps' <code>IORegisterForSystemPower</code> / <code>IOAllowPowerChange</code> go to pmconfigd, which already contains Apple's fan-out and acknowledgement machinery (<code>PMConnection.m</code>). Its kernel-facing code shrinks to one shim over <code>/dev/iopmroot</code>.</li>
+    <li><strong>ACPI events come through the kernel, not a daemon.</strong> A bridge consumes the existing <code>devctl_notify</code> calls in-kernel and republishes them as IORegistry properties and Mach interest messages. <code>/dev/devctl</code> stays inert, as nextbsd#225 wants. The multi-reader netlink route (<code>nlsysevent</code>) is <strong>module-only</strong> and so absent on NextBSD.</li>
+    <li><strong>CPU policy is a knob, not a loop.</strong> On Intel HWP laptops the hardware picks the frequency; pmconfigd sets <code>dev.hwpstate_intel.N.epp</code> by power source. FreeBSD's <code>powerd</code> is replaced, and runs from an interim LaunchDaemon until then &mdash; nothing launches it today.</li>
+    <li><strong>One decision gates the MIG interface.</strong> Apple's <code>powermanagement.defs</code> passes property lists out-of-line, and MIG out-of-line data is broken in this kernel (nextbsd#66). Fix it, or route those calls over XPC &mdash; M1.</li>
+  </ul>
+</section>
+
+<h2 id="today">1. Where NextBSD is</h2>
+
+<table class="compact">
+<tr><th>Piece</th><th>State</th></tr>
+<tr><td>Apple PowerManagement (<code>pmconfigd</code>, <code>pmset</code>, <code>caffeinate</code>, <code>pmtool</code>)</td><td><span class="pill bad">absent</span> in scope since the <a href="freebsd-apple-userland-cmds-plan.html">Apple userland plan v3</a>, never vendored</td></tr>
+<tr><td>Apple <code>reboot</code> / <code>shutdown</code> / <code>halt</code></td><td><span class="pill bad">absent</span> FreeBSD's ship; the compat audit's &ldquo;vendored but deferred on IOPMLib&rdquo; is stale</td></tr>
+<tr><td>FreeBSD <code>powerd</code></td><td><span class="pill warn">ships, never started</span> no LaunchDaemon runs it, so laptop CPU frequency is unmanaged</td></tr>
+<tr><td>ACPI event consumers</td><td><span class="pill bad">none</span> devd removed; nothing opens <code>/dev/devctl</code> or <code>/dev/acpi</code></td></tr>
+<tr><td>In-kernel IORegistry and Mach notifications</td><td><span class="pill ok">landed</span> <code>/dev/ioregistry</code> (K1), matching notifications (K2, nextbsd#41); hwregd retired (nextbsd#218)</td></tr>
+<tr><td>notifyd, ASL, configd, launchd MachServices</td><td><span class="pill ok">landed</span> pmconfigd's 161 <code>notify_*</code> sites work against the real notifyd</td></tr>
+</table>
+
+<p>The <a href="freebsd-hardware-registry-iokit-plan.html">hardware-registry plan</a> already sketched this work as phase K3 &mdash; &ldquo;Port <code>IOPMAssertion*</code>, <code>IOPSCopyPowerSourcesInfo</code>&hellip; Requires a small powerd daemon backing the assertion broker and ACPI-backed power source enumeration. Marker: <code>pmset -g</code> prints sensible output.&rdquo; This plan is that phase, grown to cover sleep and wake.</p>
+
+<h2 id="design">2. The design &mdash; pmconfigd over a kernel bridge</h2>
+
+<div class="dg-wrap">
+<svg class="dg" viewBox="0 0 960 552" role="img" aria-labelledby="pmt pmd">
+<title id="pmt">Power management architecture</title>
+<desc id="pmd">Applications and the pmset and caffeinate tools call libIOKit, which talks to pmconfigd over MIG and XPC. Gershwin, which cannot use Mach, reads state from SCDynamicStore and notify. pmconfigd plays IOPMrootDomain toward apps. Below the user-kernel boundary, pmconfigd issues ioctls on /dev/iopmroot to the iopmroot bridge, and the bridge sends it Mach interest messages. The bridge publishes IOPMrootDomain and IOPMPowerSource nodes and sits on FreeBSD's ACPI sleep path and event hook. pmconfigd sets CPU energy preference through sysctl.</desc>
+<defs>
+  <marker id="pm-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="dg-mk" d="M0,0 L10,5 L0,10 z"/></marker>
+  <marker id="pm-ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="dg-mk-bad" d="M0,0 L10,5 L0,10 z"/></marker>
+</defs>
+
+<!-- clients -->
+<rect class="dg-box" x="20" y="10" width="290" height="64" rx="6"/>
+<text class="dg-h" x="34" y="34">Applications</text>
+<text class="dg-t" x="34" y="54">IORegisterForSystemPower · IOPMAssertion*</text>
+<rect class="dg-box" x="335" y="10" width="290" height="64" rx="6"/>
+<text class="dg-h" x="349" y="34">pmset · caffeinate</text>
+<text class="dg-t" x="349" y="54">C1 · C2</text>
+<rect class="dg-box" x="650" y="10" width="290" height="64" rx="6"/>
+<text class="dg-h" x="664" y="34">Gershwin</text>
+<text class="dg-t" x="664" y="54">no Mach — reads keys and the CLI (D6)</text>
+
+<!-- libIOKit -->
+<rect class="dg-box" x="20" y="104" width="605" height="54" rx="6"/>
+<text class="dg-h" x="34" y="127">libIOKit — IOPMLib · IOPowerSources · interest notifications</text>
+<text class="dg-t" x="34" y="146">L1–L4 · power calls re-aimed at pmconfigd, not IOServiceOpen</text>
+<line class="dg-ar" x1="165" y1="74" x2="165" y2="102" marker-end="url(#pm-a)"/>
+<line class="dg-ar" x1="480" y1="74" x2="480" y2="102" marker-end="url(#pm-a)"/>
+
+<!-- pmconfigd -->
+<rect class="dg-box dg-key" x="20" y="190" width="920" height="96" rx="6"/>
+<text class="dg-h" x="34" y="214">pmconfigd — com.apple.powerd MachService, playing IOPMrootDomain toward apps</text>
+<text class="dg-t" x="34" y="236">assertions · idle and display sleep · power sources · sleep/wake fan-out with 30 s acknowledgements · CPU energy policy</text>
+<text class="dg-t" x="34" y="256">D1–D7 · MIG com.apple.PowerManagement.control · XPC com.apple.iokit.powerdxpc</text>
+<text class="dg-t" x="34" y="276">publishes to notifyd and configd (SCDynamicStore)</text>
+<line class="dg-ar" x1="320" y1="158" x2="320" y2="188" marker-end="url(#pm-a)"/>
+<text class="dg-lbl" x="330" y="178">MIG · XPC</text>
+<line class="dg-ar" x1="795" y1="188" x2="795" y2="76" marker-end="url(#pm-a)"/>
+<text class="dg-lbl" x="805" y="136">SCDynamicStore · notify</text>
+
+<!-- boundary -->
+<line x1="10" y1="318" x2="950" y2="318" stroke="var(--rule)" stroke-width="1.5" stroke-dasharray="7 5"/>
+<text class="dg-lbl" x="14" y="312">user</text>
+<text class="dg-lbl" x="14" y="334">kernel</text>
+
+<line class="dg-ar" x1="230" y1="286" x2="230" y2="348" marker-end="url(#pm-a)"/>
+<text class="dg-lbl" x="240" y="307">/dev/iopmroot: SLEEP · ACK · SETPROP</text>
+<line class="dg-ar" x1="520" y1="348" x2="520" y2="288" marker-end="url(#pm-a)"/>
+<text class="dg-lbl" x="530" y="307">'IOIN' Mach interest messages</text>
+<line class="dg-ar" x1="795" y1="286" x2="795" y2="450" marker-end="url(#pm-a)"/>
+<text class="dg-lbl" x="805" y="372">sysctl</text>
+
+<!-- bridge -->
+<rect class="dg-box dg-key" x="20" y="350" width="600" height="70" rx="6"/>
+<text class="dg-h" x="34" y="374">iopmroot bridge — IOPMrootDomain0 · IOPMPowerSource0..N</text>
+<text class="dg-t" x="34" y="394">in /dev/ioregistry · property provider (K5) · interest messages (K6)</text>
+<text class="dg-t" x="34" y="410">K4 · K7 · kern.sleeptime / kern.waketime</text>
+
+<!-- FreeBSD -->
+<rect class="dg-box" x="20" y="452" width="600" height="90" rx="6"/>
+<text class="dg-h" x="34" y="476">FreeBSD ACPI</text>
+<text class="dg-t" x="34" y="497">acpi_ReqSleepState / AckSleepState — waits for the bridge (K1)</text>
+<text class="dg-t" x="34" y="515">lid · button (K2) · AC · battery · thermal → devctl_notify hook list (K3)</text>
+<text class="dg-t" x="34" y="533">/dev/devctl stays unopened (nextbsd#225)</text>
+<line class="dg-ar" x1="260" y1="420" x2="260" y2="450" marker-end="url(#pm-a)"/>
+<line class="dg-ar" x1="400" y1="452" x2="400" y2="422" marker-end="url(#pm-a)"/>
+
+<rect class="dg-box" x="650" y="452" width="290" height="90" rx="6"/>
+<text class="dg-h" x="664" y="476">cpufreq / HWP</text>
+<text class="dg-t" x="664" y="497">dev.hwpstate_intel.N.epp</text>
+<text class="dg-t" x="664" y="515">dev.cpu.N.freq (AMD)</text>
+<text class="dg-t" x="664" y="533">set by pmconfigd (D7)</text>
+</svg>
+</div>
+
+<p>Three principles hold the design together:</p>
+<ul>
+  <li><strong>Userspace owns policy; the kernel owns the hardware path.</strong> Idle timers, assertions, clamshell and power-button rules, and the app fan-out are pmconfigd's. S3 entry, acknowledgement and the event feed are the bridge's.</li>
+  <li><strong>pmconfigd's kernel boundary is one file.</strong> The 19 root-domain user-client selectors pmconfigd calls collapse to a selector &rarr; ioctl table over <code>/dev/iopmroot</code> (D2). Most are pmconfigd-internal state in this model.</li>
+  <li><strong>Apple's names from day one.</strong> Node names, property keys, reason and wake-type strings, and message values (<code>kIOMessageCanSystemSleep</code> 0x270, <code>WillSleep</code> 0x280, <code>WillNotSleep</code> 0x290, <code>WillPowerOn</code> 0x320, <code>HasPoweredOn</code> 0x300) are Apple's, so unmodified clients and a later kernel move both see the same shapes.</li>
+</ul>
+
+<h2 id="sleep">3. Sleep and wake, step by step</h2>
+
+<table class="compact">
+<tr><th>Step</th><th>What happens</th><th>Owner</th></tr>
+<tr><td>1 · Request</td><td>Software (<code>pmset sleepnow</code> &rarr; <code>IOPMSleepSystem</code>), idle (no assertion and the idle timer expired), lid close or power button (pmconfigd's policy &mdash; the kernel's own lid, button and sleep-button actions are set to <code>NONE</code>), or low battery</td><td>pmconfigd</td></tr>
+<tr><td>2 · Kernel handshake opens</td><td><code>IOPMROOT_SLEEP{reason}</code> &rarr; <code>acpi_ReqSleepState</code>, which now sees a registered listener (K1) and arms the acknowledgement timeout (45 s) instead of sleeping at once. The bridge sends pmconfigd &ldquo;sleep requested {serial}&rdquo;</td><td>bridge</td></tr>
+<tr><td>3 · CanSystemSleep</td><td><strong>Idle sleep only</strong> &mdash; xnu does not send it for demand sleep. Any app may veto</td><td>pmconfigd</td></tr>
+<tr><td>4 · WillSleep</td><td>Every <code>IORegisterForSystemPower</code> client must acknowledge; 30 s budget per client (<code>kWillSleepMaxTimeReq</code>). Tardy clients are logged and sleep proceeds</td><td>pmconfigd</td></tr>
+<tr><td>5 · Acknowledge</td><td><code>IOPMROOT_ACK{serial, 0}</code> &rarr; <code>acpi_AckSleepState</code> &rarr; <code>acpi_EnterSleepState</code> &rarr; S3. A veto sends <code>IOPMROOT_ACK{serial, EBUSY}</code>, clearing the request, and apps get <code>WillNotSleep</code></td><td>bridge</td></tr>
+<tr><td>6 · Wake</td><td><code>power_resume</code> &rarr; the bridge sets <code>Wake Reason</code> / <code>Wake Type</code> / <code>SleepWakeUUID</code> and sends &ldquo;did wake&rdquo; &rarr; pmconfigd sends <code>WillPowerOn</code> then <code>HasPoweredOn</code>, and one capability <code>DidChange</code> (v1: every wake is a full wake)</td><td>both</td></tr>
+</table>
+
+<div class="risk"><strong>The timeout order matters.</strong> The kernel's force timeout must exceed pmconfigd's 30 s app budget, or the kernel sleeps while apps are still being asked. FreeBSD's default is 10 s; K1 makes it a tunable defaulting to 45 s. A crashed pmconfigd closes <code>/dev/iopmroot</code>, which deregisters the listener, so sleep falls back to today's behaviour rather than hanging.</div>
+
+<h2 id="events">4. ACPI events &mdash; through the kernel, not a daemon</h2>
+
+<p>Every ACPI event already goes <code>acpi_UserNotify()</code> &rarr; <code>devctl_notify("ACPI", subsystem, ...)</code>, with subsystems <code>Lid</code>, <code>Button</code>, <code>ACAD</code>, <code>CMBAT</code>, <code>Thermal</code>, <code>Suspend</code> and <code>Resume</code>. Three ways to get them to pmconfigd were considered:</p>
+
+<table class="compact">
+<tr><th>Route</th><th>Verdict</th></tr>
+<tr><td>Open <code>/dev/devctl</code> in pmconfigd, as devd did</td><td><span class="pill bad">no</span> single reader, and it is what nextbsd#225 wants to retire</td></tr>
+<tr><td>Netlink <code>nlsysevent</code> multicast group <code>ACPI</code> &mdash; what FreeBSD 15's own <code>powerd</code> uses</td><td><span class="pill bad">not available</span> <code>netlink_sysevent.c</code> is <strong>not in <code>sys/conf/files</code></strong>; it exists only as <code>sys/modules/nlsysevent</code>, and <code>powerd</code> <code>kldload</code>s it. NextBSD ships no modules. It would also be a second event bus beside the Mach channel, and it does not fix the sleep gate</td></tr>
+<tr><td><strong>An in-kernel consumer on the <code>devctl_notify</code> hook</strong></td><td><span class="pill ok">chosen</span> the hook exists; K3 makes it a list. The bridge turns events into IORegistry properties and Mach interest messages, IOKit-shaped, and <code>/dev/devctl</code> stays inert</td></tr>
+</table>
+
+<div class="gap"><strong>A gap in FreeBSD's own event path.</strong> The <em>fixed-feature</em> power button &mdash; the one QEMU and many laptops use &mdash; emits no <code>devctl</code> notification at all; it only fires the <code>acpi_sleep_event</code> eventhandler. K2 adds the missing <code>Button</code> event, and records the wake-time power-button status before FreeBSD clears it, so <code>Wake Reason</code> can say &ldquo;Power Button&rdquo;.</div>
+
+<h2 id="sources">5. Power sources</h2>
+
+<p>pmconfigd finds batteries by matching <code>IOPMPowerSource</code> and re-reads every property on any interest message. It <strong>drops any battery missing <code>BatteryInstalled</code>, <code>CurrentCapacity</code> or <code>MaxCapacity</code></strong>. K7 publishes one node per <code>acpi_cmbat</code> unit, mapped from FreeBSD's <code>acpi_bif</code>/<code>bix</code>/<code>bst</code> structures, plus a single AC-only source on machines with no battery &mdash; QEMU and desktops. <code>acpi_cmbat</code>'s notify is the push signal; there is no Apple Smart Battery Manager, so <code>IOPSRequestBatteryUpdate</code> becomes a no-op.</p>
+
+<p>pmconfigd republishes to clients through notify state bits on <code>com.apple.system.powersources.*</code> and the <code>io_ps_copy_powersources_info</code> blob behind <code>IOPSCopyPowerSourcesInfo</code>. Gershwin, which cannot use Mach, reads the same state from SCDynamicStore keys (D6).</p>
+
+<h2 id="assert">6. Assertions, idle and display sleep</h2>
+
+<p>The assertion engine is <code>PMAssertions.c</code> (7,650 lines). <code>caffeinate</code> is its ideal first client: 297 lines, two IOPMLib calls. Two Apple dependencies have no NextBSD equivalent and need a stand-in (V1):</p>
+<ul>
+  <li><strong>HID idle time.</strong> Apple reads it from <code>IOHIDSystem</code> and <code>IOHIDEventSystemClient</code>. NextBSD has evdev (<code>/dev/input/event*</code>) and the display server's own idle notifier.</li>
+  <li><strong>The display wrangler.</strong> Intel Macs watch <code>IODisplayWrangler</code> for display power. NextBSD has none, so pmconfigd owns the display idle timer and blanks through DPMS or DRM.</li>
+</ul>
+
+<h2 id="shutdown">7. reboot, shutdown, halt and scheduled events</h2>
+
+<p>Apple's <code>reboot</code> and <code>shutdown</code> call <code>reboot3()</code>, which lives in macOS libxpc and does not exist on NextBSD. Their <code>!__APPLE__</code> branch signals PID&nbsp;1 &mdash; <code>SIGINT</code> reboot, <code>SIGUSR1</code> halt, <code>SIGUSR2</code> poweroff, <code>SIGWINCH</code> power cycle &mdash; and <strong>launchd already honours exactly that protocol</strong> (nextbsd#398). IOPMLib is needed only for <code>shutdown -s</code>. The one snag is <code>reserve_reboot()</code>, which takes a reboot lock from kextd over <code>com.apple.KernelExtensionServer</code>, a service kextd does not currently register (S1).</p>
+
+<p>On macOS, <code>pmset schedule</code> sleep, shutdown and restart only post a distributed notification for loginwindow to act on. NextBSD has neither that loginwindow behaviour nor <code>distnoted</code>, so pmconfigd performs them itself (S2). <strong>Scheduled wake needs an RTC alarm armed at sleep time, and FreeBSD has no <code>rtcwake</code></strong> &mdash; that is a spike (S3).</p>
+
+<h2 id="cpu">8. CPU policy &mdash; a knob, not a loop</h2>
+
+<p>FreeBSD's <code>powerd</code> samples <code>kern.cp_times</code> and steps <code>dev.cpu.0.freq</code>. On Intel HWP machines that is nearly a no-op: <code>hwpstate_intel</code> registers as an <em>info-only</em> cpufreq driver, and the hardware picks the frequency. The real control is <strong><code>dev.hwpstate_intel.N.epp</code></strong>, from 0 (most performant) to 100 (most efficient). pmconfigd sets it by power source (D7). AMD's <code>hwpstate_amd</code> has no EPP or CPPC in 15.1, only discrete frequency levels, so there it either lifts powerd's adaptive loop or leaves the choice to the kernel. Until pmconfigd owns this, an interim LaunchDaemon starts base <code>powerd</code>, because nothing does today.</p>
+
+<h2 id="mig">9. The MIG decision</h2>
+
+<p>Apple's <code>powermanagement.defs</code> (IOKitUser, subsystem 73000) carries serialized property lists as out-of-line data in several routines &mdash; creating assertions, setting their properties, and copying power sources. <strong>MIG out-of-line data is broken in this kernel</strong>: <code>src/WLAN/wlan.defs</code> says so and uses only fixed-size arguments, and nextbsd#66 (E1) is open.</p>
+
+<div class="rec"><strong>Recommendation: fix nextbsd#66.</strong> Apple's MIG interface then works unchanged, and every other Darwin daemon that uses out-of-line data benefits. Routing those calls over XPC would work &mdash; Apple's clients already use XPC for some power operations &mdash; but it patches every affected routine and diverges from Apple's code. This is ticket M1, a decision rather than work.</div>
+
+<h2 id="later">10. The kernel-later path</h2>
+
+<p>The hybrid's second half is cheaper than first assumed. The original reason to keep the root domain in userspace was &ldquo;no in-kernel IOKit&rdquo;, and that no longer holds: the IORegistry is in the kernel (hwregd was retired, nextbsd#218), and kernel-originated Mach sends already work (<code>iokit_notify.c</code>). Moving the root domain in means growing <code>iokit_pmroot.c</code> with a per-client registry, the fan-out and a 30 s acknowledgement callout, plus the idle, clamshell and power-button policy &mdash; roughly 1,000&ndash;1,500 kernel lines.</p>
+
+<p>Four v1 choices keep that swap cheap:</p>
+<ul>
+  <li>one wire format, <code>'IOIN'</code>, used by both the kernel and pmconfigd</li>
+  <li>pmconfigd's kernel code confined to a single shim file</li>
+  <li>acknowledgement serials minted by the kernel even in v1</li>
+  <li>Apple's names and keys throughout</li>
+</ul>
+
+<p>R1 is the spike that decides whether and when to make the move.</p>
+
+<h2 id="hw">11. Hardware reality</h2>
+
+<table class="compact">
+<tr><th>Target</th><th>What works</th></tr>
+<tr><td>amd64 ACPI laptops</td><td>S3 supported and stable in FreeBSD for years. <strong>No S4, no s2idle/S0ix</strong> &mdash; a &ldquo;Modern Standby only&rdquo; laptop cannot sleep. Resume quality depends on DRM, xhci, NVMe and Wi-Fi resume <span class="pill warn">per-model</span></td></tr>
+<tr><td>QEMU / UTM (x86_64)</td><td>The whole request &rarr; notify &rarr; acknowledge &rarr; S3 &rarr; resume handshake, the fixed power button (<code>system_powerdown</code>), and an AC-only source. <strong>Not testable:</strong> batteries, lid, thermal zones, HWP</td></tr>
+<tr><td>Raspberry Pi&nbsp;5</td><td>No sleep at all: <code>acpi_ReqSleepState</code> is x86-only and FreeBSD's PSCI does off and reset, not suspend. Power sources are AC-only; thermal and throttling come from the firmware sysctls</td></tr>
+</table>
+
+<h2 id="risks">12. Risks</h2>
+
+<div class="risk"><strong>R1 &mdash; resume breaks on real hardware.</strong> S3 is only as good as each driver's resume path. Test the known-good ThinkPad class first, and treat DRM resume as the likeliest failure.</div>
+<div class="risk"><strong>R2 &mdash; pmconfigd is large and Apple-shaped.</strong> About 36k lines, with Objective-C, private libdispatch, entitlement and ASL dependencies. The v1 subset is much smaller, but the porting shims (D1) are real work.</div>
+<div class="risk"><strong>R3 &mdash; the kernel sleeps while apps are still being asked.</strong> Guarded by K1's 45 s default sitting above the 30 s app budget.</div>
+<div class="risk"><strong>R4 &mdash; the MIG decision stalls the epic.</strong> Several tickets (D3, D4, L2, L3, C1) wait on M1. Decide it early.</div>
+<div class="risk"><strong>R5 &mdash; lid policy splits between the kernel and pmconfigd.</strong> If <code>hw.acpi.lid_switch_state</code> is left set, the kernel and pmconfigd both act on a lid close. E1 sets the kernel's actions to <code>NONE</code> once pmconfigd owns them, keeping the kernel's power-button poweroff as a fallback only when pmconfigd is not running.</div>
+
+<h2 id="open">13. Open questions</h2>
+
+<div class="open-q"><strong>Q1.</strong> M1 &mdash; fix MIG out-of-line data (nextbsd#66), or route over XPC? Recommended: fix #66.</div>
+<div class="open-q"><strong>Q2.</strong> kextd's reboot lock &mdash; serve a trivial <code>kextmanager_lock_reboot</code>, or compile <code>reserve_reboot()</code> out of Apple's reboot and shutdown?</div>
+<div class="open-q"><strong>Q3.</strong> Should applications also hear about shutdown? On macOS apps are shut down by launchd and loginwindow, not told by the root domain; pmconfigd could hook launchd's shutdown path, but Apple does not.</div>
+<div class="open-q"><strong>Q4.</strong> Which laptops define the acceptance set for S3 &mdash; and does the project's T420 count as the reference machine?</div>
+<div class="open-q"><strong>Q5.</strong> The RTC wake alarm (S3): which FreeBSD mechanism, and on which hardware?</div>
+
+<h2 id="tickets">14. E17 ticket map</h2>
+
+<p><strong>EPIC E17 &mdash; Power management</strong>, label <code>area:power</code> (new, in four repos). <strong>Full bodies for every ticket are on the <a href="nextbsd-e17-tickets.html">E17 ticket drafts</a> page</strong>, generated from the same source as this table. None has been filed yet.</p>
+
+<table class="compact">
+<tr><th>#</th><th>Ticket</th><th>Repo</th><th>Depends on</th><th>Status</th></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#k1">K1</a></td><td>kernel: acpi_ReqSleepState waits for a registered sleep listener instead of a /dev/devctl reader; ack timeout becomes tunable</td><td>nextbsd-kernel</td><td>&mdash;</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#k2">K2</a></td><td>kernel: fixed-feature power button emits an ACPI Button event, and the wake PWRBTN status is recorded before it is cleared</td><td>nextbsd-kernel</td><td>&mdash;</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#k3">K3</a></td><td>kernel: devctl_notify hook becomes a list, so an in-kernel bridge can consume ACPI events while /dev/devctl stays unopened</td><td>nextbsd-kernel</td><td>&mdash;</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#k4">K4</a></td><td>kernel: iopmroot bridge driver -- IOPMrootDomain0 node and /dev/iopmroot user client for sleep request, acknowledgement and state</td><td>nextbsd-kernel</td><td>K1, K3, K5, K6</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#k5">K5</a></td><td>kernel: IORegistry property-provider hook, so a driver can add keys to its own node</td><td>nextbsd-kernel</td><td>&mdash;</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#k6">K6</a></td><td>kernel: IORegistry interest notifications -- IOREG_EVENT_INTEREST and an &#x27;IOIN&#x27; Mach message carrying messageType, messageArgument and serial</td><td>nextbsd-kernel</td><td>&mdash;</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#k7">K7</a></td><td>kernel: IOPMPowerSource nodes for ACPI batteries and AC, with Apple&#x27;s power-source keys</td><td>nextbsd-kernel</td><td>K4, K5</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#m1">M1</a></td><td>Decide: pmconfigd&#x27;s out-of-line MIG routines -- fix OOL in mach.ko (nextbsd#66) or route them over XPC</td><td>nextbsd</td><td>&mdash;</td><td><span class="pill warn">needs answer</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#d1">D1</a></td><td>pmconfigd: vendor PowerManagement-1846.120.8.0.1 and boot a minimal daemon as the com.apple.powerd MachService</td><td>nextbsd-userland</td><td>&mdash;</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#d2">D2</a></td><td>pmconfigd: one kernel shim -- root-domain selectors become /dev/iopmroot ioctls, and &#x27;IOIN&#x27; interest messages drive the daemon</td><td>nextbsd-userland</td><td>D1, K4, L1</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#d3">D3</a></td><td>pmconfigd: power sources from IOPMPowerSource nodes -- kIOPS dictionaries, notify state bits, and an AC-only source when there is no battery</td><td>nextbsd-userland</td><td>D1, K7, M1</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#d4">D4</a></td><td>pmconfigd: assertion engine and idle-sleep policy -- PreventUserIdleSystemSleep/DisplaySleep, PreventSystemSleep, sleep and displaysleep timers</td><td>nextbsd-userland</td><td>D1, D2, M1</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#d5">D5</a></td><td>pmconfigd: S3 sleep/wake orchestration -- CanSystemSleep, WillSleep, WillNotSleep, WillPowerOn, HasPoweredOn, with a 30 s acknowledgement budget</td><td>nextbsd-userland</td><td>D2, K1, K4</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#d6">D6</a></td><td>pmconfigd: publish power state for Gershwin in SCDynamicStore -- battery %, AC, lid, sleep pending</td><td>nextbsd-userland</td><td>D3</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#d7">D7</a></td><td>pmconfigd: CPU power policy -- set Intel HWP EPP by AC/battery profile; replaces FreeBSD powerd, with an interim LaunchDaemon until then</td><td>nextbsd-userland</td><td>D3</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#l1">L1</a></td><td>libIOKit: IOServiceAddInterestNotification over &#x27;IOIN&#x27;, and IORegistryEntrySetCFProperty on the root domain</td><td>nextbsd-userland</td><td>K6</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#l2">L2</a></td><td>libIOKit: IOPowerSources (ps.subproj) -- IOPSCopyPowerSourcesInfo and friends, plus &lt;IOKit/ps/*.h&gt;</td><td>nextbsd-userland</td><td>D3, M1</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#l3">L3</a></td><td>libIOKit: IOPMAssertion API and the IOPMLib / IOPMLibPrivate headers</td><td>nextbsd-userland</td><td>D4, M1</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#l4">L4</a></td><td>libIOKit: IORegisterForSystemPower, IOAllowPowerChange, IOCancelPowerChange and IOPMSleepSystem re-aimed at pmconfigd</td><td>nextbsd-userland</td><td>D5, L1</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#c1">C1</a></td><td>pmset: port pmset.m -- -g, -g batt, -g assertions, -g log, sleepnow, displaysleep/sleep settings, schedule</td><td>nextbsd-userland</td><td>D1, D3, L2, L3, L4</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#c2">C2</a></td><td>caffeinate: port caffeinate.c</td><td>nextbsd-userland</td><td>L3</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#s1">S1</a></td><td>reboot/shutdown/halt: vendor Apple&#x27;s system_cmds versions over the BSD PID-1 signal protocol launchd already honours</td><td>nextbsd-userland</td><td>&mdash;</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#s2">S2</a></td><td>pmconfigd: pmset schedule sleep/shutdown/restart performed by pmconfigd itself; wake/poweron waits on S3&#x27;s RTC alarm</td><td>nextbsd-userland</td><td>D1, S1</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#s3">S3</a></td><td>Spike: an RTC wake alarm for pmset schedule wake -- FreeBSD has no rtcwake</td><td>nextbsd-kernel</td><td>K4</td><td><span class="pill info">spike</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#v1">V1</a></td><td>Display sleep and HID idle time without IODisplayWrangler -- pmconfigd owns display idle</td><td>nextbsd-userland</td><td>D4</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#t1">T1</a></td><td>CI: power boot markers -- PM-BOOT-OK, PM-PS-OK, PM-ASSERT-OK, and PM-SLEEP-OK through QEMU S3</td><td>nextbsd</td><td>D1, D5, K2</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#e1">E1</a></td><td>Packaging: power LaunchDaemons, build blocks, man pages, compat strip entries, and ACPI sysctl defaults</td><td>nextbsd-userland</td><td>D1, S1, D7</td><td><span class="pill ok">ready</span></td></tr>
+<tr><td><a href="nextbsd-e17-tickets.html#r1">R1</a></td><td>Spike: an in-kernel IOPMrootDomain -- move the sleep/wake fan-out, acknowledgements and policy into iopmroot</td><td>nextbsd-kernel</td><td>D5</td><td><span class="pill info">spike</span></td></tr>
+</table>
+
+<p><strong>Order:</strong> K1, K2, K3, K5, K6 and D1 start in parallel; M1 is decided early. K4 follows K1/K3/K5/K6, then K7. D2 needs K4 and L1; D3 needs K7; D4 then D5; L2/L3 follow D3/D4, L4 follows D5; C2 as soon as L3 exists, C1 last. S1 is independent; S2 after S1; S3 and R1 are spikes. T1 and E1 track the rest.</p>
+
+<p><strong>Linked, not sub-issues:</strong> <a href="https://github.com/nextbsd/nextbsd/issues/225">nextbsd#225</a>, <a href="https://github.com/nextbsd/nextbsd/issues/66">nextbsd#66</a>, <a href="https://github.com/nextbsd/nextbsd/issues/115">nextbsd#115</a>, <a href="https://github.com/nextbsd/nextbsd/issues/395">nextbsd#395</a>, <a href="https://github.com/nextbsd/nextbsd/issues/179">nextbsd#179</a>, <a href="https://github.com/nextbsd/nextbsd/issues/182">nextbsd#182</a>, <a href="https://github.com/nextbsd/nextbsd/issues/390">nextbsd#390</a>, <a href="https://github.com/nextbsd/nextbsd/issues/428">nextbsd#428</a>.</p>
+
+
+<h2 id="refs">15. References and confidence</h2>
+
+<p>FreeBSD from <code>freebsd/freebsd-src</code> <code>releng/15.1</code>, the NextBSD kernel base. Apple from <code>apple-oss-distributions</code>: PowerManagement-1846.120.8.0.1, IOKitUser-100231.120.3, system_cmds-1042.120.1, and xnu <code>main</code>.</p>
+
+<p><strong>Verified directly while writing this:</strong> the sleep gate in <code>acpi_ReqSleepState</code> (&ldquo;If devd(8) is not running, immediately enter the sleep state&rdquo;, <code>if (!devctl_process_running())</code>); <code>netlink_sysevent.c</code> absent from <code>sys/conf/files</code> while <code>sys/modules/nlsysevent/Makefile</code> exists, and <code>powerd.c</code> <code>kldload</code>ing it; hwregd retired (nextbsd#218, closed) and libIOKit reading <code>/dev/ioregistry</code>; E16 taken by nextbsd#473; nextbsd#66 open.</p>
+
+<p><strong>From the three research reports, not re-verified line by line:</strong> file and line references into pmconfigd, IOKitUser, system_cmds, xnu and the FreeBSD ACPI and cpufreq sources; line counts; message values; the selector table. The reports were read from cloned tags and cite paths throughout; treat exact line numbers as approximate.</p>
+
+<p><strong>Unverified:</strong> per-model S3 behaviour on current laptops; QEMU S3 defaults under UTM; Raspberry&nbsp;Pi&nbsp;5 power-button and cpufreq attachment; whether NextBSD's libdispatch carries the private <code>dispatch_mach_*</code> API; whether launchd supports <code>BOOTSTRAP_PRIVILEGED_SERVER</code> lookups.</p>
+
+<ul>
+  <li>Companion plans: <a href="freebsd-hardware-registry-iokit-plan.html">hardware registry &amp; IOKit (K3)</a> &middot; <a href="freebsd-apple-userland-cmds-plan.html">Apple userland cmds v3</a> &middot; <a href="freebsd-asl-plan.html">ASL &amp; libnotify</a> &middot; <a href="freebsd-libcorefoundation-icu-audit.html">CoreFoundation ICU audit</a> &middot; <a href="freebsd-srclist-build-plan.html">srclist build strategy</a> &middot; <a href="freebsd-notifyd-plan.html">notifyd</a> &middot; <a href="nextbsd-inkernel-iokit-feasibility.html">in-kernel IOKit feasibility</a></li>
+  <li><a href="https://github.com/apple-oss-distributions/PowerManagement">apple-oss-distributions/PowerManagement</a> &middot; <a href="https://github.com/apple-oss-distributions/IOKitUser">IOKitUser</a> &middot; <a href="https://github.com/apple-oss-distributions/xnu">xnu</a> (<code>iokit/Kernel/IOPMrootDomain.cpp</code>)</li>
+</ul>
+
+</body>
+</html>

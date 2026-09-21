@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mounts, fstab and DiskArbitration &mdash; research spike &amp; epic plan</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e8e8; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  td.bad { color:var(--bad); font-weight:600; }
+  td.good { color:var(--good); font-weight:600; }
+  td.warn { color:var(--warn); font-weight:600; }
+  .table-scroll { overflow-x:auto; }
+  @media (max-width:640px) { .wrap { padding:28px 16px 64px; } h1 { font-size:1.6rem; } th,td { padding:7px 8px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD Research</a> &middot; supersedes <a href="freebsd-disk-arbitration-plan.html">FreeBSD DiskArbitration &mdash; porting plan</a> (2026-05, deferred)</p>
+
+<h1>Mounts, fstab and DiskArbitration</h1>
+<p class="lede">Who should mount what on NextBSD, and when? This covers the root filesystem, the live union, the Linux ABI filesystems, and USB sticks going to <code>/Volumes</code>. It answers each by asking what Apple actually does and reading the code NextBSD ships. Three questions drove it: do we need <code>/etc/fstab</code> at all, how should the Linuxulator's mounts be handled, and what would a real DiskArbitration epic look like, including whether vermaden's <code>automount</code> fits.</p>
+<p class="meta">2026-09-20. Research spike. Seven agents, five of them Fable, read Apple's open source (DiskArbitration-535.120.1.0.1 and -268, launchd-106 through -842.92.1, Startup-60/177, files-363 through -662, xnu, diskdev_cmds-757, Libinfo, autofs-322, apple/containerization). They also read FreeBSD <code>releng/15.0</code>, vermaden/automount 1.8.0, dsbmd, bsdisks, GNUstep libs-gui, the Gershwin repos, and all five NextBSD repos at <code>main</code>. Every load-bearing claim is cited as file:line. The latest green CI boot log (nextbsd run 35544120227) was used as runtime evidence. <strong>Planning only: nothing has been filed or changed.</strong> The one exception is <a href="https://github.com/nextbsd/nextbsd/issues/467">nextbsd#467</a>, which was filed earlier today and is answered here.</p>
+
+<div class="callout callout-good">
+<p><strong>The short answers.</strong></p>
+<ol>
+<li><strong>fstab: stop shipping it.</strong> Apple stopped shipping <code>/etc/fstab</code> on Macs in 10.4. The boot hook NextBSD vendored runs <code>mount -vat nonfs</code> <em>only if the file exists</em> (<code>launchctl.c:2401</code>), and it never ran on a stock Mac. Nothing on either NextBSD medium needs the file to boot, fsck, remount root rw, run <code>df</code> or shut down. Removing it fixes #467 by construction. It needs two small companion changes: move <code>noatime</code> into launchd's root remount, and pick a single owner for the root fsck. See <a href="#fstab">&sect;3</a>.</li>
+<li><strong>Linux ABI mounts: they belong to the Linux subsystem, not to a global mount table.</strong> Apple's pattern everywhere is that the daemon that switches a subsystem on also provisions its mounts. That applies to vminitd, the Rosetta-for-Linux guest agent, xsand and <code>container system start</code>. Your #54 decision (&ldquo;no LaunchDaemon, mounts stay manual&rdquo;) still stands under no-fstab: the manual path becomes &ldquo;an admin creates <code>/etc/fstab</code>&rdquo;, which is Apple's own admin hook. An <code>org.nextbsd.linux</code> one-shot is the Darwin-shaped upgrade for when Linux support becomes default. See <a href="#linux">&sect;5</a>.</li>
+<li><strong>USB sticks: build DiskArbitration, don't adopt vermaden's <code>automount</code>.</strong> Use its per-filesystem mount table as a reference and nothing more. It needs <code>devd</code>, which NextBSD removed. It sets no <code>nosuid</code>/<code>nodev</code>, runs <code>fsck -y</code> on every plug, uses one static owner, and its detach step deletes every empty directory under the mount prefix. Under <code>/Volumes</code> that would include Gershwin's own disk-image and network mount points. See <a href="#usb">&sect;6</a>.</li>
+<li><strong>DiskArbitration has no epic.</strong> Today it is a 132-line daemon that logs storage devices and sleeps. The last plan was written against the now-retired hwregd. <a href="#epic">&sect;7</a> proposes the epic: seventeen tickets in four stages, of which Stage&nbsp;A is fstab and boot cleanup that needs no DiskArbitration code.</li>
+</ol>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#today">What NextBSD does at boot today</a></li>
+<li><a href="#apple">What Apple does, era by era</a></li>
+<li><a href="#fstab">Do we need fstab? The audit</a></li>
+<li><a href="#da">What DiskArbitration actually does</a></li>
+<li><a href="#linux">Linux ABI filesystems &mdash; the Darwin shape</a></li>
+<li><a href="#usb">USB sticks, <code>/Volumes</code>, vermaden and Gershwin</a></li>
+<li><a href="#epic">The epic: DiskArbitration &amp; mounts</a></li>
+<li><a href="#corrections">Corrections to existing tickets and pages</a></li>
+<li><a href="#open">Open questions</a></li>
+<li><a href="#method">Methodology note</a></li>
+</ol>
+</div>
+
+<h2 id="today">1. What NextBSD does at boot today</h2>
+<p>The whole boot mount sequence, in execution order. All of it is on <code>main</code> and was confirmed against the CI boot log.</p>
+<div class="table-scroll"><table>
+<tr><th>#</th><th>Step</th><th>Where</th><th>Needs fstab?</th></tr>
+<tr><td>1</td><td>Kernel mounts root <strong>read-only</strong> from the baked <code>ROOTDEVNAME="ufs:/dev/ufs/ROOTFS"</code>. On installed EFI systems, <code>loader.conf</code> overrides it with <code>vfs.root.mountfrom=ufs:/dev/ufs/NEXTBSD</code>. The kernel forces <code>ro</code> regardless of options. devfs goes on <code>/dev</code>.</td><td><code>nextbsd-kernel config/NEXTBSD:15</code>; FreeBSD <code>vfs_mountroot.c:789, 1148-1153</code>; installer <code>do-install.sh:300</code></td><td class="good">no</td></tr>
+<tr><td>1&prime;</td><td><em>Live media only:</em> the mfsroot <code>/init</code> runs devfs, then cd9660 on <code>/media</code>, then uzip on <code>/rofs</code>, then tmpfs <code>/cow</code>, then <code>mount_unionfs /cow /rofs</code>, then devfs on <code>/rofs/dev</code>, then <code>vfs.pivot</code>, then execs launchd.</td><td><code>nextbsd build.sh:885-975</code></td><td class="good">no</td></tr>
+<tr><td>2</td><td>launchd (PID&nbsp;1), before any job: if <code>/</code> is <code>MNT_RDONLY</code>, run <code>fsck -p /</code> and then <code>mount -uw /</code>. <em>This is NextBSD-local code; Apple's launchd did no mount work.</em></td><td><code>launchd.c:306-313, 443-475</code></td><td class="good">no (statfs fallback)</td></tr>
+<tr><td>3</td><td>launchd spawns <code>launchctl bootstrap -S System</code>, which runs <code>system_specific_bootstrap()</code>. That function is byte-identical to Apple's launchd-842.92.1 up to line 2570.</td><td><code>core.c:7336</code>; <code>launchctl.c:2285-2494</code></td><td>&mdash;</td></tr>
+<tr><td>3a</td><td>Applies <code>/etc/sysctl.conf</code> (one <code>sysctl -w</code> per line).</td><td><code>launchctl.c:2326, 4330-4365</code></td><td>&mdash;</td></tr>
+<tr><td>3b</td><td><code>do_potential_fsck()</code> is <strong>dormant</strong>: it returns immediately because step 2 already made <code>/</code> rw. Its Darwin <code>fsck -q</code> is not a valid FreeBSD flag anyway.</td><td><code>launchctl.c:2357, 4019-4113</code></td><td class="warn">only in a failure path</td></tr>
+<tr><td>3c</td><td>Reads <code>/etc/launchd.conf</code>.</td><td><code>launchctl.c:2394</code></td><td>&mdash;</td></tr>
+<tr><td>3d</td><td><strong><code>if (path_check("/etc/fstab")) mount -vat nonfs</code></strong>. This is plain <code>-a</code>, so <code>late</code> lines are never mounted. It remounts <code>/</code> from the root line, which is where <code>noatime</code> comes from today and is also the cause of #467 on the live union.</td><td><code>launchctl.c:2400-2405</code>; FreeBSD <code>mount.c:300-323, 456-458, 567</code></td><td class="bad">this is the only fstab consumer</td></tr>
+<tr><td>3e</td><td><code>empty_dir(/var/run)</code> and <code>empty_dir(/tmp)</code>. These <strong>force-unmount</strong> anything mounted under either path, so an fstab tmpfs on <code>/tmp</code> is undone one step after it is mounted.</td><td><code>launchctl.c:2432-2433, 4276-4277</code></td><td>&mdash;</td></tr>
+<tr><td>3f</td><td><code>load -D all</code> starts every LaunchDaemon, diskarbitrationd included. No plist mounts anything.</td><td><code>launchctl.c:2469-2476</code></td><td>&mdash;</td></tr>
+</table></div>
+<p>The shipped fstab, from <code>nextbsd-overlays rootfs/private/etc/fstab</code>, has a single commit. Both claims in its header are now false: root comes from the kernel's <code>ROOTDEVNAME</code> (#188), not <code>loader.conf</code>, and launchctl does run <code>mount -a</code>.</p>
+<pre><code># The kernel mounts root directly via loader.conf's vfs.root.mountfrom
+# (ufs:/dev/ufs/ROOTFS, options=rw). This entry exists for mount(8) /
+# df(1) correctness; launchd is PID 1 and bypasses rc.d, so nothing
+# runs `mount -a` over the rest of this file.
+/dev/ufs/ROOTFS  /  ufs  rw,noatime  1  1</code></pre>
+
+<h2 id="apple">2. What Apple does, era by era</h2>
+<div class="table-scroll"><table>
+<tr><th>Step</th><th>FreeBSD rc.d</th><th>Mac OS X 10.0&ndash;10.3 (<code>/etc/rc</code>)</th><th>10.4&ndash;10.9 (rc &rarr; <code>launchctl bootstrap</code>)</th><th>10.10+ / APFS</th></tr>
+<tr><td>Root mounted ro</td><td>kernel</td><td>kernel</td><td>kernel</td><td>kernel; sealed snapshot, verified by the bootloader or kernel</td></tr>
+<tr><td>Root fsck</td><td><code>rc.d/fsck</code>, fstab pass numbers (skipped if there is no fstab)</td><td><code>/etc/rc.boot</code> <code>fsck -p</code></td><td><code>do_potential_fsck()</code> <code>fsck -q</code>/<code>-fy</code>, no fstab</td><td>launchd boot task <code>fsck -qL -R 1</code></td></tr>
+<tr><td>Root rw</td><td><code>rc.d/root</code> <code>mount -uw /</code></td><td>via <code>mount -vat hfs</code> (see &dagger;)</td><td><code>mount -uw /</code>, only if ro</td><td><code>mount -P 2</code>: <code>upgrade_mount("/")</code>, or on ROSV root stays ro and <code>apfs_boot_util 2</code> mounts Data</td></tr>
+<tr><td><code>/dev</code>, <code>/dev/fd</code></td><td>kernel devfs; fdescfs optional</td><td>kernel devfs, plus <code>mount -t fdesc -o union stdin /dev</code> in rc</td><td>kernel devfs, with fdesc folded in</td><td>kernel (<code>bsd_init.c:999-1006</code>, <code>devfs_fdesc_init()</code>)</td></tr>
+<tr><td>Other local filesystems</td><td><code>mountcritlocal</code> <code>mount -a</code></td><td><code>mount -vat hfs</code>, <code>mount -vat ufs</code></td><td><code>[ -f /etc/fstab ] &amp;&amp; mount -vat nonfs</code>, <strong>skipped on every stock Mac</strong></td><td>no <code>mount -a</code> task; <code>apfs_boot_util 1/2</code> mounts the volume group; fstab is honoured by diskarbitrationd</td></tr>
+<tr><td>Network filesystems</td><td><code>mountcritremote</code></td><td>NetInfo <code>/mounts</code></td><td>automountd (10.5+)</td><td>automountd <code>-fstab</code>/<code>-static</code> maps</td></tr>
+<tr><td>Swap</td><td><code>swapon -aq</code> (fstab <code>sw</code>)</td><td>dynamic_pager</td><td>dynamic_pager</td><td><code>enable-swap</code> task; VM volume</td></tr>
+<tr><td><code>/tmp</code>, <code>/var/run</code> cleanup</td><td><code>cleartmp</code>, <code>var</code></td><td>rc</td><td><code>empty_dir()</code> (force-unmounts)</td><td><code>dirs_cleaner</code></td></tr>
+<tr><td>Mount points on a ro root</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td><code>/etc/synthetic.conf</code>, materialised by the kernel via <code>apfs.util</code></td></tr>
+<tr><td><strong>Ships <code>/etc/fstab</code>?</strong></td><td>yes</td><td>10.0: no (only NeXT <code>fstab.hd/.sd/.rd</code>). 10.3: comment-only</td><td class="good"><strong>no</strong>. From files-467 on, the <code>files</code> project installs fstab only <code>ifeq "$(Product)" "iPhone"</code></td><td class="good"><strong>no</strong> (verified on macOS 27.0)</td></tr>
+</table></div>
+<p>&dagger; The 10.0&ndash;10.3 rc scripts contain no unconditional <code>mount -uw /</code>. Darwin <code>mount(8)</code> forces <code>MNT_UPDATE</code> for <code>/</code> (<code>diskdev_cmds mount.c:779</code>), and later Libinfo <em>synthesises</em> a root fstab entry when the file is missing (<code>Libinfo-600 file_module.c:1876-1913, 2011-2015</code>). That is how <code>getfsfile("/")</code> and <code>df</code> stay correct on a Mac with no fstab. The exact 10.0 mechanism is unverified.</p>
+<p><strong>What fstab is for on modern macOS.</strong> <code>fstab(5)</code> describes it as an admin-maintained file, edited with <code>vifs(8)</code>, that is read by diskarbitrationd, fsck, mount and umount. diskarbitrationd consults it &ldquo;for user-defined mount points, indexed by filesystem&rdquo; by <code>UUID=</code>/<code>LABEL=</code>, and automountd builds its <code>-fstab</code>/<code>-static</code> maps from it. It is a policy overlay, not a boot mount list. Apple moved the boot-critical set <em>out</em> of fstab and into code (<code>mount -P</code> never reads fstab on macOS: <code>diskdev_cmds-757 mount.c:286-288</code>).</p>
+<p><strong>The model that fits the live ISO is modern macOS, not 10.x.</strong> A read-only sealed root plus a writable volume mounted by a PID-1 boot task, with top-level mount points declared in <code>synthetic.conf</code>, is structurally NextBSD's read-only uzip base plus the tmpfs union assembled by <code>/init</code>. The Darwin lesson is to keep boot-critical mounts in boot code and never express them as fstab lines.</p>
+
+<h2 id="fstab">3. Do we need fstab? The audit</h2>
+<p>We checked every consumer of <code>/etc/fstab</code> that ships in the image. The base is a full buildworld minus the superseded list, and the Darwin userland was grepped for <code>getfsent</code>/<code>getfsfile</code>/<code>_PATH_FSTAB</code>: only <code>launchctl.c</code> uses them.</p>
+<div class="table-scroll"><table>
+<tr><th>Consumer</th><th>Runs at boot?</th><th>Without fstab</th></tr>
+<tr><td>launchctl <code>mount -vat nonfs</code></td><td>yes, if the file exists</td><td class="good">skipped entirely, so #467 cannot happen</td></tr>
+<tr><td>launchd <code>fsck -p /</code></td><td>yes (disk)</td><td class="good">resolves <code>/</code> via <code>getmntpoint()</code>, defaults to ufs, and runs the same <code>fsck_ufs -p</code> (<code>fsck.c:192-230</code>). Root is still checked.</td></tr>
+<tr><td>launchd <code>mount -uw /</code></td><td>yes (disk)</td><td class="good"><code>have_fstab=0</code> branch uses <code>f_mntfromname</code> (<code>mount.c:357-395</code>). Identical result.</td></tr>
+<tr><td>Root <code>noatime</code></td><td>via step 3d</td><td class="warn">lost; the fstab root line was its only source</td></tr>
+<tr><td>launchctl fallback <code>fsck -fy</code></td><td>dormant</td><td class="warn">no-arg <code>checkfstab</code> returns 8 and the machine halts (<code>preen.c:99-102</code>). Reachable only if launchd's own remount has already failed.</td></tr>
+<tr><td><code>swapon -a</code>, <code>umount -a</code>, bare <code>fsck</code></td><td>nothing runs them</td><td>&ldquo;fstab: /etc/fstab:0: No such file&rdquo; when run by hand (<code>umount -a</code> exits 1)</td></tr>
+<tr><td><code>df</code>, <code>mount</code> (no args), shutdown</td><td>&mdash;</td><td class="good">unaffected: <code>getmntinfo</code>, and launchd calls <code>reboot(2)</code>. The header's &ldquo;exists for mount(8)/df(1) correctness&rdquo; is wrong.</td></tr>
+<tr><td>Installer</td><td>&mdash;</td><td class="good">does not write an fstab. It cpdup-clones the running root and seds the label only <code>if [ -f ]</code> (<code>do-install.sh:288</code>).</td></tr>
+<tr><td>Swap</td><td>none exists</td><td class="good">no dependency. E14's <code>swapd</code> is the activation path (see below).</td></tr>
+<tr><td>diskarbitrationd</td><td>skeleton</td><td class="good">unaffected today</td></tr>
+</table></div>
+
+<h3>Options</h3>
+<div class="table-scroll"><table>
+<tr><th>Option</th><th>Live</th><th>Installed</th><th>Verdict</th></tr>
+<tr><td><strong>A. Ship no fstab</strong></td><td>fixes #467</td><td>boots fine; needs <code>noatime</code> moved into launchd; the <code>fsck -fy</code> halt edge case remains unless that dead Darwin path is removed</td><td class="good">recommended: this is what every Mac since 10.4 does</td></tr>
+<tr><td>B. Comment-only fstab (root line removed)</td><td>fixes #467; <code>mount -a</code> becomes a no-op</td><td>same as A, minus the stderr noise and the halt edge case; an obvious place for admin lines</td><td class="good">conservative fallback, also fine</td></tr>
+<tr><td>C. Root line with <code>noauto</code> (#467 option A)</td><td>fixes #467</td><td>keeps a misleading entry that names the wrong device on live media</td><td class="warn">works, but fixes the symptom rather than the model</td></tr>
+<tr><td>D. Live-only removal</td><td>fixes #467</td><td>unchanged, <em>except</em> the installer clones the live root, so installs differ by which medium they came from</td><td class="bad">not recommended</td></tr>
+</table></div>
+<div class="callout">
+<p><strong>Recommendation: A, with two companion changes.</strong></p>
+<ol>
+<li><code>launchd.c:446</code>: remount with <code>mount -u -o rw,noatime /</code> so installed disks keep today's observed <code>noatime</code> (CI log line 7985).</li>
+<li>Pick <strong>one</strong> owner for root fsck and remount. Today both launchd's <code>launchd_root_make_writable()</code> and launchctl's <code>do_potential_fsck()</code> exist, and Apple's launchd did neither itself. Keep launchd's version, because it runs first and uses valid FreeBSD flags. Delete or <code>#ifdef</code> the dormant Darwin <code>fsck -q</code>/<code>-fy</code> path, which removes the halt edge case with it.</li>
+</ol>
+<p>Existing installs keep their fstab: the overlay is not package-owned, so <code>pkg upgrade</code> never touches it. The new behaviour applies to new images only. If anyone wants B instead, the only difference is whether the overlays repo ships an empty file.</p>
+</div>
+
+<h2 id="da">4. What DiskArbitration actually does</h2>
+<p>Read from <code>apple-oss-distributions/DiskArbitration</code> at <code>535.120.1.0.1</code> (current) and <code>268</code> (10.9).</p>
+<h3>4.1 fstab is a policy overlay, never a mount list</h3>
+<ul>
+<li>DiskArbitration ships its own <code>getfsent</code> copy (<code>diskarbitrationd/fstab.c</code>) and builds a <em>mount map</em> in <code>__DAMountMapCreate1</code> (<code>DASupport.m:1488-1634</code>). Only three spec forms are accepted: <code>UUID=</code>, <code>LABEL=</code> (matched against the volume name) and <code>DEVICE=&lt;plist&gt;</code>. <strong>Anything else produces no entry</strong>: <code>/dev/da0p1</code>, <code>tmpfs</code>, <code>host:/export</code>, <code>none</code>, and a root line are all ignored.</li>
+<li>Honoured fields: mount point (<code>none</code> means the default), options passed through verbatim, <code>noauto</code>, and a type filter matched against the fs-bundle <code>CFBundleName</code>. freq and passno are ignored.</li>
+<li>The map is consulted only inside <code>DAMountWithArguments(disk, &hellip;)</code> (<code>DAMount.c:1312-1430</code>), which takes a disk DiskArbitration has already discovered. <code>gDAMountMapList1</code> has exactly three references, and none of them iterates fstab to mount. Re-reading is gated on mtime at the next disk event after idle; there is no file watch.</li>
+<li>Consequence: a Linux-compat line in fstab means nothing to DiskArbitration. On macOS only the legacy <code>mount -vat nonfs</code> path would act on it.</li>
+</ul>
+<h3>4.2 Pipeline</h3>
+<p>IOMedia appears, then <strong>Probe</strong>, then <strong>Peek</strong>, then <strong>Mount</strong>, then <strong>Appeared</strong> (<code>DAStage.c:139-559</code>).</p>
+<ul>
+<li><strong>Probe:</strong> runs every fs bundle in <code>/System/Library/Filesystems/*.fs</code> whose <code>FSMediaProperties</code> (content hint, Leaf, Whole) match, sorted by <code>FSProbeOrder</code>. Each bundle's <code>&lt;util&gt; -p</code> returns the name, <code>-k</code> the UUID, and <code>fsck -q</code> reports whether the volume is clean.</li>
+<li><strong>Mount:</strong> runs <code>/sbin/mount -t &lt;kind&gt; -k -o &hellip;</code> <em>as the disk's owner uid</em>.</li>
+<li><strong>Mount point:</strong> <code>/Volumes/&lt;name&gt;</code>, falling back to <code>&lt;name&gt; 1</code> &hellip; <code>&lt;name&gt; 99</code>. It is created with <code>mkdir 0111</code> and chowned (<code>DAMount.c:725-898</code>). At startup DiskArbitration sweeps <code>/Volumes</code> and removes stale directories (<code>DAMain.c:150-246</code>), so <strong>the OS owns <code>/Volumes</code></strong>, which settles gershwin-internal#22.</li>
+<li><strong>Trust defaults</strong> (<code>DAMount.c:940-972, 1527-1543</code>): removable and external media are untrusted and get <code>nosuid,nodev,noowners</code>; internal media is trusted. Media that is not writable gets <code>rdonly</code>.</li>
+<li><strong>Defer:</strong> removable and external media are not auto-mounted until a console user exists (<code>DAMount.c:1498-1521</code>). They are mounted at login and unmounted at logout.</li>
+<li><strong>Dirty volumes:</strong> an automatic mount of a dirty volume runs <code>fsck -y</code> once, then retries with <code>force,rdonly</code>.</li>
+<li><strong>Mounts it didn't make:</strong> on <code>kNotifyVFSMount</code>, DiskArbitration walks <code>getmntinfo</code> and adopts NFS/SMB mounts as disks (<code>DAServer.c:3362-3406</code>). That is how Finder sees them. <strong>DiskArbitration never initiates network or pseudo-filesystem mounts.</strong></li>
+<li><strong>Unmount and eject:</strong> an approval broadcast with a 10&nbsp;s timer. The first dissenter wins, <code>Force</code> overrides, and on <code>EBUSY</code> a dissenter carries the offending PID. The &ldquo;volume mounted&rdquo; signal clients watch for is <code>DescriptionChanged</code> on <code>VolumePath</code>.</li>
+<li><strong>Launchd plist:</strong> <code>MachServices com.apple.DiskArbitration.diskarbitrationd</code>, <code>KeepAlive</code>, no <code>RunAtLoad</code>.</li>
+</ul>
+<h3>4.3 NextBSD's skeleton, against that</h3>
+<div class="table-scroll"><table>
+<tr><th>Item</th><th>NextBSD today</th><th>Apple</th></tr>
+<tr><td>Mach service</td><td class="bad"><code>com.apple.DiskArbitration</code> (<code>diskarbitrationd.c:97</code>, plist)</td><td><code>com.apple.DiskArbitration.diskarbitrationd</code> (<code>DAInternal.h:41</code>). The client framework looks this name up, so rename before porting clients.</td></tr>
+<tr><td>What it watches</td><td class="warn">newbus nodes via <code>/dev/ioregistry</code> (<code>vtblk</code>, <code>umass</code>, <code>ahcich</code>)</td><td>IOMedia: one object per whole disk <em>and</em> per partition. On FreeBSD that is the GEOM provider graph.</td></tr>
+<tr><td>Framework, MIG, mounting, fstab</td><td class="bad">none; the daemon sleeps in <code>while(!got_term) sleep(60)</code></td><td>full</td></tr>
+<tr><td>Consumers</td><td>only <code>datest</code></td><td>Finder, Disk Utility, installers</td></tr>
+</table></div>
+<p><strong>What ports and what doesn't.</strong> The stage machine, request and queue plumbing, <code>DAMount.c</code> policy, fstab/vsdb overlays, the fs-bundle model, <code>DACommand</code>, the MIG interface and the whole client framework are C over CF, libdispatch and Mach, all of which NextBSD has. What needs rewriting is everything IOKit-specific: IOMedia creation and description, interest notifications, <code>DKIOCEJECT</code>, SCDynamicStore console user, <code>notify(3)</code> VFS keys, <code>sandbox_check</code>, Authorization Services, and <code>proc_listpidspath</code>. APFS, CoreStorage and FSKit are deleted. The code is APSL&nbsp;2.0, like launchd already in the tree.</p>
+<p><strong>IOMedia &rarr; GEOM mapping.</strong> Whole disk = DISK-class provider; partition = PART provider. The content hint is gpart <code>rawtype</code>: the GPT GUIDs are the same strings Apple uses, so fs-bundle <code>FSMediaTypes</code> keys match verbatim, and MBR types need a small table. Probing is done with <code>fstyp(8)</code> (<code>-l</code> gives the label), wrapped in a <code>*.util -p/-k</code> shim. Removable, vendor and model come from CAM and the newbus parent, which is where the existing ioregistry watch is still useful. Adopting mounts it didn't make uses <code>kqueue EVFILT_FS</code>; that it delivers <code>VQ_MOUNT</code> on NextBSD is unverified. <strong>There is no devd</strong>, so the arrival event is the kernel registry channel plus a libgeom walk.</p>
+
+<h2 id="linux">5. Linux ABI filesystems &mdash; the Darwin shape</h2>
+<p><strong>What's left of <code>rc.d/linux</code>'s job on NextBSD.</strong> The module loads are gone: the Linuxulator, linprocfs and linsysfs are compiled into the kernel, <code>NO_MODULES=yes</code> is set, and <code>kldload</code> is stripped. <code>fallback_brand=3</code> is already the kernel default (patch 0009). The only unowned piece is <strong>the five mounts</strong>:</p>
+<pre><code>linprocfs  $emul/proc      nocover
+linsysfs   $emul/sys       nocover
+devfs      $emul/dev       nocover
+fdescfs    $emul/dev/fd    nocover,linrdlnk
+tmpfs      $emul/dev/shm   nocover,mode=1777</code></pre>
+<p>These are rc.d/linux:74-80. <code>/dev/shm</code> needs no mkdir, because <code>linux_dev_shm_create()</code> puts <code>shm/</code> in every devfs instance at ABI init (<code>linux.c:699-709</code>). #460 wants the same set on the native root for AppImages as well.</p>
+
+<h3>5.1 Apple precedent</h3>
+<p>Apple never uses fstab or autofs for a subsystem's pseudo filesystems:</p>
+<ul>
+<li><strong>The kernel owns its own pseudo-filesystems</strong> with zero configuration: devfs, with fdesc folded in.</li>
+<li><strong>Every other compatibility or virtualisation subsystem is provisioned by its owning daemon</strong> when it is enabled, and the same daemon registers the exec handler:
+<ul>
+<li><strong>apple/containerization:</strong> vminitd mounts <code>proc</code>, <code>sysfs</code>, <code>devtmpfs</code>, <code>/dev/shm</code> and <code>devpts</code> per container (<code>LinuxContainer.swift:445-456</code>). The Rosetta guest agent mounts the virtiofs share and then writes the binfmt_misc registration (<code>Vminitd+Rosetta.swift:21-34</code>, <code>Binfmt.swift:64-82</code>). That registration is the exact analogue of <code>fallback_brand</code>.</li>
+<li><strong>xsand:</strong> ships inside its fs bundle, is <code>Disabled</code> until turned on, and then mounts the SAN.</li>
+<li><strong><code>container system start</code>:</strong> registers its own launchd job.</li>
+</ul></li>
+<li><strong>autofs is for network and home directories only.</strong> automountd has no <code>RunAtLoad</code>; the kernel upcalls it through <code>HostSpecialPort 11</code>.</li>
+</ul>
+
+<h3>5.2 Options</h3>
+<div class="table-scroll"><table>
+<tr><th>Option</th><th>Precedent</th><th>Status on NextBSD</th><th>Verdict</th></tr>
+<tr><td><strong>H. Manual</strong> (the #54 decision). Under no-fstab it becomes &ldquo;admin creates <code>/etc/fstab</code> with these lines&rdquo;.</td><td>Apple's admin hook (<code>mount -vat nonfs</code> if fstab exists)</td><td class="good">works today (#171's reboot evidence). Lines mount in file order, so devfs comes before fdescfs. Never use <code>late</code>; the <code>lindebugfs &hellip; late</code> line in #460 will never mount.</td><td class="good">keep as the default while Linux support is opt-in</td></tr>
+<tr><td><strong>a. <code>org.nextbsd.linux</code></strong> one-shot (<code>RunAtLoad</code>, <code>KeepAlive false</code>) plus <code>/usr/libexec/nextbsd-linux --compat [--native]</code></td><td>vminitd, the Rosetta guest, xsand, rc.d/linux</td><td>no kernel or launchd change. It ships in the package, so installs get it on upgrade, and it no-ops if <code>/compat/linux</code> is absent. For installs made after boot, use <code>launchctl kickstart -k system/org.nextbsd.linux</code>, optionally from a pkg trigger.</td><td class="good">the Darwin-shaped upgrade when Linux support becomes default; this revisits #54</td></tr>
+<tr><td>b. autofs direct map (<code>/- auto_linux</code>, <code>-fstype=linprocfs</code>)</td><td>macOS <code>/- -static</code></td><td>technically works: automountd passes the location verbatim (<code>automountd.c:347</code>). But it needs <code>options AUTOFS</code>, which is absent and cannot be loaded as a module. Nested <code>dev*</code> keys trigger eagerly. <code>stat()</code> doesn't trigger. autounmountd would wipe <code>/dev/shm</code>. A dead daemon means a 30&nbsp;s hang with no fallback to native <code>/proc</code>.</td><td class="bad">no; maybe later, for lazily mounting native <code>/proc</code>/<code>/sys</code> only</td></tr>
+<tr><td>c. Kernel mounts on ABI init</td><td>devfs</td><td><code>linux_common</code> inits at <code>SI_SUB_EXEC</code>, before root exists, so this needs a mountroot hook and a new kernel patch</td><td class="bad">no</td></tr>
+<tr><td>e. <code>WatchPaths</code>/<code>PathState</code> on <code>/compat/linux</code></td><td>&mdash;</td><td class="bad"><strong>inert</strong>: launchctl rewrites these keys to <code>com.apple.fsevents.matching</code> LaunchEvents (<code>launchctl.c:1610-1648</code>), and nothing on NextBSD delivers them (no <code>EventMonitor</code> job, no <code>PATH_*</code> semaphores in <code>core.c:322-333</code>)</td><td class="bad">not viable without writing an event monitor</td></tr>
+</table></div>
+<p><strong>FUSE for AppImage (#460) needs no provisioning.</strong> <code>fusefs</code> is static, <code>/dev/fuse</code> exists from boot with mode 0666 (<code>fuse_device.c:615-619</code>), <code>vfs.usermount=1</code> is patch 0008, and the Linuxulator itself translates Linux <code>mount("fuse.*")</code> into a <code>fusefs</code> mount (<code>linux_file.c:1108-1132</code>). An unprivileged mount end to end is still the untested item #460 lists.</p>
+
+<h2 id="usb">6. USB sticks, <code>/Volumes</code>, vermaden and Gershwin</h2>
+<h3>6.1 vermaden/automount</h3>
+<p>A 779-line <code>sh</code> script (v1.8.0, BSD-2 in its header) run by devd on every <code>DEVFS CREATE/DESTROY</code> for <code>da|mmcsd|ugen|cd</code>. Gershwin already installs it on its FreeBSD target (<code>SystemPrepare.sh:584</code>) and documents it. gershwin-desktop#60 only asks for <code>MNT_PREFIX=/Volumes</code>.</p>
+<div class="table-scroll"><table>
+<tr><th>Good reference material</th><th>Wrong for NextBSD</th></tr>
+<tr><td>The per-filesystem helper table: <code>mount_msdosfs -L -D -u -g</code>, <code>mount.exfat</code>, <code>ntfs-3g</code>, <code>lklfuse</code> for ext4/XFS, <code>hfsfuse</code>, <code>mount_cd9660 -C UTF-8</code>. Also the <code>ro</code> fallback after retries, label-based names with collision suffixes (<code>NICENAMES</code>), and skipping system partitions (<code>IGNORE_SYS_PARTS</code>).</td><td>Requires <strong>devd</strong>, which NextBSD removed. Sets <strong>no <code>nosuid</code>/<code>nodev</code></strong>, only <code>noatime</code>. Runs <strong><code>fsck -y</code> on every plug</strong>. Uses one static <code>USER</code>/<code>MNT_GROUP</code>. <code>USERUMOUNT</code> setuids <code>/sbin/mount*</code>. It has no NVMe case, no eject and no API. <strong>Detach runs <code>find $MNT_PREFIX -depth 1 -empty -delete</code></strong>, which under <code>/Volumes</code> would remove Gershwin's VolumeManager and NetworkVolumeManager mount points.</td></tr>
+</table></div>
+<p>The alternatives are worse fits:</p>
+<ul>
+<li><strong>dsbmd</strong> is the closest in shape (a daemon with a socket protocol, eject, and per-user mounts), but it is single-maintainer, last updated in 2023, and needs devd.</li>
+<li><strong>bsdisks</strong> is actively maintained, but it is a UDisks2 clone built on Qt6, polkit and D-Bus.</li>
+<li><strong>autofs <code>-media</code></strong> has no events, no eject and no user ownership.</li>
+</ul>
+<h3>6.2 What Gershwin needs, and already has</h3>
+<ul>
+<li><strong>Discovery:</strong> Workspace polls <code>getmntinfo</code> every 1.5&nbsp;s for mounts under <code>/media</code>, <code>/Volumes</code> or <code>/run/media</code> (<code>GWDesktopManager.m:1142</code>, <code>Workspace.m:5493</code>). Anything DiskArbitration mounts under <code>/Volumes</code> appears with <strong>zero Gershwin changes</strong>.</li>
+<li><strong>Notifications:</strong> <code>NSWorkspaceDidMountNotification</code> is observed, but nothing on FreeBSD posts it. GNUstep's <code>_GSWorkspaceCenter</code> rebroadcasts workspace notifications over <code>NSDistributedNotificationCenter</code> (<code>NSWorkspace.m:327-440</code>). A daemon posting <code>NSWorkspaceDidMountNotification</code> (object <code>GSWorkspaceNotification</code>, <code>NSDevicePath</code>) reaches every app. This is the bridge gershwin-desktop issues#26 proposed.</li>
+<li><strong>The real gap is unmount and eject without root.</strong> <code>GWUnmountHelper</code> falls back to <code>sudo -A umount -f</code>, and there is no real USB eject anywhere. That is exactly <code>DADiskUnmount</code>/<code>DADiskEject</code> with dissenters.</li>
+<li><strong>Other consumers waiting for a disk registry:</strong> the DiskUtility backends, ISOWrite (&ldquo;wait for automount&rdquo;), installer #64 (unmount all volumes on the target), and workspace#78 (drag-and-drop install, which needs a device, partition and volume model).</li>
+</ul>
+<div class="callout callout-warn">
+<p><strong>If a demo is needed before Stage C lands</strong>, a throwaway vermaden setup is possible, but only with devd run from a LaunchDaemon, <code>REMOVEDIRS=NO</code> (to protect <code>/Volumes</code>), and <code>USERUMOUNT=NO</code>. It would still have no <code>nosuid</code> and would still run <code>fsck -y</code>. It is not recommended for a release.</p>
+</div>
+
+<h2 id="epic">7. The epic: DiskArbitration &amp; mounts</h2>
+<p>Proposed, <strong>not filed</strong>. The epic number is left to you (E15?). Tickets are grouped into stages that can land independently.</p>
+<h3>Stage A &mdash; fstab and boot (no DiskArbitration code; fixes #467)</h3>
+<div class="table-scroll"><table>
+<tr><th>#</th><th>Repo</th><th>Ticket</th></tr>
+<tr><td>A1</td><td>nextbsd-overlays</td><td>Stop shipping <code>rootfs/private/etc/fstab</code> (or ship a comment-only one: option B). Closes #467.</td></tr>
+<tr><td>A2</td><td>nextbsd-userland</td><td>launchd root remount applies <code>noatime</code> (<code>launchd.c:446</code>). CI asserts <code>noatime</code> in the <code>mount</code> line.</td></tr>
+<tr><td>A3</td><td>nextbsd-userland</td><td>Single owner for root fsck and remount: remove or <code>#ifdef</code> launchctl's dormant Darwin <code>do_potential_fsck()</code> path (<code>fsck -q</code> is invalid on FreeBSD; <code>fsck -fy</code> halts without fstab).</td></tr>
+<tr><td>A4</td><td>nextbsd, nextbsd-userland</td><td>Fix stale comments: <code>build.sh:318-319, 356-357</code>, <code>do-install.sh:14-15, 282-288</code> and the installer README. Add a boot-test gate on <code>Cannot union mount root filesystem</code> and <code>fwexec(mount_tool</code>.</td></tr>
+<tr><td>A5</td><td>nextbsd-userland</td><td>Decide on <code>empty_dir()</code> force-unmounting <code>/tmp</code> and <code>/var/run</code> children after <code>mount -a</code>. Either leave it as Apple did (document it) or skip mount points, as modern <code>dirs_cleaner</code> does. This matters if tmpfs <code>/tmp</code> is ever wanted.</td></tr>
+</table></div>
+<h3>Stage B &mdash; Linux ABI mounts (E13; revisits #54 only if you choose to)</h3>
+<div class="table-scroll"><table>
+<tr><th>#</th><th>Repo</th><th>Ticket</th></tr>
+<tr><td>B1</td><td>docs / #54</td><td>Document the manual path under no-fstab: &ldquo;create <code>/etc/fstab</code> with these five lines, no <code>late</code>&rdquo;. Correct #171's title and premise and #460's <code>lindebugfs &hellip; late</code> line.</td></tr>
+<tr><td>B2</td><td>nextbsd-userland</td><td><em>(When Linux support becomes default.)</em> <code>org.nextbsd.linux</code> one-shot plus <code>/usr/libexec/nextbsd-linux --compat [--native]</code>, idempotent (<code>nocover</code>), a no-op without <code>/compat/linux</code>, and <code>kickstart -k</code> after pkg installs.</td></tr>
+</table></div>
+<h3>Stage C &mdash; diskarbitrationd, the daemon</h3>
+<div class="table-scroll"><table>
+<tr><th>#</th><th>Repo</th><th>Ticket</th></tr>
+<tr><td>C1</td><td>nextbsd-userland</td><td>Rename the Mach service to <code>com.apple.DiskArbitration.diskarbitrationd</code> (daemon, plist, <code>datest</code>). Refresh the stale hwregd comments.</td></tr>
+<tr><td>C2</td><td>nextbsd-userland</td><td>DADisk model from GEOM. On a kernel-registry arrival, walk libgeom DISK, PART and LABEL providers and build the <code>kDADiskDescription*</code> keys (BSD name, whole/leaf, size, content hint = gpart rawtype, partition UUID, removable, internal, vendor, model). Log only. Reference: the installer's <code>probe-disks.sh</code>.</td></tr>
+<tr><td>C3</td><td>nextbsd-userland</td><td>Adopt mounts DiskArbitration didn't make: <code>EVFILT_FS</code> plus a <code>getmntinfo</code> diff, then <code>DADiskCreateFromVolumePath</code>. First verify <code>VQ_MOUNT</code> delivery on NextBSD.</td></tr>
+<tr><td>C4</td><td>nextbsd-userland</td><td>Filesystem bundles: <code>/System/Library/Filesystems/{msdos,exfat,ntfs,ufs,cd9660,udf}.fs</code> in Apple's schema, with an <code>fstyp</code>-backed <code>*.util -p/-k</code> shim that follows the <code>FSUR_*</code> exit contract.</td></tr>
+<tr><td>C5</td><td>nextbsd-userland</td><td>Stage machine and mount executor: <code>/Volumes/&lt;name&gt;[ N]</code> with <code>mkdir 0111</code>. Untrusted media gets Apple&rsquo;s <code>nosuid,nodev,noowners</code> (<code>noexec</code> is open question&nbsp;3); ms-dos gets <code>-u/-g</code> of the console user. Clean check without auto-repair; dirty volumes mount read-only. The helper table comes from vermaden's and dsbmd's. Includes the fstab <code>UUID=</code>/<code>LABEL=</code> overlay. Create and sweep <code>/Volumes</code> at startup.</td></tr>
+</table></div>
+<h3>Stage D &mdash; framework, policy, desktop</h3>
+<div class="table-scroll"><table>
+<tr><th>#</th><th>Repo</th><th>Ticket</th></tr>
+<tr><td>D1</td><td>nextbsd-userland</td><td>Port <code>DAServer.defs</code> and the client <code>DiskArbitration.framework</code> (sessions, Register*, CopyDescription, DiskListComplete/Idle replay). <code>datest</code> becomes a real client.</td></tr>
+<tr><td>D2</td><td>nextbsd-userland</td><td>Unmount and eject with approval broadcast, dissenters and PID lookup. Eject via CAM START STOP UNIT or <code>CDIOCEJECT</code>.</td></tr>
+<tr><td>D3</td><td>gershwin</td><td>Bridge: post <code>NSWorkspaceDidMount/WillUnmount/DidUnmount</code> as distributed notifications. <code>GWUnmountHelper</code> calls DiskArbitration instead of <code>sudo umount -f</code>. Upstream a prefix match for <code>GSRemovableMediaPaths</code> to libs-gui.</td></tr>
+<tr><td>D4</td><td>nextbsd-userland</td><td>Console user source (the SCDynamicStore analogue from loginwindow) and deferral of removable mounts until login. A minimal DiskArbitrationAgent for &ldquo;not ejected properly&rdquo; and &ldquo;unreadable&rdquo; dialogs.</td></tr>
+<tr><td>D5</td><td>nextbsd-kernel</td><td>Drop patch 0008 (<code>vfs.usermount=1</code>) once Workspace's image mounts go through DiskArbitration. kernel#62 already says to do this &ldquo;when that lands&rdquo;.</td></tr>
+</table></div>
+<p><strong>Relationship to E14.</strong> The swap plan's <code>swapd</code> is the dynamic_pager shape and is already the right activation path under no-fstab. One E14 acceptance line, &ldquo;an fstab entry for <code>/private/var/vm/swapfile0</code> activates via <code>swapon -a</code>&rdquo;, should become <code>swapon /private/var/vm/swapfile0</code>. E14's premise &ldquo;launchd never runs <code>mount -a</code> (#171)&rdquo; is half right: <code>mount -a</code> does run, but <code>swapon -a</code> and <code>dumpon</code> don't.</p>
+
+<h2 id="corrections">8. Corrections to existing tickets and pages</h2>
+<div class="table-scroll"><table>
+<tr><th>Where</th><th>Says</th><th>Actually</th></tr>
+<tr><td>overlays fstab header; userland#54 option F; #171 title; #460/#461; kernel#60/#61/#65; E14</td><td>&ldquo;nothing runs <code>mount -a</code>&rdquo;</td><td><code>launchctl.c:2400-2405</code> runs <code>mount -vat nonfs</code> whenever fstab exists</td></tr>
+<tr><td>kernel#62, kernel#68, nextbsd#231</td><td>&ldquo;<code>/etc/sysctl.conf</code> is never read&rdquo;</td><td><code>launchctl.c:2326</code> applies it at bootstrap. Patches 0008 and 0009 may not have needed to be kernel patches (untested on a running box).</td></tr>
+<tr><td>userland#54 option B; nextbsd#278 &ldquo;Lever D&rdquo;</td><td><code>WatchPaths</code> is &ldquo;verified present&rdquo;</td><td>Inert: the keys are rewritten to fsevents LaunchEvents with no deliverer (<code>launchctl.c:1610-1648</code>, <code>core.c:322-333</code>)</td></tr>
+<tr><td>#171 suggested verification</td><td>&ldquo;tmpfs on <code>/tmp/scratch</code> in fstab&rdquo;</td><td>force-unmounted by <code>empty_dir(/tmp)</code> one step later</td></tr>
+<tr><td>#460 fstab block</td><td><code>lindebugfs &hellip; rw,late</code></td><td><code>late</code> is never mounted by <code>mount -vat</code></td></tr>
+<tr><td><a href="freebsd-disk-arbitration-plan.html">DiskArbitration plan</a> (2026-05)</td><td>hwregd, <code>/usr/libexec</code>, <code>com.apple.DiskArbitration</code></td><td>hwregd is retired, the binary is <code>/usr/sbin</code>, and Apple's service name is <code>&hellip;diskarbitrationd</code></td></tr>
+<tr><td><a href="nextbsd-freebsd-compat-audit.html">compat audit</a></td><td>diskarbitrationd &ldquo;supersedes devd/autofs glue&rdquo;</td><td>not yet: it only logs storage devices</td></tr>
+</table></div>
+
+<h2 id="open">9. Open questions</h2>
+<ol>
+<li><strong>A or B?</strong> Ship no fstab (Apple) or a comment-only one (quieter FreeBSD tooling). Both fix #467.</li>
+<li><strong>#54:</strong> keep option H as the default, or schedule <code>org.nextbsd.linux</code>? And should the native <code>/proc</code>=linprocfs set ever be on by default, given it is a system-wide change?</li>
+<li><strong><code>noexec</code> on untrusted media?</strong> Apple doesn't set it. It blocks running AppImages straight off a stick, which Gershwin users may expect.</li>
+<li><strong>Console user source:</strong> which process publishes &ldquo;who is at the console&rdquo; on NextBSD (loginwindow? dshelper?), so DiskArbitration can own and defer mounts?</li>
+<li><strong>EVFILT_FS:</strong> does <code>VQ_MOUNT</code> reach userland on NextBSD? GhostBSD reported it &ldquo;not working&rdquo; (gershwin issues#22).</li>
+<li><strong>Unverified on a running box:</strong> that <code>/etc/sysctl.conf</code> really applies, that the <code>automount</code> binaries ship, and that a fstab-less image boots clean. The last is covered by CI once A1 lands.</li>
+</ol>
+
+<h2 id="method">10. Methodology note</h2>
+<p>There were two fact-gathering agents (site conventions; tickets and code state) and five Fable research agents: the Darwin boot mount sequence, the DiskArbitration source, the Linux-compat mount design, the installed-system fstab audit, and USB automount with Gershwin. Where agents disagreed, the page says so. The one real disagreement was A versus B for fstab: the Darwin agent pointed out that Apple ships no file, and the audit agent pointed out FreeBSD's no-file stderr and halt edge case. The DiskArbitration agent proposed devd as the event source; that was corrected here because NextBSD removed devd. Claims marked unverified were not run on hardware.</p>
+
+<p class="footnote">Evidence: nextbsd@37a3b6e, nextbsd-userland@f035d62, nextbsd-overlays@c0d0d1f, nextbsd-kernel main, FreeBSD releng/15.0; apple-oss-distributions DiskArbitration-535.120.1.0.1 &amp; -268, launchd-106/-258.1/-329.3.3/-392.39/-442.26.2/-842.92.1, Startup-60/-177.8, files-363 through -662.1.1, xnu-201/-12377.121.6, diskdev_cmds-143/-757, Libinfo-78/-600, autofs-322; apple/containerization, apple/container; vermaden/automount 1.8.0; dsbmd 1.12; bsdisks 0.41; gnustep/libs-gui f285e90; gershwin-workspace 817491d; CI run 35544120227. Related: <a href="https://github.com/nextbsd/nextbsd/issues/467">nextbsd#467</a>, <a href="https://github.com/nextbsd/nextbsd-userland/issues/171">userland#171</a>, <a href="https://github.com/nextbsd/nextbsd-userland/issues/54">userland#54</a>, <a href="https://github.com/nextbsd/nextbsd/issues/460">#460</a>, <a href="https://github.com/nextbsd/nextbsd/issues/461">#461</a>, <a href="https://github.com/gershwin-desktop/gershwin-desktop/issues/49">gershwin-desktop#49</a>, <a href="https://github.com/gershwin-desktop/gershwin-desktop/issues/60">#60</a>, <a href="nextbsd-swap-vm-plan.html">swap plan (E14)</a>.</p>
+
+</div>
+</body>
+</html>

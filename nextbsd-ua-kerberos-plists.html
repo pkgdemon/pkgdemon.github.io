@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Option D design</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e8e8; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  td.bad { color:var(--bad); font-weight:600; }
+  td.good { color:var(--good); font-weight:600; }
+  td.warn { color:var(--warn); font-weight:600; }
+  .table-scroll { overflow-x:auto; }
+  @media (max-width:640px) { .wrap { padding:28px 16px 64px; } h1 { font-size:1.6rem; } th,td { padding:7px 8px; } }
+  /* wide tables: break out of the text column, wrap long code instead of clipping */
+  .table-scroll { --bleed:min(calc(100vw - 48px), 1600px); width:var(--bleed); margin-left:calc((100% - var(--bleed)) / 2); overflow-x:auto; }
+  p code, li code { overflow-wrap:anywhere; }
+  .table-scroll table { width:100%; }
+  td code, th code { white-space:normal; overflow-wrap:anywhere; hyphens:none; }
+  td code.nw, th code.nw { white-space:nowrap; }
+  @media (max-width:1100px) { td code.nw, th code.nw { white-space:normal; } }
+  td, th { overflow-wrap:anywhere; hyphens:none; }
+  .table-scroll td:first-child { min-width:11em; }
+  pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+  pre code { white-space:pre-wrap; overflow-wrap:anywhere; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD Research</a> &middot; sub-document of the <a href="nextbsd-user-accounts-spike.html">User account management spike</a></p>
+
+<h1>Option D design: plists, Kerberos and NFSv4, with no directory daemon</h1>
+<p class="lede">This is a working design document for a new account system. Records are plists, and each machine keeps a compiled index. Programs read accounts through an NSS module, and logins and sudo go through PAM modules. Kerberos holds every network password, and NFSv4 with Kerberos serves homes and ships the directory to clients. No directory daemon runs, and there is no LDAP. The services that do run are the ones FreeBSD already ships: the KDC and NFS. This page is meant to be argued with. &sect;13 lists the decisions still open.</p>
+<p class="meta">2026-09-21. Started from the spike&rsquo;s option&nbsp;D discussion, then revised after asking &ldquo;why a service at all?&rdquo;. Verified in FreeBSD <code>releng/15.0</code>: MIT Kerberos in base; <code>pam_krb5(8)</code>; <code>gssd(8)</code> <code>-h</code>, &ldquo;host-based initiator credentials &hellip; permits a kerberized NFS mount to use a service principal in the default Kerberos 5 keytab&rdquo;; <code>nfsuserd(8)</code>; <code>rpcsec_gss(3)</code>. Everything else is design, not yet prototyped. Planning only.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#summary">Summary</a></li>
+<li><a href="#nodaemon">Why no directory daemon</a></li>
+<li><a href="#layout">Files on disk</a></li>
+<li><a href="#records">Records</a></li>
+<li><a href="#passwords">Passwords</a></li>
+<li><a href="#nss">Lookups: <code>nss_ds</code> and the index</a></li>
+<li><a href="#pam">Logins and sudo: the PAM stacks</a></li>
+<li><a href="#network">Network: promote, join and sync</a></li>
+<li><a href="#discovery">Finding the server with Bonjour</a></li>
+<li><a href="#homes">Homes over NFSv4 with Kerberos</a></li>
+<li><a href="#cli">Commands</a></li>
+<li><a href="#reqs">Requirements, pros and cons, effort</a></li>
+<li><a href="#open">Open design questions</a></li>
+</ol>
+</div>
+
+<h2 id="summary">1. Summary</h2>
+<ul>
+<li><strong>Local accounts</strong> are plists in <code>/Local/Library/DirectoryServices</code>, with password hashes in a root-only <code>Shadow/</code> directory. <code>dscli</code> writes them, and <code>nss_ds</code> and <code>pam_ds</code> read them. This is FreeBSD&rsquo;s own model (<code>master.passwd</code>, <code>pwd_mkdb</code>, <code>nss_files</code>, <code>pam_unix</code>) with Apple&rsquo;s record format.</li>
+<li><strong>Network accounts</strong> are plists on the server with <strong>no hashes at all</strong>. Their passwords exist only as Kerberos keys in the KDC. Joined clients copy the server&rsquo;s records over NFSv4 with <code>sec=krb5p</code>, authenticated as the machine, into a local cache that <code>nss_ds</code> reads.</li>
+<li><strong>Logins</strong> use <code>pam_krb5</code> from base for network users, which also gets the ticket that the NFSv4 home needs. They use <code>pam_ds</code> for local users, for the no-password sudo rule and for offline logins.</li>
+<li><strong>Servers</strong> run only FreeBSD daemons: <code>krb5kdc</code>, <code>kadmind</code>, <code>nfsd</code>, <code>mountd</code>, <code>nfsuserd</code> and <code>gssd</code>, all under launchd. They are advertised with Bonjour through mDNSResponder, which is already in nextbsd-userland.</li>
+</ul>
+
+<h2 id="nodaemon">2. Why no directory daemon</h2>
+<p>Apple always had one: lookupd, then DirectoryService, then <code>opendirectoryd</code>. It needed one because it used plugins, a search policy across many kinds of directory, caching, and a network client for LDAP. This design has one local format and one remote format, which is the same format. What a daemon would do, something else already does:</p>
+<div class="table-scroll">
+<table>
+<tr><th>Job</th><th>With a daemon</th><th>Without one</th></tr>
+<tr><td>Look up users and groups in every process</td><td>NSS module asks the daemon over a socket</td><td><code>nss_ds</code> reads a compiled index directly, the way <code>nss_files</code> reads <code>pwd.db</code></td></tr>
+<tr><td>Check a local password</td><td>PAM asks the daemon</td><td><code>pam_ds</code> reads <code>Shadow/</code> directly; login, sudo and su already run as root, as <code>pam_unix</code> does with <code>spwd.db</code></td></tr>
+<tr><td>Check a network password</td><td>Daemon talks to the KDC</td><td><code>pam_krb5</code> in base talks to the KDC</td></tr>
+<tr><td>Change records</td><td>Daemon is the single writer</td><td><code>dscli</code> as root, under a lock file, the way <code>pw</code> and <code>vipw</code> work</td></tr>
+<tr><td>Get network records to a client</td><td>Client daemon calls server daemon</td><td>A sync job copies them over an authenticated NFSv4 mount</td></tr>
+<tr><td>Hold the machine&rsquo;s Kerberos identity</td><td>Daemon reads the keytab</td><td><code>gssd -h</code> uses the host keytab for root&rsquo;s NFS mounts</td></tr>
+</table>
+</div>
+<p><strong>What goes away:</strong> a Mach or XPC API, the socket protocol, a network RPC design, <code>librpcsec_gss</code> on the server, the dependency on nextbsd#66, and the untested launchd <code>Sockets</code> check-in.</p>
+<p><strong>What it costs:</strong></p>
+<ul>
+<li>Changes reach clients on the next sync, not instantly (&sect;8).</li>
+<li>A GUI that edits users needs a privileged helper, because only root can write. Apple&rsquo;s own pattern is a helper that launchd starts on demand and that exits when idle, so nothing stays resident (&sect;13).</li>
+<li>Access control is file permissions, not a per-attribute ACL. That is enough when no record holds a secret.</li>
+<li>It is less Apple-shaped: there is no daemon in the middle.</li>
+</ul>
+
+<h2 id="layout">3. Files on disk</h2>
+<pre><code>/Local/Library/DirectoryServices/         0755 root:wheel
+  Local/users/&lt;name&gt;.plist                0644   local accounts, no secrets
+  Local/groups/&lt;name&gt;.plist               0644
+  Local/Shadow/&lt;GeneratedUID&gt;             0600   PBKDF2-SHA512 for local accounts
+  Cache/users/&lt;name&gt;.plist                0644   copies of network records (clients)
+  Cache/groups/&lt;name&gt;.plist               0644
+  Cache/Verifiers/&lt;GeneratedUID&gt;          0600   offline-login verifiers (clients)
+  ds.db                                   0644   compiled index: Local + Cache, no secrets
+  Binding.plist                           0644   client: realm, server, last sync
+  .lock                                           taken by dscli and the sync job
+
+/Network/Library/DirectoryServices/       on the server: the real directory
+  users/&lt;name&gt;.plist   groups/&lt;name&gt;.plist   computers/&lt;name&gt;.plist
+  Serial                                  bumped on every change</code></pre>
+<p>On the server, <code>/Network/Library/DirectoryServices</code> is a real directory on the server&rsquo;s own disk, exported over NFSv4. It follows Apple&rsquo;s <code>/Network/Library</code> domain, which once held network-wide settings. Clients mount it only while syncing.</p>
+
+<h2 id="records">4. Records</h2>
+<p>Records use Apple&rsquo;s attribute names, and every value is an array, as in dslocal:</p>
+<pre><code>&lt;dict&gt;
+  &lt;key&gt;RecordName&lt;/key&gt;       &lt;array&gt;&lt;string&gt;bob&lt;/string&gt;&lt;/array&gt;
+  &lt;key&gt;RealName&lt;/key&gt;         &lt;array&gt;&lt;string&gt;Bob Smith&lt;/string&gt;&lt;/array&gt;
+  &lt;key&gt;UniqueID&lt;/key&gt;         &lt;array&gt;&lt;string&gt;1026&lt;/string&gt;&lt;/array&gt;
+  &lt;key&gt;PrimaryGroupID&lt;/key&gt;   &lt;array&gt;&lt;string&gt;20&lt;/string&gt;&lt;/array&gt;
+  &lt;key&gt;GeneratedUID&lt;/key&gt;     &lt;array&gt;&lt;string&gt;6F1C…&lt;/string&gt;&lt;/array&gt;
+  &lt;key&gt;UserShell&lt;/key&gt;        &lt;array&gt;&lt;string&gt;/bin/zsh&lt;/string&gt;&lt;/array&gt;
+  &lt;key&gt;NFSHomeDirectory&lt;/key&gt; &lt;array&gt;&lt;string&gt;/Network/Users/bob&lt;/string&gt;&lt;/array&gt;
+  &lt;key&gt;AuthenticationAuthority&lt;/key&gt;
+                             &lt;array&gt;&lt;string&gt;;Kerberosv5;;bob@EXAMPLE.LAN;EXAMPLE.LAN;&lt;/string&gt;&lt;/array&gt;
+&lt;/dict&gt;</code></pre>
+<ul>
+<li><strong>Local users</strong> have <code>NFSHomeDirectory=/Local/Users/&lt;name&gt;</code> and <code>;ShadowHash;HASHLIST:&lt;SALTED-SHA512-PBKDF2&gt;</code>. An admin with no password has <code>NoPassword</code> and no Shadow file.</li>
+<li><strong>Groups</strong> use <code>GroupMembership</code> (short names) and <code>GroupMembers</code> (GeneratedUIDs), as Apple does. Local <code>admin</code> can nest the network <code>admin</code> group, so network admins can administer joined machines.</li>
+<li><strong>UIDs:</strong> local accounts start at 501, as on a Mac. Network accounts start at 1025, as Open Directory did, so the two never collide.</li>
+<li><strong>Parsing:</strong> <code>dscli</code> and the sync job parse plists with CoreFoundation. <code>nss_ds</code> and <code>pam_ds</code> never parse plists, so no CoreFoundation is loaded into every process.</li>
+</ul>
+
+<h2 id="passwords">5. Passwords</h2>
+<div class="table-scroll">
+<table>
+<tr><th>Account</th><th>Where the verifier lives</th><th>Format</th><th>Who can read it</th></tr>
+<tr><td>Local</td><td><code>Local/Shadow/&lt;GeneratedUID&gt;</code></td><td>PBKDF2-SHA512: salt, iterations and derived key, as in Apple&rsquo;s <code>SALTED-SHA512-PBKDF2</code></td><td>root only (0600)</td></tr>
+<tr><td>Local admin with no password</td><td>none; the record has <code>NoPassword</code></td><td>&mdash;</td><td>&mdash;</td></tr>
+<tr><td>Network</td><td>The KDC database, <code>/var/db/krb5kdc/principal</code>, on the server only</td><td>Kerberos keys (AES-256 and AES-128), encrypted with the realm&rsquo;s master key</td><td>the KDC only</td></tr>
+<tr><td>Network, cached for offline</td><td><code>Cache/Verifiers/&lt;GeneratedUID&gt;</code> on each client where that user has logged in</td><td>PBKDF2-SHA512 derived at the last successful online login</td><td>root on that client only</td></tr>
+</table>
+</div>
+<p>No hash is ever in a record, in <code>ds.db</code>, in the network export or on the wire. Password changes go to whoever holds the verifier:</p>
+<ul>
+<li><code>passwd</code> runs PAM <code>chauthtok</code>. <code>pam_ds</code> rewrites the Shadow file for local users, and <code>pam_krb5</code> changes the Kerberos key through kpasswd for network users.</li>
+<li><code>dscli passwd</code> does the same for an admin resetting someone else. For network users it uses <code>kadmin</code> with the admin&rsquo;s ticket.</li>
+</ul>
+
+<h2 id="nss">6. Lookups: <code>nss_ds</code> and the index</h2>
+<ul>
+<li>After every change or sync, <code>dscli</code> compiles <code>Local/</code> and <code>Cache/</code> into <code>ds.db</code>. That is a <code>db(3)</code> hash with the same keys <code>pwd_mkdb</code> writes: by name, by UID, by sequence number, and the group equivalents. It holds no secrets.</li>
+<li><code>ds.db</code> is written to a temporary file and renamed, so readers never see half an index.</li>
+<li><code>nss_ds</code> is a small C module that opens <code>ds.db</code> and answers <code>getpwnam</code>, <code>getpwuid</code>, <code>getpwent</code>, <code>getgrnam</code>, <code>getgrgid</code>, <code>getgrent</code> and <code>getgrouplist</code>. It returns <code>*</code> as the password field. It works in static binaries, chroots with the file present, early boot and single-user mode.</li>
+<li><code>/etc/nsswitch.conf</code>: <code>passwd: files ds</code> and <code>group: files ds</code>. System users stay first, in <code>master.passwd</code>.</li>
+<li>Local records win over cached network records with the same name. <code>dscli</code> refuses to create such a clash.</li>
+</ul>
+
+<h2 id="pam">7. Logins and sudo: the PAM stacks</h2>
+<pre><code># /etc/pam.d/system  (login, su, LoginWindow, sshd include it)
+auth     sufficient  pam_ds.so                 # local users: check Shadow/; never accepts an empty password here
+auth     sufficient  pam_krb5.so try_first_pass # network users: KDC, and the ticket for the NFS home
+auth     sufficient  pam_ds.so offline try_first_pass  # KDC unreachable: cached verifier
+auth     required    pam_unix.so no_warn try_first_pass  # system users (no nullok)
+account  required    pam_ds.so
+session  required    pam_ds.so                 # create a /Local/Users home on first login; write the cached verifier
+password sufficient  pam_ds.so
+password sufficient  pam_krb5.so
+password required    pam_unix.so
+
+# /etc/pam.d/sudo
+auth     sufficient  pam_ds.so allow_nopass    # local admin with NoPassword: no prompt
+auth     include     system</code></pre>
+<ul>
+<li><code>allow_nopass</code> appears only in the sudo stack, and <code>nullok</code> appears nowhere. A no-password admin can use sudo and the console&rsquo;s auto-login, but can never log in over the network.</li>
+<li>Network users always have a Kerberos key, so sudo always prompts them.</li>
+<li><code>pam_ds</code> writes the offline verifier only after <code>pam_krb5</code> succeeds, so a wrong password is never cached.</li>
+</ul>
+
+<h2 id="network">8. Network: promote, join and sync</h2>
+<h3>Promote</h3>
+<ol>
+<li><code>kdb5_util create -s</code> creates the realm. The <code>krb5kdc</code> and <code>kadmind</code> launchd jobs are enabled.</li>
+<li>Create <code>diradmin@REALM</code>, and <code>host/</code> and <code>nfs/</code> principals for the server, and write <code>/etc/krb5.keytab</code>.</li>
+<li>Create <code>/Network/Library/DirectoryServices</code>, and the network <code>admin</code> group containing <code>diradmin</code>.</li>
+<li>Export two paths over NFSv4 with <code>sec=krb5p</code>: <code>/Local/Users</code> read-write as the homes, and <code>/Network/Library/DirectoryServices</code> read-only. Enable <code>nfsd</code>, <code>mountd</code>, <code>nfsuserd</code> and <code>gssd -h</code>.</li>
+<li>Advertise over Bonjour (&sect;9).</li>
+<li>Bind the server to itself, so its own <code>ds.db</code> includes network users.</li>
+</ol>
+<h3>Join</h3>
+<ol>
+<li>Find the server with Bonjour or by name, show the realm, and ask for confirmation.</li>
+<li>Write <code>/etc/krb5.conf</code>, ask for a directory admin&rsquo;s password, and use <code>kadmin</code> to create <code>host/</code> and <code>nfs/</code> principals for this machine and fetch them into <code>/etc/krb5.keytab</code>. Kerberos authenticates both sides, so a fake server cannot complete this step.</li>
+<li>Enable <code>gssd -h</code>, <code>nfsuserd</code> and time sync against the server.</li>
+<li>Write <code>Binding.plist</code>, run the first sync, and mount <code>/Network/Users</code>.</li>
+</ol>
+<h3>Sync</h3>
+<ol>
+<li><code>dscli sync</code> takes <code>.lock</code> and mounts the server&rsquo;s <code>/Network/Library/DirectoryServices</code> read-only over NFSv4 <code>krb5p</code>, as root with the host key through <code>gssd -h</code>. Only joined machines can mount it.</li>
+<li>If <code>Serial</code> has not changed since the last sync, it stops there.</li>
+<li>Otherwise it copies the records into <code>Cache/</code>, removes records deleted upstream, rebuilds <code>ds.db</code> and unmounts.</li>
+</ol>
+<p><strong>When sync runs:</strong> at boot, at every network-user login (from <code>pam_ds</code> session, rate-limited), after any <code>dscli</code> change, and every 15&nbsp;minutes from a launchd <code>StartInterval</code> job.</p>
+<p>The copied records contain no secrets. If the server is unreachable, the cache stays as it was and lookups keep working.</p>
+<p><strong>Why this use of NFS is safe:</strong> the spike argued against mounting the account database over NFS. Those objections were about using a live NFS mount as the database. Here NFS is only the transport for a copy:</p>
+<ul>
+<li>There are no hashes to leak.</li>
+<li>Only Kerberos-authenticated machines can mount.</li>
+<li>No lookup ever waits on the network.</li>
+<li>Only the server writes the source records.</li>
+<li>The cache covers offline use.</li>
+</ul>
+<p>One circularity remains. <code>nfsuserd</code> maps file owners through the directory, so the exported directory&rsquo;s files are owned by <code>root:wheel</code>, which is always in <code>master.passwd</code>.</p>
+
+<h2 id="discovery">9. Finding the server with Bonjour</h2>
+<p>Gershwin finds servers with <code>gdomap</code>, GNUstep&rsquo;s Distributed Objects name server (<code>gdomap -R GershwinDirectory</code> on the server, <code>gdomap -L &hellip; -M '*'</code> on clients). This design uses DNS-SD through mDNSResponder instead:</p>
+<pre><code># the server advertises, on promote and at every boot
+_nextbsd-ds._tcp.local.    SRV 0 0 2049 server1.local.
+                           TXT "realm=EXAMPLE.LAN" "path=/Network/Library/DirectoryServices" "v=1"
+_kerberos._udp.local.      SRV 0 0 88   server1.local.
+_kerberos-adm._tcp.local.  SRV 0 0 749  server1.local.
+
+# a client browses
+$ dns-sd -B _nextbsd-ds._tcp</code></pre>
+<ul>
+<li><strong>More than one subnet:</strong> the same records work in unicast DNS, and MIT Kerberos already finds KDCs by DNS SRV.</li>
+<li><strong>Bonjour answers are not trusted.</strong> A fake server fails the Kerberos exchange at join. After join, the binding is pinned by realm and server name in <code>Binding.plist</code>.</li>
+<li><strong><code>dscli join &lt;host&gt;</code></strong> skips discovery.</li>
+<li><strong><code>promote</code></strong> refuses if another realm&rsquo;s server already answers, unless given <code>--force</code>.</li>
+</ul>
+
+<h2 id="homes">10. Homes over NFSv4 with Kerberos</h2>
+<ul>
+<li>The server exports <code>/Local/Users</code> with <code>sec=krb5p</code>. Clients mount it at <code>/Network/Users</code> at join and at every boot.</li>
+<li>Each access carries the user&rsquo;s own ticket, from <code>pam_krb5</code> at login, and all traffic is encrypted. Root on a client cannot read another user&rsquo;s home without that user&rsquo;s ticket.</li>
+<li><code>nfsuserd</code> maps <code>bob@EXAMPLE.LAN</code> to UID 1026 through <code>getpwnam()</code>, which <code>nss_ds</code> answers from the cache.</li>
+<li>Tickets expire after about 10 hours. A renewal job, or a login screen that re-prompts, keeps long sessions working (&sect;13).</li>
+</ul>
+
+<h2 id="cli">11. Commands</h2>
+<pre><code># add a local admin
+$ sudo dscli user add jane --realname "Jane Doe" --admin
+Password for jane (empty for none):
+# -&gt; Local/users/jane.plist (UID 501), Local/Shadow/&lt;GUID&gt;, /Local/Users/jane, /bin/zsh, ds.db rebuilt
+
+# add a network user (on the server, or from a client with an admin ticket, see &sect;13)
+$ kinit diradmin
+$ dscli user add bob --network --realname "Bob Smith"
+# -&gt; principal bob@EXAMPLE.LAN; /Network/Library/DirectoryServices/users/bob.plist (UID 1025+);
+#    home /Local/Users/bob on the server; Serial bumped; no hash anywhere but the KDC
+
+# remove users
+$ sudo dscli user delete jane [--remove-home | --archive-home]
+$ dscli user delete bob --network [--remove-home | --archive-home]
+# -&gt; record, group memberships and (network) principal removed; clients drop it at next sync
+
+# promote and join
+$ sudo dscli promote --realm EXAMPLE.LAN
+$ sudo dscli join [server1.example.lan]
+$ sudo dscli sync            # force a sync now
+$ sudo dscli leave [--purge] # delete host principal, unmount, keep or purge the cache</code></pre>
+
+<h2 id="reqs">12. Requirements, pros and cons, effort</h2>
+<div class="table-scroll">
+<table>
+<tr><th>#</th><th>Requirement</th><th>How it is met</th></tr>
+<tr><td>1</td><td><code>/Local/Users</code></td><td>Default home for local accounts, and the server&rsquo;s home store</td></tr>
+<tr><td>2</td><td>zsh</td><td>Default <code>UserShell</code>; zsh vendored</td></tr>
+<tr><td>3</td><td>sudo rule</td><td><code>pam_ds allow_nopass</code> in the sudo stack only (&sect;7)</td></tr>
+<tr><td>4</td><td>Promote</td><td><code>dscli promote</code> (&sect;8)</td></tr>
+<tr><td>5</td><td>Join for accounts and applications</td><td><code>dscli join</code>. Applications: a third export, <code>/Network/Applications</code>, read-only.</td></tr>
+<tr><td>6</td><td><code>/Network/Users</code></td><td>NFSv4 <code>krb5p</code> (&sect;10)</td></tr>
+<tr><td>7</td><td>Replace passwd and group except system users</td><td><code>files ds</code>. <code>adduser</code> and <code>pw</code> call <code>dscli</code> or refuse for UIDs &ge; 501.</td></tr>
+</table>
+</div>
+<div class="table-scroll">
+<table>
+<tr><th>Pros</th><th>Cons</th></tr>
+<tr><td>No directory daemon anywhere; only base FreeBSD services on the server</td><td>Changes reach clients on the next sync (up to 15&nbsp;minutes), not instantly</td></tr>
+<tr><td>No hash in any record, index, export or packet; network passwords only in the KDC</td><td>No Mac, Linux or LDAP client can join without a later LDAP export</td></tr>
+<tr><td>Lookups never wait on the network; works offline, in single-user mode and in chroots</td><td>A GUI needs a privileged on-demand helper to write</td></tr>
+<tr><td>No Mach, no socket protocol, no network RPC to design, no nextbsd#66 dependency</td><td>Less Apple-shaped: no daemon in the middle</td></tr>
+<tr><td>Same model admins already know from <code>master.passwd</code>, <code>pwd_mkdb</code> and <code>pam_unix</code></td><td>Kerberos clock and keytab problems are hard to diagnose</td></tr>
+</table>
+</div>
+<p><strong>Effort, about 2&frac12;&ndash;3&frac12; months:</strong></p>
+<ul>
+<li>sudo and zsh vendoring: 1&ndash;2 weeks</li>
+<li><code>dscli</code> with local records, Shadow and the index, plus <code>nss_ds</code> and <code>pam_ds</code>: 3&ndash;4 weeks</li>
+<li>base tool integration and the installer&rsquo;s first admin: 1&ndash;2 weeks</li>
+<li>promote, join, sync, Bonjour and NFSv4 homes: 4&ndash;5 weeks</li>
+<li>offline verifiers, <code>leave</code>, hardening: 2 weeks</li>
+</ul>
+<p>This is less than the daemon design, because the network RPC disappears.</p>
+
+<h2 id="open">13. Open design questions</h2>
+<ol>
+<li><strong>Remote admin writes.</strong> <code>dscli user add --network</code> from a client has to change files on the server. The options are:
+  <ul>
+  <li>(a) Run it only on the server, over <code>ssh server sudo dscli &hellip;</code>, which is simple.</li>
+  <li>(b) Give the network <code>admin</code> group write access to the export through NFSv4 ACLs. That reintroduces an owner-mapping dependency.</li>
+  <li>(c) A write-only service on the server, started on demand by launchd for each connection and authenticated with the admin&rsquo;s ticket. Nothing stays resident.</li>
+  </ul>
+  (c) is the most Apple-like, and (a) is the fastest to ship.</li>
+<li><strong>Sync trigger.</strong> Is a 15-minute interval plus login and change triggers enough? Or should the server push a Bonjour TXT update of <code>Serial</code> that clients watch? The push is instant, but it needs something listening.</li>
+<li><strong>GUI helper.</strong> Users &amp; Groups needs a privileged helper for writes: a launchd <code>MachServices</code> job that exits when idle. Does that count as &ldquo;a service&rdquo; for this design&rsquo;s purposes?</li>
+<li><strong>Ticket lifetime.</strong> What happens to the home mount after 10 hours: renew automatically with the cached password (weaker), or re-prompt at the lock screen (Apple&rsquo;s approach)?</li>
+<li><strong>Index format.</strong> <code>db(3)</code> hash, like <code>pwd.db</code>, is proven but old. Alternatives are a sorted flat file or cdb.</li>
+<li><strong>UID ranges.</strong> Local from 501, network from 1025, and system users below 500. Gershwin&rsquo;s admin at 5000 would need migration.</li>
+<li><strong>Several servers.</strong> A replica would be a second KDC (<code>kprop</code>) and an rsync of the export. Is that in scope for the first epic?</li>
+<li><strong>Future Mac interop.</strong> A read-only LDAP export generated from the same plists, served by slapd or a small responder. Is that a later epic?</li>
+</ol>
+
+<p class="footnote">Parent: <a href="nextbsd-user-accounts-spike.html">User account management spike</a>. Related: <a href="nextbsd-ua-gershwin-ds-redesign.html">option B</a> (the <code>dscli</code> verbs this reuses), <a href="nextbsd-ua-directoryservice-port.html">option A</a> (Apple&rsquo;s record and hash layout), <a href="freebsd-mdnsresponder-plan.html">mDNSResponder plan</a>.</p>
+</div>
+<script data-nowrap-short>document.querySelectorAll("td code, th code").forEach(function(c){ if (c.textContent.length <= 18) c.classList.add("nw"); });</script>
+</body>
+</html>

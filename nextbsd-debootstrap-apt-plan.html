@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Debian userland: debootstrap and apt</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e8e8; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  td.bad { color:var(--bad); font-weight:600; }
+  td.good { color:var(--good); font-weight:600; }
+  td.warn { color:var(--warn); font-weight:600; }
+  .table-scroll { overflow-x:auto; }
+  @media (max-width:640px) { .wrap { padding:28px 16px 64px; } h1 { font-size:1.6rem; } th,td { padding:7px 8px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD Research</a> &middot; companion to <a href="nextbsd-linux-abi-mounts-plan.html">Linux ABI mounts</a></p>
+
+<h1>Debian userland: debootstrap and the <code>apt</code> wrapper</h1>
+<p class="lede">How a NextBSD user gets a Linux userland to run Linux programs. Type <code>apt install google-chrome-stable</code>. If no Linux root exists yet, NextBSD bootstraps one with debootstrap: Devuan 6 by default, with Debian or Ubuntu if you ask. It mounts it, then runs Debian&rsquo;s own <code>apt</code> inside it with your arguments unchanged. This page covers which distro, how &ldquo;latest&rdquo; is chosen, what the wrapper does, and how the graphics stack lines up with NextBSD&rsquo;s 6.12 DRM drivers.</p>
+<p class="meta">2026-09-21. Research agents read the FreeBSD <code>sysutils/debootstrap</code> port and its patches, upstream debootstrap and Devuan&rsquo;s fork, the FreeBSD Handbook&rsquo;s Linux chapter, the Debian, Devuan and Ubuntu archives (Release files and Packages indexes), Google&rsquo;s Chrome repository, the Linuxulator&rsquo;s DRM and sysfs code, and NextBSD&rsquo;s kernel, kext and userland repos. <strong>Nothing has been bootstrapped on NextBSD yet.</strong> Sizes and timings are estimates. Planning only.</p>
+
+<div class="callout callout-good">
+<p><strong>The short answers.</strong></p>
+<ol>
+<li><strong>Default distro: Devuan 6 &ldquo;Excalibur&rdquo;, <code>--variant=minbase</code>, into <code>/compat/linux</code>.</strong> It has the same Mesa 25.0.7 and libdrm 2.4.124 as Debian 13 trixie, built against kernel 6.12, an exact match for NextBSD&rsquo;s <code>drm-kmod 6.12-lts</code>. It has no systemd at all, and systemd&rsquo;s postinst is the one thing that has actually failed under the Linuxulator. Debian trixie <code>minbase</code> is an equally good second choice. Ubuntu LTS is opt-in.</li>
+<li><strong>debootstrap runs on NextBSD</strong> from the FreeBSD port on amd64 and arm64. Stage 2 runs Debian&rsquo;s <code>dpkg</code> under the Linuxulator, and debootstrap mounts what it needs itself. It goes straight into the already-mounted root; the wrapper then re-runs the mount tool (<a href="nextbsd-linux-abi-mounts-plan.html#debootstrap">mounts plan &sect;3</a>).</li>
+<li><strong>One tool, <code>nextbsd-linux</code>, in NextBSD-userland, with <code>/usr/bin/apt</code> as a thin shim.</strong> <code>apt</code> runs <em>inside</em> a chroot, as root. Installed <em>programs</em> run directly through the Linuxulator&rsquo;s alt root, as the <code>linux-chrome</code> and <code>claude-code</code> ports already do. There is no <code>apt</code> in FreeBSD base, ports or Darwin, so the name is free.</li>
+<li><strong>GPU:</strong> Intel and AMD work in principle, with Mesa talking to the 6.12 drivers through DRM ioctl passthrough. <strong>NVIDIA acceleration for Linux programs is impossible on NextBSD as built</strong>, because the NVIDIA kext is compiled without its Linux ioctl bridge, whatever the distro. The Pi 5&rsquo;s GPU is invisible to Linux libdrm, because linsysfs only describes PCI display devices.</li>
+</ol>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#flow">What the user sees</a></li>
+<li><a href="#distro">Distro choice</a></li>
+<li><a href="#latest">Resolving &ldquo;latest&rdquo;</a></li>
+<li><a href="#deboot">debootstrap on NextBSD</a></li>
+<li><a href="#wrapper">The wrapper</a></li>
+<li><a href="#gpu">Graphics: Mesa, NVIDIA, linsysfs</a></li>
+<li><a href="#apps">Running installed programs</a></li>
+<li><a href="#risks">Risks and open questions</a></li>
+<li><a href="#tickets">Tickets this implies</a></li>
+</ol>
+</div>
+
+<h2 id="flow">1. What the user sees</h2>
+<pre><code># apt install google-chrome-stable
+No Linux userland at /compat/linux.
+Bootstrap Devuan 6 (excalibur) minbase for amd64 from http://deb.devuan.org/merged?
+About 50 MB to download and 200 MB on disk. [y/N] y
+&hellip; debootstrap output &hellip;
+Linux userland ready: Devuan 6 (excalibur), amd64. Mounts up.
+Reading package lists&hellip;   &larr; Debian's own apt from here on</code></pre>
+<p>Later runs skip straight to <code>apt</code>. <code>apt update</code>, <code>upgrade</code>, <code>install</code> and <code>remove</code> behave exactly as on Debian, because they <em>are</em> Debian&rsquo;s apt. apt&rsquo;s own exit code is passed through unchanged.</p>
+
+<h2 id="distro">2. Distro choice</h2>
+<p>The table below is as of 2026-09-21, from each archive&rsquo;s <code>dists/*/Release</code> and <code>Packages</code>.</p>
+<div class="table-scroll"><table>
+<tr><th></th><th>Devuan 6 Excalibur</th><th>Debian 13 trixie</th><th>Ubuntu 24.04 noble</th><th>Ubuntu 26.04 resolute</th></tr>
+<tr><td>Status</td><td>stable 6.0 (2025-11-02)</td><td>stable 13.7; LTS 2028&ndash;2030</td><td>LTS to 2029</td><td>LTS 26.04.1</td></tr>
+<tr><td>Arches</td><td>amd64, arm64</td><td>amd64, arm64</td><td>amd64; arm64 via ports.ubuntu.com</td><td>same</td></tr>
+<tr><td>Mesa / libdrm / built against</td><td class="good">25.0.7 / 2.4.124 / 6.12 (same binaries as trixie)</td><td class="good">25.0.7 / 2.4.124 / 6.12</td><td>24.0.5 (25.2.8 in updates) / 2.4.120 / 6.8</td><td class="warn">26.0.3 / 2.4.131 / 7.0</td></tr>
+<tr><td>systemd in a minbase root</td><td class="good">none; <code>sysvinit-core</code>, eudev, elogind</td><td class="good">none in minbase (<code>init</code>/<code>systemd</code> are <em>important</em>, not <em>required</em>)</td><td class="warn">in the default set; triggers the port&rsquo;s postinst workaround</td><td class="warn">same</td></tr>
+<tr><td>debootstrap script in the FreeBSD port</td><td class="warn">no; vendor Devuan&rsquo;s <code>ceres</code> script (<code>excalibur</code> and <code>stable</code> are symlinks to it)</td><td class="good"><code>trixie</code>, <code>stable</code></td><td class="good"><code>noble</code></td><td class="good"><code>resolute</code></td></tr>
+<tr><td>Archive keyring on FreeBSD</td><td class="warn">fetch <code>devuan-keyring</code> .deb</td><td class="warn">fetch <code>debian-archive-keyring</code> .deb (the <code>debian-keyring</code> port is the developer keyring, not the archive one)</td><td class="good"><code>security/ubuntu-keyring</code></td><td class="good">same</td></tr>
+<tr><td>Chrome .deb</td><td>all deps resolvable (<code>libudev1</code> from eudev); install unverified</td><td class="good">Google targets it; amd64 + arm64</td><td class="good">yes</td><td class="good">yes</td></tr>
+</table></div>
+<p><strong>Why Devuan by default.</strong></p>
+<ul>
+<li>Its <code>merged</code> archive re-exports Debian&rsquo;s binaries and overrides only the init, udev and logind family, so the graphics pairing is exactly trixie&rsquo;s.</li>
+<li>The only Linux code the sources show failing under the Linuxulator is systemd&rsquo;s postinst: &ldquo;Failed to mount /etc/machine-id: Bad address&rdquo;, which the FreeBSD port patches around. Devuan never ships it.</li>
+<li>It matches the direction already chosen on the <a href="devuan-system7-workalike-plan.html">Devuan System 7 work-alike</a> page: sysvinit throughout, and elogind for AppImages that expect logind.</li>
+<li>The cost is vendoring one debootstrap script and fetching one keyring. Debian needs an out-of-band keyring on FreeBSD too, so only the script is extra.</li>
+</ul>
+<p><strong>Debian trixie <code>minbase</code></strong> is the zero-vendoring alternative. It has the same graphics stack, and minbase is systemd-free at bootstrap; systemd only arrives if a later <code>apt install</code> pulls it in, and Chrome&rsquo;s dependencies don&rsquo;t. <strong>Ubuntu</strong> stays opt-in. 26.04&rsquo;s Mesa was built for kernel 7.0, which is probably fine on 6.12 but untested, and its systemd-heavy default set triggers the known stage-2 failures.</p>
+<p>The user picks with <code>--distro devuan|debian|ubuntu</code> and <code>--suite &lt;codename&gt;|stable</code>, and the default lives in <code>/etc/nextbsd-linux.conf</code>.</p>
+
+<h2 id="latest">3. Resolving &ldquo;latest&rdquo;</h2>
+<ul>
+<li><strong>Devuan:</strong> <code>GET http://deb.devuan.org/merged/dists/stable/Release</code> gives <code>Codename: excalibur</code>. Plain HTTP, because <code>deb.devuan.org</code> currently fails TLS name verification. Signatures are still checked against the keyring.</li>
+<li><strong>Debian:</strong> <code>GET https://deb.debian.org/debian/dists/stable/Release</code> gives <code>Codename: trixie</code>.</li>
+<li><strong>Ubuntu:</strong> read <code>changelogs.ubuntu.com/meta-release-lts</code>, take the newest supported LTS, and confirm the port ships its script.</li>
+</ul>
+<p><strong>Pin the codename, don&rsquo;t follow <code>stable</code>.</strong> The wrapper writes the <em>codename</em> into <code>sources.list</code> and a state file, not <code>stable</code>. Writing <code>stable</code> would silently jump a working root to the next major release on release day. Moving to a new release should be an explicit <code>nextbsd-linux upgrade-release</code>, never implicit.</p>
+
+<h2 id="deboot">4. debootstrap on NextBSD</h2>
+<ul>
+<li><strong>The port.</strong> <code>sysutils/debootstrap</code> 1.0.144 is <code>NO_ARCH</code>, with host arch taken from <code>sysctl hw.machine_arch</code> (<code>aarch64</code> maps to <code>arm64</code>). It uses <code>gtar</code> and <code>ar</code>. Its dependencies are bash, gpgv, gtar, pcre2, wget and <code>ubuntu-keyring</code>. The pkg-message asks for <code>linux64 fdescfs linprocfs linsysfs tmpfs</code>, all compiled into NextBSD&rsquo;s kernel.</li>
+<li><strong>Stage 1</strong> only extracts packages, with no Linux code running. It copies the host&rsquo;s <code>/etc/resolv.conf</code> and <code>hostname</code> in.</li>
+<li><strong>Stage 2</strong> starts with <code>chroot $TARGET /bin/true</code>. debootstrap then mounts devfs, fdescfs <code>linrdlnk</code> and linprocfs inside the target itself, runs <code>dpkg</code>, and unmounts on exit (<code>functions:1232-1283, 1356-1366</code>).</li>
+<li><strong>The port&rsquo;s patches cover the two known Linuxulator gaps:</strong>
+<ul>
+<li>systemd&rsquo;s postinst is truncated, and <code>dpkg --configure</code> is retried.</li>
+<li><code>APT::Cache-Start 251658240</code> is written to <code>apt.conf.d/00freebsd</code>, because the Linuxulator lacks <code>mremap(2)</code> and apt otherwise fails with &ldquo;Dynamic MMap ran out of room&rdquo;.</li>
+</ul>
+The vendored Devuan script path has to write <code>00freebsd</code> itself.</li>
+<li><strong>Fallback:</strong> debuerreotype publishes signed-repo <code>rootfs.tar.xz</code> images for trixie on amd64 and arm64v8. Unpacking one needs no Linux code at all. It is a good fallback if stage 2 ever breaks.</li>
+</ul>
+
+<h2 id="wrapper">5. The wrapper</h2>
+<p><strong>What ships.</strong> <code>/usr/libexec/nextbsd-linux</code> (the same tool as the <a href="nextbsd-linux-abi-mounts-plan.html#spec">mount spec</a>), <code>/usr/bin/apt</code> as a shim to <code>nextbsd-linux apt</code>, and the <code>org.nextbsd.linux</code> plist. All three go in NextBSD-userland, whose package build lists every staged file automatically, so no packaging change is needed.</p>
+<div class="table-scroll"><table>
+<tr><th>Subcommand</th><th>Behaviour</th></tr>
+<tr><td><code>apt &lt;args&gt;</code></td><td>Root only. There is no <code>sudo</code> on a stock image, so print &ldquo;run as root&rdquo; rather than exec it. It ensures a root (bootstrapping on first use), refreshes the host files, then runs <code>chroot $root /usr/bin/apt "$@"</code> with apt&rsquo;s exit code passed through.</td></tr>
+<tr><td><code>bootstrap [--distro --suite --arch --mirror --variant]</code></td><td>Explicit bootstrap without running apt.</td></tr>
+<tr><td><code>run &lt;prog&gt; [args]</code></td><td>Any user. It ensures the mounts, then execs the program directly, and the Linuxulator resolves its paths through the alt root.</td></tr>
+<tr><td><code>shell</code></td><td><code>chroot $root /bin/bash</code> as root.</td></tr>
+<tr><td><code>status</code></td><td>Distro and codename, arch, mounts, whether <code>emul_path</code> matches, and GPU notes (for example, &ldquo;NVIDIA: no Linux acceleration&rdquo;).</td></tr>
+<tr><td><code>destroy</code></td><td>Unmount (refuses if busy), then <code>rm -rfx</code>.</td></tr>
+<tr><td><code>--compat</code>, <code>--native</code>, <code>--unmount</code>, <code>--status</code></td><td>The mount actions from the mounts plan.</td></tr>
+</table></div>
+<p><strong>What first use does:</strong></p>
+<ol>
+<li><strong>Find the root.</strong> It is <code>compat.linux.emul_path</code>. It counts as a valid root only if <code>etc/os-release</code>, <code>var/lib/dpkg/status</code> and the wrapper&rsquo;s own <code>.nextbsd-linux/state</code> all exist. An existing directory that fails this check is refused with exit 65, and the wrapper never deletes anything on the user&rsquo;s behalf. The empty pre-created mount skeleton is the one exception: bootstrapping into it is allowed.</li>
+<li><strong>Get consent.</strong> Show the plan and require <code>y</code> on a tty or <code>-y</code>. Without a tty and without <code>-y</code>, exit 64 with the exact command to run. On live media, refuse unless <code>--force</code>: <code>/cow</code> is RAM-backed and unswapped (#326), and a root plus Chrome is well over 600&nbsp;MB.</li>
+<li><strong>Bootstrap.</strong> Take <code>lockf</code>, then run <code>debootstrap --arch=… --variant=minbase --keyring=… &lt;codename&gt; $root &lt;mirror&gt;</code> <strong>in place</strong>. Afterwards, whatever the result, run <code>nextbsd-linux --compat</code> to restore <code>proc</code>. On failure, leave the root for inspection and point to <code>destroy</code>.</li>
+<li><strong>Write state.</strong> Record distro, codename, arch, variant, date and debootstrap version in <code>.nextbsd-linux/state</code>. Write <code>00freebsd</code> and <code>host.conf</code> (<code>order hosts, bind</code>).</li>
+<li><strong>Refresh on every run:</strong> copy <code>/etc/resolv.conf</code> (IPConfiguration rewrites it, so copy rather than symlink) and <code>/etc/hosts</code>.</li>
+</ol>
+<p><strong>Users.</strong> A direct-exec program sees the root&rsquo;s <code>/etc/passwd</code>, because it exists. <code>linux_base-rl9</code> deliberately omits <code>passwd</code>, <code>group</code> and <code>nsswitch.conf</code> so lookups fall through to the host. The recommendation is to add host users to the root&rsquo;s <code>passwd</code> and <code>group</code> at bootstrap and on <code>run</code>, which is what Handbook users do by hand.</p>
+<p><strong>Exit codes</strong> (sysexits):</p>
+<ul>
+<li>64: usage</li>
+<li>65: bad root</li>
+<li>69: mirror unreachable</li>
+<li>70: debootstrap failed</li>
+<li>75: lock held</li>
+<li>77: not root</li>
+</ul>
+<p>apt&rsquo;s own codes pass through.</p>
+
+<h2 id="gpu">6. Graphics: Mesa, NVIDIA, linsysfs</h2>
+<ul>
+<li><strong>DRM ioctls pass straight through.</strong> <code>linux_ioctl_drm()</code> fixes up the direction bits and calls <code>sys_ioctl</code>. The dma-buf and sync_file ioctls are explicitly allowed (<code>sys/compat/linux/linux_ioctl.c:2578-2620</code>). So Mesa in the root drives NextBSD&rsquo;s drm-kmod <code>6.12-lts</code> kexts through <code>/dev/dri</code>, which the root&rsquo;s devfs provides.</li>
+<li><strong>A matched userland is safest.</strong> Devuan 6 and trixie ship Mesa 25.0.7, released alongside kernel 6.12. Newer Mesa (Ubuntu 26.04) usually falls back gracefully on older kernel uAPI, but newer paths are untested here. Intel <code>xe</code> isn&rsquo;t in NextBSD&rsquo;s drm-kmod, so a Mesa that prefers <code>xe</code> won&rsquo;t help on the newest Intel GPUs.</li>
+<li><strong>NVIDIA: no Linux acceleration, by construction.</strong> NextBSD builds the 595.84 kext with the port&rsquo;s LINUX option <strong>off</strong>, which drops the Linux ioctl bridge on <code>/dev/nvidia*</code> (<code>nextbsd-kernel-extensions tools/nvidia-portpatch.sh:90-94</code>). Linux programs get llvmpipe whatever the distro. Re-enabling means satisfying the kext&rsquo;s <code>MODULE_DEPEND(nvidia, linux)</code> in a module-less kernel, then installing a <strong>version-matched</strong> NVIDIA userland into the root. That would be <code>NVIDIA-Linux-*-595.84.run</code>, installed the way <code>x11/linux-nvidia-libs</code> does it. No distro package matches: Debian has 550.163, Ubuntu 26.04 has 595.58, and FreeBSD ports has 595.99. That is its own project.</li>
+<li><strong>Pi 5: the GPU is invisible to Linux libdrm.</strong> linsysfs only creates <code>/sys/class/drm/cardN</code> and <code>/sys/dev/char/226:N</code> when the DRM device&rsquo;s parent is a PCI display device (<code>sys/compat/linsysfs/linsysfs.c:377-401</code>). vc4 and v3d are on the platform bus, so Linux <code>drmGetDevices2()</code> finds nothing. This is the Linux-side sibling of <a href="https://github.com/nextbsd/nextbsd/issues/449">nextbsd#449</a>, but here the fix belongs in linsysfs, not libdrm. PCI GPUs on amd64 are fine.</li>
+</ul>
+
+<h2 id="apps">7. Running installed programs</h2>
+<ul>
+<li><strong>Keep the root off the native PATH.</strong> Don&rsquo;t put <code>$root/usr/bin</code> on it, because <code>ls</code>, <code>sh</code> and friends would shadow the native ones. Use <code>nextbsd-linux run &lt;prog&gt;</code>, or a <code>link</code> subcommand that writes a stub into <code>/usr/local/bin</code>, the way the <code>google-chrome</code> and <code>claude</code> port wrappers do.</li>
+<li><strong>Gershwin</strong> launches <code>.app</code> bundles and has no <code>.desktop</code> parser. A Linux app needs a generated <code>.app</code> wrapper whose executable is the stub. <code>link</code> could generate one from the package&rsquo;s <code>.desktop</code> file.</li>
+<li><strong>AppImages</strong> need no root at all. The type2 runtime needs only <code>/dev/fuse</code> plus the compat mounts, and Gershwin already mounts squashfs payloads (#460).</li>
+<li><strong>claude-code</strong> has an official apt repository for Debian 10+ and Ubuntu 20.04+. Its native binary needs only glibc and libstdc++.</li>
+</ul>
+
+<h2 id="risks">8. Risks and open questions</h2>
+<ol>
+<li><strong>Absolute symlinks escape the root on unfixed kernels.</strong> FreeBSD fixed alt-root handling of absolute symlinks on <code>main</code> in commit 459ac3044b (PR 289739, 2026-04-26). It is <strong>not in <code>releng/15.0</code> or <code>stable/15</code></strong>. Trixie&rsquo;s own loader symlinks are relative, so the base root works. But <code>update-alternatives</code> symlinks are absolute by design: <code>/usr/bin/x-www-browser</code> points to <code>/etc/alternatives/&hellip;</code>, which points to <code>/usr/bin/google-chrome-stable</code>. On an unfixed kernel, direct exec through them resolves on the host. We need to check NextBSD&rsquo;s 15.1-based kernel, and backport the commit if it&rsquo;s missing.</li>
+<li><strong>Keyring provenance.</strong> The choice is between shipping the Debian and Devuan archive keyrings in NextBSD-userland (a few tens of KB; licences to check) and fetching the .deb over HTTPS, which is chicken-and-egg without a keyring. Shipping them is recommended.</li>
+<li><strong>Vendored Devuan script drift</strong>, and the Devuan mirror&rsquo;s TLS certificate mismatch.</li>
+<li><strong>Unmeasured:</strong> whether <code>/run</code> needs a tmpfs (one bookworm report), Chrome&rsquo;s actual <code>/dev/shm</code> use, bootstrap time and size.</li>
+<li><strong>Coexistence with <code>linux_base-rl9</code>.</strong> Ports hardcode <code>/compat/linux</code>. If both Debian and ports&rsquo; <code>linux-*</code> packages must coexist, the Debian root moves to <code>/compat/debian</code> with <code>emul_path</code> set. Pick one model; mixing is messy either way.</li>
+<li><strong>pkg triggers</strong> are irrelevant to this path. A courtesy trigger for admins who install <code>linux_base-*</code> anyway is possible (<code>path_glob "/compat/linux/*"</code>, which fires for files installed by other packages).</li>
+</ol>
+
+<h2 id="tickets">9. Tickets this implies</h2>
+<div class="table-scroll"><table>
+<tr><th>Ticket</th><th>Epic</th></tr>
+<tr><td><code>nextbsd-linux</code> mount tool and <code>org.nextbsd.linux</code> plist (rewrite of <a href="https://github.com/nextbsd/nextbsd-userland/issues/190">userland#190</a>)</td><td>E13 / E15</td></tr>
+<tr><td><code>nextbsd-linux bootstrap|apt|run|shell|status|destroy</code> plus the <code>/usr/bin/apt</code> shim; vendored Devuan script; shipped keyrings</td><td>E13</td></tr>
+<tr><td>Kernel: check for and backport 459ac3044b (alt-root absolute symlinks)</td><td>E13</td></tr>
+<tr><td>Kernel: linsysfs DRM nodes for platform-bus devices (Pi 5 vc4/v3d)</td><td>E13 / E7</td></tr>
+<tr><td>Spike: NVIDIA Linux acceleration (LINUX bridge plus a 595.84-matched userland)</td><td>E12</td></tr>
+<tr><td>Gershwin: <code>.app</code> wrappers for Linux apps (<code>nextbsd-linux link</code>)</td><td>E11</td></tr>
+<tr><td>Optional: restore native <code>WatchPaths</code>/<code>PathState</code> in launchd</td><td>E2</td></tr>
+</table></div>
+
+<p class="footnote">Evidence: FreeBSD ports <code>sysutils/debootstrap</code> (Makefile, pkg-plist, pkg-message, <code>files/patch-*</code>), <code>emulators/linux_base-rl9</code>, <code>www/linux-chrome</code>, <code>misc/claude-code</code>, <code>x11/linux-nvidia-libs</code>; upstream debootstrap (<code>functions</code>, <code>scripts/{debian-common,sid,gutsy}</code>) and <code>debootstrap_1.0.145devuan1</code>; Handbook <code>linuxemu</code> chapter; <code>deb.debian.org</code>, <code>deb.devuan.org/merged</code> and Ubuntu Release files and Packages indexes; <code>dl.google.com/linux/chrome/deb</code>; FreeBSD <code>sys/compat/linux/{linux_util,linux_ioctl}.c</code>, <code>sys/compat/linsysfs/linsysfs.c</code>, <code>sys/kern/vfs_lookup.c</code> (main 459ac3044b); nextbsd-kernel-extensions <code>build.yml</code> and <code>tools/nvidia-portpatch.sh</code>; nextbsd-pkg <code>scripts/build.sh</code>. Related: <a href="https://github.com/nextbsd/nextbsd/issues/461">E13 (#461)</a>, <a href="https://github.com/nextbsd/nextbsd/issues/460">#460</a>, <a href="https://github.com/nextbsd/nextbsd/issues/449">#449</a>, <a href="https://github.com/nextbsd/nextbsd/issues/326">#326</a>, <a href="https://github.com/nextbsd/nextbsd/issues/468">E14 (#468)</a>.</p>
+</div>
+</body>
+</html>

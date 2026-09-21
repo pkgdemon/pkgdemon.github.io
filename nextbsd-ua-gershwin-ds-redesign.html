@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>User accounts option B: Gershwin DirectoryServices in C/CF</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e8e8; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  td.bad { color:var(--bad); font-weight:600; }
+  td.good { color:var(--good); font-weight:600; }
+  td.warn { color:var(--warn); font-weight:600; }
+  .table-scroll { overflow-x:auto; }
+  @media (max-width:640px) { .wrap { padding:28px 16px 64px; } h1 { font-size:1.6rem; } th,td { padding:7px 8px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD Research</a> &middot; part of <a href="nextbsd-user-accounts-spike.html">User account management spike</a> &middot; companion to <a href="nextbsd-directoryservices-plan.html">option A: port Apple DirectoryService-621.12</a> and <a href="nextbsd-opendirectory-research.html">NetInfo &rarr; Open Directory history</a></p>
+
+<h1>User accounts option B: Gershwin DirectoryServices redesigned in C/CF</h1>
+<p class="lede">Gershwin already has the user experience the requirements ask for: <code>dscli init</code>, <code>dscli user add --admin</code>, <code>dscli promote</code>, <code>dscli join</code>, homes in <code>/Local/Users</code> and <code>/Network/Users</code>. What it does not have is a daemon that belongs in a base system: it is Objective-C on GNUstep Foundation, discovered through gdomap, and it shares password hashes with every host on the LAN over a root-mapped NFS export. This page documents what the code actually does today and designs a C + CoreFoundation rewrite for nextbsd-userland that keeps the commands, the file layout and the on-disk format, and replaces the daemon, the transports and the security model.</p>
+<p class="meta">2026-09-21. Source-grounded: every claim about Gershwin below comes from reading <code>gershwin-components/DirectoryServices</code> at <code>c1d9095</code> (2026-09-18), plus the NextBSD target of <code>gershwin-desktop</code>, <code>LoginWindow</code>, <code>SudoAskPass</code>, FreeBSD <code>releng/15.0</code> libc/libpam, and nextbsd-userland <code>main</code> (<code>src/WLAN/mach_service.c</code>, <code>src/launchd/src/core.c</code>). Statements marked <em>inferred</em> were not run on a machine. Planning only.</p>
+
+<div class="callout callout-good">
+<p><strong>Summary and verdict.</strong> Gershwin DirectoryServices is a 5,459-line, BSD-2-Clause, seven-month-old project (first commit 2026-02-02) made of three pieces: <code>dshelper</code> (an ObjC daemon that answers NSS-style questions over a Unix socket from two XML plists), <code>dscli</code> (an ObjC tool that edits those plists as root and drives NFS for promote/join), and <code>nss_gershwin</code> (a pure-C NSS module). It meets five of the seven requirements today, and meets the sudo requirement only by accident of <code>pam_unix</code>&rsquo;s <code>nullok</code>. The rewrite is small: about 7&ndash;8k lines of C over six to eight engineer-weeks, because the NSS module is already C, the plist format maps one-to-one onto <code>CFPropertyList</code>, and the daemon&rsquo;s whole protocol is nine text commands. The design keeps the file format and the socket protocol byte-for-byte so today&rsquo;s Gershwin clients keep working, moves hashes out of the world-readable plist, replaces the NFS-root data path with a TLS-authenticated RPC between daemons, and adds the missing PAM module that makes &ldquo;admin with no password sudoes without a prompt, admin with a password types it&rdquo; a rule instead of a side effect. Fit for the requirements: <strong>high</strong>. Apple-likeness: <strong>5/10</strong>, rising to 6 with UUIDs and a C client library. The realistic risk is not the code; it is that NextBSD&rsquo;s DNS-SD client and XPC transport are unfinished, so discovery and the client API ship on fallbacks first.</p>
+</div>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#today">What exists today, and its provenance</a></li>
+<li><a href="#gaps">What is missing or wrong today</a></li>
+<li><a href="#arch">Architecture on NextBSD</a></li>
+<li><a href="#map">Foundation to C/CF: what maps where</a></li>
+<li><a href="#reqs">Requirement-by-requirement</a></li>
+<li><a href="#ux">Command UX</a></li>
+<li><a href="#net">Network design</a></li>
+<li><a href="#compat">Compatibility with existing Gershwin, and future LDAP/Kerberos</a></li>
+<li><a href="#pros">Pros and cons</a></li>
+<li><a href="#effort">Effort by phase, and risks</a></li>
+<li><a href="#apple">How Apple-shaped it is</a></li>
+<li><a href="#sources">Sources</a></li>
+</ol>
+</div>
+
+<h2 id="today">1. What exists today, and its provenance</h2>
+<p><strong>License and era.</strong> <code>gershwin-components/LICENSE</code> is BSD-2-Clause, copyright 2025 Simon Peter. GitHub shows 29 commits touching <code>DirectoryServices/</code>, from <code>396ca44</code> &ldquo;Adding feature to support Gershwin style users and network profiles (#38)&rdquo; on 2026-02-02 to <code>18815a7</code> on 2026-09-08. The Linux backend arrived 2026-04-11 (<code>4aeb89a</code>). This is young code that has been used to ship live ISOs, not a mature directory service.</p>
+<p><strong>Size and language.</strong> 5,459 lines in 17 files. Objective-C: 3,715 lines (<code>dscli/main.m</code> 1,566, <code>dshelper/dshelper.m</code> 728, <code>DSPlatformLinux.m</code> 638, <code>DSPlatformFreeBSD.m</code> 520, <code>dshelper/main.m</code> 183, small headers). C: 943 lines (<code>nss_gershwin/nss_gershwin.c</code>). The rest is rc/systemd/init scripts, GNUmakefiles and a 453-line README. Everything ObjC links GNUstep Foundation with <code>-fobjc-arc</code>; <code>dshelper</code> also links <code>-ldispatch -lBlocksRuntime</code> for a single <code>dispatch_once</code>.</p>
+
+<h3>1.1 The daemon: dshelper</h3>
+<ul>
+<li><strong>Storage read.</strong> <code>dshelper.h:12-20</code> hard-codes the paths. The daemon prefers <code>/Network/Library/DirectoryServices/Users.plist</code> and <code>Groups.plist</code> when they exist (a joined client), else <code>/Local/Library/DirectoryServices/</code>. An empty <code>Domain.plist</code> in <code>/Local</code> marks a server (<code>isServer</code>, <code>dshelper.m:77-80</code>). Plists are loaded with <code>dictionaryWithContentsOfFile:</code> and cached by file modification date (<code>:90-135</code>); every lookup re-stats the file.</li>
+<li><strong>Record shape.</strong> <code>Users.plist</code> is a dictionary keyed by username; each value has <code>username</code>, <code>uid</code>, <code>gid</code>, <code>realName</code>, <code>shell</code>, <code>passwordHash</code> and an optional <code>noPassword</code> boolean. <code>Groups.plist</code> is keyed by group name with <code>groupname</code>, <code>gid</code>, <code>members</code>. The home directory is not stored: it is computed as <code>/Local/Users/&lt;name&gt;</code>, or <code>/Network/Users/&lt;name&gt;</code> when the daemon is in client mode (<code>:603-607</code>). Default shell when absent: <code>/usr/sbin/nologin</code> (<code>:616</code>).</li>
+<li><strong>Wire protocol.</strong> One AF_UNIX stream socket at <code>/var/run/dshelper.sock</code>, <code>chmod 0666</code> (<code>:275</code>). One request per connection, read in a single 2 KiB <code>read()</code>, colon-separated text: <code>getpwnam:name</code>, <code>getpwuid:uid</code>, <code>getgrnam:name</code>, <code>getgrgid:gid</code>, <code>auth:name:password</code>, <code>getpwent</code>, <code>getgrent</code>, <code>getgrouplist:name</code>, <code>getadminmembers</code> (<code>processRequest:callerUid:</code>, <code>:439-579</code>). Replies are a <code>passwd(5)</code> line, a <code>group(5)</code> line, <code>1</code>/<code>0</code>, <code>NOTFOUND</code> or <code>ERROR</code>. The password field is the crypt hash only when <code>getpeereid()</code> says the caller is root; otherwise <code>*</code>; and an empty string for <code>noPassword</code> accounts so <code>pam_unix nullok</code> lets them in (<code>:581-617</code>). <code>getgrnam:wheel</code> and <code>getgrgid:0</code> return <code>/etc/group</code>&rsquo;s wheel members merged with the members of gid 5000 <code>admin</code> (<code>:470-499, 673-687</code>).</li>
+<li><strong>Server mode adds TCP.</strong> When <code>Domain.plist</code> exists the same single-threaded <code>select()</code> loop also listens on TCP port 4721 (<code>DS_SERVICE_PORT</code>) and runs the same text protocol with the caller uid forced to <code>-1</code> (<code>:286-313, 377-404</code>). Nothing in the tree ever connects to it; clients read the plists over NFS instead. <code>dshelper.h:6-9</code> also defines a <code>DS_DISCOVERY_PORT 4720</code> / <code>"DSDISC"</code> pair twice and never uses it: an abandoned UDP discovery design.</li>
+<li><strong>Discovery.</strong> A server registers <code>GershwinDirectory</code> with GNUstep&rsquo;s Distributed Objects name server by shelling out: <code>system("/System/Library/Tools/gdomap -P 4721 -T tcp_gdo -R GershwinDirectory")</code> (<code>:698-705</code>). Clients look it up with <code>gdomap -L GershwinDirectory -T tcp_gdo -M '*'</code>, after generating an interface file with an <code>ifconfig | awk</code> pipeline, and parse the &ldquo;Found &hellip; on '&lt;ip&gt;'&rdquo; line (<code>DSPlatformFreeBSD.m:436-518</code>). The README says <code>rpcbind</code> is required for gdomap; the code shows gdomap is standalone on port 538 and <code>rpcbind</code> is for NFS.</li>
+<li><strong>Process model.</strong> <code>main.m</code> forks, writes <code>/var/run/dshelper.pid</code> under <code>flock</code>, installs signal handlers and refuses to run as non-root. Gershwin&rsquo;s NextBSD target runs it with <code>-d</code> (foreground) under <code>io.github.gershwin-desktop.dshelper.plist</code> with <code>KeepAlive</code>, alongside <code>org.gnustep.gdomap.plist</code>; both live in <code>/System/Library/LaunchDaemons</code>.</li>
+</ul>
+
+<h3>1.2 The tool: dscli</h3>
+<ul>
+<li><strong>Everything is root and everything is file editing.</strong> <code>main()</code> exits unless <code>getuid()==0</code> (<code>dscli/main.m:1407-1410</code>). All user and group commands load the plist, mutate the dictionary and write it back with <code>NSDataWritingAtomic</code> (<code>loadPlist</code>/<code>savePlist</code>, <code>:75-100</code>). The daemon is never involved in writes; it notices by mtime. On a joined client the same code path writes straight into <code>/Network/Library/DirectoryServices/</code>, meaning through the NFS mount into the server&rsquo;s <code>/Local</code>.</li>
+<li><strong>Verbs.</strong> <code>user list|show|add|delete|passwd|edit</code>, <code>group list|show|add|delete|addmember|removemember</code>, <code>list</code>, <code>passwd</code>, <code>verify</code>, <code>init</code>, <code>promote</code>, <code>demote</code>, <code>join [server]</code>, <code>leave</code>. <code>user add</code> allocates the next uid above 5000 and a private group, creates <code>/Local/Users/&lt;name&gt;</code> 0755 owned by the user with no skeleton (<code>:471-491</code>), defaults the shell to <code>/bin/sh</code>, and with <code>--admin</code> appends the name to group <code>admin</code> (gid 5000). Passwords are <code>crypt(3)</code> with <code>$6$rounds=5000$</code> and a 16-character salt (<code>:102-121</code>). <code>user delete</code> refuses to delete uid 5000 or the name <code>admin</code>, and leaves the home in place.</li>
+<li><strong><code>init</code>.</strong> Creates <code>/Local/Library/DirectoryServices</code>, <code>/Local/Users</code>, <code>/Local/Applications</code>, <code>/Network</code> and a sticky <code>/Volumes</code>; seeds <code>Users.plist</code> with <code>admin</code> (uid/gid 5000, <code>noPassword: YES</code>, shell <code>/bin/sh</code>, home <code>/Local/Users/admin</code>) and <code>Groups.plist</code> with <code>admin</code>; rewrites <code>/etc/nsswitch.conf</code> to <code>passwd: gershwin files</code> and <code>group: gershwin files</code> (<code>:1008-1056</code>); and writes <code>/usr/local/etc/sudoers.d/gershwin</code> containing a <code>secure_path</code> captured by sourcing <code>GNUstep.sh</code>, <code>env_keep += "LD_LIBRARY_PATH DYLD_LIBRARY_PATH &hellip; GNUSTEP_*"</code>, and <code>%admin ALL = (ALL) ALL</code> (<code>configureSudoers</code>, <code>:909-1006</code>). Both the gershwin-desktop NextBSD build and the FreeBSD installer run <code>dscli init</code> in the chroot and create no <code>/etc</code> account at all (<code>targets/nextbsd/build.sh:250-262</code>).</li>
+<li><strong><code>promote</code></strong> (<code>:1161-1227</code>, FreeBSD backend <code>DSPlatformFreeBSD.m:102-210</code>): refuses if a server is already discoverable; appends <code>/Local -alldirs -maproot=root</code> to <code>/etc/exports</code> with no network restriction; <code>sysrc rpcbind_enable nfs_server_enable mountd_enable</code>; starts them; writes an empty <code>Domain.plist</code>; <code>service dshelper restart</code>.</li>
+<li><strong><code>join</code></strong> (<code>:1287-1360</code>, backend <code>:275-380</code>): discovers or takes a host; enables <code>rpcbind</code> and <code>nfs_client</code>; <code>mkdir /Network</code>; appends <code>server:/Local /Network nfs rw 0 0</code> to <code>/etc/fstab</code>; <code>mount /Network</code>; checks that <code>/Network/Library/DirectoryServices</code> appeared. <code>leave</code> unmounts and removes the fstab line. <code>demote</code> refuses while <code>showmount -a</code> lists clients.</li>
+</ul>
+
+<h3>1.3 The NSS module, and the absence of a PAM module</h3>
+<ul>
+<li><code>nss_gershwin.c</code> is pure C. On FreeBSD it registers <code>getpwnam_r</code>, <code>getpwuid_r</code>, <code>getgrnam_r</code>, <code>getgrgid_r</code> and <code>getgroupmembership</code> through <code>nss_module_register</code> (<code>:927-942</code>). It does <em>not</em> register <code>setpwent</code>/<code>getpwent_r</code>/<code>getgrent_r</code>, so <code>getent passwd</code> with no argument will not list directory users on FreeBSD (Linux gets <code>getspnam_r</code> and <code>initgroups_dyn</code> instead). Each call opens a fresh socket to <code>dshelper</code>.</li>
+<li><code>getgroupmembership</code> (<code>:830-922</code>) asks the daemon for <code>getgrouplist:user</code>, then appends the gids of <code>audio</code>, <code>video</code>, <code>render</code> and <code>input</code> if they exist in <code>/etc/group</code>, and gid 0 (wheel) plus 27 (sudo, Linux) when the user is in gid 5000. That is how admins get <code>su</code> on FreeBSD.</li>
+<li><strong>There is no PAM module.</strong> Authentication is <code>pam_unix</code>: <code>getpwnam()</code> as root returns the hash through NSS and <code>pam_unix</code> compares. LoginWindow calls <code>pam_start("login", &hellip;)</code> (<code>LoginWindowPAM.m:164</code>). SudoAskPass bypasses PAM and sends <code>auth:user:pass</code> to the socket directly to pre-validate (<code>SudoAskPass.m:403-478</code>).</li>
+<li>The module installs to <code>/System/Library/Libraries/nss_gershwin.so.1</code> and drops an <code>ldconfig</code> hint file so libc&rsquo;s <code>libc_dlopen("nss_%s.so.%d")</code> can find it (<code>nsdispatch.c:512-515</code>). This is one of the two <code>/System/Library</code> path collisions the hub page already records for Gershwin on NextBSD.</li>
+</ul>
+
+<h3>1.4 /Local, /Network, admin, sudo and the shell today</h3>
+<div class="table-scroll"><table>
+<tr><th>Concern</th><th>What the code does</th><th>Verified in</th></tr>
+<tr><td><code>/Local/Users</code></td><td>Created by <code>init</code>; home created at <code>user add</code>, 0755, no skeleton.</td><td><code>dscli/main.m:1063-1083, 471-491</code></td></tr>
+<tr><td><code>/Network/Users</code></td><td>Not a separate mount: the whole server <code>/Local</code> is mounted at <code>/Network</code>, so <code>/Network/Users</code>, <code>/Network/Applications</code> and <code>/Network/Library/DirectoryServices</code> all appear. The daemon rewrites <code>pw_dir</code> to <code>/Network/Users/&lt;name&gt;</code> in client mode.</td><td><code>DSPlatformFreeBSD.m:343-362</code>, <code>dshelper.m:603-607</code></td></tr>
+<tr><td>admin</td><td>Group <code>admin</code> gid 5000; <code>init</code> creates user <code>admin</code> uid 5000 with <code>noPassword</code>. Admins are injected into wheel by NSS and, through <code>%admin ALL=(ALL) ALL</code>, may sudo.</td><td><code>dscli/main.m:1102-1145, 982</code>; <code>nss_gershwin.c:896-918</code></td></tr>
+<tr><td>sudo without a password</td><td>Not implemented as a rule. It happens because FreeBSD&rsquo;s <code>/etc/pam.d/system</code> has <code>pam_unix.so &hellip; nullok</code>, and <code>pam_unix</code> returns <code>PAM_SUCCESS</code> before asking for a password when the hash is empty (<code>pam_unix.c:108-113</code>). The same rule makes an empty-hash account accept <em>any</em> password at the login prompt; LoginWindow works around that only <code>#if defined(__linux__)</code> (<code>LoginWindowPAM.m:137-150</code>).</td><td>FreeBSD releng/15.0 <code>lib/libpam/modules/pam_unix/pam_unix.c</code>, <code>lib/libpam/pam.d/system</code></td></tr>
+<tr><td>Default shell</td><td><code>/bin/sh</code> from <code>dscli</code>; <code>/usr/sbin/nologin</code> if the record has none. No zsh anywhere.</td><td><code>dscli/main.m:389</code>, <code>dshelper.m:616</code></td></tr>
+<tr><td>root and system users</td><td>Untouched: stay in <code>/etc/master.passwd</code>. nsswitch order <code>gershwin files</code> means the daemon is consulted first for every lookup, including root&rsquo;s.</td><td><code>dscli/main.m:1033-1045</code></td></tr>
+</table></div>
+
+<h2 id="gaps">2. What is missing or wrong today</h2>
+<div class="callout callout-bad">
+<p><strong>Security, verified from the code.</strong> (1) <code>promote</code> exports <code>/Local</code> read-write to every host, <code>-maproot=root</code>, so any machine on the LAN can mount it as root, read every hash in <code>Users.plist</code>, and add itself an admin. (2) The TCP 4721 listener answers <code>getpwent</code> and <code>auth:user:pass</code> to anyone, in plaintext, with no rate limit: user enumeration and online password guessing for free. (3) <code>Users.plist</code> is written with the process umask (<em>inferred</em> 0644) so hashes are readable by every local user on the server, and by every user on every client through the mount. (4) <code>sudoers.d/gershwin</code> keeps <code>LD_LIBRARY_PATH</code> through sudo. (5) The <code>nullok</code> hole above.</p>
+</div>
+<ul>
+<li><strong>No PAM module</strong>, so the password policy is whatever <code>pam_unix</code> does; <code>passwd(1)</code> and <code>chsh(1)</code> fail for directory users because they edit <code>master.passwd</code> through <code>pw_util</code>; only <code>dscli passwd</code> works.</li>
+<li><strong>No enumeration on FreeBSD</strong> (<code>getent passwd</code>, user pickers, <code>ls -l</code> of a shared tree all lose).</li>
+<li><strong>No offline behaviour</strong> for clients: when the server is down the client daemon silently falls back to <code>/Local</code>, which on a client contains only the local <code>admin</code>.</li>
+<li><strong>No record identity</strong>: no UUID, no creation date, no per-record files; a rename is delete-and-recreate; two admins on two clients writing at once lose one another&rsquo;s changes (last atomic write wins).</li>
+<li><strong>Discovery depends on gdomap</strong> (part of GNUstep base, LGPL), an <code>ifconfig | awk</code> pipeline, and a temporary file in <code>/tmp</code>. <code>promote</code> enforces &ldquo;one server per network&rdquo; only by whether discovery answered.</li>
+<li><strong>Everything shells out</strong>: <code>system("sysrc &hellip;")</code>, <code>service &hellip;</code>, <code>showmount -a</code>, <code>mount | grep</code>. NextBSD has no <code>rc.d</code>, no <code>sysrc</code> and ships no <code>/etc/fstab</code>, so the FreeBSD backend does not work there unmodified; the NextBSD target only runs <code>dscli init</code>.</li>
+<li><strong>Not Apple-shaped where it matters to apps</strong>: there is no client library, no node concept, no attribute names an OpenDirectory-style API could map onto.</li>
+</ul>
+
+<h2 id="arch">3. Architecture on NextBSD</h2>
+<p>The rewrite is one daemon, one tool, one NSS module, one PAM module and one small client library, all C, built with <code>bsd.prog.mk</code>/<code>bsd.lib.mk</code> like the other nextbsd-userland components, installed on plain Apple-Unix paths. Names follow the wland rule: our daemon models no Apple daemon, so its labels are <code>org.nextbsd.*</code>, never <code>com.apple.*</code>.</p>
+<pre><code>nextbsd-userland/
+  src/DirectoryServices/
+    dsd/            dsd.c main + launchd check-in     store.c   CFPropertyList store, locking, Shadow/
+                    local_ipc.c AF_UNIX text protocol  net.c     TLS server/client between daemons
+                    auth.c  crypt/bcrypt verify, policy  mounts.c  /Network/Users, /Network/Applications
+                    discover.c DNS-SD + gdomap shim     notify.c  notify_post("org.nextbsd.ds.changed")
+                    ds.defs  MIG: org.nextbsd.ds (read-only status, flat inline structs)
+    dscli/          dscli.c verbs, table output        platform.c  promote/join/leave on NextBSD
+    libds/          ds.h ds.c  C API over the socket; returns CFDictionaryRef records
+    nss_ds/         nss_ds.c  libc-only (fork of nss_gershwin.c)  -> /usr/lib/nss_ds.so.1
+    pam_ds/         pam_ds.c  auth/account/password/session      -> /usr/lib/pam_ds.so.6
+    tests/          protocol, store, pam, nss smoke tests
+  overlay/System/Library/LaunchDaemons/org.nextbsd.dsd.plist
+  overlay/etc/pam.d/{login,sudo,su,sshd,passwd}   overlay/etc/nsswitch.conf   overlay/etc/sudoers.d/nextbsd
+  src/sudo/  (vendored 1.9.17p2)     src/zsh/  (vendored 5.9.2, GPL Functions/ omitted)</code></pre>
+<div class="table-scroll"><table>
+<tr><th>Installed path</th><th>What</th></tr>
+<tr><td><code>/usr/libexec/dsd</code></td><td>The daemon. Runs as root (it must read Shadow/ and create homes). Foreground, no fork, no pidfile: launchd owns it.</td></tr>
+<tr><td><code>/usr/bin/dscli</code></td><td>The tool. Not setuid. Reads work for any user; writes require root or an <code>admin</code> member, checked by <code>dsd</code> from peer credentials.</td></tr>
+<tr><td><code>/usr/lib/libds.so</code>, <code>/usr/include/ds/ds.h</code></td><td>C client library (CF types). Gershwin can wrap it in ObjC above the Mach line, the way the OD plan splits CoreWLAN.</td></tr>
+<tr><td><code>/usr/lib/nss_ds.so.1</code></td><td>NSS module. <code>nsswitch.conf</code>: <code>passwd: files ds</code>, <code>group: files ds</code>.</td></tr>
+<tr><td><code>/usr/lib/pam_ds.so.6</code></td><td>PAM module, referenced from <code>/etc/pam.d/{login,sudo,su,sshd,passwd}</code>.</td></tr>
+<tr><td><code>/var/run/ds.sock</code> (+ symlink <code>/var/run/dshelper.sock</code>)</td><td>Local socket, created by launchd (<code>Sockets</code>), mode 0666.</td></tr>
+<tr><td><code>/var/db/ds/</code></td><td>Client state: <code>client.plist</code> (server, port, pinned certificate, machine token; 0600), <code>cache.plist</code> (last good directory copy for offline logins; 0600).</td></tr>
+</table></div>
+
+<h3>3.1 launchd plist and service names</h3>
+<pre><code>&lt;!-- overlay/System/Library/LaunchDaemons/org.nextbsd.dsd.plist --&gt;
+&lt;key&gt;Label&lt;/key&gt;                &lt;string&gt;org.nextbsd.dsd&lt;/string&gt;
+&lt;key&gt;ProgramArguments&lt;/key&gt;     &lt;array&gt;&lt;string&gt;/usr/libexec/dsd&lt;/string&gt;&lt;/array&gt;
+&lt;key&gt;RunAtLoad&lt;/key&gt;            &lt;true/&gt;
+&lt;key&gt;KeepAlive&lt;/key&gt;            &lt;true/&gt;
+&lt;key&gt;Sockets&lt;/key&gt;
+  &lt;dict&gt;&lt;key&gt;Listeners&lt;/key&gt;&lt;dict&gt;
+    &lt;key&gt;SockPathName&lt;/key&gt; &lt;string&gt;/var/run/ds.sock&lt;/string&gt;
+    &lt;key&gt;SockType&lt;/key&gt;     &lt;string&gt;stream&lt;/string&gt;
+    &lt;key&gt;SockPathMode&lt;/key&gt; &lt;integer&gt;438&lt;/integer&gt;   &lt;!-- 0666 --&gt;
+  &lt;/dict&gt;&lt;/dict&gt;
+&lt;key&gt;MachServices&lt;/key&gt;
+  &lt;dict&gt;&lt;key&gt;org.nextbsd.ds&lt;/key&gt;&lt;true/&gt;&lt;/dict&gt;
+&lt;key&gt;StandardErrorPath&lt;/key&gt;    &lt;string&gt;/var/log/dsd.stderr&lt;/string&gt;</code></pre>
+<p>NextBSD&rsquo;s launchd parses <code>Sockets</code> (<code>core.c:1625 socketgroup_setup</code>, <code>:3011</code>) and <code>MachServices</code> (<code>:3033</code>, <code>:6851</code>), and <code>liblaunch</code> answers <code>LAUNCH_KEY_CHECKIN</code>, so the socket can be launchd-owned like the mDNSResponder plan proposes. <em>Inferred, to be tested in phase 0:</em> if <code>Sockets</code> check-in turns out not to hand a usable fd, <code>dsd</code> binds the socket itself, exactly as <code>dshelper</code> does now; the plist loses one key and nothing else changes. There is no launchd ordering on this port, so <code>dsd</code> starts whenever it starts, and LoginWindow&rsquo;s PAM call simply retries the socket for a few seconds (the NSS module returns <code>NS_UNAVAIL</code>, which nsswitch treats as &ldquo;continue&rdquo;).</p>
+<div class="table-scroll"><table>
+<tr><th>Name</th><th>Kind</th><th>Used by</th></tr>
+<tr><td><code>org.nextbsd.dsd</code></td><td>launchd label</td><td><code>launchctl</code></td></tr>
+<tr><td><code>org.nextbsd.ds</code></td><td>Mach service, MIG, read-only: <code>ds_status</code>, <code>ds_role</code>, <code>ds_server_info</code>, flat inline replies only because MIG out-of-line data is broken in this kernel (the WLAN plan&rsquo;s constraint)</td><td><code>libds</code>, <code>dscli list</code>, future prefpane</td></tr>
+<tr><td><code>org.nextbsd.ds.changed</code></td><td>notifyd key, posted after every write</td><td>LoginWindow user list, prefpanes, <code>nscd</code>-style caches</td></tr>
+<tr><td><code>/var/run/ds.sock</code></td><td>AF_UNIX, text protocol v1 (Gershwin&rsquo;s) + v2</td><td><code>nss_ds</code>, <code>pam_ds</code>, <code>dscli</code>, <code>libds</code>, legacy SudoAskPass</td></tr>
+<tr><td><code>_nextbsd-ds._tcp</code> on 4721</td><td>DNS-SD service, TLS</td><td>client <code>dsd</code>, <code>dscli join</code></td></tr>
+</table></div>
+<p>Why not XPC for the local API: the scoping page lists <code>xpc_connection.c</code> for deletion (#146) and libxpc&rsquo;s wire format is libnv, not bplist. Building a directory client on it today would tie this project to a transport the project is removing. The AF_UNIX socket gives <code>getpeereid()</code> for free, which is the one property the privileged operations need, and the C-only NSS module cannot link libdispatch or CoreFoundation anyway: it is loaded into every process, including GNUstep applications, and the hub records that no single process may load both libdispatch builds.</p>
+
+<h3>3.2 Storage format and location</h3>
+<p>Keep <code>/Local/Library/DirectoryServices/Users.plist</code> and <code>Groups.plist</code> as the canonical store, same dictionary-of-records shape, read and written with <code>CFPropertyListCreateWithData</code>/<code>CFPropertyListCreateData</code> (XML for humans, which is what Gershwin writes). Add fields: <code>generatedUID</code> (CFUUID, Apple&rsquo;s <code>GeneratedUID</code> idea), <code>home</code> (explicit, default computed as today), <code>created</code>, <code>modified</code>, <code>disabled</code>. Move secrets: by default <code>passwordHash</code> leaves <code>Users.plist</code> for <code>Shadow/&lt;generatedUID&gt;.plist</code>, 0600 root, holding <code>hash</code> (<code>$2b$</code> bcrypt by default, <code>$6$</code> accepted), <code>changed</code>, <code>failedAttempts</code>. That is Apple 10.5&rsquo;s <code>/var/db/shadow/hash/&lt;GUID&gt;</code> layout. <code>Domain.plist</code> gains content: <code>name</code>, <code>serverUUID</code>, <code>port</code>, <code>certificate</code>, <code>legacyNFS</code>. Writes go through <code>dsd</code> only, under one <code>flock</code>, written to a temp file and renamed. A legacy mode (<code>promote --legacy</code>) keeps hashes inside <code>Users.plist</code> because that is where a 2026 Gershwin client looks for them (section 8).</p>
+
+<h3>3.3 NSS and PAM</h3>
+<ul>
+<li><code>nss_ds</code> keeps Gershwin&rsquo;s five FreeBSD methods and adds <code>setpwent</code>/<code>getpwent_r</code>/<code>endpwent</code> and the group equivalents by streaming <code>getpwent</code>/<code>getgrent</code> replies. With <code>passwd: files ds</code>, system users never touch the socket. The order is safe for group membership because libc&rsquo;s <code>files</code> source has no native <code>getgroupmembership</code>; its fallback enumerates and returns <code>NS_NOTFOUND</code> at the end (<code>getgrent.c:465-546</code>), so nsswitch continues to <code>ds</code>, which appends the admin&rsquo;s <code>wheel</code> and hardware groups as today.</li>
+<li><code>pam_ds</code> is the piece Gershwin lacks. <code>auth</code>: look the user up; if the record is not ours return <code>PAM_USER_UNKNOWN</code> (stack continues to <code>pam_unix</code>); if <code>noPassword</code> and the module argument <code>allow_nopass</code> is set, return <code>PAM_SUCCESS</code> without prompting; otherwise prompt and send <code>auth:</code> to <code>dsd</code>, which verifies against Shadow/ (or forwards to the server on a client) and applies lockout. The hash never leaves the daemon. <code>account</code>: honour <code>disabled</code>. <code>password</code>: old/new to <code>dsd</code>, so <code>passwd(1)</code> works for directory users. <code>session</code>: on a client, make sure <code>/Network/Users</code> is mounted before the home is used.</li>
+</ul>
+<pre><code># /etc/pam.d/sudo (vendored sudo, sysconfdir /etc)
+auth      sufficient  pam_ds.so   allow_nopass    # admin with no password: no prompt
+auth      include     system                      # everyone else: pam_unix
+account   sufficient  pam_ds.so
+account   include     system
+# /etc/pam.d/login: same shape but WITHOUT allow_nopass on auth; an empty-password
+# account may log in only with an empty password, closing the nullok hole.</code></pre>
+<p>This is the shape macOS uses (<code>auth sufficient pam_opendirectory.so</code> in its <code>/etc/pam.d/sudo</code>), and it makes the requirement a policy line rather than an artefact of <code>nullok</code>. <code>/etc/sudoers.d/nextbsd</code> is just <code>%admin ALL=(ALL) ALL</code>; no <code>secure_path</code> games and no <code>env_keep</code>, because there is no GNUstep environment to carry.</p>
+
+<h3>3.4 System users stay in /etc/master.passwd</h3>
+<p><code>root</code>, <code>daemon</code>, <code>_dhcp</code> and friends stay where FreeBSD&rsquo;s build, <code>pwd_mkdb</code>, single-user mode and <code>/rescue</code> expect them. <code>dsd</code> allocates uids and gids from 5000 upward (as now) and refuses to create a record whose name or id exists in <code>files</code>. Requirement 7 asks for root to move too; the honest answer is that root must be resolvable before <code>dsd</code> runs and when the disk is half-mounted, so root&rsquo;s <em>record</em> stays in <code>master.passwd</code>. What can move is root&rsquo;s <em>password</em> policy: <code>dscli passwd root</code> writes both <code>master.passwd</code> (through <code>pw_util</code>) and Shadow/, so one command manages it.</p>
+
+<h3>3.5 pw, adduser, vipw</h3>
+<p>Leave them in place, unchanged, for system users; they operate on <code>master.passwd</code> and are the right tool for that file. <code>dscli</code> is the tool for people. Two small guards: <code>dscli</code> warns when a requested name exists in <code>files</code>, and the installer/first-boot creates no <code>/etc</code> human account (as the gershwin-desktop build already insists). <code>passwd(1)</code> and <code>chsh(1)</code>: <code>passwd</code> works through <code>pam_ds</code>; <code>chsh</code>/<code>chfn</code> bypass PAM and will report the user is not in <code>master.passwd</code>, so the documented path is <code>dscli user edit --shell</code>. A wrapper that redirects <code>chsh</code> for directory users is optional and cheap.</p>
+
+<h2 id="map">4. Foundation to C/CF: what maps where</h2>
+<div class="table-scroll"><table>
+<tr><th>Gershwin usage</th><th>NextBSD replacement</th><th>Note</th></tr>
+<tr><td><code>NSDictionary dictionaryWithContentsOfFile:</code>, <code>NSPropertyListSerialization</code>, <code>NSDataWritingAtomic</code></td><td><code>CFPropertyListCreateWithData</code>, <code>CFPropertyListCreateData</code>, <code>mkstemp</code>+<code>rename</code></td><td>CF-lite&rsquo;s plist reader/writer works (launchctl depends on it). Same XML on disk.</td></tr>
+<tr><td><code>NSString</code>, <code>componentsSeparatedByString:</code>, formats</td><td>Plain C for the wire protocol (<code>strsep</code>, <code>snprintf</code>); <code>CFString</code> only at the plist boundary</td><td>The protocol is ASCII; CF adds nothing there.</td></tr>
+<tr><td><code>NSFileManager</code> create/attributes/exists</td><td><code>mkdir</code>, <code>chown</code>, <code>stat</code>, <code>copyfile</code>-style skeleton copy</td><td>Home creation gains <code>/usr/share/skel</code> plus Desktop/Documents/Downloads/Library.</td></tr>
+<tr><td><code>select()</code> loop, one request per connection</td><td>libdispatch: <code>DISPATCH_SOURCE_TYPE_READ</code> on the listening fd, a serial queue for the store</td><td>Same concurrency (one writer), no blocking on a slow client. Raw kqueue is the fallback if dispatch misbehaves; wland uses a raw loop for its Mach side.</td></tr>
+<tr><td><code>getpeereid()</code></td><td><code>getpeereid()</code> (FreeBSD native)</td><td>Unchanged.</td></tr>
+<tr><td><code>dispatch_once</code> singleton</td><td>static</td><td>&nbsp;</td></tr>
+<tr><td><code>system("gdomap -R &hellip;")</code>, <code>gdomap -L &hellip; -M '*'</code>, <code>ifconfig | awk</code></td><td><code>DNSServiceRegister</code>/<code>DNSServiceBrowse</code> for <code>_nextbsd-ds._tcp</code> via libdns_sd; <code>getifaddrs()</code>; a 200-line gdomap-protocol shim for legacy peers</td><td>The dns_sd client over Mach is not finished on NextBSD (hub: libdns_sd is an AF_UNIX stub); until it lands, discovery is <code>join &lt;host&gt;</code> plus the gdomap shim. Honest fallback, not a blocker.</td></tr>
+<tr><td><code>NSHost hostWithAddress:</code></td><td><code>getnameinfo()</code></td><td>&nbsp;</td></tr>
+<tr><td><code>system("sysrc &hellip;")</code>, <code>service &hellip;</code>, <code>/etc/fstab</code> edits, <code>mount | grep</code></td><td><code>posix_spawn</code> of <code>nfsd</code>/<code>mountd</code>/<code>rpcbind</code> under launchd plists shipped with <code>dsd</code>; <code>nmount(2)</code> for <code>/Network/Users</code>; <code>getmntinfo(3)</code> to test mounts</td><td>NextBSD has no rc.d and no fstab; the daemon owns its mounts, the same doctrine as the Linux ABI mounts page.</td></tr>
+<tr><td><code>NSDebugLLog</code></td><td><code>asl_log</code> / <code>syslog(3)</code></td><td>&nbsp;</td></tr>
+<tr><td>pidfile + <code>fork()</code> + <code>flock</code></td><td>none: launchd</td><td>&nbsp;</td></tr>
+<tr><td>(nothing)</td><td><code>notify_post("org.nextbsd.ds.changed")</code></td><td>New: lets UIs refresh without polling mtimes.</td></tr>
+<tr><td>(nothing)</td><td>MIG <code>org.nextbsd.ds</code> via <code>bootstrap_check_in</code> + <code>mach_msg</code> loop, cloned from <code>src/WLAN/mach_service.c:65-105</code></td><td>Read-only status for now; the seam where a future XPC/OD-style API attaches.</td></tr>
+</table></div>
+<p><strong>What gets rewritten versus carried.</strong> Carried with edits: <code>nss_gershwin.c</code> (about 80% survives; drop the Linux half, add enumeration). Rewritten from its behaviour: <code>dshelper.m</code> (into <code>store.c</code> + <code>local_ipc.c</code>, about 900 lines), <code>dscli/main.m</code> (verbs and output kept, about 1,400 lines of C), the two platform backends (one NextBSD backend, no <code>sysrc</code>). New: <code>net.c</code> TLS RPC, <code>pam_ds.c</code>, <code>libds</code>, <code>discover.c</code>, <code>mounts.c</code>, tests.</p>
+
+<h2 id="reqs">5. Requirement-by-requirement</h2>
+<div class="table-scroll"><table>
+<tr><th>#</th><th>Requirement</th><th>How it is met</th><th>Effort</th><th>Risk</th></tr>
+<tr><td>1</td><td>Users live in <code>/Local/Users</code></td><td>Already Gershwin&rsquo;s layout; <code>dsd</code> creates homes there with a skeleton. Record gains an explicit <code>home</code> field.</td><td class="good">Low</td><td class="good">Low</td></tr>
+<tr><td>2</td><td>Default shell zsh</td><td>Vendor zsh 5.9.2 to <code>/bin/zsh</code>; <code>dscli user add</code> defaults <code>shell</code> to <code>/bin/zsh</code>; <code>/etc/shells</code> and <code>/etc/zshrc</code> in the overlay. Gershwin&rsquo;s <code>/bin/sh</code> default becomes a one-line change.</td><td class="good">Low</td><td class="good">Low; zsh builds on FreeBSD today (ports <code>shells/zsh</code>).</td></tr>
+<tr><td>3</td><td>Admin sudo: no password set &rarr; no prompt; password set &rarr; must type it</td><td><code>pam_ds.so allow_nopass</code> as <code>auth sufficient</code> in <code>/etc/pam.d/sudo</code>, plus <code>%admin ALL=(ALL) ALL</code>. The <code>noPassword</code> flag is cleared by <code>dscli passwd</code> exactly as Gershwin does (<code>main.m:581-583</code>).</td><td class="good">Low (module ~500 lines)</td><td class="warn">Medium: sudo must be built with PAM and the policy must be tested against <code>sudo -k</code>, timestamps and <code>askpass</code>.</td></tr>
+<tr><td>4</td><td>Promote a machine to a directory server</td><td><code>dscli promote</code>: creates keypair and self-signed certificate, fills <code>Domain.plist</code>, starts the TLS listener on 4721, registers <code>_nextbsd-ds._tcp</code>, exports <code>/Local/Users</code> and <code>/Local/Applications</code> over NFS read-write with root squash, restricted to the joined clients&rsquo; addresses.</td><td class="warn">Medium</td><td class="warn">Medium: NFS server under launchd on NextBSD is untested (plists for <code>rpcbind</code>, <code>mountd</code>, <code>nfsd</code>).</td></tr>
+<tr><td>5</td><td>Join a server for network accounts and applications</td><td><code>dscli join [host]</code>: TOFU-pin the server certificate, authenticate as a server admin, receive a machine token, write <code>/var/db/ds/client.plist</code>, mount <code>/Network/Users</code> and <code>/Network/Applications</code>, switch <code>dsd</code> to client mode with an offline cache.</td><td class="warn">Medium</td><td class="warn">Medium: discovery depends on dns_sd-over-Mach; <code>join &lt;host&gt;</code> works without it.</td></tr>
+<tr><td>6</td><td>Network users&rsquo; homes under <code>/Network/Users</code></td><td>Server exports <code>/Local/Users</code>; client <code>dsd</code> mounts it at <code>/Network/Users</code> at join and at every boot; records served to a client carry <code>home=/Network/Users/&lt;name&gt;</code>, as Gershwin does.</td><td class="good">Low</td><td class="warn">Medium: uid mapping is by matching ids (fine, one directory), but NFS with root squash means the client cannot create a missing home; <code>dsd</code> on the server creates it at <code>user add</code>.</td></tr>
+<tr><td>7</td><td>Replace <code>/etc/passwd</code> and <code>group</code> for account management, including root, except system users</td><td>All human accounts in the directory; <code>nsswitch files ds</code>; <code>dscli passwd root</code> manages root&rsquo;s password in both places. Root&rsquo;s record itself stays in <code>master.passwd</code>.</td><td class="good">Low</td><td class="warn">Partial by design: moving root&rsquo;s record would break single-user and <code>/rescue</code>; this is also what Apple never did for uid 0 until dslocal.</td></tr>
+<tr><td>+</td><td>Vendor sudo and zsh</td><td>sudo 1.9.17p2: ISC-style &ldquo;Sudo license&rdquo; (<code>LICENSE.md</code>; ports <code>LICENSE=sudo</code>), base-compatible. zsh 5.9.2: MIT-like &ldquo;ZSH license&rdquo; (<code>LICENCE</code>; ports <code>LICENSE=ZSH</code>); some files under <code>Functions/</code> are GPL and must be omitted from the vendored tree. Both build with <code>bsd.prog.mk</code> wrappers or their own configure in the chroot.</td><td class="warn">Medium (build glue)</td><td class="good">Low legally; medium on build plumbing (sudo&rsquo;s configure and setuid install).</td></tr>
+</table></div>
+
+<h2 id="ux">6. Command UX</h2>
+<p>The verbs are Gershwin&rsquo;s; the outputs are trimmed from the existing <code>printf</code> strings with the daemon-side steps made visible. <code>dscli</code> never has to be run through <code>GNUstep.sh</code>.</p>
+<pre><code>$ sudo dscli user add jsmith --realname "Jane Smith" --admin
+Created /Local/Users/jsmith (uid 5001, gid 5001, shell /bin/zsh)
+Added jsmith to group admin
+User created: jsmith. Run 'dscli passwd jsmith' to set a password.
+$ sudo dscli passwd jsmith
+New password:
+Confirm password:
+Password set for jsmith.
+$ dscli user show jsmith
+Username:   jsmith            UID: 5001   GID: 5001
+Real Name:  Jane Smith        Shell: /bin/zsh
+Home:       /Local/Users/jsmith
+Password:   set (bcrypt, changed 2026-09-21)
+Groups:     jsmith, admin (wheel via admin)
+UUID:       9D2E5F0C-3A1B-4C8E-9F0A-6B7C8D9E0F11</code></pre>
+<pre><code>$ sudo dscli promote
+Promoting this machine to a directory server...
+  Generated server key and certificate (SHA256: 4f:1c:...:9a)
+  Wrote /Local/Library/DirectoryServices/Domain.plist (domain "office", port 4721)
+  Exporting /Local/Users and /Local/Applications over NFS (root squash, joined clients only)
+  Started rpcbind, mountd, nfsd (org.nextbsd.ds.nfs)
+  Registered _nextbsd-ds._tcp "office" via mDNSResponder
+Server ready. Clients join with: dscli join            (or: dscli join server.local)</code></pre>
+<pre><code>$ sudo dscli join
+Searching for directory servers... found "office" at server.local (10.0.1.5:4721)
+Server certificate SHA256: 4f:1c:...:9a   Trust this server? [y/N] y
+Admin name on office: jsmith
+Password:
+  Joined as machine "laptop" (token stored in /var/db/ds/client.plist)
+  Mounted server.local:/Local/Users on /Network/Users
+  Mounted server.local:/Local/Applications on /Network/Applications
+  Cached 12 users, 6 groups for offline login
+Join complete. Network accounts are available now.</code></pre>
+<pre><code>laptop login: jsmith                         # LoginWindow or getty; PAM "login" stack
+Password:
+laptop% echo $HOME $SHELL ; id
+/Network/Users/jsmith /bin/zsh
+uid=5001(jsmith) gid=5001(jsmith) groups=5001(jsmith),5000(admin),0(wheel),...
+laptop% sudo dscli user add bob --realname "Bob"    # write forwarded to the server
+Password:                                           # jsmith has a password, so sudo asks
+laptop% dscli list
+Role: Client of "office" (server.local, connected, cache 40 s old)
+Users (13)  Groups (7) ...</code></pre>
+<p>The one deliberate UX addition is that <code>join</code> asks for an admin credential and shows a certificate fingerprint. Gershwin&rsquo;s <code>join</code> asks for nothing, which is exactly the property that lets any host read every hash.</p>
+
+<h2 id="net">7. Network design</h2>
+<h3>7.1 Wire protocols</h3>
+<ul>
+<li><strong>Local (v1, kept):</strong> Gershwin&rsquo;s nine text commands on <code>/var/run/ds.sock</code>, unchanged, so <code>nss_gershwin.so.1</code> and SudoAskPass keep working during the transition. <strong>v2 additions</strong> on the same socket: <code>v2 whoami</code>, <code>v2 lookup user &lt;name&gt;</code> (reply: length-prefixed binary plist), <code>v2 set user &lt;name&gt; &lt;bplist&gt;</code>, <code>v2 passwd</code>, <code>v2 join|leave|promote|demote</code>. Authorization: <code>getpeereid()</code> uid 0, or a uid whose record is in <code>admin</code> for record writes; the hash is never returned to anyone. The v1 <code>getpwnam</code>-as-root path still returns the hash for <code>pam_unix</code> compatibility, and is switched off once <code>pam_ds</code> is in the PAM stacks (<code>Domain.plist</code> key <code>exposeHashesToRoot</code>, default false on NextBSD, true in legacy mode).</li>
+<li><strong>Between daemons:</strong> TCP 4721, TLS 1.3 from base OpenSSL, frames of 4-byte length plus a binary plist dictionary <code>{op, args, token}</code>. Ops: <code>hello</code> (server UUID, domain name, generation counter), <code>sync</code> (full copy of public records for the cache, no hashes), <code>lookup</code>, <code>auth</code> (name + password, verified server-side, with per-client rate limiting), <code>chpass</code>, <code>write</code> (admin name + password or admin session), <code>enroll</code> (join), <code>unenroll</code>. Clients pin the server certificate at join (TOFU, like ssh); the server issues a per-machine token so an un-joined host cannot even <code>sync</code>. Gershwin&rsquo;s plaintext 4721 protocol has no clients in the tree, so taking the port for TLS breaks nothing.</li>
+</ul>
+<h3>7.2 Discovery</h3>
+<p>DNS-SD, <code>_nextbsd-ds._tcp</code>, TXT <code>domain=office uuid=&hellip; fp=&lt;sha256&gt;</code>, registered by the server&rsquo;s <code>dsd</code> through libdns_sd. NextBSD&rsquo;s mDNSResponder advertises and answers today, but the hub records that the <code>dns_sd</code> client protocol over Mach is unfinished, so phase 1 ships with <code>dscli join &lt;host&gt;</code> and a gdomap-protocol shim (register with a local gdomap if one runs, answer <code>GDO_LOOKUP</code> broadcasts for <code>GershwinDirectory</code> otherwise; the protocol is a few fixed-size UDP/TCP messages) and phase 2 adds Bonjour when the mDNS-over-Mach plan lands. &ldquo;One server per network&rdquo; becomes a warning, not a refusal, because two domains on one LAN is a legitimate configuration.</p>
+<h3>7.3 Authentication and password security, candidly</h3>
+<ul>
+<li>Today: SHA-512 crypt at 5,000 rounds is acceptable but weak against GPU guessing given that the hashes are effectively public on the LAN. New default: bcrypt <code>$2b$</code> cost 12 (in FreeBSD&rsquo;s <code>libcrypt</code>), <code>$6$</code> accepted for migrated records and re-hashed on next successful login.</li>
+<li>Hashes stay on the server. Clients verify through the TLS RPC; when offline they verify against a cached copy of the user&rsquo;s own hash written only after a successful online login (Apple&rsquo;s mobile-account idea, minus the sync engine). That cache is 0600 root, and is the one place a client holds a secret.</li>
+<li>Lockout: 10 failures in 5 minutes per user per client; <code>dscli user unlock</code>.</li>
+<li>Not provided: Kerberos tickets, SSO to file shares, password quality rules beyond length. NFS traffic itself is unauthenticated AUTH_SYS, as it is for Gershwin and as it was for NeXT; the export list is restricted to enrolled client addresses, which is a real but modest improvement. <code>sec=krb5</code> is possible once a KDC exists (section 8).</li>
+</ul>
+<h3>7.4 Homes to /Network/Users</h3>
+<p>NFS, but narrowly: the server exports <code>/Local/Users</code> and <code>/Local/Applications</code> (not <code>/Local/Library</code>) with <code>-alldirs</code>, root squash, <code>-network</code> lists rewritten from the enrolled clients. <code>dsd</code> on the client performs both mounts with <code>nmount(2)</code> at join and after each boot, retrying until the network is up (no launchd ordering exists). FreeBSD&rsquo;s autofs is the later upgrade for laptops that leave the office: an <code>auto_master</code> direct map for <code>/Network/Users</code> with <code>automountd</code> and <code>autounmountd</code> under launchd; not in phase 1 because it adds two more daemons to port. Legacy Gershwin clients keep mounting the whole <code>/Local</code> at <code>/Network</code> when the server runs in legacy mode.</p>
+
+<h2 id="compat">8. Compatibility with existing Gershwin, and future LDAP/Kerberos</h2>
+<h3>8.1 Interoperating with today&rsquo;s Gershwin (Linux and FreeBSD GNUstep)</h3>
+<div class="table-scroll"><table>
+<tr><th>Pair</th><th>Works?</th><th>How</th></tr>
+<tr><td>NextBSD server, Gershwin client</td><td class="good">Yes, in <code>promote --legacy</code> mode</td><td>Server keeps <code>passwordHash</code> in <code>Users.plist</code>, exports <code>/Local -alldirs -maproot=root</code> to the listed networks, and registers <code>GershwinDirectory</code> via the gdomap shim. The Gershwin client mounts, reads the plists, and edits them through the mount as today; the server&rsquo;s <code>dsd</code> notices by mtime and re-reads (the same cache rule as <code>dshelper</code>). Every weakness of section 2 comes back, which is why it is a flag.</td></tr>
+<tr><td>Gershwin server, NextBSD client</td><td class="good">Yes</td><td><code>dscli join --legacy host</code> mounts <code>host:/Local</code> at <code>/Network</code>, the client <code>dsd</code> reads <code>/Network/Library/DirectoryServices/*.plist</code> exactly as <code>dshelper</code> does, and <code>pam_ds</code> verifies against the in-record hash locally. No TLS, no token, no lockout; homes appear at <code>/Network/Users</code> unchanged.</td></tr>
+<tr><td>Gershwin components on a NextBSD host (SudoAskPass, LoginWindow, <code>nss_gershwin</code>)</td><td class="good">Yes</td><td>Socket path symlink plus the v1 protocol. <code>passwd: files ds gershwin</code> during transition; <code>nss_gershwin</code> becomes redundant, not broken.</td></tr>
+<tr><td>Same on-disk store read by both <code>dshelper</code> and <code>dsd</code></td><td class="good">Yes</td><td>The plist shape is a superset. New keys (<code>generatedUID</code>, <code>home</code>) are ignored by Gershwin; a Gershwin <code>dscli</code> writing the file drops nothing because it round-trips the dictionary it read.</td></tr>
+</table></div>
+<p>Because the format and the socket protocol are preserved, the honest recommendation is to upstream: land the C daemon in nextbsd-userland, then offer Gershwin a <code>dscli</code>/<code>dshelper</code> replacement that is the same binaries built on FreeBSD and Linux (the code has no NextBSD-only dependency except launchd check-in, which is <code>#ifdef</code>-sized). The gershwin-desktop NextBSD target then drops <code>org.gnustep.gdomap.plist</code> and <code>io.github.gershwin-desktop.dshelper.plist</code>.</p>
+<h3>8.2 Could it later expose LDAP and Kerberos for Mac clients?</h3>
+<p><strong>Yes, and more cheaply than option A would suggest, because the data set is tiny.</strong> Two front-ends, both phase 3 or later:</p>
+<ul>
+<li><strong>LDAP.</strong> An in-<code>dsd</code> read-only LDAPv3 responder (bind, search, compare; BER via a 1,500-line hand-written codec or base&rsquo;s <code>libldap</code>-free approach) presenting <code>posixAccount</code>/<code>posixGroup</code> plus the <code>apple-user</code>/<code>apple-group</code> schema attributes a Mac&rsquo;s LDAPv3 plugin expects (<code>apple-generateduid</code>, <code>authAuthority</code>, <code>apple-user-homeurl</code>). Simple bind verifies against Shadow/. A Mac from 10.4 through macOS 26 can still bind to an LDAPv3 node in Directory Utility, log in, and mount a network home from the record; the sensible home transport is NFS or SMB, since Apple has been removing the AFP client. Alternative: run OpenLDAP from ports with a back-sock backend that asks <code>dsd</code>; more moving parts, fewer lines to own.</li>
+<li><strong>Kerberos.</strong> FreeBSD 15 base ships MIT Kerberos (<code>krb5kdc</code>, <code>kadmind</code>, <code>kadmin.local</code>, <code>libkrb5</code>; Heimdal was replaced in 15.0). <code>dscli promote --kerberos REALM</code> creates the realm; <code>dsd</code> adds/changes principals through <code>kadmin</code> at <code>user add</code>/<code>passwd</code> time (it has the plaintext then, which is the only moment keys can be derived). Records then carry <code>authAuthority: ;Kerberosv5;&hellip;</code>, Macs get tickets at login, and NFS can run <code>sec=krb5</code>. What this does not give is Apple&rsquo;s Password Server (SASL, port 3659); modern Macs do not need it for LDAP+Kerberos binding.</li>
+</ul>
+<p>Effort for both: roughly four to six weeks, testable against a real Mac. None of it changes the local design; that is the point of keeping records, UUIDs and a single writer in <code>dsd</code>.</p>
+
+<h2 id="pros">9. Pros and cons</h2>
+<div class="table-scroll"><table>
+<tr><th>Pros</th><th>Cons</th></tr>
+<tr><td>Keeps a UX the user already likes, and a file format Gershwin already ships; no migration for existing installs.</td><td>It is a bespoke directory: no third-party client (Mac, Linux SSSD) can join until the LDAP/Kerberos front-ends exist.</td></tr>
+<tr><td>Small: ~7&ndash;8k lines of C, no C++, no ObjC, no GNUstep, no gdomap; fits the wland/configd pattern.</td><td>Reimplements things Apple&rsquo;s DirectoryService plugins already had (search policy, attribute mapping); option A gets those from source but at 50k C++ lines.</td></tr>
+<tr><td>Fixes the real security holes (world-readable hashes, root-mapped export, plaintext auth port, <code>nullok</code>) while staying backward compatible on purpose.</td><td>Legacy mode reintroduces every one of those holes; operators must understand the flag.</td></tr>
+<tr><td>PAM module makes the sudo rule explicit and closes the login hole on FreeBSD.</td><td>Depends on NextBSD parts that are not finished: launchd <code>Sockets</code> check-in (unverified), dns_sd over Mach (missing), NFS server plists (not written).</td></tr>
+<tr><td>Both ends are ours, so labels are <code>org.nextbsd.*</code> with no fabricated Apple names.</td><td>Not an OpenDirectory API; Gershwin&rsquo;s eventual ObjC wrapper is over <code>libds</code>, not <code>ODNode</code>.</td></tr>
+</table></div>
+
+<h2 id="effort">10. Effort by phase, and risks</h2>
+<div class="table-scroll"><table>
+<tr><th>Phase</th><th>Scope</th><th>Estimate</th><th>Exit test</th></tr>
+<tr><td>0. Local parity</td><td><code>dsd</code> store + local socket (v1 + v2), <code>nss_ds</code> with enumeration, <code>pam_ds</code>, <code>dscli</code> local verbs, plist, overlay <code>nsswitch.conf</code>/<code>pam.d</code>/<code>sudoers.d</code>, zsh and sudo vendored, first-boot <code>dscli init</code>.</td><td>2.5&ndash;3 weeks</td><td>CI: boot, <code>dscli user add --admin</code>, <code>getent passwd</code> lists the user, <code>su</code> and <code>sudo -n true</code> as passwordless admin succeed, fail after <code>dscli passwd</code>, login rejects wrong password for a <code>noPassword</code> account.</td></tr>
+<tr><td>1. Server and client</td><td>TLS RPC, <code>promote</code>/<code>demote</code>/<code>join</code>/<code>leave</code> with explicit host, NFS server plists, <code>/Network/Users</code> mounts, offline cache, lockout.</td><td>2&ndash;2.5 weeks</td><td>Two VMs: join, log in as a network user with <code>$HOME=/Network/Users/&hellip;</code>, write a file, add a user from the client, log in offline with the cache.</td></tr>
+<tr><td>2. Discovery and compatibility</td><td>DNS-SD when the mDNS Mach client lands; gdomap shim; legacy modes both ways; notifyd key; <code>libds</code> + MIG status service.</td><td>1&ndash;1.5 weeks</td><td>Gershwin FreeBSD client joins a NextBSD legacy server; NextBSD client joins a Gershwin server.</td></tr>
+<tr><td>3. Later</td><td>autofs homes, LDAP responder, MIT Kerberos realm, Mac bind test.</td><td>4&ndash;6 weeks</td><td>A Mac binds and logs in.</td></tr>
+</table></div>
+<p><strong>Risks.</strong> (R1) launchd <code>Sockets</code> and <code>MachServices</code> check-in behaviour on NextBSD is inferred from <code>core.c</code>, not run; mitigation is the self-bound socket. (R2) No launchd ordering: <code>dsd</code>, mDNSResponder, NFS and LoginWindow race; mitigation is retry loops and <code>NS_UNAVAIL</code> semantics in NSS. (R3) NFS server under launchd on NextBSD has never been done; three plists and a boot test. (R4) DNS-SD client missing; <code>join &lt;host&gt;</code> until it exists. (R5) PAM stacks: an error in <code>/etc/pam.d/sudo</code> locks admins out; keep <code>getty</code> on a VT and root in <code>master.passwd</code>. (R6) Vendored sudo is setuid root in base; track upstream releases. (R7) Gershwin upstream may keep evolving <code>dshelper</code>&rsquo;s protocol; the fix is to upstream the C version rather than track two.</p>
+
+<h2 id="apple">11. How Apple-shaped it is</h2>
+<p><strong>5 out of 10.</strong> The shape is right: Local and Network domains at their NeXT-era mount points, records as plists with a UUID (10.5 dslocal), secrets in a shadow store (10.5 <code>/var/db/shadow/hash</code>), a PAM module that stands where <code>pam_opendirectory</code> stands, a launchd-owned daemon named by the platform, a notifyd key, and a promote/join pair that mirrors Server Admin&rsquo;s &ldquo;Open Directory Master&rdquo; and Directory Utility&rsquo;s &ldquo;Bind&rdquo; without the LDAP. What is not Apple: no node paths (<code>/Local/Default</code>, <code>/LDAPv3/&hellip;</code>), no <code>dscl</code> grammar (the user asked for that, so it is a feature here), no OpenDirectory API or ODRecord attribute names, no membership daemon with UUID-based ACLs, no Password Server or Kerberos, no MCX. Two cheap points are available: name the record attributes after Apple&rsquo;s (<code>RecordName</code>, <code>UniqueID</code>, <code>PrimaryGroupID</code>, <code>NFSHomeDirectory</code>, <code>UserShell</code>, <code>GeneratedUID</code>) in <code>libds</code>&rsquo;s dictionaries while keeping Gershwin&rsquo;s keys on disk, and give <code>libds</code> a session/node/record vocabulary so an ObjC <code>OpenDirectory</code>-shaped framework can sit on it later. That gets to 6. Option A remains the path to 8 or 9, at ten times the code.</p>
+
+<h2 id="sources">12. Sources</h2>
+<ul>
+<li>Gershwin: <a href="https://github.com/gershwin-desktop/gershwin-components">gershwin-components</a> at <code>c1d9095</code>, local clone <code>scratchpad/gd/gershwin-components/DirectoryServices/</code>: <code>README.md</code>, <code>dshelper/{main.m,dshelper.m,dshelper.h,dshelper.rc,dshelper.init,dshelper.service,gdomap.service,GNUmakefile}</code>, <code>dscli/{main.m,DSPlatform.h,DSPlatform.m,DSPlatformFreeBSD.m,DSPlatformLinux.m}</code>, <code>nss_gershwin/{nss_gershwin.c,GNUmakefile}</code>; <code>LoginWindow/LoginWindowPAM.m</code>, <code>LoginWindow/LoginWindow-pam.pam</code>, <code>SudoAskPass/SudoAskPass.m</code>, <code>Assistants/InstallationAssistant/Resources/installer-FreeBSD.sh</code>. Commit list from <code>gh api repos/gershwin-desktop/gershwin-components/commits?path=DirectoryServices</code> (29 commits, 2026-02-02 to 2026-09-08).</li>
+<li>Gershwin on NextBSD: <code>scratchpad/gd/gershwin-desktop/targets/nextbsd/build.sh</code> and <code>overlays/System/Library/LaunchDaemons/{io.github.gershwin-desktop.dshelper,org.gnustep.gdomap}.plist</code>; <code>gershwin-system/Library/Scripts/SystemPrepare.sh</code>.</li>
+<li>FreeBSD releng/15.0: <code>lib/libpam/modules/pam_unix/pam_unix.c</code>, <code>lib/libpam/pam.d/system</code>, <code>lib/libc/net/nsdispatch.c</code>, <code>include/nsswitch.h</code>, <code>lib/libc/gen/getgrent.c</code>, <code>lib/libc/gen/getpwent.c</code> (local copies under <code>scratchpad/fbsd15</code> and <code>scratchpad/src/fbsd15-bits</code>).</li>
+<li>nextbsd-userland <code>main</code>: <code>src/WLAN/mach_service.c</code>, <code>overlay/System/Library/LaunchDaemons/org.nextbsd.wland.plist</code>, <code>src/launchd/src/core.c</code>, <code>src/launchd/liblaunch/liblaunch.c</code>, the <code>src/</code> listing.</li>
+<li>Site pages: <a href="nextbsd-directoryservices-plan.html">option A porting plan</a>, <a href="nextbsd-opendirectory-research.html">NetInfo/OD history</a>, <a href="freebsd-pam-port-plan.html">PAM port plan</a>, <a href="freebsd-opendirectory-port-plan.html">OD scoping</a>, <a href="nextbsd-wlan-plan.html">WLAN plan</a> (Mach service pattern, MIG OOL constraint), <a href="nextbsd-libxpc-libdispatch-scoping.html">libxpc/libdispatch scoping</a> (<code>xpc_connection.c</code> removal), <a href="freebsd-mdnsresponder-plan.html">mDNSResponder plan</a>, <a href="freebsd-libcorefoundation-icu-audit.html">CF audit</a> (CFPropertyList works without ICU), <a href="nextbsd-linux-abi-mounts-plan.html">Linux ABI mounts</a> (daemon-owned mounts, no fstab, inert WatchPaths), <a href="nextbsd-research.html">hub</a> (dns_sd stub, /System/Library collisions).</li>
+<li>Licenses: <a href="https://github.com/sudo-project/sudo/blob/main/LICENSE.md">sudo LICENSE.md</a>, <a href="https://github.com/zsh-users/zsh/blob/master/LICENCE">zsh LICENCE</a>; FreeBSD ports <code>security/sudo/Makefile</code> (1.9.17p2, <code>LICENSE=sudo</code>) and <code>shells/zsh/Makefile</code> (5.9.2, <code>LICENSE=ZSH</code>).</li>
+<li>Apple: <a href="https://github.com/apple-oss-distributions">apple-oss-distributions</a> DirectoryService-621.12, OpenDirectory-146, DSTools-162 (only as shape references here; nothing is vendored in option B).</li>
+</ul>
+
+<p class="footnote">Everything attributed to Gershwin or FreeBSD above was read in source at the stated revisions. The launchd <code>Sockets</code> check-in behaviour, the plist file mode, and the NFS-under-launchd claims are inferred and are phase 0/1 tests. No NextBSD machine ran any of this. Written 2026-09-21.</p>
+</div>
+</body>
+</html>

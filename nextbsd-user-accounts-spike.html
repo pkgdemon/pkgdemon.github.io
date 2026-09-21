@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>User account management</title>
+<style>
+  :root { --fg:#1a1a1a; --fg-muted:#555; --bg:#fafaf7; --accent:#b8472a; --accent-soft:#f3e7df; --border:#d8d4c8; --code-bg:#f0ece2; --table-stripe:#f4efe5; --warn:#8a5a00; --good:#2d6f3b; --bad:#a23030; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,sans-serif; color:var(--fg); background:var(--bg); line-height:1.55; margin:0; padding:0; }
+  .wrap { max-width:900px; margin:0 auto; padding:48px 32px 96px; }
+  h1 { font-size:2.05rem; line-height:1.2; margin:0 0 8px; letter-spacing:-0.01em; }
+  h2 { font-size:1.4rem; margin:54px 0 12px; padding-top:18px; border-top:2px solid var(--border); }
+  h3 { font-size:1.12rem; margin:30px 0 10px; color:var(--accent); }
+  p { margin:0 0 14px; }
+  ul,ol { margin:0 0 14px 22px; padding:0; } li { margin:0 0 6px; }
+  code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.9em; background:var(--code-bg); padding:1px 5px; border-radius:3px; }
+  pre { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:0.84em; line-height:1.5; background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:14px 16px; overflow-x:auto; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  .lede { font-size:1rem; color:var(--fg-muted); margin:0 0 28px; }
+  .meta { font-size:0.85rem; color:var(--fg-muted); margin:0 0 24px; }
+  table { border-collapse:collapse; width:100%; margin:12px 0 22px; font-size:0.9rem; }
+  th,td { text-align:left; padding:9px 12px; border:1px solid var(--border); vertical-align:top; }
+  th { background:var(--accent-soft); font-weight:600; }
+  tr:nth-child(even) td { background:var(--table-stripe); }
+  .callout { border-left:3px solid var(--accent); background:var(--accent-soft); padding:14px 18px; margin:18px 0 22px; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .callout-warn { border-left-color:var(--warn); background:#fbf3df; }
+  .callout-good { border-left-color:var(--good); background:#e8f1e3; }
+  .callout-bad { border-left-color:var(--bad); background:#f7e8e8; }
+  .pill { display:inline-block; font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 8px; border-radius:10px; margin-right:8px; }
+  .pill-good { background:#d6ead0; color:var(--good); } .pill-warn { background:#f4dfbf; color:var(--warn); } .pill-bad { background:#f0c8c8; color:var(--bad); } .pill-neutral { background:#ddd; color:#333; }
+  .toc { background:white; border:1px solid var(--border); border-radius:4px; padding:18px 24px 14px 36px; margin:0 0 36px; font-size:0.95rem; }
+  .toc h2 { margin:0 0 8px; padding-top:0; border-top:none; font-size:1rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--fg-muted); margin-left:-14px; }
+  .toc ol { margin:0 0 0 6px; } .toc li { margin-bottom:4px; }
+  .toc a { color:var(--fg); text-decoration:none; } .toc a:hover { text-decoration:underline; }
+  .back { font-size:0.9rem; margin-bottom:18px; } .back a { color:var(--accent); text-decoration:none; }
+  .footnote { font-size:0.85rem; color:var(--fg-muted); border-top:1px solid var(--border); margin-top:48px; padding-top:16px; }
+  td.bad { color:var(--bad); font-weight:600; }
+  td.good { color:var(--good); font-weight:600; }
+  td.warn { color:var(--warn); font-weight:600; }
+  .table-scroll { overflow-x:auto; }
+  @media (max-width:640px) { .wrap { padding:28px 16px 64px; } h1 { font-size:1.6rem; } th,td { padding:7px 8px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="back"><a href="index.html">&larr; Back</a> &middot; <a href="nextbsd-research.html">NextBSD Research</a> &middot; spike for the User Account Management epic</p>
+
+<h1>User account management: which directory to build</h1>
+<p class="lede">NextBSD needs a way to create users, let admins sudo, promote a machine to a server and join clients to it. It should replace <code>/etc/passwd</code> for everything except the system users. There are three candidates: port Apple&rsquo;s DirectoryService, rewrite Gershwin&rsquo;s DirectoryServices in C with CoreFoundation, or port NeXT&rsquo;s NetInfo. This spike compares them against the requirements and recommends one shape for the epic.</p>
+<p class="meta">2026-09-21. Three research agents each read one candidate&rsquo;s source and wrote a design doc. They read <code>apple-oss-distributions</code> DirectoryService-621.12, DSTools and netinfo-369.6/Libinfo, <code>gershwin-components/DirectoryServices</code> at <code>c1d9095</code>, and FreeBSD <code>releng/15.0</code>. This page compiles and reconciles those docs. Planning only; nothing has been built.</p>
+
+<div class="toc">
+<h2>Contents</h2>
+<ol>
+<li><a href="#reqs">The requirements</a></li>
+<li><a href="#options">The three design docs</a></li>
+<li><a href="#table">Side by side</a></li>
+<li><a href="#fit">Requirement fit</a></li>
+<li><a href="#sudo">The sudo rule, which all three get wrong by default</a></li>
+<li><a href="#rec">Recommendation</a></li>
+<li><a href="#epic">What the epic would contain</a></li>
+<li><a href="#open">Open decisions</a></li>
+</ol>
+</div>
+
+<h2 id="reqs">1. The requirements</h2>
+<ol>
+<li>Users live in <code>/Local/Users</code>.</li>
+<li>The default shell is zsh.</li>
+<li>Admins can sudo. An admin with <strong>no password set</strong> sudoes with no prompt. An admin <strong>with a password</strong> must type it.</li>
+<li>A command <strong>promotes</strong> a machine to a server that other computers join.</li>
+<li>A command <strong>joins</strong> a server, for network accounts and network applications.</li>
+<li>On a joined machine, network users live in <code>/Network/Users</code>.</li>
+<li>This replaces <code>/etc/passwd</code> and <code>/etc/group</code> for account management, root included. Built-in system users stay for Unix compatibility.</li>
+</ol>
+<p>The epic also vendors sudo and zsh into nextbsd-userland. All three docs checked the licences. sudo is ISC-style. zsh is MIT-style, but some files under <code>Functions/</code> are GPL and must be left out. Both are fine for base whichever option is chosen.</p>
+
+<h2 id="options">2. The three design docs</h2>
+<table>
+<tr><th>Option</th><th>Design doc</th><th>One-line verdict</th></tr>
+<tr><td><strong>A</strong></td><td><a href="nextbsd-ua-directoryservice-port.html">Port Apple DirectoryService</a></td><td>This is the real Mac OS X 10.5/10.6 client architecture. It means 151,601 lines of 2011 C++ against Apple frameworks we only partly have. Promote has to be rebuilt, because slapconfig, PasswordServer and Server Admin were never open-sourced.</td></tr>
+<tr><td><strong>B</strong></td><td><a href="nextbsd-ua-gershwin-ds-redesign.html">Gershwin DirectoryServices in C/CF</a></td><td>This is the shape and commands you already like, in about 7&ndash;8k lines. It is the fastest route to all seven requirements. Today&rsquo;s Gershwin code has serious security holes that the redesign has to fix.</td></tr>
+<tr><td><strong>C</strong></td><td><a href="nextbsd-ua-netinfo-port.html">Port NetInfo</a></td><td>This is the authentic NeXT and 10.0&ndash;10.4 stack, and it meets every requirement mechanically. It is insecure by design: every password hash is readable without authenticating, and trust is based on IP address. Hardening it removes the only reason to choose it.</td></tr>
+</table>
+
+<h2 id="table">3. Side by side</h2>
+<div class="table-scroll">
+<table>
+<tr><th></th><th>A. Apple DirectoryService</th><th>B. Gershwin DS in C/CF</th><th>C. NetInfo</th></tr>
+<tr><td>Source</td><td>DirectoryService-621.12, APSL 2.0</td><td>gershwin-components, BSD-2-Clause (your code)</td><td>netinfo-369.6 (2006) + Libinfo, APSL 1.0/1.1, and 261 files with no licence text</td></tr>
+<tr><td>Size and language</td><td>151,601 lines of C++ behind a 51-function C API</td><td>5,459 lines today (ObjC + C); about 7&ndash;8k lines of C after the rewrite</td><td>About 56k lines of C. lookupd (17.5k lines of ObjC) is dropped for an NSS module.</td></tr>
+<tr><td>Local store</td><td>One XML plist per record (dslocal), moved under <code>/Local/Library/DirectoryServices</code></td><td><code>Users.plist</code> / <code>Groups.plist</code>, plus a new root-only <code>Shadow/</code></td><td>A <code>.nidb</code> database served by <code>netinfod local</code>, which is a boot dependency</td></tr>
+<tr><td>Wire protocol</td><td>MIG to the daemon; LDAPv3 to servers</td><td>A Unix socket locally; TLS RPC on port 4721 between machines; LDAP and Kerberos front-ends later</td><td>ONC RPC over rpcbind, IPv4 only</td></tr>
+<tr><td>Promote</td><td>New C tool: OpenLDAP from ports with Apple&rsquo;s schema, plus the MIT KDC in FreeBSD 15 base</td><td><code>dscli promote</code>: certificate, TLS listener, Bonjour, NFS exports</td><td><code>nidomain -m</code> and a <code>serves</code> entry</td></tr>
+<tr><td>Join</td><td>A C rewrite of <code>dsconfigldap</code> over the existing LDAPv3 plugin</td><td><code>dscli join [host]</code>: pins the server certificate on first use and gets a machine token</td><td>A static binding file, or broadcast binding</td></tr>
+<tr><td>Password security</td><td>Good once the 2010 hash blob is replaced with PBKDF2-SHA512; Kerberos on the network</td><td>Good after the redesign (bcrypt shadow hashes, TLS); <strong>bad today</strong></td><td><strong>Bad</strong>: crypt-DES hashes readable by anyone; the write credential is sent bit-inverted in the RPC credential</td></tr>
+<tr><td>Real Macs as clients</td><td>Yes (LDAP + Kerberos, Open Directory schema)</td><td>Later, through an LDAP/Kerberos front-end (phase 3)</td><td>Only NeXT and Mac OS X 10.0&ndash;10.4</td></tr>
+<tr><td>Effort</td><td><strong>9&ndash;12 engineer-months</strong></td><td><strong>6&ndash;8 weeks</strong> for Gershwin&rsquo;s features plus networking; +4&ndash;6 weeks for LDAP/Kerberos</td><td>5&ndash;6 weeks as-is; 9&ndash;10 weeks hardened</td></tr>
+<tr><td>Biggest risk</td><td>Building 2011 C++ against CF, SystemConfiguration, Security/CDSA and IOKit; MIG out-of-line data is broken on the kmod (nextbsd#66)</td><td>launchd Sockets check-in is unverified; an NFS server under launchd is untested; a PAM mistake can lock everyone out</td><td>The security model; LP64 cleanup (about 130 <code>unsigned long</code> sites); autofs is not in the NextBSD kernel today</td></tr>
+<tr><td>Apple-likeness</td><td><strong>7/10</strong> (client 8, server 5)</td><td><strong>5/10</strong> (6 with Apple attribute names)</td><td><strong>5/10</strong> (9 against NeXT/10.4, 1 against modern macOS)</td></tr>
+</table>
+</div>
+<div class="callout"><p><strong>A correction between the docs.</strong> The option&nbsp;B doc first said FreeBSD base ships Heimdal Kerberos. The option&nbsp;A agent checked <code>releng/15.0</code>: FreeBSD 15 replaced Heimdal with <strong>MIT Kerberos</strong> (<code>krb5/libexec/{kdc,kadmind}</code>). That is also what Mac OS X 10.5/10.6 servers ran, so the Kerberos half of an Apple-shaped server is already in base. The option&nbsp;B page has been corrected.</p></div>
+
+<h2 id="fit">4. Requirement fit</h2>
+<div class="table-scroll">
+<table>
+<tr><th>#</th><th>A</th><th>B</th><th>C</th></tr>
+<tr><td>1 <code>/Local/Users</code></td><td class="good">Set in the record&rsquo;s home default</td><td class="good">Already Gershwin&rsquo;s layout</td><td class="good">Default set by a wrapper</td></tr>
+<tr><td>2 zsh</td><td class="good">Change the seed</td><td class="good">One-line default</td><td class="good">Default set by a wrapper</td></tr>
+<tr><td>3 sudo rule</td><td class="warn">New PAM module (&sect;5)</td><td class="warn">New PAM module (&sect;5)</td><td class="bad">Clashes with netinfod&rsquo;s &ldquo;Free Parking&rdquo; rule: a passwordless admin becomes an unauthenticated root of the whole domain</td></tr>
+<tr><td>4 promote</td><td class="warn">New tool; the Apple original was closed source</td><td class="good"><code>dscli promote</code> (hardened)</td><td class="good"><code>nidomain -m</code></td></tr>
+<tr><td>5 join</td><td class="good">Existing LDAPv3 bind path</td><td class="good"><code>dscli join</code></td><td class="good">Binding file</td></tr>
+<tr><td>6 <code>/Network/Users</code></td><td class="good">NFSv4 mount</td><td class="good">NFS mount at join and at boot</td><td class="warn">Needs autofs, which the kernel lacks today</td></tr>
+<tr><td>7 replace passwd</td><td class="good"><code>master.passwd</code> keeps system users and a locked root for single-user mode</td><td class="good"><code>nsswitch files ds</code>; <code>dscli passwd root</code></td><td class="warn">Yes, but it adds a boot dependency on <code>netinfod</code></td></tr>
+</table>
+</div>
+
+<h2 id="sudo">5. The sudo rule, which all three get wrong by default</h2>
+<p>Requirement 3 sounds like a sudoers line, but it is not. <code>NOPASSWD</code> would skip the prompt even for admins who <em>have</em> a password. The rule has to depend on whether the account has a password, so it belongs in PAM.</p>
+<ul>
+<li><strong>Gershwin today</strong> gets the behaviour by accident. FreeBSD&rsquo;s <code>/etc/pam.d/system</code> uses <code>pam_unix &hellip; nullok</code>, so an empty hash passes. <code>system</code> is also included by <code>login</code>, <code>sshd</code> and <code>su</code>, so the same account can log in <em>with any password</em>, remotely too if sshd allows it.</li>
+<li><strong>NetInfo</strong> is worse: an admin with an empty password is an administrator of the whole network domain with no authentication at all.</li>
+<li><strong>The fix, common to A and B:</strong> a directory PAM module with an <code>allow_nopass</code> option. It appears only in <code>/etc/pam.d/sudo</code>, and only for members of <code>admin</code>. Every other service drops <code>nullok</code>. An account without a password can use sudo and the local console (the login window&rsquo;s auto-login), but can never log in over the network. Once <code>dscli passwd</code> sets a password, the prompt comes back automatically.</li>
+</ul>
+
+<h2 id="rec">6. Recommendation</h2>
+<div class="callout callout-good">
+<p><strong>Build option&nbsp;B, in Apple&rsquo;s vocabulary, with Apple&rsquo;s network protocols.</strong> Rewrite Gershwin DirectoryServices in C with CoreFoundation as the base, because it is your design and the fastest route to all seven requirements. Take three things from option&nbsp;A so the result has the Open Directory shape:</p>
+<ol>
+<li><strong>Apple&rsquo;s record and attribute names in the store and in <code>libds</code>.</strong> Use <code>RecordName</code>, <code>UniqueID</code>, <code>PrimaryGroupID</code>, <code>NFSHomeDirectory</code>, <code>UserShell</code>, <code>GeneratedUID</code>, <code>AuthenticationAuthority</code> and <code>ShadowHashData</code>. Store one plist per record, written atomically, as dslocal does, rather than one <code>Users.plist</code>. The commands stay friendly, while the data underneath looks like a Mac&rsquo;s. That raises B from 5/10 to about 7/10 at little cost.</li>
+<li><strong>LDAP and Kerberos as the network protocol</strong>, instead of making port 4721 the permanent wire. OpenLDAP comes from ports with Apple&rsquo;s schema, and the MIT KDC is already in base. This is exactly what an Open Directory master was, and it is the only route by which real Macs, Linux boxes and network applications (requirement 5) can use NextBSD accounts. B&rsquo;s TLS RPC can ship first, as the NextBSD-to-NextBSD path, while the LDAP server matures. The unauthenticated Gershwin protocol survives only behind an explicit <code>--legacy</code> flag.</li>
+<li><strong>Keep the <code>dscl</code> escape hatch, but not as the main interface.</strong> A thin <code>dscl</code>-compatible read path makes scripts and documentation written for Macs mostly work. The documented interface is <code>dscli</code>&rsquo;s verbs.</li>
+</ol>
+<p><strong>Don&rsquo;t port DirectoryService wholesale.</strong> It is 150k lines of C++ with a hard dependency on MIG out-of-line data, and its server half was never released. Most of its value is the schema and the LDAPv3 client behaviour, which item&nbsp;1 and item&nbsp;2 get without the port. <strong>Don&rsquo;t port NetInfo.</strong> Apple removed it in 10.5 for the same security reasons it would have here, and a hardened NetInfo is just a worse version of option&nbsp;B.</p>
+</div>
+
+<h2 id="epic">7. What the epic would contain</h2>
+<table>
+<tr><th>Phase</th><th>Work</th><th>Estimate</th><th>Done when</th></tr>
+<tr><td>0. Vendoring</td><td>sudo and zsh into nextbsd-userland; <code>/etc/shells</code>, <code>/etc/zshrc</code>, <code>sudoers.d/nextbsd</code> with <code>%admin ALL=(ALL) ALL</code></td><td>1&ndash;2 weeks</td><td><code>/bin/zsh</code> and <code>/usr/bin/sudo</code> are in the image</td></tr>
+<tr><td>1. Local directory</td><td><code>dsd</code> (launchd <code>org.nextbsd.dsd</code>, Mach name <code>org.nextbsd.ds</code>), <code>libds</code>, per-record store with Apple attribute names, root-only shadow hashes, <code>nss_ds</code>, <code>pam_ds</code> with <code>allow_nopass</code> for sudo only, and <code>dscli user|group|passwd</code></td><td>3&ndash;4 weeks</td><td>An admin is created in <code>/Local/Users</code> with zsh; sudo prompts only if a password is set; <code>/etc/passwd</code> holds only system users</td></tr>
+<tr><td>2. Base tool integration</td><td><code>adduser</code>, <code>pw</code>, <code>vipw</code> and <code>chpass</code> either call <code>dscli</code> or refuse for UIDs &ge; 500; the installer and LoginWindow use <code>libds</code>; migration from existing <code>master.passwd</code> users</td><td>1&ndash;2 weeks</td><td>No base tool can create a human user outside the directory</td></tr>
+<tr><td>3. NextBSD network</td><td><code>dscli promote</code> and <code>dscli join</code> over TLS with certificate pinning, Bonjour <code>_nextbsd-ds._tcp</code>, NFS <code>/Network/Users</code> mounted at join and at boot, network applications at <code>/Network/Applications</code></td><td>3&ndash;4 weeks</td><td>A second VM joins and a network user logs in with a <code>/Network/Users</code> home</td></tr>
+<tr><td>4. Open Directory shape</td><td>Promote also sets up OpenLDAP with Apple&rsquo;s schema and an MIT Kerberos realm; join can bind to any LDAP/Kerberos server; a Mac bind test</td><td>4&ndash;6 weeks</td><td>A real Mac binds to a NextBSD server, and NextBSD binds to an LDAP server</td></tr>
+</table>
+<p>That totals about 3&ndash;4 months for one engineer, against 9&ndash;12 months for option&nbsp;A. Phase&nbsp;4 can move to its own epic if you want the shipping line drawn at phase&nbsp;3.</p>
+
+<h2 id="open">8. Open decisions</h2>
+<ol>
+<li><strong>The UID range</strong> for directory users. Apple starts at 501; Gershwin&rsquo;s admin is 5000. Pick one before any installs exist.</li>
+<li><strong>Should the network protocol be LDAP from day one</strong>, skipping the TLS RPC? That is slower to ship but leaves nothing to deprecate later.</li>
+<li><strong>Should OpenLDAP live in base or come from ports</strong> for servers only? Clients need only <code>libldap</code> or <code>dsd</code>&rsquo;s own LDAP client.</li>
+<li><strong>Home-directory transport</strong>: NFSv4 with Kerberos (<code>sec=krb5</code>) is the secure choice. Plain AUTH_SYS trusts every client&rsquo;s UID claim.</li>
+<li><strong>Compatibility with the existing Gershwin GNUstep tools</strong> on Linux and FreeBSD: support the legacy protocol read-only, or not at all.</li>
+</ol>
+
+<p class="footnote">Design docs: <a href="nextbsd-ua-directoryservice-port.html">A: Apple DirectoryService</a> &middot; <a href="nextbsd-ua-gershwin-ds-redesign.html">B: Gershwin DirectoryServices in C/CF</a> &middot; <a href="nextbsd-ua-netinfo-port.html">C: NetInfo</a>. Background: <a href="nextbsd-opendirectory-research.html">Directory services before opendirectoryd</a> and the earlier <a href="nextbsd-directoryservices-plan.html">directoryservicesd porting plan</a>, which this spike supersedes for the account-management epic.</p>
+</div>
+</body>
+</html>
